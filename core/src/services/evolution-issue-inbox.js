@@ -22,6 +22,8 @@ const ISSUE_DEFINITIONS = Object.freeze({
   plant_failed: { severity: 'error', label: '自己的农场种植失败' },
   kickout: { severity: 'warn', label: '账号会话被服务端踢下线' },
   reconnect_failed: { severity: 'warn', label: '账号网络重连多次失败' },
+  code_refresh_failed: { severity: 'error', label: '登录凭据无法生成新的游戏 Code' },
+  credential_keepalive_failed: { severity: 'warn', label: '微信长凭据滚动保活失败' },
 });
 
 function normalizeIssue(value) {
