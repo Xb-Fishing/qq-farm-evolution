@@ -1572,6 +1572,8 @@ function onKickout(info) {
 function onReconnectFailed(info) {
     const reason = info && info.reason ? info.reason : '未知';
     log('系统', `连接多次重试失败，准备停止账号。原因: ${  reason}`);
+    require('../services/daily-events').recordEvent(
+        process.env.FARM_ACCOUNT_ID || '', 'warn', 'reconnect_failed', '网络连接多次重试失败');
     sendToMaster({ type: 'ws_reconnect_failed', reason });
     stopBot().catch(() => exitWorker(0));
 }

@@ -83,6 +83,13 @@ function recordEvent(accountId, level, type, message) {
     if (state.events.length > MAX_EVENTS) state.events.splice(0, state.events.length - MAX_EVENTS);
   }
   persist(String(accountId || 'default'), state);
+
+  // 自动进化只接收白名单问题类别；不传账号和错误原文，避免把个人信息写进收件箱。
+  if (entry.level === 'warn' || entry.level === 'error') {
+    try {
+      require('./evolution-issue-inbox').recordRuntimeIssue(entry.type, entry.level, entry.at);
+    } catch { /* 问题摘要记录失败不能影响主流程 */ }
+  }
 }
 
 function getTodayEvents(accountId) {
