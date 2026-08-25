@@ -68,6 +68,13 @@ test('Worker 每次启动后都会重新挂载凭据保活', () => {
   assert.match(source, /scheduleAccountRefresh\(account\.id\)/);
 });
 
+test('Code 刷新和长凭据保活失败会留下脱敏进化线索', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/runtime/auto-code-refresh.js'), 'utf8');
+  assert.match(source, /recordEvolutionIssue\('code_refresh_failed', 'error'\)/);
+  assert.match(source, /recordEvolutionIssue\('credential_keepalive_failed', 'warn'\)/);
+  assert.doesNotMatch(source, /recordRuntimeIssue\([^\n]*err\.message/);
+});
+
 test('安全巡检 SIGTERM/143 归类为中止而不是失败', () => {
   assert.equal(classifyEvolutionExit(143, '', false), 'interrupted');
   assert.equal(classifyEvolutionExit(null, 'SIGTERM', false), 'interrupted');
