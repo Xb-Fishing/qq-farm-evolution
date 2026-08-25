@@ -1,4 +1,4 @@
-# 交接文档：qq-farm-bot（更新 2026-08-26，自动进化接收短期脱敏运行问题）
+# 交接文档：qq-farm-bot（更新 2026-08-26，微信凭据按真实有效期跨日续期）
 
 给下一个会话用。先读本文件，再动 `worker.js` / `friend-orchestrator.js` / `farming-orchestrator.js`。
 
@@ -40,6 +40,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 - **自动进化可以零改动**：没有可靠问题证据、没有明确安全收益，或现有逻辑已满足要求时，必须允许代码和 HANDOFF 都不修改、不生成提交；不得为了“每日进化”制造代码或文档改动。只要实际改了代码，仍必须同步更新 HANDOFF、测试、提交并推送。
 - **自动进化运行问题只做短期脱敏线索**：日常错误只能按白名单记录“类别、次数、时间”，禁止保存或送给 Agent 账号/好友、协议方法、错误原文、URL 或凭据。安全巡检必须回看本机短期日志验证后才能改代码，不能凭摘要恢复熔断或收紧收益链；无需修改时立即确认清除，有代码改动则等应用重启成功后清除，失败/拒绝期间保留，最长 72 小时。
 - **重启只复用用户已有 tmux `farm:0.0` 窗格**：包括人工改动生效和面板“应用进化”；禁止新建 tmux session/window，禁止在 tmux 外另起 `nohup` Bot。找不到该 pane 时必须取消重启，不能先停服再另起。
+- **凌晨静默只能放慢 Worker 业务巡查，不能停主进程微信凭据续期**：长凭据必须按服务端真实有效期持久化和跨日续期；不得把“每半小时检查”再写成“每半小时真实刷新”，也不得用周期换游戏 Code/重启 Worker 代替长凭据保活。
 
 ## 这一轮落地的逻辑（2026-08-21 下午）
 
@@ -174,8 +175,8 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 
 1. `client.js`：`autoStartAccounts: true`（重启后账号会自己起来）
 1b. **账号「不登录」**：面板账号卡上点「不登录」→ 停下该号并写 `autoLogin: false`；重启 bot 也不会再拉起。点「立即登录」会清掉标记。只停一下仍用「停止」（下次重启还会自动上）。
-2. 被踢接管：`auto-code-refresh.js` `scheduleKickoutRelogin()`（**退避递增：5min → 30min → 1h → 3h → 3h…按当日累计接管次数查表**，2026-08-22 改，原来是固定 5 分钟；**每日 5 次即熔断停止**，连续失败 3 次也停）。手动启动会清掉 `relogin_<id>`。`invalid scope [40188]` 只说明该次 refreshtoken 续期被拒：**当前游戏 WS 仍在线时不停号、不换 Code，下轮再试**；只有真实断线后，现有 loginBuffer 也无法换出 Code 时才需重扫。**自定义重登延迟（2026-08-23 加）**：设置 → 自动控制，账号配置 `kickoutRelogin: { delayMinutes, validUntil }`（照 friendQuietHours 链路；`resolveKickoutDelayMs`/`isKickoutOverrideActive` 纯函数在 auto-code-refresh.js，有测试）。留空/0 = 默认退避；>0 且在有效期内 = 固定自定义延迟；有效期过自动回退默认。熔断（每日 5 次/连败 3 次）不受自定义影响
-2b. **长凭据保活与换 Code 已拆开（2026-08-25）**：游戏 WS 在线时仍按官方节拍 25s 心跳；微信 `loginBuffer/refreshtoken` 无论在线，还是被踢/异常断线后的等待接管期，都做 25–35min 抖动滚动保活。保活成功只更新长凭据，失败只记录并下轮重试，绝不申请游戏 Code、启动或重启 Worker；真正到接管时才用最新 loginBuffer 申请一次 Code。只在 bot 冷启动、真实 WS400/被踢/重连失败或手动点击时才换 Code。`requestFarmCode` 先用现有 loginBuffer 发 Code，仅 `ManualAuth rejected` 时才尝试 refreshtoken；Worker 每次重启后都重新挂载在线保活定时器。面板旧字段 `autoCodeRefresh.intervalMinutes` 为了数据兼容保留，现语义是「真实断线后的重试间隔」，不再是在线周期刷新。
+2. 被踢接管：`auto-code-refresh.js` `scheduleKickoutRelogin()`（**退避递增：5min → 30min → 1h → 3h → 3h…按当日累计接管次数查表**，2026-08-22 改，原来是固定 5 分钟；**每日 5 次即熔断停止**，连续失败 3 次也停）。手动启动会清掉 `relogin_<id>`。`invalid scope [40188]` 是当前 OAuth 授权已明确失效：**当前游戏 WS 仍在线时不停号、不换 Code，也不高频重试**；保活层只做 6–6.5 小时低频复查。若真实断线后现有 loginBuffer 也无法换 Code，必须重扫一次，不得声称代码可以从已终止授权凭空恢复。**自定义重登延迟（2026-08-23 加）**：设置 → 自动控制，账号配置 `kickoutRelogin: { delayMinutes, validUntil }`（照 friendQuietHours 链路；`resolveKickoutDelayMs`/`isKickoutOverrideActive` 纯函数在 auto-code-refresh.js，有测试）。留空/0 = 默认退避；>0 且在有效期内 = 固定自定义延迟；有效期过自动回退默认。熔断（每日 5 次/连败 3 次）不受自定义影响
+2b. **长凭据保活与换 Code 已拆开（2026-08-26 按真实有效期修正）**：游戏 WS 在线时仍按官方节拍 25s 心跳；微信 `loginBuffer/refreshtoken` 无论在线，还是被踢/异常断线后的等待接管期，都持久化服务端 `expires_in/expires_at`，只在到期前 35–45 分钟真实续期一次。临时失败按 5/10/20 分钟上限退避，明确失效只低频复查。保活成功只更新长凭据，绝不申请游戏 Code、启动或重启 Worker；真正到接管时才用最新 loginBuffer 申请一次 Code。只在 bot 冷启动、真实 WS400/被踢/重连失败或手动点击时才换 Code。面板旧字段 `autoCodeRefresh.intervalMinutes` 为了数据兼容保留，现语义是「真实断线后的重试间隔」，不再是在线周期刷新。
 3. 会话 FIFO：`core/data/admin-sessions.json`，上限 20
 4. 收菜/种菜拆开关：`harvest` / `plant` 独立于农场巡查
 5. `friend-visit.js` 补过 `analyzeFriendLands` import（放虫放草曾崩）
@@ -422,7 +423,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 | 项 | 风险 | 不修理由 |
 |---|---|---|
 | 心跳固定 25s | 等间隔 | 对齐官方客户端节拍，加抖动反而偏离官方行为；协议层不动 |
-| 微信长凭据保活 | 续期接口可偶发 40188 | 已改为 25–35min 抖动滚动保活；在线时续期失败不停号、不换 Code，不再有 60min 固定重登 |
+| 微信长凭据保活 | 过度刷新或丢失有效期会增加跨日失效 | 已改为持久化服务端有效期，只在到期前 35–45min 续期；40188 不停在线号、不换 Code、不高频重试 |
 | ACE 上报 1788 次/24h（约 48s 一次） | 高频上报 | 协议层硬约束不碰（用户禁令） |
 | 真人顶号拉锯（单日 5 次接管） | 登录行为密集 | 已有退避递增 + 每日 5 次熔断 + 连败 3 次即停；再收紧等于把号让给真人 |
 | `star_activity_claim_interval` 固定 5min | 若打开开关会恢复固定节奏 | 当前所有活动领取开关为关，timer 空转零请求；**打开任一开关前先给它加抖动**（照抄 mystery-shop 的 `nextAutoBuyCheckDelayMs` 模式） |
@@ -432,7 +433,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 
 - 3007 被旧进程占着时 `start.sh` 不会拉起新代码
 - 内存：Cursor fileWatcher 曾吃 121GB，bot 被 OOM 干掉（日志突然断、无堆栈）
-- 微信在线会话只走 25s WS 心跳，不周期换 Code；只有冷启动/真实断线/被踢接管才发新 Code，长凭据在线及断线等待期间都另行按 25–35min 滚动保活
+- 微信在线会话只走 25s WS 心跳，不周期换 Code；只有冷启动/真实断线/被踢接管才发新 Code，长凭据在线及断线等待期间都另行按服务端有效期提前 35–45min 续期
 - 夜间静默**不要默认打开**（会错过晚上偷菜）
 
 ## 测试入口
@@ -441,7 +442,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/core"
-node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/request-governor.test.js test/maturity-sentinel.test.js test/device-protocol.test.js test/behavior.test.js test/kickout-relogin.test.js
+node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/request-governor.test.js test/maturity-sentinel.test.js test/device-protocol.test.js test/behavior.test.js test/kickout-relogin.test.js test/wx-credential-lifetime.test.js
 ```
 
 ## 不要做的
@@ -479,7 +480,7 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 ### 根因与改动
 
 - 线上出现“被其他终端登录踢下线，30 分钟后接管”。核对调用链确认：`worker-manager.stopWorker()` 会调用 `autoCodeRefresh.stopAccount()`，旧逻辑把在线 `wx_keepalive_*` 一并清掉，随后 `scheduleKickoutRelogin()` 只挂 `relogin_*`。因此 30 分钟、1 小时或 3 小时等待期间没有滚动 `loginBuffer/refreshtoken`；到点才用旧 loginBuffer 申请 Code，失败后再拿可能已经过期的 refreshtoken 补救，长退避下会增加重新扫码概率。
-- `auto-code-refresh.js` 抽出 `armCredentialKeepalive()`：在线与断线等待共用 25–35 分钟抖动保活，只调用 `keepWxCredentialAlive()` 更新 `loginBuffer/refreshtoken/accesstoken`。`scheduleKickoutRelogin()` 和普通异常断线的 `scheduleRelogin()` 在挂接管倒计时后立即重新挂载离线保活。
+- `auto-code-refresh.js` 抽出 `armCredentialKeepalive()`：在线与断线等待共用按服务端有效期的保活，只调用 `keepWxCredentialAlive()` 更新 `loginBuffer/refreshtoken/accesstoken` 及有效期元数据。`scheduleKickoutRelogin()` 和普通异常断线的 `scheduleRelogin()` 在挂接管倒计时后立即重新挂载离线保活。
 - 离线保活**不申请游戏 Code、不启动或重启 Worker，也不缩短 5min→30min→1h→3h 接管退避**；只有 `relogin_*` 真正到点时才申请一次新 Code。面板手动停止没有后续重登排程，仍由 `stopAccount()` 清掉保活与接管任务，不能改成“手动停号也偷偷续期”。
 - 接管写回改成只持久化 `{ id, code }`，再重新读取最新账号启动 Worker；不能继续把函数开头的整个旧 account 快照写回，否则离线保活恰好滚动 token 时可能被旧 loginBuffer/refreshtoken 覆盖。
 
@@ -549,6 +550,29 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 该文件由多个账号 Worker 写，普通 read-modify-write 会互相覆盖；锁竞争时宁可漏掉一条摘要也不能阻塞收获/偷菜主流程。收件箱是辅助线索，真实证据始终是短期运行日志。
 - Node 20 收件箱/事件/进化定向测试 **32/32**、核心收益与设备/登录组合 **90/90**、全量 `core/test/*.test.js` **306/306** 通过；相关后端 ESLint **0 error**，前端生产构建通过。前端 ESLint **0 error**，仍有该历史组件既有的格式/UnoCSS warning；本轮新增区块已按修复建议格式化。
 - 本轮没有修改收菜、偷菜、重点用户施肥 HOT/PREARM、请求治理预算/降速、Code 保活、设备协议或 TSDK/ACE。回滚用 `git revert <本轮提交>`，随后只在既有 `farm:0.0` 重启；ignored 的收件箱即使留在本机也无人读取并会自然过期，禁止为清理它递归删除 `core/data`。
+
+## 微信登录长凭据跨日续期（2026-08-26）
+
+### 现场证据与根因
+
+- 匿名回看连续 3 天日志，长凭据保活白天持续成功，失效都集中在北京时间零点后第一轮。凌晨静默期间主进程定时器仍在运行，所以根因不是“静默把保活停了”。
+- 旧实现把“每 25–35 分钟检查是否快到期”写成了“每 25–35 分钟真实请求刷新”，连续 3 天累计发生 116 次成功滚动；同时完全没有保存服务端返回的 `expires_in/expires_at`，进程重启后又从头猜测。这两点造成过度滚动、无法按真实到期点跨日续期。
+- 农场 Code 不是“一天有效的长凭据”：它是建立游戏连接时临时换取、短时且通常一次性的登录材料，连上后由 25 秒 WS 心跳维持。跨日失效的是用于重建 `loginBuffer` 的 OAuth 长凭据，不能用周期换 Code 来“保活”它。
+
+### 本轮改动
+
+- 扫码确认和后台刷新现在都保存腾讯返回的有效秒数、绝对到期时间、最近成功时间及 refresh token 观测时间。这些字段只在 ignored 账号数据中持久化，管理 API 不返回，前端请求也不能注入覆盖。
+- `auto-code-refresh.js` 只在真实到期前 35–45 分钟刷新；典型 2 小时凭据会在上次成功后约 75–85 分钟续期一次，不再每半小时真实打接口。旧账号首次升级时因没有有效期元数据，会在 2–8 秒后做唯一一次迁移续期，成功后就进入正常到期排程。
+- 临时网络/服务失败改为 5/10/20 分钟上限的受控重试；`40188 invalid scope`、`42007` 等明确失效改为 6–6.5 小时低频复查，避免零点反复打接口。token 已成功滚动但后续 loginBuffer 请求失败时，也会先保存已返回的新 token，不再被旧快照覆盖。
+- 在线、被踢等待、异常断线等待三种状态共用主进程长凭据排程。夜间静默、普通巡查降速和 Worker 睡眠都不会暂停它；保活仍不换游戏 Code、不重启 Worker，不会改变被踢接管退避。
+
+### 边界、踩坑、验证与回滚
+
+- 本轮修复不能恢复已经返回 `40188 invalid scope` 的存量授权；部署后需要最后重扫一次，让新凭据带着真实有效期进入新排程。单元测试只能证明调度和持久化边界，下一个北京时间零点后仍需用脱敏日志验证真实服务端行为；不得在验证前宣称永不失效。
+- 以后禁止回退成固定 25–35 分钟真实刷新；禁止在每次冷启动、Code 换取或普通巡查时强制刷长凭据；禁止用函数入参中的旧 account 快照覆盖已滚动 token；禁止把静默开关接到主进程保活定时器。
+- 日志和自动进化收件箱只能记脱敏类别、有效秒数和 token 是否滚动，不得输出凭据值、OAuth 回调、服务地址、完整错误或运行时身份。
+- Node 20 凭据/会话/被踢定向测试 **34/34**、HANDOFF 要求的核心收益与登录组合 **116/116**、`core/test/*.test.js` 全量 **310/310** 通过；本轮相关后端 ESLint **0 error**，无前端改动。
+- 本轮没有修改自己收获、普通偷菜到点、重点用户 HOT/PREARM、请求治理、25 秒游戏心跳、设备串或 TSDK/ACE。回滚用 `git revert <本轮提交>`，然后只在既有 `farm:0.0` 重启；注意回滚会恢复过度刷新和每日重扫风险。
 
 - 不要改 TSDK / WASM / ACE / 登录 fingerprint 轮换
 - 不要用盯梢节奏去刷所有好友

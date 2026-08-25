@@ -9,6 +9,10 @@ test('账号请求体不能直接注入微信滚动凭据', () => {
     loginBuffer: 'forged-buffer', refreshtoken: 'forged-refresh',
     accesstoken: 'forged-access', refreshToken: 'forged-refresh-camel',
     accessToken: 'forged-access-camel',
+    wxCredentialExpiresAt: 123,
+    wxCredentialExpiresIn: 456,
+    wxRefreshTokenObservedAt: 789,
+    wxCredentialLastSuccessAt: 999,
   });
   assert.deepEqual(sanitized, { id: '1', wxid: 'wx-new', code: 'farm-code' });
 });

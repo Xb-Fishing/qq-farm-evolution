@@ -324,6 +324,10 @@ function createDataProvider(deps) {
                 delete acc.loginBuffer;
                 delete acc.refreshtoken;
                 delete acc.accesstoken;
+                delete acc.wxCredentialExpiresAt;
+                delete acc.wxCredentialExpiresIn;
+                delete acc.wxRefreshTokenObservedAt;
+                delete acc.wxCredentialLastSuccessAt;
                 if (worker && worker.status && worker.status.status && worker.status.status.name) {
                     acc.nick = worker.status.status.name;
                 }
