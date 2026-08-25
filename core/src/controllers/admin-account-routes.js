@@ -25,6 +25,10 @@ const PROTECTED_WX_CREDENTIAL_FIELDS = [
   "accesstoken",
   "refreshToken",
   "accessToken",
+  "wxCredentialExpiresAt",
+  "wxCredentialExpiresIn",
+  "wxRefreshTokenObservedAt",
+  "wxCredentialLastSuccessAt",
 ];
 
 function stripProtectedWxCredentials(source) {
@@ -257,6 +261,10 @@ function registerAdminAccountRoutes({
           loginBuffer: pending.loginBuffer,
           refreshtoken: pending.refreshtoken,
           accesstoken: pending.accesstoken,
+          wxCredentialExpiresAt: pending.wxCredentialExpiresAt,
+          wxCredentialExpiresIn: pending.wxCredentialExpiresIn,
+          wxRefreshTokenObservedAt: pending.wxRefreshTokenObservedAt,
+          wxCredentialLastSuccessAt: pending.wxCredentialLastSuccessAt,
           avatar: pending.avatar || nextAccount.avatar || "",
           wxDefaultsApplied: true,
         });
@@ -275,6 +283,10 @@ function registerAdminAccountRoutes({
             loginBuffer: "",
             refreshtoken: "",
             accesstoken: "",
+            wxCredentialExpiresAt: 0,
+            wxCredentialExpiresIn: 0,
+            wxRefreshTokenObservedAt: 0,
+            wxCredentialLastSuccessAt: 0,
           });
         }
       }

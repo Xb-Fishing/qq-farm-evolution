@@ -2,12 +2,47 @@ const fetch = require('node-fetch');
 const { createScheduler } = require('../services/scheduler');
 const wxLoginAdapter = require('../services/wx-login-adapter');
 
-const WX_KEEPALIVE_MIN_MS = 25 * 60000;
-const WX_KEEPALIVE_MAX_MS = 35 * 60000;
+const WX_KEEPALIVE_AHEAD_MIN_MS = 35 * 60000;
+const WX_KEEPALIVE_AHEAD_MAX_MS = 45 * 60000;
+const WX_KEEPALIVE_MIGRATION_MIN_MS = 2000;
+const WX_KEEPALIVE_MIGRATION_MAX_MS = 8000;
+const WX_KEEPALIVE_RETRY_BASE_MS = 5 * 60000;
+const WX_KEEPALIVE_RETRY_MAX_MS = 20 * 60000;
+const WX_KEEPALIVE_TERMINAL_RECHECK_MS = 6 * 60 * 60000;
 
-function nextCredentialKeepaliveDelayMs() {
-  return WX_KEEPALIVE_MIN_MS
-    + Math.floor(Math.random() * (WX_KEEPALIVE_MAX_MS - WX_KEEPALIVE_MIN_MS + 1));
+function randomDelayBetween(minMs, maxMs, random = Math.random) {
+  const low = Math.max(0, Math.floor(Number(minMs) || 0));
+  const high = Math.max(low, Math.floor(Number(maxMs) || low));
+  return low + Math.floor(random() * (high - low + 1));
+}
+
+/**
+ * 按服务端 expires_in 提前 35-45 分钟续期。旧账号没有有效期时只迁移一次；
+ * 临时失败用受控退避补刷，明确失效则低频复查，避免刷新风暴。
+ */
+function nextCredentialKeepaliveDelayMs(account = {}, options = {}) {
+  const reason = String(options.reason || 'normal');
+  const random = typeof options.random === 'function' ? options.random : Math.random;
+  if (reason === 'retry') {
+    const failures = Math.max(1, Number(options.failureCount) || 1);
+    const base = Math.min(WX_KEEPALIVE_RETRY_MAX_MS,
+      WX_KEEPALIVE_RETRY_BASE_MS * (2 ** Math.min(2, failures - 1)));
+    return base + randomDelayBetween(0, 60000, random);
+  }
+  if (reason === 'definitive') {
+    return WX_KEEPALIVE_TERMINAL_RECHECK_MS + randomDelayBetween(0, 30 * 60000, random);
+  }
+
+  const now = Number(options.now) || Date.now();
+  const expiresAt = Number(account && account.wxCredentialExpiresAt) || 0;
+  if (expiresAt <= 0) {
+    return randomDelayBetween(WX_KEEPALIVE_MIGRATION_MIN_MS, WX_KEEPALIVE_MIGRATION_MAX_MS, random);
+  }
+  const ahead = randomDelayBetween(WX_KEEPALIVE_AHEAD_MIN_MS, WX_KEEPALIVE_AHEAD_MAX_MS, random);
+  const delay = expiresAt - now - ahead;
+  return delay > 0
+    ? Math.floor(delay)
+    : randomDelayBetween(WX_KEEPALIVE_MIGRATION_MIN_MS, WX_KEEPALIVE_MIGRATION_MAX_MS, random);
 }
 
 function recordEvolutionIssue(type, level) {
@@ -181,7 +216,7 @@ function createAutoCodeRefreshService(deps) {
 
   /**
    * 持续滚动微信长凭据；只更新 loginBuffer/token，不申请游戏 Code、不启动 Worker。
-   * mode 仅用于日志区分在线和断线等待，两种状态使用相同的 25-35 分钟安全节奏。
+   * mode 仅用于日志区分在线和断线等待；两种状态都按持久化的服务端有效期续期。
    */
   function armCredentialKeepalive(accountId, generation, mode = 'online') {
     const accountKey = String(accountId || '');
@@ -192,31 +227,51 @@ function createAutoCodeRefreshService(deps) {
     if (!account || !account.loginBuffer || !account.refreshtoken) return false;
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) return false;
 
-    const scheduleNextKeepalive = () => {
+    let consecutiveFailures = 0;
+    const scheduleNextKeepalive = (reason = 'normal') => {
       if (keepaliveGeneration.get(accountKey) !== generation) return;
-      scheduler.setTimeoutTask(taskName, getCredentialKeepaliveDelayMs(), async () => {
+      const scheduledAccount = findAccount(accountId);
+      if (!scheduledAccount || !scheduledAccount.loginBuffer || !scheduledAccount.refreshtoken) return;
+      const delayMs = getCredentialKeepaliveDelayMs(scheduledAccount, {
+        reason,
+        failureCount: consecutiveFailures,
+        now: Date.now(),
+      });
+      scheduler.setTimeoutTask(taskName, delayMs, async () => {
         if (keepaliveGeneration.get(accountKey) !== generation) return;
         const latest = findAccount(accountId);
         if (!latest || !latest.loginBuffer || !latest.refreshtoken) return;
+        let nextReason = 'normal';
         try {
           const result = await keepCredentialAlive(latest);
           if (!result.Success) {
+            consecutiveFailures += 1;
+            nextReason = result.definitive === true ? 'definitive' : 'retry';
             recordEvolutionIssue('credential_keepalive_failed', 'warn');
             const stateLabel = mode === 'offline' ? '断线等待期间' : '当前游戏连接不重启';
             log('错误', `微信凭证保活失败（${stateLabel}）: ${latest.name} - ${result.Message || '未知错误'}`, {
               accountId: accountKey, accountName: latest.name,
             });
+          } else {
+            consecutiveFailures = 0;
           }
+        } catch {
+          consecutiveFailures += 1;
+          nextReason = 'retry';
+          recordEvolutionIssue('credential_keepalive_failed', 'warn');
+          log('错误', `微信凭证保活异常（将受控重试）: ${latest.name}`, {
+            accountId: accountKey, accountName: latest.name,
+          });
         } finally {
-          // 无论在线或等待接管，都只滚动长凭据；接管时才单独申请一次游戏 Code。
-          scheduleNextKeepalive();
+          // 静默只停 Worker 业务巡查；主进程长凭据始终按有效期续期，不申请游戏 Code。
+          scheduleNextKeepalive(nextReason);
         }
       });
     };
 
     scheduleNextKeepalive();
     const modeLabel = mode === 'offline' ? '断线等待保活' : '在线保活';
-    log('系统', `微信登录凭据${modeLabel}已启用: ${account.name}，约 25-35 分钟一次（不换游戏 Code）`, {
+    log('系统', `微信登录凭据${modeLabel}已启用: ${account.name}，按有效期提前 35-45 分钟续期（不换游戏 Code）`, {
       accountId: accountKey, accountName: account.name, mode,
     });
     return true;
@@ -407,6 +462,11 @@ function createAutoCodeRefreshService(deps) {
 module.exports = {
   createAutoCodeRefreshService,
   nextCredentialKeepaliveDelayMs,
-  WX_KEEPALIVE_MIN_MS,
-  WX_KEEPALIVE_MAX_MS,
+  WX_KEEPALIVE_AHEAD_MIN_MS,
+  WX_KEEPALIVE_AHEAD_MAX_MS,
+  WX_KEEPALIVE_MIGRATION_MIN_MS,
+  WX_KEEPALIVE_MIGRATION_MAX_MS,
+  WX_KEEPALIVE_RETRY_BASE_MS,
+  WX_KEEPALIVE_RETRY_MAX_MS,
+  WX_KEEPALIVE_TERMINAL_RECHECK_MS,
 };

@@ -1,5 +1,5 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
+const __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -8,6 +8,7 @@ exports.consumePendingWxInfo = consumePendingWxInfo;
 exports.getAccountAvatar = getAccountAvatar;
 exports.getFarmCode = getFarmCode;
 exports.getQRCode = getQRCode;
+exports.isDefinitiveWxCredentialError = isDefinitiveWxCredentialError;
 exports.keepWxCredentialAlive = keepWxCredentialAlive;
 exports.peekPendingWxInfo = peekPendingWxInfo;
 exports.withAccountCredentialLock = withAccountCredentialLock;
@@ -35,6 +36,36 @@ function asRecord(value) {
 }
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
+}
+function isDefinitiveWxCredentialError(raw) {
+    const message = String(raw || '').toLowerCase();
+    if (message.includes('40188') && message.includes('invalid scope'))
+        return true;
+    if (message.includes('40030') || message.includes('42007'))
+        return true;
+    if (message.includes('refreshtoken') && (message.includes('-109') || message.includes('empty token')))
+        return true;
+    return (message.includes('refresh') || message.includes('token') || message.includes('凭证'))
+        && (message.includes('expired') || message.includes('invalid') || message.includes('过期') || message.includes('失效'));
+}
+function buildCredentialMetadata(source, previous = {}, includeSuccess = false) {
+    const data = asRecord(source);
+    const result = {};
+    const expiresAt = Number(data.credentialExpiresAt);
+    const expiresIn = Number(data.credentialExpiresIn);
+    const observedAt = Number(data.refreshTokenObservedAt);
+    const hasRefreshToken = Boolean(String(data.refreshtoken || data.refreshToken || ''));
+    if (Number.isFinite(expiresAt) && expiresAt > 0)
+        result.wxCredentialExpiresAt = Math.floor(expiresAt);
+    if (Number.isFinite(expiresIn) && expiresIn > 0)
+        result.wxCredentialExpiresIn = Math.floor(expiresIn);
+    if (observedAt > 0 || data.refreshTokenRotated === true
+        || (hasRefreshToken && !Number(previous.wxRefreshTokenObservedAt))) {
+        result.wxRefreshTokenObservedAt = observedAt > 0 ? Math.floor(observedAt) : Date.now();
+    }
+    if (includeSuccess)
+        result.wxCredentialLastSuccessAt = Date.now();
+    return result;
 }
 function asRotatedCredentialError(error) {
     return (error instanceof Error ? error : new Error(String(error)));
@@ -94,6 +125,10 @@ function buildPendingWxInfo(matched) {
         loginBuffer: String(entry.loginBuffer || ''),
         refreshtoken: entry.refreshtoken || '',
         accesstoken: entry.accesstoken || '',
+        wxCredentialExpiresAt: Number(entry.credentialExpiresAt) || 0,
+        wxCredentialExpiresIn: Number(entry.credentialExpiresIn) || 0,
+        wxRefreshTokenObservedAt: Number(entry.refreshTokenObservedAt) || 0,
+        wxCredentialLastSuccessAt: Number(entry.credentialLastSuccessAt) || 0,
         avatar: entry.avatar || '',
         nickname: entry.nickname || '',
     };
@@ -159,6 +194,9 @@ function humanizeWxCodeError(raw) {
     if (s.includes('ManualAuth rejected')) {
         return '微信登录凭证已失效，请在面板重新扫码登录';
     }
+    if (s.includes('40188') && s.toLowerCase().includes('invalid scope')) {
+        return '微信授权范围已失效，需要重新扫码授权';
+    }
     if (s.includes('socket read timeout') || s.includes('Unable to establish') || s.includes('invalid HTTP response')) {
         return '无法连接微信服务器（网络波动），请稍后重试；若持续失败请重新扫码登录';
     }
@@ -221,6 +259,10 @@ async function checkQR(uuid, owner) {
                             entry.loginBuffer = entry.session.loginBuffer;
                             entry.refreshtoken = entry.session.refreshtoken || '';
                             entry.accesstoken = entry.session.accesstoken || '';
+                            entry.credentialExpiresAt = Number(entry.session.credentialExpiresAt) || 0;
+                            entry.credentialExpiresIn = Number(entry.session.credentialExpiresIn) || 0;
+                            entry.refreshTokenObservedAt = Number(entry.session.refreshTokenObservedAt) || 0;
+                            entry.credentialLastSuccessAt = Date.now();
                             // 拉取应用宝用户信息（真实昵称 + 头像 URL），失败不阻断登录
                             try {
                                 const info = await wxLogin.fetchUserInfo(entry.session);
@@ -278,6 +320,7 @@ async function issueFarmCode(openid, options = {}) {
         let loginBuffer = '';
         let refreshtoken = '';
         let accesstoken = '';
+        let credentialMetadata = {};
         let entryAvatar = '';
         const matchedSession = options.sessionId
             ? findOwnedWxSession(options.sessionId, openid, options.owner)
@@ -293,6 +336,7 @@ async function issueFarmCode(openid, options = {}) {
                 refreshtoken = String(sessionEntry.refreshtoken);
             if (sessionEntry.accesstoken)
                 accesstoken = String(sessionEntry.accesstoken);
+            credentialMetadata = buildCredentialMetadata(sessionEntry, sessionEntry, true);
             if (sessionEntry.avatar)
                 entryAvatar = String(sessionEntry.avatar);
         }
@@ -305,6 +349,11 @@ async function issueFarmCode(openid, options = {}) {
                 refreshtoken = String(account.refreshtoken);
             if (!accesstoken && account.accesstoken)
                 accesstoken = String(account.accesstoken);
+            credentialMetadata = buildCredentialMetadata({
+                credentialExpiresAt: account.wxCredentialExpiresAt,
+                credentialExpiresIn: account.wxCredentialExpiresIn,
+                refreshTokenObservedAt: account.wxRefreshTokenObservedAt,
+            }, account, false);
         }
         if (!loginBuffer) {
             return { Success: false, Message: '缺少登录凭证（loginBuffer），请重新扫码登录' };
@@ -323,11 +372,17 @@ async function issueFarmCode(openid, options = {}) {
                     loginBuffer = refreshed.loginBuffer;
                     refreshtoken = refreshed.refreshtoken;
                     accesstoken = refreshed.accesstoken || accesstoken;
+                    credentialMetadata = buildCredentialMetadata(refreshed, account || sessionEntry || {}, true);
                     // 编辑重扫随后会保存账号；同步会话中的滚动凭证，避免保存步骤回滚为刷新前的 token。
                     if (sessionEntry) {
                         sessionEntry.loginBuffer = loginBuffer;
                         sessionEntry.refreshtoken = refreshtoken;
                         sessionEntry.accesstoken = accesstoken;
+                        sessionEntry.credentialExpiresAt = refreshed.credentialExpiresAt;
+                        sessionEntry.credentialExpiresIn = refreshed.credentialExpiresIn;
+                        if (refreshed.refreshTokenRotated || !sessionEntry.refreshTokenObservedAt)
+                            sessionEntry.refreshTokenObservedAt = Date.now();
+                        sessionEntry.credentialLastSuccessAt = Date.now();
                     }
                     code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
                 }
@@ -340,6 +395,7 @@ async function issueFarmCode(openid, options = {}) {
                             id: account.id,
                             ...(rotatedError.refreshtoken ? { refreshtoken: rotatedError.refreshtoken } : {}),
                             ...(rotatedError.accesstoken ? { accesstoken: rotatedError.accesstoken } : {}),
+                            ...buildCredentialMetadata(rotatedError, account, false),
                         });
                     }
                     return { Success: false, Message: `获取 Code 失败: ${humanizeWxCodeError(rotatedError.message)}（自动续期失败，请重新扫码登录）` };
@@ -362,6 +418,7 @@ async function issueFarmCode(openid, options = {}) {
                 updates.refreshtoken = refreshtoken;
             if (accesstoken && accesstoken !== account.accesstoken)
                 updates.accesstoken = accesstoken;
+            Object.assign(updates, credentialMetadata);
             // 头像也总是更新（重新扫码后头像可能变化，否则前端 cache-bust 的 ?v= 不变，面板一直显示旧头像）
             if (entryAvatar && entryAvatar !== account.avatar)
                 updates.avatar = entryAvatar;
@@ -430,15 +487,13 @@ async function getAccountAvatar(openid) {
     return null;
 }
 /**
- * 微信凭证主动保活：用账号 refreshtoken 刷新 loginBuffer + refreshtoken（滚动续期）
- * 关键：loginBuffer 实际有效期 > 2h，而 refreshtoken 约 2h 过期——必须主动刷新（不等 loginBuffer 失效），
- * 否则 loginBuffer 失效时 refreshtoken 已过期，续期必然失败（code=-109），只能重新扫码。
- * 每 30 分钟调用一次：refreshtoken 2h 窗口内滚动续期，永不失效。
+ * 微信凭证主动保活：用账号 refreshtoken 刷新 loginBuffer + token。
+ * 调度层按服务端 expires_in 只在即将过期时调用；这里只负责一次原子滚动与持久化。
  */
 async function keepWxCredentialAlive(acc) {
     const account = asRecord(acc);
     if (!account.wxid || !account.refreshtoken || !account.loginBuffer) {
-        return { Success: false, Message: '缺少微信凭证（refreshtoken/loginBuffer），请重新扫码登录' };
+        return { Success: false, Message: '缺少微信凭证（refreshtoken/loginBuffer），请重新扫码登录', definitive: true };
     }
     return withAccountCredentialLock(account.wxid, account.id, async () => {
         const latestAccount = findAccountByWxid(account.wxid, account.id) || account;
@@ -455,10 +510,19 @@ async function keepWxCredentialAlive(acc) {
                     loginBuffer: refreshed.loginBuffer,
                     refreshtoken: refreshed.refreshtoken,
                     accesstoken: refreshed.accesstoken || latestAccount.accesstoken || '',
+                    ...buildCredentialMetadata(refreshed, latestAccount, true),
                 });
             }
-            logger.info('wx credential keepalive ok', { accountId: account.id });
-            return { Success: true };
+            logger.info('wx credential keepalive ok', {
+                accountId: account.id,
+                expiresIn: Number(refreshed.credentialExpiresIn) || 0,
+                refreshTokenRotated: refreshed.refreshTokenRotated === true,
+            });
+            return {
+                Success: true,
+                expiresAt: Number(refreshed.credentialExpiresAt) || 0,
+                refreshTokenRotated: refreshed.refreshTokenRotated === true,
+            };
         }
         catch (error) {
             const rotatedError = asRotatedCredentialError(error);
@@ -467,12 +531,16 @@ async function keepWxCredentialAlive(acc) {
                     id: account.id,
                     ...(rotatedError.refreshtoken ? { refreshtoken: rotatedError.refreshtoken } : {}),
                     ...(rotatedError.accesstoken ? { accesstoken: rotatedError.accesstoken } : {}),
+                    ...buildCredentialMetadata(rotatedError, latestAccount, false),
                 });
             }
             const message = humanizeWxCodeError(rotatedError.message);
             logger.warn('keepWxCredentialAlive failed', { accountId: account.id, error: message });
-            return { Success: false, Message: message };
+            return {
+                Success: false,
+                Message: message,
+                definitive: isDefinitiveWxCredentialError(rotatedError.message),
+            };
         }
     });
 }
-

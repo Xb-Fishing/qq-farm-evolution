@@ -1,5 +1,5 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
+const __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -21,6 +21,7 @@ const USER_INFO_URL = "https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_get_user_info"
 const OAUTH_APP_ID = "wxd44977328b36e647";
 const USER_AGENT = "Mozilla/5.0";
 const LOGIN_BUFFER_ACCESS_KEY = "wgrdg373hy26ww2";
+const DEFAULT_CREDENTIAL_EXPIRES_IN_SECONDS = 7200;
 function cookieHeader(cookies) {
     return [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
 }
@@ -73,6 +74,10 @@ function requiredCookie(cookies, name) {
         throw new Error(`WeChat OAuth callback did not provide ${name}`);
     return value;
 }
+function positiveSeconds(value, fallback = DEFAULT_CREDENTIAL_EXPIRES_IN_SECONDS) {
+    const seconds = Number.parseInt(String(value || ""), 10);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : fallback;
+}
 function pickLoginBuffer(data) {
     const source = asRecord(data);
     const snake = asRecord(asRecord(asRecord(source.ext_info).list_s).login_buffer).value;
@@ -82,10 +87,13 @@ function pickLoginBuffer(data) {
         || "";
     return typeof value === "string" ? value : "";
 }
-function attachRotatedCredentials(error, refreshToken, accessToken) {
+function attachRotatedCredentials(error, refreshToken, accessToken, lifetime = {}) {
     const credentialError = (error instanceof Error ? error : new Error(String(error)));
     credentialError.refreshtoken = refreshToken;
     credentialError.accesstoken = accessToken;
+    credentialError.credentialExpiresAt = Number(lifetime.credentialExpiresAt) || 0;
+    credentialError.credentialExpiresIn = Number(lifetime.credentialExpiresIn) || 0;
+    credentialError.refreshTokenRotated = lifetime.refreshTokenRotated === true;
     return credentialError;
 }
 class WxLoginService {
@@ -148,6 +156,9 @@ class WxLoginService {
         const accessToken = requiredCookie(session.cookies, "accesstoken");
         // refreshtoken 可选（部分环境不回传）；存在则用于 loginBuffer 保活刷新
         const refreshToken = session.cookies.get("refreshtoken") || "";
+        const loginType = session.cookies.get("logintype") || "WX";
+        const expiresIn = positiveSeconds(session.cookies.get("expires_in"));
+        const credentialExpiresAt = Date.now() + expiresIn * 1000;
         const payload = JSON.stringify({ extInfo: { listS: { unionid: { value: [openid] }, user_id: { value: [openid] }, access_token: { value: [accessToken] } }, listI: { user_type: { value: [0] } } } });
         const timestamp = String(Date.now());
         const nonce = String(node_crypto_1.default.randomInt(1e3, 1e4));
@@ -168,6 +179,10 @@ class WxLoginService {
         session.accesstoken = accessToken;
         session.refreshtoken = refreshToken;
         session.loginBuffer = loginBuffer;
+        session.loginType = loginType;
+        session.credentialExpiresIn = expiresIn;
+        session.credentialExpiresAt = credentialExpiresAt;
+        session.refreshTokenObservedAt = refreshToken ? Date.now() : 0;
         return { openid, loginBuffer };
     }
     async fetchUserInfo(session) {
@@ -219,8 +234,11 @@ class WxLoginService {
         if (data.code !== 0)
             throw new Error(`WeChat token refresh failed: code=${String(data.code)} msg=${String(data.msg)}`);
         const info = asRecord(data.user_info || data.userInfo);
-        const accessToken = String(info.access_token || info.accessToken || "");
-        const refreshToken = String(info.refresh_token || info.refreshToken || session.refreshtoken);
+        const accessToken = String(info.access_token || info.accessToken || info.accesstoken || "");
+        const refreshToken = String(info.refresh_token || info.refreshToken || info.refreshtoken || session.refreshtoken);
+        const expiresIn = positiveSeconds(info.expires_in || info.expiresIn);
+        const credentialExpiresAt = Date.now() + expiresIn * 1000;
+        const refreshTokenRotated = refreshToken !== String(session.refreshtoken || "");
         if (!accessToken)
             throw new Error("WeChat token refresh response missing access_token");
         // refresh token 为滚动凭证：刷新接口成功后旧 token 已失效，后续 loginBuffer 请求即使失败，
@@ -246,10 +264,21 @@ class WxLoginService {
                 throw new Error(`WeChat login buffer refresh failed: code=${String(lbData.code ?? "unknown")} msg=${String(lbData.msg || "invalid response")}`);
             }
             session.loginBuffer = loginBuffer;
-            return { loginBuffer, refreshtoken: refreshToken, accesstoken: accessToken };
+            return {
+                loginBuffer,
+                refreshtoken: refreshToken,
+                accesstoken: accessToken,
+                credentialExpiresAt,
+                credentialExpiresIn: expiresIn,
+                refreshTokenRotated,
+            };
         }
         catch (error) {
-            throw attachRotatedCredentials(error, refreshToken, accessToken);
+            throw attachRotatedCredentials(error, refreshToken, accessToken, {
+                credentialExpiresAt,
+                credentialExpiresIn: expiresIn,
+                refreshTokenRotated,
+            });
         }
     }
     destroy(session) {
@@ -259,7 +288,10 @@ class WxLoginService {
         session.accesstoken = void 0;
         session.refreshtoken = void 0;
         session.loginBuffer = void 0;
+        session.loginType = void 0;
+        session.credentialExpiresAt = void 0;
+        session.credentialExpiresIn = void 0;
+        session.refreshTokenObservedAt = void 0;
     }
 }
 exports.WxLoginService = WxLoginService;
-
