@@ -1,5 +1,10 @@
 const { getItemById } = require("../config/gameConfig");
 const { toNum } = require("../utils/utils");
+const {
+  buildShareableDailyEventLog,
+  readPersistedTodayEvents,
+  todayKey,
+} = require("../services/daily-events");
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,6 +74,17 @@ function buildUseItemMessage(usedItemName, usedCount, newItems) {
 
   const rewards = newItems.map((item) => `${item.name} x${item.count}`).join(", ");
   return `使用 ${usedItemName} x${usedCount}，获得: ${rewards}`;
+}
+
+async function getDailyEventsWithFallback(provider, accountId) {
+  try {
+    const events = await provider.getDailyEvents(accountId);
+    if (Array.isArray(events)) return events;
+  }
+  catch {
+    // 被踢/断线时 Worker 不存在，改读它退出前已经落盘的当日事件。
+  }
+  return readPersistedTodayEvents(accountId);
 }
 
 async function sellMergedBagItems(provider, accountId, items) {
@@ -202,8 +218,28 @@ function registerAdminBagRoutes({
       return;
 
     try {
-      const events = await provider.getDailyEvents(accountId);
-      res.json({ ok: true, data: { date: new Date().toISOString().slice(0, 10), events: events || [] } });
+      const events = await getDailyEventsWithFallback(provider, accountId);
+      res.json({ ok: true, data: { date: todayKey(), events } });
+    }
+    catch (error) {
+      sendProviderError(res, error);
+    }
+  });
+
+  app.get("/api/daily-events/download", async (req, res) => {
+    const accountId = requireAccessibleAccount(req, res, getAccountIdFromRequest, canAccessAccount);
+    if (!accountId)
+      return;
+
+    try {
+      const date = todayKey();
+      const events = await getDailyEventsWithFallback(provider, accountId);
+      const content = buildShareableDailyEventLog(events, { date });
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="farm-events-${date}.txt"`);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(`\uFEFF${content}`);
     }
     catch (error) {
       sendProviderError(res, error);
@@ -239,4 +275,4 @@ function registerAdminBagRoutes({
   });
 }
 
-module.exports = { registerAdminBagRoutes, sellMergedBagItems };
+module.exports = { registerAdminBagRoutes, sellMergedBagItems, getDailyEventsWithFallback };

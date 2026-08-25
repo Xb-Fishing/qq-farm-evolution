@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { getDataFile } = require('../config/runtime-paths');
+const { collectRuntimePrivacyTerms, redactExternalText } = require('./privacy-guard');
 
 const MAX_EVENTS = 200; // 单日上限，够看且防刷爆
 
@@ -18,6 +19,16 @@ function todayKey() {
 
 function filePath(accountId) {
   return getDataFile(`daily-events-${accountId || 'default'}.json`);
+}
+
+function readPersistedTodayEvents(accountId) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath(String(accountId || 'default')), 'utf8'));
+    if (raw && raw.date === todayKey() && Array.isArray(raw.events)) {
+      return raw.events.slice(-MAX_EVENTS);
+    }
+  } catch {}
+  return [];
 }
 
 function load(accountId) {
@@ -78,9 +89,67 @@ function getTodayEvents(accountId) {
   return load(accountId).events;
 }
 
+function sanitizeShareableMessage(event, runtimeTerms) {
+  const type = String(event && event.type || 'event').slice(0, 40);
+  let message = redactExternalText(String(event && event.message || ''));
+  for (const term of [...runtimeTerms].sort((left, right) => right.length - left.length)) {
+    message = message.split(term).join('[PERSONAL]');
+  }
+  // 偷菜事件的旧记录直接包含好友昵称；即使昵称尚未进入本机 denylist，也不能外发。
+  if (type === 'steal' && message.startsWith('偷取 ')) {
+    const countMatch = message.match(/\s(\d+) 个/u);
+    if (countMatch && Number.isInteger(countMatch.index)) {
+      const suffix = message.slice(countMatch.index + countMatch[0].length);
+      message = `偷取 好友 ${countMatch[1]} 个${suffix}`;
+    }
+  }
+  return message
+    .replace(/\b(gid|openid|uin|wxid)\s*[:=：]\s*[\w-]+/gi, '$1=[IDENTIFIER]')
+    .replace(/\b[\w.%+-]+@[\w.-]+\.[A-Z]{2,}\b/gi, '[EMAIL]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+function formatShareableTime(timestamp) {
+  const date = new Date((Number(timestamp) || 0) + 8 * 3600 * 1000);
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} `
+    + `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +08:00`;
+}
+
+/** 构造可交给他人排查的脱敏文本，不包含账号 ID/名称或好友昵称。 */
+function buildShareableDailyEventLog(events, options = {}) {
+  const date = String(options.date || todayKey());
+  const runtimeTerms = options.runtimeTerms || collectRuntimePrivacyTerms();
+  const rows = (Array.isArray(events) ? events : []).slice(-MAX_EVENTS).map((event) => {
+    const level = event && (event.level === 'warn' || event.level === 'error') ? event.level : 'info';
+    const type = String(event && event.type || 'event').replace(/[^\w-]/g, '').slice(0, 40) || 'event';
+    const count = Math.max(1, Number(event && event.count) || 1);
+    const repeat = count > 1 ? ` ×${count}` : '';
+    return `[${formatShareableTime(event && event.at)}] [${level}] [${type}] ${sanitizeShareableMessage(event, runtimeTerms)}${repeat}`;
+  });
+  return [
+    'QQ Farm Bot 今日事件（已脱敏）',
+    `日期：${date}（北京时间）`,
+    '说明：不包含账号标识、好友昵称、凭据、Token、Webhook、网址或本机地址。',
+    '',
+    ...(rows.length > 0 ? rows : ['今天没有记录到事件。']),
+    '',
+  ].join('\n');
+}
+
 /** 测试用 */
 function resetForTest() {
   accounts.clear();
 }
 
-module.exports = { recordEvent, getTodayEvents, todayKey, resetForTest, MAX_EVENTS };
+module.exports = {
+  recordEvent,
+  getTodayEvents,
+  readPersistedTodayEvents,
+  buildShareableDailyEventLog,
+  todayKey,
+  resetForTest,
+  MAX_EVENTS,
+};
