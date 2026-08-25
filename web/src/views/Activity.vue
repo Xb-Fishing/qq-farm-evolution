@@ -95,6 +95,8 @@ type EvolutionAgent = 'claude' | 'codex'
 const evolutionDefaultAgent = ref<EvolutionAgent>('claude')
 const evolutionAgentLoading = ref(false)
 const evolutionRunning = ref(false)
+const evolutionNextRunAt = ref(0)
+const evolutionIssueCount = ref(0)
 const sections = computed<ActivitySection[]>(() => [
   { key: 'qixi', label: '鹊桥寄情', icon: 'i-carbon-favorite', count: qixiActivity.value?.gift.remainingCount || 0 },
   { key: 'journey', label: '千星游记', icon: 'i-carbon-map', count: activity.value?.passport?.claimableLevels || 0 },
@@ -112,9 +114,17 @@ async function refreshAll() {
   }
 }
 
-function syncEvolutionAgent(evolve: { defaultAgent?: EvolutionAgent, agent?: EvolutionAgent, status?: string } | null | undefined) {
+function syncEvolutionAgent(evolve: {
+  defaultAgent?: EvolutionAgent
+  agent?: EvolutionAgent
+  status?: string
+  nextAutoRunAt?: number
+  pendingRuntimeIssueCount?: number
+} | null | undefined) {
   evolutionDefaultAgent.value = (evolve?.defaultAgent || evolve?.agent) === 'codex' ? 'codex' : 'claude'
   evolutionRunning.value = evolve?.status === 'running'
+  evolutionNextRunAt.value = Number(evolve?.nextAutoRunAt) || 0
+  evolutionIssueCount.value = Number(evolve?.pendingRuntimeIssueCount) || 0
 }
 
 async function loadEvolutionAgent() {
@@ -284,6 +294,12 @@ onMounted(refreshAll)
               <option value="codex">Codex</option>
             </select>
           </label>
+          <span
+            v-if="userStore.isAdmin"
+            class="inline-flex items-center border border-sky-200/25 rounded-lg bg-[#071b43]/75 px-3 py-1.5 text-xs text-sky-50 backdrop-blur-sm"
+          >
+            下次自动：{{ evolutionNextRunAt ? new Date(evolutionNextRunAt).toLocaleString() : '待调度' }} · 待复盘 {{ evolutionIssueCount }} 类
+          </span>
           <BaseButton v-if="userStore.isAdmin" variant="secondary" @click="showActivityAnalysis = true">
             <span class="i-carbon-analytics mr-1.5" />
             自动进化 / 活动分析

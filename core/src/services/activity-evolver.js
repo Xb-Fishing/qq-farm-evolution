@@ -14,8 +14,15 @@ const { execFile, execFileSync, execSync, spawn } = require('node:child_process'
 const { promisify } = require('node:util');
 const { getDataFile } = require('../config/runtime-paths');
 const { createModuleLogger } = require('./logger');
-const { createScheduler } = require('./scheduler');
+const { createScheduler, getSchedulerRegistrySnapshot } = require('./scheduler');
 const { sendFeishuText } = require('./feishu-notify');
+const {
+  ISSUE_DEFINITIONS,
+  acknowledgeRuntimeIssues,
+  getRuntimeIssueSnapshot,
+  normalizeRuntimeIssueBatch,
+  toRuntimeIssueBatch,
+} = require('./evolution-issue-inbox');
 const {
   auditGitRange,
   formatPrivacyFindings,
@@ -71,6 +78,7 @@ function defaultState() {
     privacyFindings: [],
     commit: '',
     logFile: '',
+    runtimeIssueBatch: [],
     handledUnknownIds: [],
     handledEndedIds: [],
     upstreamHead: '', // 可选上游参考仓库的 HEAD sha（巡检 agent 维护）
@@ -91,6 +99,7 @@ function normalizePersistedState(value, now = Date.now()) {
   state.privacyFindings = Array.isArray(state.privacyFindings)
     ? state.privacyFindings.map(item => String(item || '').slice(0, 300)).slice(0, 20)
     : [];
+  state.runtimeIssueBatch = normalizeRuntimeIssueBatch(state.runtimeIssueBatch);
   const summary = String(state.summary || '');
   const legacyInterrupted = state.status === 'failed'
     && /退出码\s*(?:130|143)|SIG(?:TERM|INT)/i.test(summary);
@@ -475,10 +484,34 @@ ${sections.join('\n\n')}
 【约束】最小改动；拿不准协议结构的活动只在 HANDOFF.md 增加「待接入活动」记录，不写猜测代码；不新增项目现有之外的依赖。`;
 }
 
-function buildSafetyPrompt(userInstruction = '', revisionContext = null) {
+function buildRuntimeIssuePrompt(runtimeIssues = []) {
+  const issues = (Array.isArray(runtimeIssues) ? runtimeIssues : [])
+    .map(issue => ({ issue, definition: ISSUE_DEFINITIONS[String(issue && issue.key || '')] }))
+    .filter(item => item.definition)
+    .slice(0, 40);
+  if (issues.length === 0) {
+    return `【近 72 小时运行问题收件箱】
+当前没有待复盘的问题摘要。仍须按下方证据收集流程检查本机短期日志。`;
+  }
+  const lines = issues.map(({ issue, definition }) => {
+    const count = Math.max(1, Number(issue && issue.count) || 1);
+    const firstAt = new Date(Number(issue && issue.firstAt) || 0).toISOString();
+    const lastAt = new Date(Number(issue && issue.lastAt) || 0).toISOString();
+    return `- ${definition.label}：${count} 次；首次 ${firstAt}；最近 ${lastAt}`;
+  });
+  return `【近 72 小时运行问题收件箱】
+以下内容只含脱敏类别、次数和时间，不含账号、好友、协议方法、错误原文、网址或凭据：
+${lines.join('\n')}
+
+这些摘要只是排查线索，不是修改依据。必须回看对应时段的本机短期日志并定位代码；证据不足、属于外部登录冲突或现有策略已经正确时，可以不改代码。禁止因为这些问题恢复整号熔断或放慢核心收益链。`;
+}
+
+function buildSafetyPrompt(userInstruction = '', revisionContext = null, runtimeIssues = []) {
   return `你是 qq-farm-bot 项目的防封安全巡检 agent，仓库根目录就是当前工作目录（git 仓库；你只能创建本地提交，不能推送）。
 
 ${buildEvolutionGuardrails(userInstruction, revisionContext)}
+
+${buildRuntimeIssuePrompt(runtimeIssues)}
 
 【目标】把封号概率压到工程上可实现最低。手段只有四条杠杆，按优先级：
 1. 少发请求：找冗余调用/可砍轮询/可加每日上限的地方
@@ -586,6 +619,7 @@ function launchEvolution(task, payload = {}) {
 
   running = true;
   lastTask = task;
+  const runtimeIssues = task === 'safety' ? getRuntimeIssueSnapshot() : [];
   const state = current;
   state.status = 'running';
   state.lastRunAt = Date.now();
@@ -596,6 +630,7 @@ function launchEvolution(task, payload = {}) {
   state.commit = '';
   state.changeSummary = '';
   state.privacyFindings = [];
+  state.runtimeIssueBatch = task === 'safety' ? toRuntimeIssueBatch(runtimeIssues) : [];
   if (task === 'safety') {
     state.lastSafetyEvolveDate = getLocalDateKey();
     state.summary = `安全巡检执行中（${agentLabel}，防封审计）`;
@@ -617,7 +652,7 @@ function launchEvolution(task, payload = {}) {
   try { fs.chmodSync(logFile, 0o600); } catch {}
   const headBefore = gitHead();
   const prompt = task === 'safety'
-    ? buildSafetyPrompt(current.userInstruction, current.revisionContext)
+    ? buildSafetyPrompt(current.userInstruction, current.revisionContext, runtimeIssues)
     : buildPrompt(
         payload.report,
         payload.newUnknown,
@@ -688,6 +723,10 @@ function launchEvolution(task, payload = {}) {
     if (task !== 'safety' && COMPLETED_STATUSES.has(outcome)) {
       next.handledUnknownIds = [...new Set([...next.handledUnknownIds, ...payload.newUnknown])].slice(-200);
       next.handledEndedIds = [...new Set([...next.handledEndedIds, ...payload.newEnded])].slice(-200);
+    }
+    if (task === 'safety' && outcome === 'no_change') {
+      acknowledgeRuntimeIssues(next.runtimeIssueBatch);
+      next.runtimeIssueBatch = [];
     }
     if (COMPLETED_STATUSES.has(outcome)) next.revisionContext = null;
     writeState(next);
@@ -938,6 +977,10 @@ function startActivityEvolver(options = {}) {
 
   // apply-evolution.sh 只有在旧进程退出后才能生效，新进程启动就是可靠的已应用边界。
   const reconciled = markEvolutionAppliedAfterRestart(readState());
+  if (reconciled.changed) {
+    acknowledgeRuntimeIssues(reconciled.state.runtimeIssueBatch);
+    reconciled.state.runtimeIssueBatch = [];
+  }
   writeState(reconciled.state);
   if (reconciled.changed) {
     void notify(
@@ -966,7 +1009,19 @@ function startActivityEvolver(options = {}) {
 }
 
 function getEvolveState() {
-  return { running, lastTask, ...readState() };
+  const issueSnapshot = getRuntimeIssueSnapshot();
+  const schedule = getSchedulerRegistrySnapshot('activity_evolver').schedulers[0];
+  const nextAutoRunAt = (schedule && schedule.tasks || [])
+    .filter(task => task.nextRunAt > Date.now())
+    .reduce((earliest, task) => !earliest || task.nextRunAt < earliest ? task.nextRunAt : earliest, 0);
+  return {
+    running,
+    lastTask,
+    ...readState(),
+    nextAutoRunAt,
+    pendingRuntimeIssueCount: issueSnapshot.length,
+    pendingRuntimeIssueOccurrences: issueSnapshot.reduce((sum, issue) => sum + issue.count, 0),
+  };
 }
 
 function setEvolutionAgent(value) {
@@ -1111,5 +1166,6 @@ module.exports = {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  buildRuntimeIssuePrompt,
   buildSafetyPrompt,
 };

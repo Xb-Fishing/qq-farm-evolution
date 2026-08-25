@@ -99,6 +99,9 @@ interface EvolveState {
   lastSafetyEvolveDate?: string
   lastEvolveDate?: string
   userInstruction?: string
+  nextAutoRunAt?: number
+  pendingRuntimeIssueCount?: number
+  pendingRuntimeIssueOccurrences?: number
 }
 
 const toast = useToastStore()
@@ -473,7 +476,7 @@ onMounted(loadUpdateStatus)
             自动进化（活动 + 防封安全巡检）
           </h4>
           <p class="mt-1 text-xs text-purple-700/90 dark:text-purple-300/90">
-            每天北京时间 00:00-01:00 自动跑一版：安全巡检审计请求频率/通信层/版本并做保守加固，活动任务核对活动上下线。agent 改代码 → 全量测试 → git 提交（不重启），飞书通知后由你点「应用进化」生效。
+            每天北京时间 00:00-01:00 自动跑一版：安全巡检会同时复盘近 72 小时的脱敏运行问题，活动任务核对活动上下线。agent 改代码 → 全量测试 → git 提交（不重启），飞书通知后由你点「应用进化」生效。
           </p>
         </div>
         <button
@@ -483,6 +486,27 @@ onMounted(loadUpdateStatus)
         >
           发送测试通知
         </button>
+      </div>
+      <div class="grid mt-3 gap-2 sm:grid-cols-2">
+        <div class="border border-purple-200 rounded bg-white/70 px-3 py-2 text-xs text-purple-800 dark:border-purple-700/50 dark:bg-gray-800/70 dark:text-purple-300">
+          <div class="font-medium">
+            下次自动进化
+          </div>
+          <div class="mt-1">
+            {{ formatTime(evolve?.nextAutoRunAt) }}
+          </div>
+        </div>
+        <div class="border border-purple-200 rounded bg-white/70 px-3 py-2 text-xs text-purple-800 dark:border-purple-700/50 dark:bg-gray-800/70 dark:text-purple-300">
+          <div class="font-medium">
+            待 Agent 复盘的运行问题
+          </div>
+          <div class="mt-1">
+            {{ evolve?.pendingRuntimeIssueCount || 0 }} 类 · {{ evolve?.pendingRuntimeIssueOccurrences || 0 }} 次
+          </div>
+          <div class="mt-1 opacity-75">
+            只保留脱敏摘要；确认无需修改或更新生效后清除，最长保留 72 小时。
+          </div>
+        </div>
       </div>
       <div class="mt-3 rounded border border-purple-200 bg-white/70 p-3 dark:border-purple-700/50 dark:bg-gray-800/70">
         <label class="text-xs font-medium text-purple-900 dark:text-purple-200" for="evolution-user-instruction">
