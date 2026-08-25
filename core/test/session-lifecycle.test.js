@@ -6,8 +6,13 @@ const path = require('node:path');
 
 const {
   nextCredentialKeepaliveDelayMs,
-  WX_KEEPALIVE_MIN_MS,
-  WX_KEEPALIVE_MAX_MS,
+  WX_KEEPALIVE_AHEAD_MIN_MS,
+  WX_KEEPALIVE_AHEAD_MAX_MS,
+  WX_KEEPALIVE_MIGRATION_MIN_MS,
+  WX_KEEPALIVE_MIGRATION_MAX_MS,
+  WX_KEEPALIVE_RETRY_BASE_MS,
+  WX_KEEPALIVE_RETRY_MAX_MS,
+  WX_KEEPALIVE_TERMINAL_RECHECK_MS,
 } = require('../src/runtime/auto-code-refresh');
 const {
   classifyEvolutionExit,
@@ -27,12 +32,34 @@ const {
   buildSafetyPrompt,
 } = require('../src/services/activity-evolver');
 
-test('微信凭据保活使用 25-35 分钟抖动窗口', () => {
-  for (let i = 0; i < 200; i += 1) {
-    const delay = nextCredentialKeepaliveDelayMs();
-    assert.ok(delay >= WX_KEEPALIVE_MIN_MS);
-    assert.ok(delay <= WX_KEEPALIVE_MAX_MS);
-  }
+test('微信凭据按服务端有效期续期，不再每半小时真实刷新', () => {
+  const now = Date.parse('2026-08-26T02:00:00Z');
+  const account = { wxCredentialExpiresAt: now + 2 * 60 * 60000 };
+  assert.equal(
+    nextCredentialKeepaliveDelayMs(account, { now, random: () => 0 }),
+    2 * 60 * 60000 - WX_KEEPALIVE_AHEAD_MIN_MS,
+  );
+  assert.equal(
+    nextCredentialKeepaliveDelayMs(account, { now, random: () => 0.999999 }),
+    2 * 60 * 60000 - WX_KEEPALIVE_AHEAD_MAX_MS,
+  );
+
+  const migration = nextCredentialKeepaliveDelayMs({}, { now, random: () => 0.5 });
+  assert.ok(migration >= WX_KEEPALIVE_MIGRATION_MIN_MS);
+  assert.ok(migration <= WX_KEEPALIVE_MIGRATION_MAX_MS);
+
+  assert.equal(
+    nextCredentialKeepaliveDelayMs(account, { reason: 'retry', failureCount: 1, random: () => 0 }),
+    WX_KEEPALIVE_RETRY_BASE_MS,
+  );
+  assert.equal(
+    nextCredentialKeepaliveDelayMs(account, { reason: 'retry', failureCount: 9, random: () => 0 }),
+    WX_KEEPALIVE_RETRY_MAX_MS,
+  );
+  assert.equal(
+    nextCredentialKeepaliveDelayMs(account, { reason: 'definitive', random: () => 0 }),
+    WX_KEEPALIVE_TERMINAL_RECHECK_MS,
+  );
 });
 
 test('在线账号不再按固定周期换 Code 或重启 Worker', () => {
