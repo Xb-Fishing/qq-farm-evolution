@@ -9,6 +9,7 @@ process.env.FARM_DATA_DIR = dataDir;
 
 const store = require('../src/models/store');
 const { createAutoCodeRefreshService } = require('../src/runtime/auto-code-refresh');
+const { getSchedulerRegistrySnapshot } = require('../src/services/scheduler');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
@@ -67,4 +68,53 @@ test('store persists and clamps the kickoutRelogin setting', () => {
 
     store.applyConfigSnapshot({ kickoutRelogin: { delayMinutes: 0 } }, { accountId: account.id });
     assert.deepEqual(store.getKickoutRelogin(account.id), { delayMinutes: 0, validUntil: '2026-08-23T18:00' });
+});
+
+test('被踢等待接管期间继续滚动长凭据但不提前申请 Code 或启动 Worker', async () => {
+    const account = {
+        id: 'offline-credential-test',
+        name: 'Offline credential fixture',
+        wxid: 'wx-fixture',
+        loginBuffer: 'login-buffer-fixture',
+        refreshtoken: 'refresh-token-fixture',
+    };
+    let keepaliveCalls = 0;
+    let restartCalls = 0;
+    let accountWrites = 0;
+    const svc = createAutoCodeRefreshService({
+        store: {
+            getKickoutRelogin: () => ({ delayMinutes: 0, validUntil: '' }),
+            isAccountAutoLogin: () => true,
+        },
+        getAccounts: () => ({ accounts: [account] }),
+        addOrUpdateAccount: () => { accountWrites += 1; },
+        resolveWorkerControls: () => ({ restartWorker: () => { restartCalls += 1; } }),
+        keepWxCredentialAlive: async () => {
+            keepaliveCalls += 1;
+            return { Success: true };
+        },
+        getCredentialKeepaliveDelayMs: () => 5,
+        log: () => {},
+        addAccountLog: () => {},
+    });
+
+    try {
+        assert.equal(svc.scheduleKickoutRelogin(account.id, 'kickout:test'), true);
+        const scheduled = getSchedulerRegistrySnapshot('auto_code_refresh')
+            .schedulers.flatMap(item => item.tasks.map(task => task.name));
+        assert.ok(scheduled.includes(`relogin_${account.id}`));
+        assert.ok(scheduled.includes(`wx_keepalive_${account.id}`));
+
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.ok(keepaliveCalls >= 1);
+        assert.equal(accountWrites, 0);
+        assert.equal(restartCalls, 0);
+    } finally {
+        svc.stopAccount(account.id);
+    }
+
+    const remaining = getSchedulerRegistrySnapshot('auto_code_refresh')
+        .schedulers.flatMap(item => item.tasks.map(task => task.name));
+    assert.ok(!remaining.includes(`relogin_${account.id}`));
+    assert.ok(!remaining.includes(`wx_keepalive_${account.id}`));
 });

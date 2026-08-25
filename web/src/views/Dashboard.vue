@@ -482,10 +482,11 @@ interface DailyEvent {
 }
 
 const dailyEvents = ref<DailyEvent[]>([])
+const downloadingDailyEvents = ref(false)
 let dailyEventsRequestId = 0
 
 async function fetchDailyEvents() {
-  if (!currentAccountId.value || !currentAccount.value?.running)
+  if (!currentAccountId.value)
     return
   const requestedId = String(currentAccountId.value)
   const requestId = ++dailyEventsRequestId
@@ -495,6 +496,42 @@ async function fetchDailyEvents() {
       dailyEvents.value = data.data?.events || []
   }
   catch { /* 事件日志拉取失败不影响面板 */ }
+}
+
+async function downloadDailyEventLog() {
+  if (!currentAccountId.value || downloadingDailyEvents.value)
+    return
+
+  const requestedId = String(currentAccountId.value)
+  downloadingDailyEvents.value = true
+  try {
+    const response = await api.get('/api/daily-events/download', {
+      headers: { 'x-account-id': requestedId },
+      responseType: 'blob',
+    })
+    const disposition = String(response.headers?.['content-disposition'] || '')
+    const matchedName = disposition.match(/filename="?([\w.-]+)"?/i)?.[1]
+    const filename = matchedName || `farm-events-${new Date().toISOString().slice(0, 10)}.txt`
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([response.data], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    toastStore.success('今日事件日志已下载（内容已脱敏）')
+  }
+  catch (error: any) {
+    const message = error?.response?.data?.error || error?.message || '请求失败'
+    toastStore.error(`下载失败: ${message}`)
+  }
+  finally {
+    downloadingDailyEvents.value = false
+  }
 }
 
 const EVENT_LEVEL_STYLE: Record<string, string> = {
@@ -1043,7 +1080,20 @@ useIntervalFn(updateCountdowns, 1000)
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-list-checked" />
           <span>今日事件</span>
-          <span class="ml-auto text-xs font-normal text-gray-400">仅保留当天</span>
+          <div class="ml-auto flex items-center gap-2">
+            <span class="text-xs font-normal text-gray-400">仅保留当天</span>
+            <BaseButton
+              variant="secondary"
+              size="sm"
+              :loading="downloadingDailyEvents"
+              :disabled="!currentAccountId"
+              title="下载可分享的脱敏日志"
+              @click="downloadDailyEventLog"
+            >
+              <div class="i-carbon-download mr-1" />
+              下载日志
+            </BaseButton>
+          </div>
         </h3>
         <div v-if="!dailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
           今天还没有记录到事件

@@ -19,6 +19,12 @@ function createAutoCodeRefreshService(deps) {
     log,
     addAccountLog,
   } = deps;
+  const keepCredentialAlive = typeof deps.keepWxCredentialAlive === 'function'
+    ? deps.keepWxCredentialAlive
+    : wxLoginAdapter.keepWxCredentialAlive;
+  const getCredentialKeepaliveDelayMs = typeof deps.getCredentialKeepaliveDelayMs === 'function'
+    ? deps.getCredentialKeepaliveDelayMs
+    : nextCredentialKeepaliveDelayMs;
 
   const scheduler = createScheduler('auto_code_refresh');
   const recoveryState = new Map();
@@ -138,8 +144,10 @@ function createAutoCodeRefreshService(deps) {
 
     try {
       const code = await requestFarmCode(account, wxConfig);
-      const nextAccount = { ...account, code };
-      addOrUpdateAccount(nextAccount);
+      // 只写本轮生成的 Code；断线保活可能刚刚滚动过 loginBuffer/token，
+      // 不能用函数开头读取的旧 account 快照把新长凭据覆盖回去。
+      addOrUpdateAccount({ id: account.id, code });
+      const nextAccount = findAccount(accountId) || { ...account, code };
 
       const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
       if (typeof controls.restartWorker === 'function') controls.restartWorker(nextAccount);
@@ -162,6 +170,55 @@ function createAutoCodeRefreshService(deps) {
       });
       return false;
     }
+  }
+
+  /**
+   * 持续滚动微信长凭据；只更新 loginBuffer/token，不申请游戏 Code、不启动 Worker。
+   * mode 仅用于日志区分在线和断线等待，两种状态使用相同的 25-35 分钟安全节奏。
+   */
+  function armCredentialKeepalive(accountId, generation, mode = 'online') {
+    const accountKey = String(accountId || '');
+    const taskName = getKeepaliveTaskName(accountId);
+    scheduler.clear(taskName);
+
+    const account = findAccount(accountId);
+    if (!account || !account.loginBuffer || !account.refreshtoken) return false;
+    if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) return false;
+
+    const scheduleNextKeepalive = () => {
+      if (keepaliveGeneration.get(accountKey) !== generation) return;
+      scheduler.setTimeoutTask(taskName, getCredentialKeepaliveDelayMs(), async () => {
+        if (keepaliveGeneration.get(accountKey) !== generation) return;
+        const latest = findAccount(accountId);
+        if (!latest || !latest.loginBuffer || !latest.refreshtoken) return;
+        try {
+          const result = await keepCredentialAlive(latest);
+          if (!result.Success) {
+            const stateLabel = mode === 'offline' ? '断线等待期间' : '当前游戏连接不重启';
+            log('错误', `微信凭证保活失败（${stateLabel}）: ${latest.name} - ${result.Message || '未知错误'}`, {
+              accountId: accountKey, accountName: latest.name,
+            });
+          }
+        } finally {
+          // 无论在线或等待接管，都只滚动长凭据；接管时才单独申请一次游戏 Code。
+          scheduleNextKeepalive();
+        }
+      });
+    };
+
+    scheduleNextKeepalive();
+    const modeLabel = mode === 'offline' ? '断线等待保活' : '在线保活';
+    log('系统', `微信登录凭据${modeLabel}已启用: ${account.name}，约 25-35 分钟一次（不换游戏 Code）`, {
+      accountId: accountKey, accountName: account.name, mode,
+    });
+    return true;
+  }
+
+  function armOfflineCredentialKeepalive(accountId) {
+    const accountKey = String(accountId || '');
+    const generation = (keepaliveGeneration.get(accountKey) || 0) + 1;
+    keepaliveGeneration.set(accountKey, generation);
+    return armCredentialKeepalive(accountId, generation, 'offline');
   }
 
   function scheduleAccount(accountId) {
@@ -187,31 +244,7 @@ function createAutoCodeRefreshService(deps) {
       return;
     }
 
-    if (account.loginBuffer && account.refreshtoken) {
-      const scheduleNextKeepalive = () => {
-        if (keepaliveGeneration.get(accountKey) !== generation) return;
-        scheduler.setTimeoutTask(getKeepaliveTaskName(accountId), nextCredentialKeepaliveDelayMs(), async () => {
-          if (keepaliveGeneration.get(accountKey) !== generation) return;
-          const latest = findAccount(accountId);
-          if (!latest) return;
-          try {
-            const result = await wxLoginAdapter.keepWxCredentialAlive(latest);
-            if (!result.Success) {
-              log('错误', `微信凭证保活失败（当前游戏连接不重启）: ${latest.name} - ${result.Message || '未知错误'}`, {
-                accountId: String(accountId), accountName: latest.name,
-              });
-            }
-          } finally {
-            // 滚动凭据保活只更新 loginBuffer/token，不换游戏 Code、不重启在线 Worker。
-            scheduleNextKeepalive();
-          }
-        });
-      };
-      scheduleNextKeepalive();
-      log('系统', `微信登录凭据保活已启用: ${account.name}，约 25-35 分钟一次（在线不换 Code）`, {
-        accountId: String(accountId), accountName: account.name,
-      });
-    }
+    armCredentialKeepalive(accountId, generation, 'online');
 
     // 旧版在这里每隔 intervalMinutes 主动换 Code 并重启 Worker，会人为制造周期掉线。
     // 现在该配置只控制真实断线后的自动恢复间隔；在线会话只走上面的凭据保活。
@@ -313,6 +346,9 @@ function createAutoCodeRefreshService(deps) {
     scheduler.setTimeoutTask(taskName, delayMs, () => {
       refreshAccountCode(accountId, reason);
     });
+    // stopWorker 会先清理在线保活；等待接管期间必须立即重新挂载长凭据保活，
+    // 但不能提前申请游戏 Code 或启动 Worker。
+    armOfflineCredentialKeepalive(accountId);
     log('系统', `账号 ${account.name} 被其他终端登录踢下线，${delayDesc}后自动尝试接管（今日第 ${recovery.attempts + 1} 次）`, {
       accountId: key, accountName: account.name, reason,
       sessionMs, delayMs, attempt: recovery.attempts + 1, custom: customActive,
@@ -341,6 +377,7 @@ function createAutoCodeRefreshService(deps) {
     scheduler.setTimeoutTask(taskName, cfg.intervalMinutes * 60000, () => {
       refreshAccountCode(accountId, reason);
     });
+    armOfflineCredentialKeepalive(accountId);
     log('系统', `账号 ${account.name} 将在 ${cfg.intervalMinutes} 分钟后自动刷新凭证并重登`, {
       accountId: String(accountId), accountName: account.name, reason,
     });
