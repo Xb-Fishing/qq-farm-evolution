@@ -111,6 +111,25 @@ function sanitizeShareableMessage(event, runtimeTerms) {
     .slice(0, 500);
 }
 
+/**
+ * 诊断偷菜问题时保留好友昵称，但凭据、网络地址和账号标识仍必须脱敏。
+ * 此函数只处理已经明确属于偷菜/被偷的短文本，不可用于导出任意运行日志。
+ */
+function sanitizeStealDiagnosticText(value) {
+  return redactExternalText(String(value || ''))
+    .replace(/\b(gid|openid|uin|wxid)\s*[:=：]\s*[\w-]+/gi, '$1=[IDENTIFIER]')
+    .replace(/\b[\w.%+-]+@[\w.-]+\.[A-Z]{2,}\b/gi, '[EMAIL]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+function sanitizeFriendName(value) {
+  const name = String(value || '').trim();
+  if (!name || /^GID\s*[:=：]/i.test(name)) return '未知好友';
+  return sanitizeStealDiagnosticText(name).slice(0, 80) || '未知好友';
+}
+
 function formatShareableTime(timestamp) {
   const date = new Date((Number(timestamp) || 0) + 8 * 3600 * 1000);
   const pad = value => String(value).padStart(2, '0');
@@ -139,6 +158,55 @@ function buildShareableDailyEventLog(events, options = {}) {
   ].join('\n');
 }
 
+/**
+ * 构造专用偷菜诊断日志：只包含本账号偷菜和别人偷本账号两类事件。
+ * 好友昵称按用户要求保留；GID、头像 URL、账号信息和凭据从不写入。
+ */
+function buildStealDailyEventLog(events, interactRecords, options = {}) {
+  const date = String(options.date || todayKey());
+  const incomingAvailable = options.incomingAvailable !== false;
+  const rows = [];
+
+  for (const event of (Array.isArray(events) ? events : []).slice(-MAX_EVENTS)) {
+    if (String(event && event.type || '') !== 'steal') continue;
+    if (formatShareableTime(event && event.at).slice(0, 10) !== date) continue;
+    const count = Math.max(1, Number(event && event.count) || 1);
+    rows.push({
+      at: Number(event && event.at) || 0,
+      direction: '偷菜',
+      message: sanitizeStealDiagnosticText(event && event.message),
+      repeat: count > 1 ? ` ×${count}` : '',
+    });
+  }
+
+  for (const record of Array.isArray(interactRecords) ? interactRecords : []) {
+    if (Number(record && record.actionType) !== 1) continue;
+    const at = Number(record && (record.serverTimeMs || Number(record.serverTimeSec) * 1000)) || 0;
+    if (formatShareableTime(at).slice(0, 10) !== date) continue;
+    const friendName = sanitizeFriendName(record && record.nick);
+    const detail = sanitizeStealDiagnosticText(record && record.actionDetail) || '偷取作物';
+    rows.push({ at, direction: '被偷', message: `${friendName} · ${detail}`, repeat: '' });
+  }
+
+  rows.sort((left, right) => left.at - right.at || left.direction.localeCompare(right.direction));
+  const incomingStatus = incomingAvailable
+    ? '被偷记录：已读取访客互动记录。'
+    : '被偷记录：账号离线或接口暂不可用，本次只导出已有偷菜事件。';
+
+  return [
+    'QQ Farm Bot 偷菜/被偷事件日志',
+    `日期：${date}（北京时间）`,
+    '说明：仅包含偷菜与被偷事件；为便于排查会保留好友昵称，请谨慎分享。',
+    '安全处理：不包含 GID、账号标识、凭据、Token、Webhook、网址或本机地址。',
+    incomingStatus,
+    '',
+    ...(rows.length > 0
+      ? rows.map(row => `[${formatShareableTime(row.at)}] [${row.direction}] ${row.message}${row.repeat}`)
+      : ['今天没有记录到偷菜或被偷事件。']),
+    '',
+  ].join('\n');
+}
+
 /** 测试用 */
 function resetForTest() {
   accounts.clear();
@@ -149,6 +217,7 @@ module.exports = {
   getTodayEvents,
   readPersistedTodayEvents,
   buildShareableDailyEventLog,
+  buildStealDailyEventLog,
   todayKey,
   resetForTest,
   MAX_EVENTS,
