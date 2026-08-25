@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { serverMatureSecToLocalMs } = require('../src/services/farming-orchestrator');
+const { nextWatchlistPollDelayMs } = require('../src/services/friend-orchestrator');
 
 // worker.js 不可直接 require（会连游戏服务），这里锁住独立成熟保护器的接线与优先级。
 const src = fs.readFileSync(
@@ -99,14 +100,35 @@ test('every friend harvest entry point renews contention grace at the API bounda
   );
 });
 
-test('priority baseline polling is minute-level and never opens governor watch mode', () => {
+test('priority baseline polling tightens only inside the observation window without opening governor watch mode', () => {
   assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MIN_MS = 5 \* 60_000/);
   assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MAX_MS = 8 \* 60_000/);
-  assert.match(friendSrc, /WATCHLIST_POLL_GROWING_MIN_MS = 2 \* 60_000/);
-  assert.match(friendSrc, /WATCHLIST_POLL_GROWING_MAX_MS = 4 \* 60_000/);
+  assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MIN_MS = 45_000/);
+  assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MAX_MS = 75_000/);
   assert.doesNotMatch(friendSrc, /setWatchMode\(/);
-  assert.match(friendSrc, /slowdown\.active && !isFertilizerHot\(gid, now\)/);
+  assert.match(friendSrc, /slowdown\.active && !isFertilizerHot\(gid, now\) && !inObservationWindow/);
   assert.match(friendSrc, /baselineDelay \+ gaussianInt\(floorMs/);
+});
+
+test('priority polling wakes at the observation boundary and stays within the tighter jitter range', () => {
+  const wakeBeforeMs = 122 * 60_000;
+  const chooseMax = (_min, max) => max;
+
+  assert.equal(nextWatchlistPollDelayMs(0, { wakeBeforeMs, randomDelay: chooseMax }), 8 * 60_000);
+  assert.equal(
+    nextWatchlistPollDelayMs(wakeBeforeMs + 20_000, { wakeBeforeMs, randomDelay: chooseMax }),
+    20_000,
+    'an idle timer must not oversleep the observation-window boundary'
+  );
+  assert.equal(
+    nextWatchlistPollDelayMs(90 * 60_000, { wakeBeforeMs, randomDelay: chooseMax }),
+    75_000
+  );
+  assert.equal(
+    nextWatchlistPollDelayMs(90_000, { wakeBeforeMs, randomDelay: chooseMax }),
+    30_000,
+    'the last baseline must not skip the 60-second PREARM boundary'
+  );
 });
 
 test('unified scheduler has no global breaker branch that postpones all work', () => {
