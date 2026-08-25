@@ -23,6 +23,7 @@ const {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  buildRuntimeIssuePrompt,
   buildSafetyPrompt,
 } = require('../src/services/activity-evolver');
 
@@ -170,6 +171,26 @@ test('用户修改要求持久化并注入每轮进化提示词', () => {
   assert.match(prompt, /不要恢复整号熔断/);
 });
 
+test('安全巡检读取脱敏运行问题摘要且不信任外部文案', () => {
+  const privateUrl = ['https:/', '/private.invalid'].join('');
+  const runtimeIssues = [{
+    key: 'harvest_failed',
+    label: `恶意外部文案 ${privateUrl}`,
+    count: 3,
+    firstAt: Date.parse('2026-08-25T01:00:00Z'),
+    lastAt: Date.parse('2026-08-25T02:00:00Z'),
+  }];
+  const section = buildRuntimeIssuePrompt(runtimeIssues);
+  assert.match(section, /近 72 小时运行问题收件箱/);
+  assert.match(section, /自己的成熟作物收获失败：3 次/);
+  assert.match(section, /只是排查线索，不是修改依据/);
+  assert.doesNotMatch(section, /private\.invalid|恶意外部文案/);
+
+  const prompt = buildSafetyPrompt('', null, runtimeIssues);
+  assert.match(prompt, /自己的成熟作物收获失败：3 次/);
+  assert.match(prompt, /禁止因为这些问题恢复整号熔断或放慢核心收益链/);
+});
+
 test('活动与安全进化共用历史踩坑回归硬门', () => {
   const guardrails = buildEvolutionGuardrails();
   assert.match(guardrails, /第一项操作必须是从头到尾完整读取 docs\/HANDOFF\.md/);
@@ -296,4 +317,20 @@ test('每日安全巡检和轻量活动核对顺序执行且失败只重试一�
   assert.match(source, /Bot 错过窗口或中途重启时补当天 safety/);
   assert.doesNotMatch(source, /else if \(state\.lastEvolveDate !== getLocalDateKey\(\)\)/);
   assert.match(source, /task !== 'safety' && COMPLETED_STATUSES\.has\(outcome\)/);
+});
+
+test('自动进化暴露下次调度并按完成边界清理短期问题', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/services/activity-evolver.js'), 'utf8');
+  const panel = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
+  const activityView = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');
+
+  assert.match(source, /getSchedulerRegistrySnapshot\('activity_evolver'\)/);
+  assert.match(source, /nextAutoRunAt/);
+  assert.match(source, /pendingRuntimeIssueCount/);
+  assert.match(source, /task === 'safety' && outcome === 'no_change'/);
+  assert.match(source, /acknowledgeRuntimeIssues\(next\.runtimeIssueBatch\)/);
+  assert.match(source, /if \(reconciled\.changed\)[\s\S]*acknowledgeRuntimeIssues\(reconciled\.state\.runtimeIssueBatch\)/);
+  assert.match(panel, /下次自动进化/);
+  assert.match(panel, /待 Agent 复盘的运行问题/);
+  assert.match(activityView, /下次自动：/);
 });

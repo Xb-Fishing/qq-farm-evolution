@@ -18,6 +18,11 @@ const {
   getDailyEventsWithFallback,
   registerAdminBagRoutes,
 } = require('../src/controllers/admin-bag-routes');
+const {
+  acknowledgeRuntimeIssues,
+  getRuntimeIssueSnapshot,
+  toRuntimeIssueBatch,
+} = require('../src/services/evolution-issue-inbox');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
@@ -59,6 +64,19 @@ test('账号 Worker 离线时今日事件接口回退读取已落盘日志', asy
   assert.deepEqual(events, getTodayEvents('offline-fixture'));
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'kickout');
+});
+
+test('日常错误事件只向自动进化收件箱投递脱敏类别', () => {
+  const existing = getRuntimeIssueSnapshot();
+  acknowledgeRuntimeIssues(toRuntimeIssueBatch(existing));
+  const privateUrl = ['https:/', '/private.invalid/path'].join('');
+  recordEvent('private-account', 'error', 'plant_failed', `私人好友种植失败 ${privateUrl}`);
+
+  const issues = getRuntimeIssueSnapshot();
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].key, 'plant_failed');
+  const persisted = fs.readFileSync(path.join(dataDir, 'evolution-runtime-issues.json'), 'utf8');
+  assert.doesNotMatch(persisted, /private-account|私人好友|private\.invalid/);
 });
 
 test('偷菜专用日志只导出偷菜和被偷并保留好友昵称', () => {
