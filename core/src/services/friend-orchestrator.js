@@ -100,12 +100,12 @@ const watchlistNames = new Map();
 let watchlistPollLoopArmed = false;
 const WATCHLIST_POLL_TICK_MS = 3_000;
 // 普通重点巡田只负责更新成熟墙钟/施肥基线，不关心对方日常收菜和重种。
-// 未知或无作物降到 5-8 分钟；已知进入 122 分钟观察范围也只需 2-4 分钟一次。
+// 未知或无作物保持 5-8 分钟；已知进入 122 分钟观察范围收紧到 45-75 秒。
 // 真正发现施肥趋势后由 fertilizer-watch 独立切换到秒级 HOT。
 const WATCHLIST_POLL_IDLE_MIN_MS = 5 * 60_000;
 const WATCHLIST_POLL_IDLE_MAX_MS = 8 * 60_000;
-const WATCHLIST_POLL_GROWING_MIN_MS = 2 * 60_000;
-const WATCHLIST_POLL_GROWING_MAX_MS = 4 * 60_000;
+const WATCHLIST_POLL_WINDOW_MIN_MS = 45_000;
+const WATCHLIST_POLL_WINDOW_MAX_MS = 75_000;
 let lastRipeRefreshAt = 0;
 const RIPE_REFRESH_MIN_MS = 30_000;
 // 自己成熟前给收获请求预留通道，新的好友扫描/进门不得占用这段窗口。
@@ -129,23 +129,45 @@ function getWatchlistWakeBeforeMs() {
   return (minutes > 0 ? Math.min(360, minutes) : DEFAULT_WATCHLIST_WAKE_BEFORE_MINUTES) * 60 * 1000;
 }
 
-function nextWatchlistPollDelayMs(remainMs) {
+function nextWatchlistPollDelayMs(remainMs, options = {}) {
   const remain = Number(remainMs) || 0;
-  if (remain <= 0 || remain > getWatchlistWakeBeforeMs()) {
-    return gaussianInt(WATCHLIST_POLL_IDLE_MIN_MS, WATCHLIST_POLL_IDLE_MAX_MS);
+  const wakeBeforeMs = Math.max(
+    DUE_PREARM_WATCHLIST_MS,
+    Number(options.wakeBeforeMs) || getWatchlistWakeBeforeMs()
+  );
+  const randomDelay = typeof options.randomDelay === 'function'
+    ? options.randomDelay
+    : gaussianInt;
+  if (remain <= 0) {
+    return randomDelay(WATCHLIST_POLL_IDLE_MIN_MS, WATCHLIST_POLL_IDLE_MAX_MS);
+  }
+  if (remain > wakeBeforeMs) {
+    // 不能让窗口外已经挂好的 5-8 分钟定时器睡过观察窗口入口。
+    return Math.max(
+      WATCHLIST_POLL_TICK_MS,
+      Math.min(
+        randomDelay(WATCHLIST_POLL_IDLE_MIN_MS, WATCHLIST_POLL_IDLE_MAX_MS),
+        remain - wakeBeforeMs
+      )
+    );
   }
   if (remain <= DUE_PREARM_WATCHLIST_MS) {
     // PREARM 已独立按成熟墙钟触发，无需继续进门确认日常状态。
-    return gaussianInt(WATCHLIST_POLL_GROWING_MIN_MS, WATCHLIST_POLL_GROWING_MAX_MS);
+    return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
   }
-  // 不错过成熟前 60 秒的 PREARM 武装点；其余时间保持分钟级基线刷新。
+  // 不错过成熟前 60 秒的 PREARM 武装点；其余时间保持单目标抖动基线刷新。
   return Math.max(
     WATCHLIST_POLL_TICK_MS,
     Math.min(
-      gaussianInt(WATCHLIST_POLL_GROWING_MIN_MS, WATCHLIST_POLL_GROWING_MAX_MS),
+      randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS),
       remain - DUE_PREARM_WATCHLIST_MS
     )
   );
+}
+
+function isWatchlistObservationWindow(remainMs) {
+  const remain = Number(remainMs) || 0;
+  return remain > 0 && remain <= getWatchlistWakeBeforeMs();
 }
 
 function recomputeFriendSummaryClocks(now = Date.now()) {
@@ -1220,7 +1242,7 @@ function announceWatchlist(rawFriends, watchlistSet, { now, myGid, blacklist }) 
 /**
  * 重点监控好友主动巡田：wx 等平台的好友摘要不带 ripe_time_sec，
  * 只有进门读地块才有精确成熟时刻与施肥证据（fertLeft/nudged/matureAt）。
- * 节奏：>122 分钟、未知或无作物 5-8min 一次；≤122 分钟 2-4min 一次；
+ * 节奏：>122 分钟、未知或无作物 5-8min 一次；≤122 分钟 45-75s 一次；
  * ≤60s 交给 PREARM 到点抢收。只有确认施肥趋势才由 HOT 秒级追踪。
  * 只对重点好友生效，次数远低于帮助巡查的全列表频率。
  */
@@ -1260,8 +1282,9 @@ async function watchlistPollTick() {
       if ((watchlistPollNextAt.get(gid) || 0) > now) continue;
       // 异常期只放慢普通重点巡检，不再等一个长冷却窗口结束。
       // 已确认的施肥 HOT 仍保持原有秒级节奏。
-      if (slowdown.active && !isFertilizerHot(gid, now)) {
-        const knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      const knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      const inObservationWindow = isWatchlistObservationWindow(knownRipeAt - now);
+      if (slowdown.active && !isFertilizerHot(gid, now) && !inObservationWindow) {
         const baselineDelay = nextWatchlistPollDelayMs(knownRipeAt - now);
         const floorMs = Math.max(30_000, Number(slowdown.recommendedDelayMs) || 90_000);
         watchlistPollNextAt.set(
