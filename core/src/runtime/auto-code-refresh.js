@@ -10,6 +10,12 @@ function nextCredentialKeepaliveDelayMs() {
     + Math.floor(Math.random() * (WX_KEEPALIVE_MAX_MS - WX_KEEPALIVE_MIN_MS + 1));
 }
 
+function recordEvolutionIssue(type, level) {
+  try {
+    require('../services/evolution-issue-inbox').recordRuntimeIssue(type, level);
+  } catch { /* 进化线索记录失败不能影响登录或保活 */ }
+}
+
 function createAutoCodeRefreshService(deps) {
   const {
     store,
@@ -162,6 +168,7 @@ function createAutoCodeRefreshService(deps) {
       return true;
     } catch (err) {
       if (recovery) recovery.failures += 1;
+      recordEvolutionIssue('code_refresh_failed', 'error');
       addAccountLog('auto_code_refresh_failed', `自动刷新 Code 失败: ${  err.message}`,
         account.id, account.name, { reason });
       log('错误', `自动刷新 Code 失败: ${  account.name  } - ${  err.message}`, {
@@ -194,6 +201,7 @@ function createAutoCodeRefreshService(deps) {
         try {
           const result = await keepCredentialAlive(latest);
           if (!result.Success) {
+            recordEvolutionIssue('credential_keepalive_failed', 'warn');
             const stateLabel = mode === 'offline' ? '断线等待期间' : '当前游戏连接不重启';
             log('错误', `微信凭证保活失败（${stateLabel}）: ${latest.name} - ${result.Message || '未知错误'}`, {
               accountId: accountKey, accountName: latest.name,
