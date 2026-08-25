@@ -40,16 +40,26 @@ test('在线账号不再按固定周期换 Code 或重启 Worker', () => {
     source.indexOf('async function requestFarmCode'),
     source.indexOf('async function refreshAccountCode'),
   );
+  const refreshBlock = source.slice(
+    source.indexOf('async function refreshAccountCode'),
+    source.indexOf('function armCredentialKeepalive'),
+  );
   const scheduleBlock = source.slice(
     source.indexOf('function scheduleAccount'),
     source.indexOf('function rescheduleAll'),
   );
+  const keepaliveBlock = source.slice(
+    source.indexOf('function armCredentialKeepalive'),
+    source.indexOf('function armOfflineCredentialKeepalive'),
+  );
 
   assert.doesNotMatch(requestBlock, /keepWxCredentialAlive/);
+  assert.match(refreshBlock, /addOrUpdateAccount\(\{ id: account\.id, code \}\)/);
+  assert.doesNotMatch(refreshBlock, /nextAccount\s*=\s*\{\s*\.\.\.account,\s*code\s*\}/);
   assert.doesNotMatch(scheduleBlock, /refreshAccountCode\s*\(\s*accountId\s*,\s*['"]timer['"]/);
-  assert.match(scheduleBlock, /keepWxCredentialAlive/);
-  assert.match(scheduleBlock, /setTimeoutTask/);
-  assert.match(scheduleBlock, /在线不换 Code/);
+  assert.match(scheduleBlock, /armCredentialKeepalive/);
+  assert.match(keepaliveBlock, /setTimeoutTask/);
+  assert.match(keepaliveBlock, /不换游戏 Code/);
 });
 
 test('Worker 每次启动后都会重新挂载凭据保活', () => {

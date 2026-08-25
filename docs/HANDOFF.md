@@ -61,7 +61,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 
 **好友成熟墙钟缓存（2026-08-21 夜加，2026-08-25 降频）**：`ripeSnapshots` 按 GID 保存 `{ dueAt, previousDueAt, advanceMs, shock, at, name }`。普通偷菜不再按距成熟远近做 3–5 秒/15–30 秒摘要刷新；有墙钟直接等到点，没有墙钟才 5–8 分钟低频 `GetAll` 重新发现。每次由帮助、重点巡田、手动进门、推送或低频兜底拿到新摘要/地块时，仍把倒计时换算成绝对墙钟并检测提前变化；可信提前才只对目标切 HOT。`armStealWake` 合并目标 HOT/PREARM `nextVisitAt` 与普通成熟点，但不会把目标频率扩散给全好友。
 
-**停止即停干净（2026-08-21 晚加）**：`stopWorker` 现在会调 `autoCodeRefresh.stopAccount`（清凭据保活/断线恢复/被踢接管定时器）。旧版的 60 分钟周期换 Code 已删除，不会再把在线账号人为拉掉重登。worker 内部所有 sleep 都是内存定时器，`stopBot` 已清全部调度器队列 + 进程/线程退出即清零，重启后无残留。
+**停止即停干净（2026-08-21 晚加，2026-08-25 补离线保活边界）**：`stopWorker` 会先调 `autoCodeRefresh.stopAccount` 清凭据保活/断线恢复/被踢接管定时器；如果停止原因是被踢或异常断线，随后对应的 `scheduleKickoutRelogin/scheduleRelogin` 会只重新挂载长凭据保活和接管倒计时。面板手动停止不会走重登排程，因此仍会彻底停干净。旧版的 60 分钟周期换 Code 已删除，不会再把在线账号人为拉掉重登。worker 内部所有 sleep 都是内存定时器，`stopBot` 已清全部调度器队列 + 进程/线程退出即清零，重启后无残留。
 
 **踩过的坑：**
 
@@ -174,7 +174,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 1. `client.js`：`autoStartAccounts: true`（重启后账号会自己起来）
 1b. **账号「不登录」**：面板账号卡上点「不登录」→ 停下该号并写 `autoLogin: false`；重启 bot 也不会再拉起。点「立即登录」会清掉标记。只停一下仍用「停止」（下次重启还会自动上）。
 2. 被踢接管：`auto-code-refresh.js` `scheduleKickoutRelogin()`（**退避递增：5min → 30min → 1h → 3h → 3h…按当日累计接管次数查表**，2026-08-22 改，原来是固定 5 分钟；**每日 5 次即熔断停止**，连续失败 3 次也停）。手动启动会清掉 `relogin_<id>`。`invalid scope [40188]` 只说明该次 refreshtoken 续期被拒：**当前游戏 WS 仍在线时不停号、不换 Code，下轮再试**；只有真实断线后，现有 loginBuffer 也无法换出 Code 时才需重扫。**自定义重登延迟（2026-08-23 加）**：设置 → 自动控制，账号配置 `kickoutRelogin: { delayMinutes, validUntil }`（照 friendQuietHours 链路；`resolveKickoutDelayMs`/`isKickoutOverrideActive` 纯函数在 auto-code-refresh.js，有测试）。留空/0 = 默认退避；>0 且在有效期内 = 固定自定义延迟；有效期过自动回退默认。熔断（每日 5 次/连败 3 次）不受自定义影响
-2b. **在线保活与换 Code 已拆开（2026-08-25）**：游戏 WS 仍按官方节拍 25s 心跳；另外对微信 `loginBuffer/refreshtoken` 做 25–35min 抖动滚动保活。保活成功只更新长凭据，失败只记录并下轮重试，两者都不换游戏 Code、不重启 Worker。只在 bot 冷启动、真实 WS400/被踢/重连失败或手动点击时才换 Code。`requestFarmCode` 先用现有 loginBuffer 发 Code，仅 `ManualAuth rejected` 时才尝试 refreshtoken；Worker 每次重启后都重新挂载保活定时器。面板旧字段 `autoCodeRefresh.intervalMinutes` 为了数据兼容保留，现语义是「真实断线后的重试间隔」，不再是在线周期刷新。
+2b. **长凭据保活与换 Code 已拆开（2026-08-25）**：游戏 WS 在线时仍按官方节拍 25s 心跳；微信 `loginBuffer/refreshtoken` 无论在线，还是被踢/异常断线后的等待接管期，都做 25–35min 抖动滚动保活。保活成功只更新长凭据，失败只记录并下轮重试，绝不申请游戏 Code、启动或重启 Worker；真正到接管时才用最新 loginBuffer 申请一次 Code。只在 bot 冷启动、真实 WS400/被踢/重连失败或手动点击时才换 Code。`requestFarmCode` 先用现有 loginBuffer 发 Code，仅 `ManualAuth rejected` 时才尝试 refreshtoken；Worker 每次重启后都重新挂载在线保活定时器。面板旧字段 `autoCodeRefresh.intervalMinutes` 为了数据兼容保留，现语义是「真实断线后的重试间隔」，不再是在线周期刷新。
 3. 会话 FIFO：`core/data/admin-sessions.json`，上限 20
 4. 收菜/种菜拆开关：`harvest` / `plant` 独立于农场巡查
 5. `friend-visit.js` 补过 `analyzeFriendLands` import（放虫放草曾崩）
@@ -195,7 +195,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 │    ├─ worker-manager.js    → 每账号起一个 worker（thread/fork），             │
 │    │                         看门狗 30s ping / 90s 超时重启，日限 8 次        │
 │    ├─ auto-code-refresh.js → 在线只保活长凭据，不周期换 Code；断线/被踢才换   │
-│    │                         (scheduleKickoutRelogin: 5min→30min→1h→3h)      │
+│    │                         (等待期保活长凭据；接管时才换 Code)             │
 │    ├─ relogin-reminder.js  → 下线提醒（飞书/SMTP/…，pushoo 多渠道）           │
 │    └─ data-provider.js     → 面板读写接口（startAccount 对微信=立即换code重登）│
 │                                                                             │
@@ -429,7 +429,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 
 - 3007 被旧进程占着时 `start.sh` 不会拉起新代码
 - 内存：Cursor fileWatcher 曾吃 121GB，bot 被 OOM 干掉（日志突然断、无堆栈）
-- 微信在线会话只走 25s WS 心跳，不周期换 Code；只有冷启动/真实断线/被踢接管才发新 Code，长凭据另行 25–35min 滚动保活
+- 微信在线会话只走 25s WS 心跳，不周期换 Code；只有冷启动/真实断线/被踢接管才发新 Code，长凭据在线及断线等待期间都另行按 25–35min 滚动保活
 - 夜间静默**不要默认打开**（会错过晚上偷菜）
 
 ## 测试入口
@@ -470,6 +470,36 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 隐私闸门只影响自动进化推送，不改变自己收获、好友偷菜、重点用户 HOT/PREARM、请求治理、Code 保活和设备串逻辑。任何后续“安全优化”仍不得借机收紧核心收益链。
 
 本轮验证：Node 20 定向隐私/进化测试 **26/26** 通过；`cd core && node --test test/*.test.js` 全量 **291/291** 通过；本轮相关后端 ESLint **0 error**；`scripts/apply-evolution.sh` 和专用 pre-push hook 语法/权限检查通过。只允许在既有 `farm:0.0` 重启，远端必须在强制更新后重新核对只有干净 `main`。
+
+## 被踢/断线等待期间保持微信长凭据（2026-08-25）
+
+### 根因与改动
+
+- 线上出现“被其他终端登录踢下线，30 分钟后接管”。核对调用链确认：`worker-manager.stopWorker()` 会调用 `autoCodeRefresh.stopAccount()`，旧逻辑把在线 `wx_keepalive_*` 一并清掉，随后 `scheduleKickoutRelogin()` 只挂 `relogin_*`。因此 30 分钟、1 小时或 3 小时等待期间没有滚动 `loginBuffer/refreshtoken`；到点才用旧 loginBuffer 申请 Code，失败后再拿可能已经过期的 refreshtoken 补救，长退避下会增加重新扫码概率。
+- `auto-code-refresh.js` 抽出 `armCredentialKeepalive()`：在线与断线等待共用 25–35 分钟抖动保活，只调用 `keepWxCredentialAlive()` 更新 `loginBuffer/refreshtoken/accesstoken`。`scheduleKickoutRelogin()` 和普通异常断线的 `scheduleRelogin()` 在挂接管倒计时后立即重新挂载离线保活。
+- 离线保活**不申请游戏 Code、不启动或重启 Worker，也不缩短 5min→30min→1h→3h 接管退避**；只有 `relogin_*` 真正到点时才申请一次新 Code。面板手动停止没有后续重登排程，仍由 `stopAccount()` 清掉保活与接管任务，不能改成“手动停号也偷偷续期”。
+- 接管写回改成只持久化 `{ id, code }`，再重新读取最新账号启动 Worker；不能继续把函数开头的整个旧 account 快照写回，否则离线保活恰好滚动 token 时可能被旧 loginBuffer/refreshtoken 覆盖。
+
+### 踩坑、边界与验证
+
+- 第一次定向测试仍要求 `scheduleAccount()` 函数体直接出现 `setTimeoutTask`，共用函数抽取后误报失败；已把断言改为检查 `armCredentialKeepalive()` 的定时器和“不换游戏 Code”边界。以后测试应锁行为边界，不要锁实现必须写在哪个函数体。
+- Bot 主进程重启属于显式冷启动，当前仍会按冷启动流程立即申请 Code，不继承内存里的剩余接管倒计时；不要为了刷新凭据频繁重启。正常被踢但主进程不断时，离线保活与原接管退避会同时保留。
+- Node 20 登录生命周期/被踢定向测试 **25/25** 通过，覆盖等待期同时存在 `wx_keepalive_*` 与 `relogin_*`、保活实际重复执行、接管到点前零账号 Code 写入/零 Worker 重启，以及手动停止后两个任务都清除。`cd core && node --test test/*.test.js` 全量 **292/292** 通过；相关 ESLint **0 error**。
+- 本轮没有修改收菜、偷菜、重点用户 HOT/PREARM、请求治理、25s 游戏心跳、设备串或 TSDK/ACE。回滚只 revert 本轮提交并在既有 `farm:0.0` 重启；不得恢复在线周期换 Code，也不得用整号熔断代替离线保活。
+
+## 今日事件脱敏日志下载（2026-08-25）
+
+- Dashboard“今日事件”标题右侧新增“下载日志”。下载接口仍走登录态和账号访问权限校验，返回带 UTF-8 BOM 的 `farm-events-<北京时间日期>.txt`，并设置 `attachment`、`no-store` 和 `nosniff`；文件名不含账号 ID、昵称或服务器信息。
+- 下载内容不是原始 `combined-*.log`，只导出当天最多 200 条结构化事件。`buildShareableDailyEventLog()` 会删除完整 URL、内网/机器路径、Webhook/Token 等常见秘密，再按本机账号/用户/重点好友 denylist 删除个人字段；偷菜事件无条件把好友昵称改为“好友”，同时清理 GID/openid/uin/wxid、邮箱和换行注入。该文件才适合直接交给别人排查，不能把 ignored 的原始日志或 `daily-events-*.json` 当作等价下载物。
+- 原接口只向运行中的 Worker 请求事件，账号刚被踢时下载会失败。现在先走 Worker 获取最新内存事件，Worker 不存在或调用失败时回退读取它退出前同步落盘的当日事件；Dashboard 拉取也不再以 `account.running` 为前置条件。因此被踢/断线时仍能查看和下载已有记录，不会为了下载而启动账号或申请 Code。
+
+### 踩坑、验证与回滚
+
+- 好友昵称不一定已进入运行时 denylist，不能只依赖通用字符串脱敏；`steal` 类型必须按事件结构无条件去掉目标昵称。下载接口也不能直接返回前端当前数组，否则离线时页面缓存可能旧、并且服务端无法执行统一隐私门。
+- 首版好友昵称解析用了可产生超线性回溯的宽泛正则，ESLint 已拦截；现改为先线性定位固定的“数量 + 个”片段再切片，不允许为了省代码恢复宽泛回溯表达式。
+- Node 20 日志下载/离线回退/登录生命周期定向测试 **28/28** 通过；全量 `core/test/*.test.js` **295/295** 通过；自己收获、好友到点偷菜、重点 HOT/PREARM、请求治理、设备协议及被踢链定向 **89/89** 通过。相关后端和 Dashboard ESLint **0 error**（Dashboard 仅保留既有 8 条 UnoCSS 顺序 warning），前端生产构建通过，仍只有既有图标/字体构建提示。
+- 回滚用 `git revert <本轮提交>` 后只在既有 `farm:0.0` 重启。本功能只读当日事件，不得在后续扩展为自动上传原始日志、账号配置、运行数据目录或任何外部地址。
+
 - 不要改 TSDK / WASM / ACE / 登录 fingerprint 轮换
 - 不要用盯梢节奏去刷所有好友
 - 不要把「自己催熟」和「好友盯梢」日志混成一条
