@@ -2,6 +2,7 @@ const { getItemById } = require("../config/gameConfig");
 const { toNum } = require("../utils/utils");
 const {
   buildShareableDailyEventLog,
+  buildStealDailyEventLog,
   readPersistedTodayEvents,
   todayKey,
 } = require("../services/daily-events");
@@ -85,6 +86,19 @@ async function getDailyEventsWithFallback(provider, accountId) {
     // 被踢/断线时 Worker 不存在，改读它退出前已经落盘的当日事件。
   }
   return readPersistedTodayEvents(accountId);
+}
+
+async function getInteractRecordsForDownload(provider, accountId) {
+  if (!provider || typeof provider.getInteractRecords !== "function")
+    return { records: [], available: false };
+  try {
+    const records = await provider.getInteractRecords(accountId);
+    return { records: Array.isArray(records) ? records : [], available: true };
+  }
+  catch {
+    // 断线时仍允许下载已落盘的主动偷菜记录，不把接口错误或身份信息写入附件。
+    return { records: [], available: false };
+  }
 }
 
 async function sellMergedBagItems(provider, accountId, items) {
@@ -246,6 +260,32 @@ function registerAdminBagRoutes({
     }
   });
 
+  app.get("/api/daily-events/steal-download", async (req, res) => {
+    const accountId = requireAccessibleAccount(req, res, getAccountIdFromRequest, canAccessAccount);
+    if (!accountId)
+      return;
+
+    try {
+      const date = todayKey();
+      const [events, incoming] = await Promise.all([
+        getDailyEventsWithFallback(provider, accountId),
+        getInteractRecordsForDownload(provider, accountId),
+      ]);
+      const content = buildStealDailyEventLog(events, incoming.records, {
+        date,
+        incomingAvailable: incoming.available,
+      });
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="farm-steal-events-${date}.txt"`);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(`\uFEFF${content}`);
+    }
+    catch (error) {
+      sendProviderError(res, error);
+    }
+  });
+
   app.post("/api/breaker/clear", async (req, res) => {
     const accountId = requireAccessibleAccount(req, res, getAccountIdFromRequest, canAccessAccount);
     if (!accountId)
@@ -275,4 +315,9 @@ function registerAdminBagRoutes({
   });
 }
 
-module.exports = { registerAdminBagRoutes, sellMergedBagItems, getDailyEventsWithFallback };
+module.exports = {
+  registerAdminBagRoutes,
+  sellMergedBagItems,
+  getDailyEventsWithFallback,
+  getInteractRecordsForDownload,
+};

@@ -9,6 +9,7 @@ process.env.FARM_DATA_DIR = dataDir;
 
 const {
   buildShareableDailyEventLog,
+  buildStealDailyEventLog,
   getTodayEvents,
   recordEvent,
   resetForTest,
@@ -60,6 +61,43 @@ test('账号 Worker 离线时今日事件接口回退读取已落盘日志', asy
   assert.equal(events[0].type, 'kickout');
 });
 
+test('偷菜专用日志只导出偷菜和被偷并保留好友昵称', () => {
+  const secretUrl = ['https:/', '/example.invalid/avatar'].join('');
+  const content = buildStealDailyEventLog([
+    {
+      at: Date.parse('2026-08-25T02:00:00Z'),
+      level: 'info',
+      type: 'steal',
+      message: '偷取 测试好友甲 3 个（测试作物）',
+    },
+    {
+      at: Date.parse('2026-08-25T02:01:00Z'),
+      level: 'info',
+      type: 'harvest',
+      message: '收获 12 个作物',
+    },
+  ], [
+    {
+      serverTimeMs: Date.parse('2026-08-25T02:02:00Z'),
+      actionType: 1,
+      nick: '测试好友乙',
+      visitorGid: 123456,
+      avatarUrl: secretUrl,
+      actionDetail: '偷取 测试作物 × 2 · 地块 4',
+    },
+    {
+      serverTimeMs: Date.parse('2026-08-25T02:03:00Z'),
+      actionType: 2,
+      nick: '帮忙好友',
+      actionDetail: '帮忙 1 次',
+    },
+  ], { date: '2026-08-25', incomingAvailable: true });
+
+  assert.match(content, /\[偷菜\] 偷取 测试好友甲 3 个（测试作物）/);
+  assert.match(content, /\[被偷\] 测试好友乙 · 偷取 测试作物 × 2 · 地块 4/);
+  assert.doesNotMatch(content, /收获 12 个|帮忙好友|123456|example\.invalid/);
+});
+
 test('下载接口复用账号权限并返回禁止缓存的 UTF-8 脱敏附件', async () => {
   const getRoutes = new Map();
   registerAdminBagRoutes({
@@ -86,4 +124,83 @@ test('下载接口复用账号权限并返回禁止缓存的 UTF-8 脱敏附件'
   assert.equal(headers['Cache-Control'], 'no-store');
   assert.ok(body.startsWith('\uFEFFQQ Farm Bot 今日事件（已脱敏）'));
   assert.doesNotMatch(body, /offline-fixture/);
+});
+
+test('偷菜专用下载读取一次互动记录并返回保留好友昵称的附件', async () => {
+  const getRoutes = new Map();
+  let interactCalls = 0;
+  registerAdminBagRoutes({
+    app: {
+      get: (route, handler) => getRoutes.set(route, handler),
+      post: () => {},
+    },
+    provider: {
+      getDailyEvents: async () => [{
+        at: Date.now(),
+        level: 'info',
+        type: 'steal',
+        message: '偷取 测试好友甲 1 个（测试作物）',
+      }],
+      getInteractRecords: async () => {
+        interactCalls += 1;
+        return [{
+          serverTimeMs: Date.now(),
+          actionType: 1,
+          nick: '测试好友乙',
+          actionDetail: '偷取 测试作物 × 1',
+        }];
+      },
+    },
+    emitRealtimeLog: () => {},
+    getAccountIdFromRequest: () => 'test-account',
+    canAccessAccount: () => true,
+    sendProviderError: (_res, error) => { throw error; },
+  });
+
+  const headers = {};
+  let body = '';
+  const response = {
+    setHeader: (name, value) => { headers[name] = value; },
+    send: (value) => { body = value; },
+  };
+  await getRoutes.get('/api/daily-events/steal-download')({}, response);
+
+  assert.equal(interactCalls, 1);
+  assert.match(headers['Content-Disposition'], /^attachment; filename="farm-steal-events-\d{4}-\d{2}-\d{2}\.txt"$/);
+  assert.equal(headers['Cache-Control'], 'no-store');
+  assert.ok(body.startsWith('\uFEFFQQ Farm Bot 偷菜/被偷事件日志'));
+  assert.match(body, /测试好友甲/);
+  assert.match(body, /测试好友乙/);
+  assert.doesNotMatch(body, /test-account/);
+});
+
+test('账号离线时偷菜专用下载仍返回落盘记录并标注被偷数据未读取', async () => {
+  resetForTest();
+  recordEvent('offline-steal-fixture', 'info', 'steal', '偷取 离线测试好友 2 个（测试作物）');
+  const getRoutes = new Map();
+  registerAdminBagRoutes({
+    app: {
+      get: (route, handler) => getRoutes.set(route, handler),
+      post: () => {},
+    },
+    provider: {
+      getDailyEvents: async () => { throw new Error('账号未运行'); },
+      getInteractRecords: async () => { throw new Error('账号未运行'); },
+    },
+    emitRealtimeLog: () => {},
+    getAccountIdFromRequest: () => 'offline-steal-fixture',
+    canAccessAccount: () => true,
+    sendProviderError: (_res, error) => { throw error; },
+  });
+
+  let body = '';
+  const response = {
+    setHeader: () => {},
+    send: (value) => { body = value; },
+  };
+  await getRoutes.get('/api/daily-events/steal-download')({}, response);
+
+  assert.match(body, /离线测试好友/);
+  assert.match(body, /账号离线或接口暂不可用/);
+  assert.doesNotMatch(body, /offline-steal-fixture|账号未运行/);
 });

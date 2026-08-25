@@ -483,6 +483,7 @@ interface DailyEvent {
 
 const dailyEvents = ref<DailyEvent[]>([])
 const downloadingDailyEvents = ref(false)
+const downloadingStealEvents = ref(false)
 let dailyEventsRequestId = 0
 
 async function fetchDailyEvents() {
@@ -498,32 +499,39 @@ async function fetchDailyEvents() {
   catch { /* 事件日志拉取失败不影响面板 */ }
 }
 
+async function downloadDailyEventFile(endpoint: string, fallbackName: string, successMessage: string) {
+  const requestedId = String(currentAccountId.value)
+  const response = await api.get(endpoint, {
+    headers: { 'x-account-id': requestedId },
+    responseType: 'blob',
+  })
+  const disposition = String(response.headers?.['content-disposition'] || '')
+  const matchedName = disposition.match(/filename="?([\w.-]+)"?/i)?.[1]
+  const blob = response.data instanceof Blob
+    ? response.data
+    : new Blob([response.data], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = matchedName || fallbackName
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  toastStore.success(successMessage)
+}
+
 async function downloadDailyEventLog() {
   if (!currentAccountId.value || downloadingDailyEvents.value)
     return
 
-  const requestedId = String(currentAccountId.value)
   downloadingDailyEvents.value = true
   try {
-    const response = await api.get('/api/daily-events/download', {
-      headers: { 'x-account-id': requestedId },
-      responseType: 'blob',
-    })
-    const disposition = String(response.headers?.['content-disposition'] || '')
-    const matchedName = disposition.match(/filename="?([\w.-]+)"?/i)?.[1]
-    const filename = matchedName || `farm-events-${new Date().toISOString().slice(0, 10)}.txt`
-    const blob = response.data instanceof Blob
-      ? response.data
-      : new Blob([response.data], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-    toastStore.success('今日事件日志已下载（内容已脱敏）')
+    await downloadDailyEventFile(
+      '/api/daily-events/download',
+      `farm-events-${new Date().toISOString().slice(0, 10)}.txt`,
+      '今日事件日志已下载（内容已脱敏）',
+    )
   }
   catch (error: any) {
     const message = error?.response?.data?.error || error?.message || '请求失败'
@@ -531,6 +539,27 @@ async function downloadDailyEventLog() {
   }
   finally {
     downloadingDailyEvents.value = false
+  }
+}
+
+async function downloadStealEventLog() {
+  if (!currentAccountId.value || downloadingStealEvents.value)
+    return
+
+  downloadingStealEvents.value = true
+  try {
+    await downloadDailyEventFile(
+      '/api/daily-events/steal-download',
+      `farm-steal-events-${new Date().toISOString().slice(0, 10)}.txt`,
+      '偷菜/被偷日志已下载（保留好友昵称）',
+    )
+  }
+  catch (error: any) {
+    const message = error?.response?.data?.error || error?.message || '请求失败'
+    toastStore.error(`下载失败: ${message}`)
+  }
+  finally {
+    downloadingStealEvents.value = false
   }
 }
 
@@ -1080,7 +1109,7 @@ useIntervalFn(updateCountdowns, 1000)
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-list-checked" />
           <span>今日事件</span>
-          <div class="ml-auto flex items-center gap-2">
+          <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
             <span class="text-xs font-normal text-gray-400">仅保留当天</span>
             <BaseButton
               variant="secondary"
@@ -1092,6 +1121,17 @@ useIntervalFn(updateCountdowns, 1000)
             >
               <div class="i-carbon-download mr-1" />
               下载日志
+            </BaseButton>
+            <BaseButton
+              variant="secondary"
+              size="sm"
+              :loading="downloadingStealEvents"
+              :disabled="!currentAccountId"
+              title="仅导出偷菜和被偷事件，并保留好友昵称"
+              @click="downloadStealEventLog"
+            >
+              <div class="i-carbon-download mr-1" />
+              偷菜/被偷日志
             </BaseButton>
           </div>
         </h3>
