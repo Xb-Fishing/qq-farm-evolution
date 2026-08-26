@@ -6,8 +6,8 @@ import api from '@/api'
 import HeluExchangePanel from '@/components/activity/HeluExchangePanel.vue'
 import HeluPassportPanel from '@/components/activity/HeluPassportPanel.vue'
 import HeluSolarTermsPanel from '@/components/activity/HeluSolarTermsPanel.vue'
-import QixiActivityPanel from '@/components/activity/QixiActivityPanel.vue'
 import StarRecordPanel from '@/components/activity/StarRecordPanel.vue'
+import WeatherActivityPanel from '@/components/activity/WeatherActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
@@ -81,15 +81,12 @@ const {
   starRecordClaimLoading,
   exchangeLoading,
   heluError,
-  qixiActivity,
-  qixiFriends,
-  qixiLoading,
-  qixiBuildLoading,
-  qixiGiftLoading,
-  qixiDewLoading,
+  weatherActivity,
+  weatherLoading,
+  weatherError,
 } = storeToRefs(activityStore)
 
-const activeSection = ref<ActivitySectionKey>('journey')
+const activeSection = ref<ActivitySectionKey>('weather')
 const showActivityAnalysis = ref(false)
 type EvolutionAgent = 'claude' | 'codex'
 const evolutionDefaultAgent = ref<EvolutionAgent>('claude')
@@ -98,7 +95,7 @@ const evolutionRunning = ref(false)
 const evolutionNextRunAt = ref(0)
 const evolutionIssueCount = ref(0)
 const sections = computed<ActivitySection[]>(() => [
-  { key: 'qixi', label: '鹊桥寄情', icon: 'i-carbon-favorite', count: qixiActivity.value?.gift.remainingCount || 0 },
+  { key: 'weather', label: '雨落成诗', icon: 'i-carbon-rain-heavy', count: weatherActivity.value?.draw.paidRemaining || 0 },
   { key: 'journey', label: '千星游记', icon: 'i-carbon-map', count: activity.value?.passport?.claimableLevels || 0 },
   { key: 'records', label: '观星礼录', icon: 'i-carbon-star', count: activity.value?.starRecord?.claimableCount || 0 },
   { key: 'shop', label: '星砂兑换商店', icon: 'i-carbon-store', count: activity.value?.exchangeShop?.length || 0 },
@@ -109,7 +106,7 @@ async function refreshAll() {
   if (currentAccountId.value) {
     await Promise.all([
       activityStore.fetchHeluActivity(String(currentAccountId.value)),
-      activityStore.fetchQixiActivity(String(currentAccountId.value)),
+      activityStore.fetchWeatherActivity(String(currentAccountId.value)),
     ])
   }
 }
@@ -159,26 +156,11 @@ async function saveEvolutionAgent(event: Event) {
   }
 }
 
-async function buildQixi() {
+async function refreshWeather() {
   if (!currentAccountId.value)
     return
-  const result = await activityStore.buildQixiBridge(String(currentAccountId.value))
-  result?.ok ? toast.success(result.completed ? '鹊桥已全部完成' : '驻建鹊桥成功') : toast.error(result?.error || '驻建鹊桥失败')
-}
-async function useQixiDew() {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.useQixiDew(String(currentAccountId.value))
-  result?.ok
-    ? toast.success(result.usedCount ? `已使用 ${result.usedCount} 个鹊羽灵露` : result.reason === 'daily_limit' ? '今日使用次数已达上限' : '暂无符合条件的土地')
-    : toast.error(result?.error || '使用鹊羽灵露失败')
-}
-
-async function giftQixi(friendGid: number, count: number) {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.sendQixiSachet(String(currentAccountId.value), friendGid, count)
-  result?.ok ? toast.success(`已赠送 ${result.sentCount || count} 个鹊羽香囊`) : toast.error(result?.error || '香囊赠送失败')
+  const result = await activityStore.fetchWeatherActivity(String(currentAccountId.value))
+  result?.ok ? toast.success('雨落成诗只读状态已刷新') : toast.error(result?.error || '雨落成诗刷新失败')
 }
 
 async function claimRecords() {
@@ -315,6 +297,9 @@ onMounted(refreshAll)
       <div v-if="heluError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ heluError }}
       </div>
+      <div v-if="weatherError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+        {{ weatherError }}
+      </div>
       <div v-if="activity?.warning" class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
         {{ activity.warning }}
       </div>
@@ -322,22 +307,17 @@ onMounted(refreshAll)
         {{ L.loading }}
       </div>
 
+      <WeatherActivityPanel
+        v-if="activeSection === 'weather'"
+        :activity="weatherActivity"
+        :loading="weatherLoading"
+        @refresh="refreshWeather"
+      />
       <StarRecordPanel
-        v-if="activeSection === 'records'"
+        v-else-if="activeSection === 'records'"
         :record="activity?.starRecord"
         :loading="starRecordClaimLoading"
         @claim="claimRecords"
-      />
-      <QixiActivityPanel
-        v-else-if="activeSection === 'qixi'"
-        :activity="qixiActivity"
-        :friends="qixiFriends"
-        :build-loading="qixiBuildLoading || qixiLoading"
-        :gift-loading="qixiGiftLoading"
-        :dew-loading="qixiDewLoading"
-        @build="buildQixi"
-        @dew="useQixiDew"
-        @gift="giftQixi"
       />
       <div v-else-if="activeSection === 'shop'" class="space-y-3">
         <div v-if="activity?.shopWarning" class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-100">

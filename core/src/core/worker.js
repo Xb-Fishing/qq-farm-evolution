@@ -314,27 +314,16 @@ async function runStarActivityAutoClaims() {
     const automation = getAutomation() || {};
     const claimPassport = automation.star_passport_claim === true;
     const claimRecords = automation.star_record_claim === true;
-    const claimQingmeiSeedsEnabled = automation.qingmei_seed_claim === true;
-    const brewQingmeiWineEnabled = automation.qingmei_wine_brew === true;
-    const useQixiDewEnabled = automation.qixi_dew_use === true;
-    const buildQixiBridgeEnabled = automation.qixi_bridge_build === true;
-    const giftQixiSachetEnabled = automation.qixi_sachet_gift === true;
-    const qixiFriendPriority = Array.isArray(automation.qixi_friend_priority)
-        ? automation.qixi_friend_priority.map(Number).filter(gid => gid > 0) : [];
-    if (!claimPassport && !claimRecords && !claimQingmeiSeedsEnabled && !brewQingmeiWineEnabled
-        && !useQixiDewEnabled && !buildQixiBridgeEnabled && !giftQixiSachetEnabled) return;
+    if (!claimPassport && !claimRecords) return;
 
     starActivityClaimRunning = true;
     try {
         const {
             getStarActivity,
             claimSeasonPassportRewards,
-            claimStarRecordRewards,
-            claimQingmeiSeeds,
-            brewAndSellQingmeiWine
+            claimStarRecordRewards
         } = require('../services/activity');
-        const needsStarActivity = claimPassport || claimRecords || claimQingmeiSeedsEnabled || brewQingmeiWineEnabled;
-        const activity = needsStarActivity ? await getStarActivity() : {};
+        const activity = await getStarActivity();
         if (claimPassport && Number(activity?.passport?.claimableLevels || 0) > 0) {
             try {
                 const result = await claimSeasonPassportRewards();
@@ -371,104 +360,6 @@ async function runStarActivityAutoClaims() {
             }
         }
 
-        // 青梅领取节点不稳定地下发每日 status，不能依赖页面用的 claimable
-        // 字段决定是否调用；服务端“已领取”响应会在 service 内标记当天状态。
-        if (claimQingmeiSeedsEnabled && activity?.qingmei?.claimActive !== false && activity?.qingmei?.claimed !== true) {
-            try {
-                const result = await claimQingmeiSeeds();
-                const alreadyClaimed = result?.alreadyClaimed === true;
-                log('活动', alreadyClaimed
-                    ? '自动校验青梅种子：今日已领取'
-                    : `自动领取青梅种子完成：${  Number(result?.claimedCount || 0)  } 个`, {
-                    module: 'activity',
-                    event: '青梅种子自动领取',
-                    result: alreadyClaimed ? 'none' : 'success',
-                    alreadyClaimed,
-                    claimedCount: Number(result?.claimedCount || 0)
-                });
-            } catch (err) {
-                log('活动', `自动领取青梅种子失败: ${  err.message}`, {
-                    module: 'activity',
-                    event: '青梅种子自动领取',
-                    result: 'error'
-                });
-            }
-        }
-        if (brewQingmeiWineEnabled && activity?.qingmei?.wineActive !== false && Number(activity?.qingmei?.material?.itemCount || 0) > 0) {
-            try {
-                const result = await brewAndSellQingmeiWine({ share: true });
-                const sellOption = Math.max(1, Number(result?.sell?.multiple || (result?.share?.shared ? 2 : 1)) || 1);
-                const incomeMultiple = sellOption === 2 ? 1.5 : 1;
-                const previewPrice = Number(result?.preview?.price || 0);
-                const finalPrice = Number(result?.brew?.price || 0);
-                const brewMultiple = previewPrice > 0 && finalPrice > 0
-                    ? Number((finalPrice / previewPrice).toFixed(2))
-                    : 1;
-                log('活动', `自动酿造并售卖青梅酿完成：酿造 ${  brewMultiple  } 倍，分享收入 ${  incomeMultiple  } 倍，金币 ${  Number(result?.sell?.gold || 0)  }`, {
-                    module: 'activity',
-                    event: '青梅酿自动酿造',
-                    result: 'success',
-                    consumedCount: Number(result?.consumedCount || 0),
-                    gold: Number(result?.sell?.gold || 0),
-                    brewMultiple,
-                    previewPrice,
-                    finalPrice,
-                    incomeMultiple,
-                    protocolMultiple: sellOption,
-                    shared: result?.share?.shared === true
-                });
-            } catch (err) {
-                log('活动', `自动酿造青梅酿失败: ${  err.message}`, {
-                    module: 'activity',
-                    event: '青梅酿自动酿造',
-                    result: 'error',
-                    stage: err?.stage || ''
-                });
-            }
-        }
-
-        if (useQixiDewEnabled || buildQixiBridgeEnabled || giftQixiSachetEnabled) {
-            const { getQixiActivity, useQixiDew, buildQixiBridge, sendQixiSachet } = require('../services/activity');
-            let qixi = await getQixiActivity();
-            if (useQixiDewEnabled && !qixi?.dewUsage?.limitReached && Number(qixi?.items?.dew?.itemCount || 0) > 0) {
-                const result = await useQixiDew();
-                qixi = result.activity || qixi;
-                log('活动', `自动使用鹊羽灵露完成：${Number(result.usedCount || 0)} 个`, { module: 'activity', event: '鹊羽灵露自动使用', result: result.usedCount ? 'success' : 'none' });
-            }
-            if (buildQixiBridgeEnabled) {
-                let built = 0;
-                try {
-                    while (qixi?.bridge?.canBuild && built < 20) {
-                        const result = await buildQixiBridge();
-                        if (!result.built) break;
-                        built++;
-                        qixi = result.activity || qixi;
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    }
-                    log('活动', `自动驻建鹊桥完成：${built} 阶段`, { module: 'activity', event: '鹊桥自动驻建', result: built ? 'success' : 'none', count: built });
-                } catch (err) {
-                    log('活动', `自动驻建鹊桥失败: ${err.message}`, { module: 'activity', event: '鹊桥自动驻建', result: 'error', count: built });
-                }
-            }
-            if (giftQixiSachetEnabled && qixiFriendPriority.length > 0 && Number(qixi?.gift?.remainingCount || 0) > 0) {
-                let sent = 0;
-                for (const gid of qixiFriendPriority) {
-                    if (Number(qixi?.gift?.remainingCount || 0) <= 0 || Number(qixi?.items?.sachet?.itemCount || 0) <= 0) break;
-                    try {
-                        const sendCount = Math.min(
-                            Number(qixi.gift.remainingCount || 0),
-                            Number(qixi.items.sachet.itemCount || 0)
-                        );
-                        const result = await sendQixiSachet(gid, sendCount);
-                        sent += Number(result.sentCount || 0);
-                        qixi = result.activity || qixi;
-                    } catch (err) {
-                        log('活动', `向好友 ${gid} 赠送香囊失败: ${err.message}`, { module: 'activity', event: '香囊自动赠送', result: 'error', friendGid: gid });
-                    }
-                }
-                log('活动', `自动赠送鹊羽香囊完成：${sent} 个`, { module: 'activity', event: '香囊自动赠送', result: sent ? 'success' : 'none', count: sent });
-            }
-        }
     } catch (err) {
         if (!isTransientNetworkError(err)) {
             log('活动', `活动自动领取检查失败: ${  err.message}`, {
@@ -1207,16 +1098,6 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
                 !prevAuto?.star_passport_claim && newAuto?.star_passport_claim
             ) || (
                 !prevAuto?.star_record_claim && newAuto?.star_record_claim
-            ) || (
-                !prevAuto?.qingmei_seed_claim && newAuto?.qingmei_seed_claim
-            ) || (
-                !prevAuto?.qingmei_wine_brew && newAuto?.qingmei_wine_brew
-            ) || (
-                !prevAuto?.qixi_dew_use && newAuto?.qixi_dew_use
-            ) || (
-                !prevAuto?.qixi_bridge_build && newAuto?.qixi_bridge_build
-            ) || (
-                !prevAuto?.qixi_sachet_gift && newAuto?.qixi_sachet_gift
             );
             if (starClaimBecameEnabled) {
                 workerScheduler.setTimeoutTask('star_activity_claim_after_save', 2000, () => {
@@ -1798,6 +1679,11 @@ async function handleApiCall(msg) {
             case 'getStarActivity': {
                 const { getStarActivity } = require('../services/activity');
                 result = await getStarActivity();
+                break;
+            }
+            case 'getWeatherActivity': {
+                const { getWeatherActivity } = require('../services/activity');
+                result = await getWeatherActivity();
                 break;
             }
             case 'claimStarRecordRewards': {
