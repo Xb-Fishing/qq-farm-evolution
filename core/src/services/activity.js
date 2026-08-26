@@ -124,15 +124,20 @@ const QIXI_FEATHER_ITEM_ID = 1024;
 const QIXI_SACHET_ITEM_ID = 1025;
 const QIXI_DEW_ITEM_ID = 301103;
 const WEATHER_ACTIVITY_ID = 2026070300;
+const WEATHER_EXCHANGE_ACTIVITY_ID = 2026070301;
+const WEATHER_TYPE17_ACTIVITY_ID = 2026070302;
+const WEATHER_DRAW_ACTIVITY_ID = 2026070303;
+const WEATHER_TYPE20_ACTIVITY_ID = 2026070304;
+const WEATHER_TYPE6_ACTIVITY_ID = 2026070305;
 const WEATHER_CLIENT_UI_UID = 'WeatherBottleUI';
 const WEATHER_BOTTLE_ITEM_ID = 5001;
 const WEATHER_DRAW_REWARD_ITEM_ID = 5002;
 const WEATHER_SUB_ACTIVITY_DEFS = [
-  { id: 2026070301, type: 3, feature: 'exchangeShop', protobufField: 102 },
-  { id: 2026070302, type: 17, feature: '', protobufField: 114 },
-  { id: 2026070303, type: 8, feature: 'draw', protobufField: 105 },
-  { id: 2026070304, type: 20, feature: '', protobufField: 118 },
-  { id: 2026070305, type: 6, feature: '', protobufField: 117 },
+  { id: WEATHER_EXCHANGE_ACTIVITY_ID, type: 3, feature: 'exchangeShop', protobufField: 102 },
+  { id: WEATHER_TYPE17_ACTIVITY_ID, type: 17, feature: '', protobufField: 114 },
+  { id: WEATHER_DRAW_ACTIVITY_ID, type: 8, feature: 'draw', protobufField: 105 },
+  { id: WEATHER_TYPE20_ACTIVITY_ID, type: 20, feature: '', protobufField: 118 },
+  { id: WEATHER_TYPE6_ACTIVITY_ID, type: 6, feature: '', protobufField: 117 },
 ];
 const HELU_PASSPORT_UID = 'SAIJI_PASSPORT';
 const HELU_TITLE = '荷风十里蝉初鸣';
@@ -405,8 +410,8 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
       available: !!activity,
     };
   });
-  const exchangeNode = findDiscoveryActivity(root, 2026070301);
-  const drawNode = findDiscoveryActivity(root, 2026070303);
+  const exchangeNode = findDiscoveryActivity(root, WEATHER_EXCHANGE_ACTIVITY_ID);
+  const drawNode = findDiscoveryActivity(root, WEATHER_DRAW_ACTIVITY_ID);
   const exchangeShop = Array.isArray(exchangeNode?.details?.exchangeShop?.items)
     ? exchangeNode.details.exchangeShop.items : [];
   const draw = drawNode?.details?.draw || {
@@ -2812,6 +2817,11 @@ module.exports = {
   QIXI_BRIDGE_ACTIVITY_ID,
   QIXI_GIFT_ACTIVITY_ID,
   WEATHER_ACTIVITY_ID,
+  WEATHER_EXCHANGE_ACTIVITY_ID,
+  WEATHER_TYPE17_ACTIVITY_ID,
+  WEATHER_DRAW_ACTIVITY_ID,
+  WEATHER_TYPE20_ACTIVITY_ID,
+  WEATHER_TYPE6_ACTIVITY_ID,
   WEATHER_CLIENT_UI_UID,
   WEATHER_BOTTLE_ITEM_ID,
   WEATHER_DRAW_REWARD_ITEM_ID,
