@@ -27,6 +27,82 @@ export interface ActivityExchangeShopItem {
   extra: string
 }
 
+export interface WeatherActivityItem {
+  itemId: number
+  itemCount: number
+  itemName: string
+  image?: string
+}
+
+export interface WeatherSubActivity {
+  id: number
+  parentId: number
+  type: number
+  title: string
+  startTime: number
+  endTime: number
+  sort: number
+  visible: boolean
+  enabled: boolean
+  status: number
+  statusLabel: string
+  feature: 'exchangeShop' | 'draw' | 'opaque'
+  protobufField: number
+  protobufState: 'declared_read_only' | 'opaque_read_only'
+  protocolObserved: boolean
+  available: boolean
+}
+
+export interface WeatherActivityData {
+  uid: string
+  uidConfirmed: boolean
+  clientUiUid: string
+  title: string
+  activityId: number
+  startTime: number
+  endTime: number
+  visible: boolean
+  enabled: boolean
+  status: number
+  active: boolean
+  readOnly: boolean
+  inventoryAvailable: boolean
+  writeOperationsSupported: boolean
+  writeBoundary: string
+  rulesTitle: string
+  ruleLines: string[]
+  items: {
+    weatherBottle: WeatherActivityItem
+    drawReward: WeatherActivityItem
+  }
+  exchangeShop: ActivityExchangeShopItem[]
+  draw: {
+    freeMax: number
+    freeUsed: number
+    freeRemaining: number
+    paidMax: number
+    paidUsed: number
+    paidRemaining: number
+    paidCurrencyId: number
+    paidPrice: number
+    fallbackPrice: number
+    currencyName: string
+    rewardPool: Array<WeatherActivityItem & { id: number, rarity: number, probability: string }>
+  }
+  subActivities: WeatherSubActivity[]
+  protocol: {
+    declaredReadOnlyFields: number[]
+    opaqueReadOnlyFields: number[]
+    observedShape: Array<{ path: string, wire: number, count: number, byteLengths: number[] }>
+  }
+  summary: {
+    subActivityCount: number
+    enabledCount: number
+    exchangeItemCount: number
+    rewardPoolCount: number
+  }
+}
+
 export interface HeluDrawReward {
   itemId: number
   itemCount: number
@@ -139,34 +215,6 @@ export interface StarActivityData {
   warning?: string
 }
 
-export interface QixiItem { itemId: number, itemCount: number, itemName: string, image?: string }
-export interface QixiFriend { gid: number, name: string, avatar?: string, level?: number }
-export interface QixiActivityData {
-  uid: string
-  title: string
-  activityId: number
-  startTime: number
-  endTime: number
-  active: boolean
-  items: { feather: QixiItem, dew: QixiItem, sachet: QixiItem }
-  dewUsage: { dailyLimit: number, limitReached: boolean }
-  bridge: {
-    stages: Array<{ id: number, status: number, claimed: boolean, cost: QixiItem, rewards: QixiItem[] }>
-    completedCount: number
-    nextStage?: { id: number, status: number, claimed: boolean, cost: QixiItem, rewards: QixiItem[] } | null
-    canBuild: boolean
-  }
-  gift: {
-    sentCount: number
-    receivedCount: number
-    maxCount: number
-    remainingCount: number
-    cost: QixiItem
-    reward: QixiItem
-    enabled: boolean
-  }
-}
-
 export type HeluSubActivityKey = 'giftLotus' | 'shop' | 'journey' | 'notes'
 
 export interface QingmeiActivity {
@@ -274,12 +322,9 @@ export interface HeluActivityData {
 
 export const useActivityStore = defineStore('activity', () => {
   const heluActivity = ref<StarActivityData | null>(null)
-  const qixiActivity = ref<QixiActivityData | null>(null)
-  const qixiFriends = ref<QixiFriend[]>([])
-  const qixiLoading = ref(false)
-  const qixiBuildLoading = ref(false)
-  const qixiGiftLoading = ref(false)
-  const qixiDewLoading = ref(false)
+  const weatherActivity = ref<WeatherActivityData | null>(null)
+  const weatherLoading = ref(false)
+  const weatherError = ref('')
 
   const heluLoading = ref(false)
   const drawLoading = ref(false)
@@ -293,11 +338,13 @@ export const useActivityStore = defineStore('activity', () => {
   const heluError = ref('')
 
   let heluRequestId = 0
+  let weatherRequestId = 0
 
   function clearActivityData() {
     heluActivity.value = null
-    qixiActivity.value = null
-    qixiFriends.value = []
+    weatherActivity.value = null
+    weatherLoading.value = false
+    weatherError.value = ''
     heluLoading.value = false
     drawLoading.value = false
     exchangeLoading.value = false
@@ -309,55 +356,41 @@ export const useActivityStore = defineStore('activity', () => {
     heluError.value = ''
   }
 
-  async function fetchQixiActivity(accountId: string) {
-    qixiLoading.value = true
-    try {
-      const { data } = await api.get('/api/activity/qixi', { headers: { 'x-account-id': accountId } })
-      if (data.ok && isCurrentAccount(String(accountId))) {
-        qixiActivity.value = data.activity || null
-        qixiFriends.value = data.friends || []
-      }
-      return data
-    }
-    finally { qixiLoading.value = false }
-  }
-
-  async function buildQixiBridge(accountId: string) {
-    qixiBuildLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/qixi/bridge/build', {}, { headers: { 'x-account-id': accountId } })
-      if (data.ok && data.activity && isCurrentAccount(String(accountId)))
-        qixiActivity.value = data.activity
-      return data
-    }
-    finally { qixiBuildLoading.value = false }
-  }
-  async function useQixiDew(accountId: string) {
-    qixiDewLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/qixi/dew/use', {}, { headers: { 'x-account-id': accountId } })
-      if (data.ok && data.activity && isCurrentAccount(String(accountId)))
-        qixiActivity.value = data.activity
-      return data
-    }
-    finally { qixiDewLoading.value = false }
-  }
-
-  async function sendQixiSachet(accountId: string, friendGid: number, count: number) {
-    qixiGiftLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/qixi/gift', { friendGid, count }, { headers: { 'x-account-id': accountId } })
-      if (data.ok && data.activity && isCurrentAccount(String(accountId)))
-        qixiActivity.value = data.activity
-      return data
-    }
-    finally { qixiGiftLoading.value = false }
-  }
-
   function isCurrentAccount(accountId: string) {
     const accountStore = useAccountStore()
     const currentId = String((accountStore.currentAccountId as { value?: string })?.value ?? accountStore.currentAccountId ?? '')
     return currentId === String(accountId)
+  }
+
+  async function fetchWeatherActivity(accountId: string) {
+    if (!accountId)
+      return
+    const requestedId = String(accountId)
+    const requestId = ++weatherRequestId
+    weatherLoading.value = true
+    weatherError.value = ''
+    try {
+      const { data } = await api.get('/api/activity/weather', {
+        headers: { 'x-account-id': accountId },
+      })
+      if (requestId !== weatherRequestId || !isCurrentAccount(requestedId))
+        return data
+      if (data.ok)
+        weatherActivity.value = data.activity || null
+      else
+        weatherError.value = data.error || '获取雨落成诗失败'
+      return data
+    }
+    catch (err: any) {
+      const error = err.message || '获取雨落成诗失败'
+      if (requestId === weatherRequestId && isCurrentAccount(requestedId))
+        weatherError.value = error
+      return { ok: false, error }
+    }
+    finally {
+      if (requestId === weatherRequestId)
+        weatherLoading.value = false
+    }
   }
 
   async function fetchHeluActivity(accountId: string) {
@@ -529,12 +562,9 @@ export const useActivityStore = defineStore('activity', () => {
 
   return {
     heluActivity,
-    qixiActivity,
-    qixiFriends,
-    qixiLoading,
-    qixiBuildLoading,
-    qixiGiftLoading,
-    qixiDewLoading,
+    weatherActivity,
+    weatherLoading,
+    weatherError,
     heluLoading,
     drawLoading,
     exchangeLoading,
@@ -546,10 +576,7 @@ export const useActivityStore = defineStore('activity', () => {
     heluError,
     clearActivityData,
     fetchHeluActivity,
-    fetchQixiActivity,
-    buildQixiBridge,
-    useQixiDew,
-    sendQixiSachet,
+    fetchWeatherActivity,
     claimStarRecords,
     drawHelu,
     exchangeHelu,
