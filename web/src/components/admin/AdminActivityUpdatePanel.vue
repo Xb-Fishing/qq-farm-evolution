@@ -55,6 +55,7 @@ interface ActivityUpdateReport {
       error?: string
     } & ActivityGroup>
     unknownActivityIds: number[]
+    checkedActivityIds?: number[]
     probes?: { attempted: number, matched: number, activityGroups?: number }
   } | null
   localEvidence?: {
@@ -96,6 +97,7 @@ interface ActivityGroup {
   }
   children?: ActivityGroup[]
   payload?: Record<string, unknown> | null
+  reviewKind?: 'candidate' | 'known-active'
   error?: string
 }
 
@@ -222,6 +224,9 @@ function contentSummary(group: ActivityGroup) {
     parts.push(`抽奖 ${summary.draw}`)
   if (summary.starRecord)
     parts.push(`图鉴 ${summary.starRecord}`)
+  const gameplayCount = activityRuleInsights(group).filter(item => item.kind === 'gameplay').length
+  if (gameplayCount)
+    parts.push(`说明玩法 ${gameplayCount}`)
   return parts.join(' · ')
 }
 
@@ -274,6 +279,35 @@ function activityRuleSections(group: ActivityGroup) {
   })
 }
 
+interface ActivityRuleInsight {
+  key: string
+  title: string
+  description: string
+  evidence: string
+  kind: 'gameplay' | 'warning'
+}
+
+const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'evidence'> & { pattern: RegExp }> = [
+  { key: 'weather-mutation', title: '特殊天气与作物变化', description: '专属 UI 应说明触发天气、适用作物、变化结果和收益。', kind: 'gameplay', pattern: /雷雨天气|闪电变异|变异果实/ },
+  { key: 'research', title: '研究任务与阶段奖励', description: '专属 UI 应展示任务来源、活动徽章、推进关系和奖励阶段。', kind: 'gameplay', pattern: /气象研究|雷电徽章/ },
+  { key: 'weather-collect', title: '好友农场天气采集', description: '专属 UI 应展示目标农场条件、采集道具和采集产出。', kind: 'gameplay', pattern: /天气采集瓶/ },
+  { key: 'weather-summon', title: '自己的农场召唤天气', description: '专属 UI 应展示使用位置、召唤结果以及特殊天气冲突条件。', kind: 'gameplay', pattern: /雷雨召唤瓶/ },
+  { key: 'weather-prank', title: '好友天气互动', description: '专属 UI 应展示互动道具、使用对象和经验奖励。', kind: 'gameplay', pattern: /使坏天气瓶|青蛙使坏瓶|乌云使坏瓶/ },
+  { key: 'limited-warning', title: '限时道具与活动结束提示', description: '专属 UI 应把失效、出售或活动结束后的保留规则放在醒目提示区。', kind: 'warning', pattern: /限时活动道具|活动结束后|不会因活动结束/ },
+]
+
+function activityRuleInsights(group: ActivityGroup): ActivityRuleInsight[] {
+  const lines = activityRuleSections(group).flatMap(section => section.lines)
+  return ACTIVITY_RULE_INSIGHT_DEFINITIONS.flatMap((definition) => {
+    const evidence = lines.find(line => definition.pattern.test(line))
+    return evidence ? [{ ...definition, evidence }] : []
+  })
+}
+
+function isUnknownActivity(group: ActivityGroup) {
+  return report.value?.unknownActivityIds?.includes(Number(group.id)) === true
+}
+
 function activityNodeLabel(node: ActivityGroup) {
   if (!node.parentId || node.type === 1)
     return '主活动'
@@ -286,9 +320,9 @@ function activityNodeLabel(node: ActivityGroup) {
 
 function activityNodeDescription(node: ActivityGroup) {
   if (node.type === 15)
-    return '包含 QiXiActivity 活动标识及完整玩法规则，是鹊羽获取、筑桥和奖励适配的主要入口。'
+    return '活动核心玩法配置节点；具体玩法名称优先按活动说明识别，协议字段仍需只读快照或官方证据确认。'
   if (node.type === 16)
-    return '当前在线接口仅返回基础元数据；可能关联香囊赠礼或情谊记录，具体字段仍需活动开放后的协议样本确认。'
+    return '活动关联玩法节点；当前在线接口仅返回基础元数据，具体字段仍需活动开放后的协议样本确认。'
   return node.parentId ? '服务端活动树中的功能子节点。' : '活动组根节点，负责活动入口和起止时间。'
 }
 
@@ -640,8 +674,8 @@ onMounted(loadUpdateStatus)
             </button>
             <button
               class="rounded border border-purple-400 bg-white px-3 py-1.5 text-xs text-purple-700 transition hover:bg-purple-50 disabled:opacity-50 dark:bg-gray-900 dark:text-purple-300"
-              :disabled="evolutionBlocked || evolving || forceEvolving || !report?.unknownActivityIds?.length"
-              title="忽略已处理标记，用最新在线证据重新适配当前候选活动"
+              :disabled="evolutionBlocked || evolving || forceEvolving || !(report?.online?.groups?.length)"
+              title="使用最新活动说明与只读证据，重新复核候选活动或当前已登记活动"
               @click="triggerEvolve(true)"
             >
               {{ forceEvolving ? '重新启动中…' : '重新进化当前活动' }}
@@ -736,15 +770,20 @@ onMounted(loadUpdateStatus)
         v-if="discoveredGroups.length"
         class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
       >
-        <h4 class="font-semibold">新活动待适配</h4>
+        <h4 class="font-semibold">活动适配复核</h4>
         <p class="mt-2 text-sm">
-          已自动发现 {{ discoveredGroups.length }} 个活动入口。当前仅保存只读结构快照，等待确认兑换、抽奖或任务规则。
+          已只读复核 {{ discoveredGroups.length }} 个候选或当前活动入口。活动说明用于识别玩法和 UI 要求，写操作仍必须等待协议证据。
         </p>
         <div class="mt-3 space-y-2">
           <div v-for="group in discoveredGroups" :key="group.id" class="rounded-lg bg-white/70 px-3 py-2 dark:bg-gray-900/40">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <strong>{{ group.title || `活动 ${group.id}` }}</strong>
-              <code class="text-xs">ID {{ group.id }}</code>
+              <div class="flex items-center gap-2">
+                <span class="rounded bg-teal-100 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-900/40 dark:text-teal-200">
+                  {{ isUnknownActivity(group) ? '新活动候选' : '当前活动复核' }}
+                </span>
+                <code class="text-xs">ID {{ group.id }}</code>
+              </div>
             </div>
             <div class="mt-1 text-xs opacity-80">来源 List + GetGroup · {{ contentSummary(group) }}</div>
           </div>
@@ -799,24 +838,47 @@ onMounted(loadUpdateStatus)
             </div>
           </div>
           <div v-if="activityRuleSections(group).length" class="mt-5 border-t border-gray-100 pt-4 dark:border-gray-700">
-            <h5 class="font-semibold text-gray-900 dark:text-white">玩法规则与完整活动说明</h5>
-            <section
-              v-for="section in activityRuleSections(group)"
-              :key="section.id"
-              class="mt-3 rounded-lg bg-gray-50 p-4 dark:bg-gray-900/40"
-            >
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <h6 class="font-medium text-gray-900 dark:text-white">{{ section.title }}</h6>
-                <span class="text-xs text-gray-500">
-                  节点 {{ section.id }}<template v-if="section.uid"> · {{ section.uid }}</template>
-                </span>
+            <h5 class="font-semibold text-gray-900 dark:text-white">根据活动说明识别的 UI 检查项</h5>
+            <p class="mt-1 text-xs text-gray-500">
+              这些检查项可以直接驱动玩法卡片、流程和提示；它们不能作为写操作命令或参数的证据。
+            </p>
+            <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <div
+                v-for="insight in activityRuleInsights(group)"
+                :key="insight.key"
+                class="rounded-lg border p-3"
+                :class="insight.kind === 'warning' ? 'border-amber-200 bg-amber-50 dark:border-amber-800/60 dark:bg-amber-950/20' : 'border-sky-100 bg-sky-50/70 dark:border-sky-800/50 dark:bg-sky-950/20'"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <span class="text-sm text-gray-900 font-medium dark:text-white">{{ insight.title }}</span>
+                  <span class="shrink-0 rounded bg-white/70 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800/60 dark:text-gray-300">
+                    {{ insight.kind === 'warning' ? '醒目提示' : '玩法 UI' }}
+                  </span>
+                </div>
+                <p class="mt-2 text-xs text-gray-600 leading-5 dark:text-gray-300">{{ insight.description }}</p>
+                <p class="mt-2 line-clamp-2 text-xs text-gray-400" :title="insight.evidence">依据：{{ insight.evidence }}</p>
               </div>
-              <div class="mt-3 space-y-2 text-sm leading-6 text-gray-700 dark:text-gray-300">
-                <p v-for="(line, index) in section.lines" :key="`${section.id}-${index}`" class="whitespace-pre-line">
-                  {{ line }}
-                </p>
-              </div>
-            </section>
+            </div>
+            <div class="mt-5 border-t border-gray-100 pt-4 dark:border-gray-700">
+              <h5 class="font-semibold text-gray-900 dark:text-white">玩法规则与完整活动说明</h5>
+              <section
+                v-for="section in activityRuleSections(group)"
+                :key="section.id"
+                class="mt-3 rounded-lg bg-gray-50 p-4 dark:bg-gray-900/40"
+              >
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h6 class="font-medium text-gray-900 dark:text-white">{{ section.title }}</h6>
+                  <span class="text-xs text-gray-500">
+                    节点 {{ section.id }}<template v-if="section.uid"> · {{ section.uid }}</template>
+                  </span>
+                </div>
+                <div class="mt-3 space-y-2 text-sm leading-6 text-gray-700 dark:text-gray-300">
+                  <p v-for="(line, index) in section.lines" :key="`${section.id}-${index}`" class="whitespace-pre-line">
+                    {{ line }}
+                  </p>
+                </div>
+              </section>
+            </div>
           </div>
         </article>
       </div>

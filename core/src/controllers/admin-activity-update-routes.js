@@ -25,6 +25,25 @@ function selectUnknownOnlineActivities(activities, knownIds) {
   });
 }
 
+function selectKnownActivityReviewRoots(activities, knownIds, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const known = new Set((knownIds || []).map(Number));
+  return (activities || [])
+    .filter((item) => {
+      const id = Number(item?.id);
+      const parentId = Number(item?.parentId) || 0;
+      const startTime = Number(item?.startTime) || 0;
+      const endTime = Number(item?.endTime) || 0;
+      return id > 0
+        && known.has(id)
+        && parentId === 0
+        && item?.visible !== false
+        && (!startTime || startTime <= nowSeconds)
+        && (!endTime || endTime >= nowSeconds);
+    })
+    .sort((a, b) => Number(b?.enabled) - Number(a?.enabled) || Number(b?.endTime) - Number(a?.endTime))
+    .slice(0, 4);
+}
+
 function buildEvolutionStartResponse(result, evolve) {
   if (result?.ok) {
     return { statusCode: 200, body: { ok: true, started: true, evolve } };
@@ -95,9 +114,28 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     const groups = [];
     for (const item of unknown.slice(0, 20)) {
       try {
-        groups.push(await provider.getActivityGroupSnapshot(account.id, item.id, ''));
+        groups.push({
+          ...await provider.getActivityGroupSnapshot(account.id, item.id, ''),
+          reviewKind: 'candidate',
+        });
       } catch (error) {
-        groups.push({ id: item.id, title: item.title, error: error.message || String(error) });
+        groups.push({ id: item.id, title: item.title, reviewKind: 'candidate', error: error.message || String(error) });
+      }
+    }
+    // 每 30 分钟的既有活动扫描顺带复核最多 4 个当前活动根节点。这样活动 ID
+    // 已登记后，活动说明、玩法和 UI 完整性仍有证据可供每日 Agent 检查；不会对
+    // 每个子节点逐个请求，也不会改变任何活动状态。
+    const reviewRoots = selectKnownActivityReviewRoots(activities, knownIds);
+    const groupedIds = new Set(groups.map(item => Number(item?.id)));
+    for (const item of reviewRoots) {
+      if (groupedIds.has(Number(item.id))) continue;
+      try {
+        groups.push({
+          ...await provider.getActivityGroupSnapshot(account.id, item.id, ''),
+          reviewKind: 'known-active',
+        });
+      } catch (error) {
+        groups.push({ id: item.id, title: item.title, reviewKind: 'known-active', error: error.message || String(error) });
       }
     }
     const listedIds = new Set(activities.map(item => Number(item.id)));
@@ -138,6 +176,7 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
       scannedAt: Date.now(),
       activities,
       groups,
+      checkedActivityIds: reviewRoots.map(item => Number(item.id)),
       probes: {
         attempted: selectedProbeIds.length,
         candidates: probeIds.length,
@@ -216,5 +255,6 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
 module.exports = {
   buildEvolutionStartResponse,
   registerAdminActivityUpdateRoutes,
+  selectKnownActivityReviewRoots,
   selectUnknownOnlineActivities,
 };

@@ -52,7 +52,17 @@ function createWeatherSnapshot() {
           uid: 'WeatherBottleUI',
           tips: {
             title: '活动说明',
-            txt: ['<b>【活动简介】</b>', '成长中的作物有机会发生闪电变异。<br/>变异果实售价提升。'],
+            txt: [
+              '<b>【活动简介】</b>',
+              '雷雨天气中，成长中的作物有机会发生闪电变异（1品和2品作物除外），变异果实的售价将提升至原来的4倍！',
+              '1.开展气象研究',
+              '完成使用天气采集瓶、使用雷雨召唤瓶和收获闪电变异作物任务，即可获得雷电徽章。消耗雷电徽章可依次推进气象研究，并领取对应奖励。',
+              '天气采集瓶：前往处于雷雨天气的好友农场，即可使用天气采集瓶。每次成功采集，必定获得雷雨召唤瓶×1。',
+              '雷雨召唤瓶：在自己的农场使用雷雨召唤瓶，即可主动召唤一场雷雨。若农场当前已有特殊天气，则暂时无法使用。',
+              '使坏天气瓶：在好友农场使用青蛙使坏瓶或乌云使坏瓶，可以触发趣味互动事件，并获得经验奖励。',
+              '天气瓶为限时活动道具。活动结束后将无法继续使用，可出售兑换金币。',
+              '活动期间已经发生闪电变异的作物不会因活动结束而消失，成熟后仍可正常收获。',
+            ],
           },
         },
         details: {
@@ -133,6 +143,26 @@ test('雨落成诗按在线证据标准化活动树、道具、次数和只读�
   assert.equal(activity.readOnly, true);
   assert.equal(activity.writeOperationsSupported, false);
   assert.ok(activity.ruleLines.every(line => !line.includes('<')));
+  assert.deepEqual(activity.gameplayGuides.map(item => item.key), [
+    'mutation', 'collect', 'summon', 'research', 'prank',
+  ]);
+  assert.equal(activity.summary.gameplayGuideCount, 5);
+  assert.ok(activity.gameplayGuides.every(item => item.source === 'activity_rules'));
+  assert.ok(activity.gameplayGuides.every(item => item.operationSupported === false));
+  assert.match(activity.gameplayGuides.find(item => item.key === 'collect').steps.join(' '), /好友农场.*召唤瓶/);
+  assert.match(activity.gameplayGuides.find(item => item.key === 'research').steps.join(' '), /雷电徽章.*阶段奖励/);
+  assert.match(activity.gameplayGuides.find(item => item.key === 'mutation').steps.join(' '), /4 倍/);
+  assert.equal(activity.ruleWarnings.length, 2);
+});
+
+test('没有活动说明证据时不凭协议节点猜玩法 UI', () => {
+  const snapshot = createWeatherSnapshot();
+  snapshot.children[0].payload.tips.txt = ['当前只有通用活动说明'];
+  const activity = normalizeWeatherActivity(snapshot);
+
+  assert.deepEqual(activity.gameplayGuides, []);
+  assert.deepEqual(activity.ruleWarnings, []);
+  assert.equal(activity.summary.gameplayGuideCount, 0);
 });
 
 test('雨落成诗根节点和全部子节点都进入已知活动注册表', () => {
@@ -186,4 +216,17 @@ test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析�
   assert.doesNotMatch(activityViewSource, /QixiActivityPanel|鹊桥寄情/);
   assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
   assert.match(workerSource, /case 'getQixiActivity'/);
+});
+
+test('雨落成诗专属 UI 按活动说明展示玩法，协议节点只作为诊断信息', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../web/src/components/activity/WeatherActivityPanel.vue'), 'utf8');
+  const scanSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
+
+  assert.match(source, /天气瓶主线/);
+  assert.match(source, /玩法说明与参与条件/);
+  assert.match(source, /活动注意事项/);
+  assert.match(source, /协议接入状态（诊断信息）/);
+  assert.doesNotMatch(source, /未命名玩法/);
+  assert.match(scanSource, /根据活动说明识别的 UI 检查项/);
+  assert.match(scanSource, /它们不能作为写操作命令或参数的证据/);
 });

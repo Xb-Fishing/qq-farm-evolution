@@ -362,6 +362,65 @@ function normalizeWeatherRuleLines(payload) {
     .slice(0, 30);
 }
 
+function findWeatherRuleLine(ruleLines, pattern) {
+  return (ruleLines || []).find(line => pattern.test(String(line || ''))) || '';
+}
+
+/**
+ * 活动说明足以证明玩法名称、用户流程和展示文案，但不能证明任何写请求。
+ * 因此这里把说明转换成 UI 指南，所有卡片都显式保持 operationSupported=false。
+ */
+function buildWeatherGameplayGuides(ruleLines) {
+  const mutationRule = findWeatherRuleLine(ruleLines, /雷雨天气中.*闪电变异|变异果实.*4倍/);
+  const researchRule = findWeatherRuleLine(ruleLines, /雷电徽章.*气象研究|开展气象研究/);
+  const collectRule = findWeatherRuleLine(ruleLines, /天气采集瓶：/);
+  const summonRule = findWeatherRuleLine(ruleLines, /雷雨召唤瓶：/);
+  const prankRule = findWeatherRuleLine(ruleLines, /使坏天气瓶：/);
+  const definitions = [
+    {
+      key: 'mutation',
+      title: '雷雨与闪电变异',
+      icon: 'rain',
+      evidence: mutationRule,
+      steps: ['等待农场随机进入雷雨天气', '成长中的 3 品及以上作物有机会闪电变异', '成熟后正常收获，变异果实售价提升至 4 倍'],
+    },
+    {
+      key: 'collect',
+      title: '好友农场采集天气',
+      icon: 'collect',
+      evidence: collectRule,
+      steps: ['寻找正处于雷雨天气的好友农场', '使用天气采集瓶完成采集', '每次成功采集必得雷雨召唤瓶 ×1'],
+    },
+    {
+      key: 'summon',
+      title: '自己的农场召唤雷雨',
+      icon: 'summon',
+      evidence: summonRule,
+      steps: ['在自己的农场使用雷雨召唤瓶', '主动召唤一场雷雨天气', '已有特殊天气时暂时不能使用'],
+    },
+    {
+      key: 'research',
+      title: '气象研究',
+      icon: 'research',
+      evidence: researchRule,
+      steps: ['使用天气采集瓶、雷雨召唤瓶或收获闪电变异作物', '完成任务获得雷电徽章', '消耗徽章依次推进研究并领取阶段奖励'],
+    },
+    {
+      key: 'prank',
+      title: '好友天气互动',
+      icon: 'prank',
+      evidence: prankRule,
+      steps: ['前往好友农场', '使用青蛙使坏瓶或乌云使坏瓶', '触发趣味互动事件并获得经验奖励'],
+    },
+  ];
+
+  return definitions.filter(item => item.evidence).map(item => ({
+    ...item,
+    source: 'activity_rules',
+    operationSupported: false,
+  }));
+}
+
 function weatherActivityStatusLabel(activity) {
   if (!activity?.visible) return '未展示';
   if (activity?.enabled) return '进行中';
@@ -437,6 +496,9 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
   const inActivityWindow = startTime > 0 && endTime > 0
     ? nowSeconds >= startTime && nowSeconds <= endTime
     : false;
+  const ruleLines = normalizeWeatherRuleLines(root?.payload || exchangeNode?.payload);
+  const gameplayGuides = buildWeatherGameplayGuides(ruleLines);
+  const ruleWarnings = ruleLines.filter(line => /限时活动道具|不会因活动结束而消失/.test(line));
 
   return {
     uid: '',
@@ -455,7 +517,9 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
     writeOperationsSupported: false,
     writeBoundary: '缺少成功请求样本或官方源码证据，未接入任何活动写操作',
     rulesTitle: String(root?.payload?.tips?.title || exchangeNode?.payload?.tips?.title || '活动说明'),
-    ruleLines: normalizeWeatherRuleLines(root?.payload || exchangeNode?.payload),
+    ruleLines,
+    gameplayGuides,
+    ruleWarnings,
     items: {
       weatherBottle: {
         itemId: WEATHER_BOTTLE_ITEM_ID,
@@ -489,6 +553,7 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
       enabledCount: subActivities.filter(activity => activity.enabled).length,
       exchangeItemCount: exchangeShop.length,
       rewardPoolCount: drawRewards.length,
+      gameplayGuideCount: gameplayGuides.length,
     },
   };
 }
@@ -2837,6 +2902,7 @@ module.exports = {
   summarizeActivityProtocolShape,
   getWeatherActivity,
   normalizeWeatherActivity,
+  buildWeatherGameplayGuides,
   getNanguaShop,
   getHeluActivity,
   getStarActivity,
