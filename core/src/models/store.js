@@ -215,12 +215,6 @@ const DEFAULT_AUTOMATION = {
     task: true,
     star_passport_claim: false,
     star_record_claim: false,
-    qingmei_seed_claim: false,
-    qingmei_wine_brew: false,
-    qixi_dew_use: false,
-    qixi_bridge_build: false,
-    qixi_sachet_gift: false,
-    qixi_friend_priority: [],
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
@@ -641,8 +635,6 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
                 cfg.automation[key] = normalizeFertilizerLandTypes(value, cfg.automation[key]);
             } else if (key === 'fertilizer_smart_seconds') {
                 cfg.automation[key] = Math.max(60, Math.min(7200, Number(value) || 300));
-            } else if (key === 'qixi_friend_priority') {
-                cfg.automation[key] = normalizeKnownFriendGids(value, []);
             } else {
                 cfg.automation[key] = !!value;
             }
@@ -1139,7 +1131,6 @@ loadGlobalConfig();
 function getAutomation(accountId) {
     const auto = { ...getAccountConfigSnapshot(accountId).automation };
     auto.fertilizer_land_types = normalizeFertilizerLandTypes(auto.fertilizer_land_types);
-    auto.qixi_friend_priority = normalizeKnownFriendGids(auto.qixi_friend_priority, []);
     return auto;
 }
 
@@ -1192,8 +1183,6 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
                 cfg.automation[key] = normalizeFertilizerLandTypes(value, cfg.automation[key]);
             } else if (key === 'fertilizer_smart_seconds') {
                 cfg.automation[key] = Math.max(60, Math.min(7200, Number(value) || 300));
-            } else if (key === 'qixi_friend_priority') {
-                cfg.automation[key] = normalizeKnownFriendGids(value, []);
             } else {
                 cfg.automation[key] = !!value;
             }
