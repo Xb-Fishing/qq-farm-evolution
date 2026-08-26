@@ -56,7 +56,7 @@ interface ActivityUpdateReport {
     } & ActivityGroup>
     unknownActivityIds: number[]
     checkedActivityIds?: number[]
-    probes?: { attempted: number, matched: number, activityGroups?: number }
+    probes?: { attempted: number, matched: number, activityGroups?: number, disabledReason?: string }
   } | null
   localEvidence?: {
     enabled: boolean
@@ -132,6 +132,7 @@ const report = ref<ActivityUpdateReport | null>(null)
 const error = ref('')
 const intervalMs = ref(0)
 const nextScanAt = ref(0)
+const upstreamCacheMs = ref(2 * 60 * 1000)
 const evolve = ref<EvolveState | null>(null)
 const evolving = ref(false)
 const forceEvolving = ref(false)
@@ -166,6 +167,8 @@ function syncEvolveState(value: EvolveState | null | undefined) {
 }
 
 const discoveredGroups = computed(() => report.value?.online?.groups || [])
+const candidateGroupCount = computed(() => discoveredGroups.value.filter(group => groupContainsUnknown(group)).length)
+const currentReviewGroupCount = computed(() => discoveredGroups.value.length - candidateGroupCount.value)
 
 const statusLabel = computed(() => {
   if (!report.value)
@@ -308,6 +311,10 @@ function isUnknownActivity(group: ActivityGroup) {
   return report.value?.unknownActivityIds?.includes(Number(group.id)) === true
 }
 
+function groupContainsUnknown(group: ActivityGroup) {
+  return flattenGroup(group).some(isUnknownActivity)
+}
+
 function activityNodeLabel(node: ActivityGroup) {
   if (!node.parentId || node.type === 1)
     return '主活动'
@@ -336,6 +343,7 @@ async function scanUpdates() {
     report.value = data.report
     intervalMs.value = Number(data.intervalMs) || intervalMs.value
     nextScanAt.value = Number(data.nextScanAt) || nextScanAt.value
+    upstreamCacheMs.value = Number(data.upstreamCacheMs) || upstreamCacheMs.value
     syncEvolveState(data.evolve)
     if (data.report?.status === 'update-found')
       toast.warning(`发现 ${data.report.unknownActivityIds.length} 个候选活动 ID`)
@@ -492,6 +500,7 @@ async function loadUpdateStatus() {
     report.value = data.report || null
     intervalMs.value = Number(data.intervalMs) || 0
     nextScanAt.value = Number(data.nextScanAt) || 0
+    upstreamCacheMs.value = Number(data.upstreamCacheMs) || upstreamCacheMs.value
     syncEvolveState(data.evolve)
   }
   catch (err: any) {
@@ -748,10 +757,13 @@ onMounted(loadUpdateStatus)
               <div class="mt-1 font-medium">{{ report.online.unknownActivityIds.length }} 个</div>
             </div>
             <div class="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
-              <div class="text-xs text-gray-500">GetGroup 探测</div>
-              <div class="mt-1 font-medium">{{ report.online.probes?.activityGroups || 0 }} 组 · {{ report.online.probes?.matched || 0 }} 节点</div>
+              <div class="text-xs text-gray-500">当前活动复核</div>
+              <div class="mt-1 font-medium">{{ report.online.checkedActivityIds?.length || 0 }} 个根活动</div>
             </div>
           </div>
+          <p class="mt-3 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-700 leading-5 dark:bg-sky-900/20 dark:text-sky-200">
+            上游安全：只读取 ActivityService.List 已下发的根活动，未发布 ID 主动探测已关闭；面板在 {{ Math.ceil(upstreamCacheMs / 1000) }} 秒内重复刷新会复用本地结果，不会重复穿透腾讯协议。
+          </p>
           <div v-if="report.online.groups.length" class="mt-3 space-y-2">
             <div v-for="group in report.online.groups" :key="group.id" class="rounded-lg border border-gray-100 px-3 py-2 text-sm dark:border-gray-700">
               <div class="flex flex-wrap justify-between gap-2">
@@ -772,7 +784,7 @@ onMounted(loadUpdateStatus)
       >
         <h4 class="font-semibold">活动适配复核</h4>
         <p class="mt-2 text-sm">
-          已只读复核 {{ discoveredGroups.length }} 个候选或当前活动入口。活动说明用于识别玩法和 UI 要求，写操作仍必须等待协议证据。
+          本次新活动候选组 {{ candidateGroupCount }} 个，当前已登记活动复核 {{ currentReviewGroupCount }} 个。活动说明用于识别玩法和 UI 要求，写操作仍必须等待官方客户端真实调用证据。
         </p>
         <div class="mt-3 space-y-2">
           <div v-for="group in discoveredGroups" :key="group.id" class="rounded-lg bg-white/70 px-3 py-2 dark:bg-gray-900/40">
@@ -780,7 +792,7 @@ onMounted(loadUpdateStatus)
               <strong>{{ group.title || `活动 ${group.id}` }}</strong>
               <div class="flex items-center gap-2">
                 <span class="rounded bg-teal-100 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-900/40 dark:text-teal-200">
-                  {{ isUnknownActivity(group) ? '新活动候选' : '当前活动复核' }}
+                  {{ groupContainsUnknown(group) ? '新活动候选' : '当前活动复核' }}
                 </span>
                 <code class="text-xs">ID {{ group.id }}</code>
               </div>

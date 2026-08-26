@@ -1,6 +1,7 @@
 const activity = require('../services/activity');
 const {
   getActivityUpdateState,
+  MANUAL_SCAN_UPSTREAM_CACHE_MS,
   runActivityUpdateScan,
   startActivityUpdateMonitor,
 } = require('../services/activity-update-monitor');
@@ -23,6 +24,24 @@ function selectUnknownOnlineActivities(activities, knownIds) {
     seen.add(id);
     return true;
   });
+}
+
+function selectActivitySnapshotRoots(activities, candidates) {
+  const byId = new Map((activities || []).map(item => [Number(item?.id), item]));
+  const roots = new Map();
+  for (const candidate of candidates || []) {
+    let current = candidate;
+    const seen = new Set();
+    while (Number(current?.parentId) > 0 && !seen.has(Number(current?.id))) {
+      seen.add(Number(current?.id));
+      const parent = byId.get(Number(current.parentId));
+      if (!parent) break;
+      current = parent;
+    }
+    const rootId = Number(current?.id);
+    if (rootId > 0 && !roots.has(rootId)) roots.set(rootId, current);
+  }
+  return [...roots.values()].slice(0, 20);
 }
 
 function selectKnownActivityReviewRoots(activities, knownIds, nowSeconds = Math.floor(Date.now() / 1000)) {
@@ -63,33 +82,10 @@ function buildEvolutionStartResponse(result, evolve) {
 }
 
 function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken }) {
-  const MAX_DATE_PROBES_PER_SCAN = 6;
   const knownActivityIds = Object.entries(activity)
     .filter(([key, value]) => key.endsWith('_ACTIVITY_ID') && Number.isFinite(Number(value)))
     .map(([, value]) => Number(value));
-  const buildDateProbeIds = (days = 3, slots = 10) => {
-    const ids = [];
-    const now = new Date();
-    for (let offset = 0; offset <= days; offset += 1) {
-      const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
-      const prefix = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-      for (let slot = 0; slot < slots; slot += 1) ids.push(Number(`${prefix}${String(slot).padStart(2, '0')}`));
-    }
-    return ids;
-  };
-  const selectRotatingProbeIds = (ids, now = Date.now()) => {
-    const candidates = [...new Set((ids || []).map(Number).filter(id => id > 0))];
-    if (candidates.length <= MAX_DATE_PROBES_PER_SCAN) return candidates;
-    // 活动 List 是主发现链；日期 ID 只是兜底。每 30 分钟轮换一小段，避免一次连续
-    // 枚举 40-50 个未发布 ID，数小时内仍能覆盖全部候选。
-    const bucket = Math.floor(now / (30 * 60 * 1000));
-    const start = (bucket * MAX_DATE_PROBES_PER_SCAN) % candidates.length;
-    return Array.from(
-      { length: MAX_DATE_PROBES_PER_SCAN },
-      (_, index) => candidates[(start + index) % candidates.length]
-    );
-  };
-  const scanOnlineActivities = async (knownIds, localReport = null) => {
+  const scanOnlineActivities = async (knownIds) => {
     const accounts = provider.getAccounts()?.accounts || [];
     const account = accounts.find((item) => {
       if (!item.running || !provider.isAccountRunning(item.id)) return false;
@@ -107,12 +103,13 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     }
 
     const activities = await provider.getActivityDiscoveryList(account.id);
-    const known = new Set((knownIds || []).map(Number));
     // 活动 ID 是内容批次标识，不保证按开放日期单调递增。例如服务端可能在 8 月
     // 才开放 7 月批次 ID；在线 List 已经是权威发现源，不能再用历史最大 ID 过滤。
     const unknown = selectUnknownOnlineActivities(activities, knownIds);
     const groups = [];
-    for (const item of unknown.slice(0, 20)) {
+    // 只读取 List 已明确下发的活动根节点。子节点随根 GetGroup 一次返回，禁止按
+    // 日期枚举未发布 ID，也禁止逐个对子节点做试探请求，避免命中风控诱导接口。
+    for (const item of selectActivitySnapshotRoots(activities, unknown)) {
       try {
         groups.push({
           ...await provider.getActivityGroupSnapshot(account.id, item.id, ''),
@@ -138,38 +135,6 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
         groups.push({ id: item.id, title: item.title, reviewKind: 'known-active', error: error.message || String(error) });
       }
     }
-    const listedIds = new Set(activities.map(item => Number(item.id)));
-    const probeIds = [...new Set([
-      ...buildDateProbeIds(),
-      ...(localReport?.unknownActivityIds || []).map(Number),
-    ])].filter(id => id > 0 && !known.has(id) && !listedIds.has(id));
-    const selectedProbeIds = selectRotatingProbeIds(probeIds);
-    const probeGroups = [];
-    for (const id of selectedProbeIds) {
-      try {
-        const snapshot = await provider.getActivityGroupSnapshot(account.id, id, '');
-        if (Number(snapshot?.id) === id && (snapshot.title || snapshot.children?.length)) {
-          probeGroups.push({ ...snapshot, discoverySource: 'GetGroup probe' });
-        }
-      } catch {
-        // 未发布 ID 返回业务错误属于正常探测结果。
-      }
-    }
-    const probeById = new Map(probeGroups.map(item => [Number(item.id), { ...item, children: [...(item.children || [])] }]));
-    const probeRoots = [];
-    for (const item of probeById.values()) {
-      const parent = probeById.get(Number(item.parentId));
-      if (parent) {
-        if (!parent.children.some(child => Number(child.id) === Number(item.id))) parent.children.push(item);
-      } else {
-        probeRoots.push(item);
-      }
-    }
-    groups.push(...probeRoots);
-    const unknownIds = [...new Set([
-      ...unknown.map(item => Number(item.id)),
-      ...probeRoots.map(item => Number(item.id)),
-    ])];
     return {
       available: true,
       accountName: account.name || account.nick || '在线账号',
@@ -178,12 +143,13 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
       groups,
       checkedActivityIds: reviewRoots.map(item => Number(item.id)),
       probes: {
-        attempted: selectedProbeIds.length,
-        candidates: probeIds.length,
-        matched: probeGroups.length,
-        activityGroups: probeRoots.length,
+        attempted: 0,
+        candidates: 0,
+        matched: 0,
+        activityGroups: 0,
+        disabledReason: '禁止枚举未由 ActivityService.List 下发的活动 ID',
       },
-      unknownActivityIds: unknownIds,
+      unknownActivityIds: unknown.map(item => Number(item.id)),
     };
   };
   startActivityUpdateMonitor({
@@ -196,13 +162,26 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
   activityEvolver.startActivityEvolver({ store });
 
   app.get('/api/activity/update/status', requireAdminToken, (req, res) => {
-    res.json({ ok: true, ...getActivityUpdateState(), evolve: activityEvolver.getEvolveState() });
+    res.json({
+      ok: true,
+      ...getActivityUpdateState(),
+      upstreamCacheMs: MANUAL_SCAN_UPSTREAM_CACHE_MS,
+      evolve: activityEvolver.getEvolveState(),
+    });
   });
 
   app.post('/api/activity/update/scan', requireAdminToken, async (req, res) => {
     try {
-      const report = await runActivityUpdateScan();
-      res.json({ ok: true, report, ...getActivityUpdateState(), evolve: activityEvolver.getEvolveState() });
+      const previousScannedAt = Number(getActivityUpdateState().report?.scannedAt) || 0;
+      const report = await runActivityUpdateScan({ maxAgeMs: MANUAL_SCAN_UPSTREAM_CACHE_MS });
+      res.json({
+        ok: true,
+        report,
+        ...getActivityUpdateState(),
+        upstreamCached: previousScannedAt > 0 && Number(report?.scannedAt) === previousScannedAt,
+        upstreamCacheMs: MANUAL_SCAN_UPSTREAM_CACHE_MS,
+        evolve: activityEvolver.getEvolveState(),
+      });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || '活动更新扫描失败' });
     }
@@ -256,5 +235,6 @@ module.exports = {
   buildEvolutionStartResponse,
   registerAdminActivityUpdateRoutes,
   selectKnownActivityReviewRoots,
+  selectActivitySnapshotRoots,
   selectUnknownOnlineActivities,
 };

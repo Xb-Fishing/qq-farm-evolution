@@ -14,7 +14,9 @@ const {
   normalizeWeatherActivity,
 } = require('../src/services/activity');
 const {
+  createActivityReadCache,
   registerAdminWeatherActivityRoutes,
+  WEATHER_ACTIVITY_UPSTREAM_CACHE_MS,
 } = require('../src/controllers/admin-weather-activity-routes');
 
 function createWeatherSnapshot() {
@@ -187,11 +189,15 @@ test('雨落成诗根节点和全部子节点都进入已知活动注册表', ()
 test('雨落成诗管理接口只读取已连接账号状态', async () => {
   const routes = new Map();
   const activity = normalizeWeatherActivity(createWeatherSnapshot());
+  let upstreamReads = 0;
   registerAdminWeatherActivityRoutes({
     app: { get: (route, handler) => routes.set(route, handler) },
     provider: {
       getStatus: () => ({ connection: { connected: true } }),
-      getWeatherActivity: async () => activity,
+      getWeatherActivity: async () => {
+        upstreamReads += 1;
+        return activity;
+      },
     },
     getAccountIdFromRequest: () => 'account-A',
     canAccessAccount: () => true,
@@ -203,6 +209,39 @@ test('雨落成诗管理接口只读取已连接账号状态', async () => {
   assert.equal(body.ok, true);
   assert.equal(body.activity.activityId, WEATHER_ACTIVITY_ID);
   assert.equal(body.activity.writeOperationsSupported, false);
+  assert.equal(body.upstreamCached, false);
+
+  await routes.get('/api/activity/weather')({}, { json: value => { body = value; } });
+  assert.equal(body.upstreamCached, true);
+  assert.equal(body.upstreamCacheMs, WEATHER_ACTIVITY_UPSTREAM_CACHE_MS);
+  assert.equal(upstreamReads, 1);
+});
+
+test('活动只读缓存合并并发请求，过期后才重新读取腾讯上游', async () => {
+  let now = 1_000;
+  let upstreamReads = 0;
+  const cache = createActivityReadCache({ ttlMs: 10_000, now: () => now });
+  const loader = async () => {
+    upstreamReads += 1;
+    return { version: upstreamReads };
+  };
+
+  const [first, concurrent] = await Promise.all([
+    cache.read('account-A', loader),
+    cache.read('account-A', loader),
+  ]);
+  assert.equal(upstreamReads, 1);
+  assert.equal(first.value.version, 1);
+  assert.equal(concurrent.value.version, 1);
+
+  const cached = await cache.read('account-A', loader);
+  assert.equal(cached.upstreamCached, true);
+  assert.equal(upstreamReads, 1);
+
+  now += 10_000;
+  const refreshed = await cache.read('account-A', loader);
+  assert.equal(refreshed.upstreamCached, false);
+  assert.equal(upstreamReads, 2);
 });
 
 test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析仍保留', () => {
@@ -229,4 +268,7 @@ test('雨落成诗专属 UI 按活动说明展示玩法，协议节点只作为�
   assert.doesNotMatch(source, /未命名玩法/);
   assert.match(scanSource, /根据活动说明识别的 UI 检查项/);
   assert.match(scanSource, /它们不能作为写操作命令或参数的证据/);
+  assert.doesNotMatch(scanSource, /个候选或当前活动入口/);
+  assert.match(scanSource, /本次新活动候选组/);
+  assert.match(source, /1 分钟内重复刷新复用本地结果/);
 });

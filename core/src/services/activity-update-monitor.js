@@ -3,6 +3,7 @@ const { getDataFile } = require('../config/runtime-paths');
 const { scanActivityUpdates } = require('./activity-update-scanner');
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000;
+const MANUAL_SCAN_UPSTREAM_CACHE_MS = 2 * 60 * 1000;
 const MIN_INTERVAL_MS = 60 * 1000;
 const INITIAL_SCAN_MIN_MS = 15 * 1000;
 const INITIAL_SCAN_JITTER_MS = 10 * 1000;
@@ -12,6 +13,7 @@ const STATE_FILE = getDataFile('activity-update-report.json');
 
 let timer = null;
 let running = false;
+let scanPromise = null;
 let report = null;
 let knownActivityIds = [];
 let intervalMs = DEFAULT_INTERVAL_MS;
@@ -50,6 +52,13 @@ function writeSavedReport(value) {
   } catch (error) {
     console.warn(`[活动更新] 保存分析结果失败: ${error.message}`);
   }
+}
+
+function isActivityReportFresh(value, maxAgeMs, now = Date.now()) {
+  if (value?.status === 'unavailable' || value?.online?.available === false) return false;
+  const scannedAt = Number(value?.scannedAt) || 0;
+  const ageLimit = Math.max(0, Number(maxAgeMs) || 0);
+  return scannedAt > 0 && ageLimit > 0 && now - scannedAt >= 0 && now - scannedAt < ageLimit;
 }
 
 /**
@@ -121,35 +130,45 @@ function analyzeReport(scanned, previous, online = null) {
   };
 }
 
-async function runActivityUpdateScan() {
-  if (running) return report;
-  running = true;
-  try {
-    const previous = report || readSavedReport();
-    const scanned = localScanEnabled
-      ? { ...scanActivityUpdates({ knownActivityIds }), localScanEnabled: true }
-      : emptyLocalReport();
-    let online = null;
-    if (typeof onlineScanner === 'function') {
-      try {
-        online = await onlineScanner(knownActivityIds, scanned);
-      } catch (error) {
-        online = { available: false, error: error.message || String(error), activities: [], groups: [], unknownActivityIds: [] };
-      }
-    }
-    report = analyzeReport(scanned, previous, online);
-    writeSavedReport(report);
-    if (typeof onReport === 'function') {
-      try {
-        onReport(report);
-      } catch (error) {
-        console.warn(`[活动更新] 报告回调失败: ${error.message}`);
-      }
-    }
-    return report;
-  } finally {
-    running = false;
+async function runActivityUpdateScan(options = {}) {
+  const maxAgeMs = Math.max(0, Number(options.maxAgeMs) || 0);
+  const current = report || readSavedReport();
+  if (isActivityReportFresh(current, maxAgeMs)) {
+    report = current;
+    return current;
   }
+  if (scanPromise) return scanPromise;
+  running = true;
+  scanPromise = (async () => {
+    try {
+      const previous = report || readSavedReport();
+      const scanned = localScanEnabled
+        ? { ...scanActivityUpdates({ knownActivityIds }), localScanEnabled: true }
+        : emptyLocalReport();
+      let online = null;
+      if (typeof onlineScanner === 'function') {
+        try {
+          online = await onlineScanner(knownActivityIds, scanned);
+        } catch (error) {
+          online = { available: false, error: error.message || String(error), activities: [], groups: [], unknownActivityIds: [] };
+        }
+      }
+      report = analyzeReport(scanned, previous, online);
+      writeSavedReport(report);
+      if (typeof onReport === 'function') {
+        try {
+          onReport(report);
+        } catch (error) {
+          console.warn(`[活动更新] 报告回调失败: ${error.message}`);
+        }
+      }
+      return report;
+    } finally {
+      running = false;
+      scanPromise = null;
+    }
+  })();
+  return scanPromise;
 }
 
 // 固定 30 分钟扫描是机器指纹：均匀打散 ±20%，均值不变（防封巡检 2026-08-23）
@@ -209,11 +228,13 @@ function getActivityUpdateState() {
 
 module.exports = {
   DEFAULT_INTERVAL_MS,
+  MANUAL_SCAN_UPSTREAM_CACHE_MS,
   nextScanDelayMs,
   nextInitialScanDelayMs,
   nextUnavailableRetryDelayMs,
   analyzeReport,
   getActivityUpdateState,
+  isActivityReportFresh,
   runActivityUpdateScan,
   startActivityUpdateMonitor,
 };

@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { analyzeReport } = require('../src/services/activity-update-monitor');
+const {
+  analyzeReport,
+  isActivityReportFresh,
+  MANUAL_SCAN_UPSTREAM_CACHE_MS,
+} = require('../src/services/activity-update-monitor');
 
 test('本机扫描结果只作为辅助证据，不直接生成在线候选活动', () => {
   const result = analyzeReport({
@@ -52,4 +56,14 @@ test('首扫等待账号启动，离线补扫保持低频且带抖动', () => {
   assert.equal(nextInitialScanDelayMs(() => 0.999999), 25_000);
   assert.equal(nextUnavailableRetryDelayMs(() => 0), 60_000);
   assert.equal(nextUnavailableRetryDelayMs(() => 0.999999), 90_000);
+});
+
+test('管理面板频繁刷新在两分钟内复用活动扫描结果', () => {
+  const scannedAt = 10_000;
+  assert.equal(MANUAL_SCAN_UPSTREAM_CACHE_MS, 120_000);
+  assert.equal(isActivityReportFresh({ scannedAt }, MANUAL_SCAN_UPSTREAM_CACHE_MS, scannedAt + 119_999), true);
+  assert.equal(isActivityReportFresh({ scannedAt }, MANUAL_SCAN_UPSTREAM_CACHE_MS, scannedAt + 120_000), false);
+  assert.equal(isActivityReportFresh(null, MANUAL_SCAN_UPSTREAM_CACHE_MS, scannedAt), false);
+  assert.equal(isActivityReportFresh({ scannedAt, status: 'unavailable' }, MANUAL_SCAN_UPSTREAM_CACHE_MS, scannedAt + 1), false);
+  assert.equal(isActivityReportFresh({ scannedAt, online: { available: false } }, MANUAL_SCAN_UPSTREAM_CACHE_MS, scannedAt + 1), false);
 });
