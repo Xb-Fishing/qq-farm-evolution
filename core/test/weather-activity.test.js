@@ -5,6 +5,11 @@ const path = require('node:path');
 
 const {
   WEATHER_ACTIVITY_ID,
+  WEATHER_EXCHANGE_ACTIVITY_ID,
+  WEATHER_TYPE17_ACTIVITY_ID,
+  WEATHER_DRAW_ACTIVITY_ID,
+  WEATHER_TYPE20_ACTIVITY_ID,
+  WEATHER_TYPE6_ACTIVITY_ID,
   WEATHER_CLIENT_UI_UID,
   normalizeWeatherActivity,
 } = require('../src/services/activity');
@@ -128,6 +133,25 @@ test('雨落成诗按在线证据标准化活动树、道具、次数和只读�
   assert.equal(activity.readOnly, true);
   assert.equal(activity.writeOperationsSupported, false);
   assert.ok(activity.ruleLines.every(line => !line.includes('<')));
+});
+
+test('雨落成诗根节点和全部子节点都进入已知活动注册表', () => {
+  const knownIds = [
+    WEATHER_ACTIVITY_ID,
+    WEATHER_EXCHANGE_ACTIVITY_ID,
+    WEATHER_TYPE17_ACTIVITY_ID,
+    WEATHER_DRAW_ACTIVITY_ID,
+    WEATHER_TYPE20_ACTIVITY_ID,
+    WEATHER_TYPE6_ACTIVITY_ID,
+  ];
+  assert.deepEqual(knownIds, [
+    2026070300,
+    2026070301,
+    2026070302,
+    2026070303,
+    2026070304,
+    2026070305,
+  ]);
 });
 
 test('雨落成诗管理接口只读取已连接账号状态', async () => {
