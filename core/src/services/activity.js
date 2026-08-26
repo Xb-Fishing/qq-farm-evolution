@@ -123,6 +123,17 @@ const QIXI_GIFT_SEND_CMD = 26;
 const QIXI_FEATHER_ITEM_ID = 1024;
 const QIXI_SACHET_ITEM_ID = 1025;
 const QIXI_DEW_ITEM_ID = 301103;
+const WEATHER_ACTIVITY_ID = 2026070300;
+const WEATHER_CLIENT_UI_UID = 'WeatherBottleUI';
+const WEATHER_BOTTLE_ITEM_ID = 5001;
+const WEATHER_DRAW_REWARD_ITEM_ID = 5002;
+const WEATHER_SUB_ACTIVITY_DEFS = [
+  { id: 2026070301, type: 3, feature: 'exchangeShop', protobufField: 102 },
+  { id: 2026070302, type: 17, feature: '', protobufField: 114 },
+  { id: 2026070303, type: 8, feature: 'draw', protobufField: 105 },
+  { id: 2026070304, type: 20, feature: '', protobufField: 118 },
+  { id: 2026070305, type: 6, feature: '', protobufField: 117 },
+];
 const HELU_PASSPORT_UID = 'SAIJI_PASSPORT';
 const HELU_TITLE = '荷风十里蝉初鸣';
 const HELU_SUB_ACTIVITY_KEYS = {
@@ -324,6 +335,177 @@ async function getActivityGroupSnapshot(activityId, uid = '') {
       protocolShape: summarizeActivityProtocolShape(reply?.__rawBody),
     },
   };
+}
+
+function findDiscoveryActivity(root, activityId) {
+  if (!root) return null;
+  if (toNum(root.id) === toNum(activityId)) return root;
+  for (const child of Array.isArray(root.children) ? root.children : []) {
+    const found = findDiscoveryActivity(child, activityId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function normalizeWeatherRuleLines(payload) {
+  const entries = Array.isArray(payload?.tips?.txt) ? payload.tips.txt : [];
+  return entries
+    .filter(entry => typeof entry === 'string')
+    .flatMap(entry => entry.replace(/<br\s*\/?>/gi, '\n').split('\n'))
+    .map(entry => entry.replace(/<[^>]*>/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 30);
+}
+
+function weatherActivityStatusLabel(activity) {
+  if (!activity?.visible) return '未展示';
+  if (activity?.enabled) return '进行中';
+  const status = toNum(activity?.status);
+  return status > 0 ? `未启用（状态 ${status}）` : '未启用';
+}
+
+function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}) {
+  const root = findDiscoveryActivity(snapshot, WEATHER_ACTIVITY_ID) || snapshot || {};
+  const counts = itemCounts instanceof Map
+    ? itemCounts
+    : new Map(Object.entries(itemCounts || {}).map(([id, count]) => [toNum(id), toNum(count)]));
+  const relevantProtocolFields = new Set(WEATHER_SUB_ACTIVITY_DEFS.map(item => String(item.protobufField)));
+  const observedProtocolShape = (Array.isArray(snapshot?.discoveryEvidence?.protocolShape)
+    ? snapshot.discoveryEvidence.protocolShape : [])
+    .filter(entry => String(entry?.path || '').split('.').some(part => relevantProtocolFields.has(part)))
+    .slice(0, 60)
+    .map(entry => ({
+      path: String(entry.path || ''),
+      wire: toNum(entry.wire),
+      count: Math.max(0, toNum(entry.count)),
+      byteLengths: (Array.isArray(entry.byteLengths) ? entry.byteLengths : [])
+        .map(toNum)
+        .filter(length => length >= 0)
+        .slice(0, 8),
+    }));
+  const subActivities = WEATHER_SUB_ACTIVITY_DEFS.map((definition) => {
+    const activity = findDiscoveryActivity(root, definition.id);
+    const feature = definition.feature;
+    return {
+      id: definition.id,
+      parentId: toNum(activity?.parentId) || WEATHER_ACTIVITY_ID,
+      type: toNum(activity?.type) || definition.type,
+      title: String(activity?.title || root?.title || '雨落成诗'),
+      startTime: toNum(activity?.startTime) || toNum(root?.startTime),
+      endTime: toNum(activity?.endTime) || toNum(root?.endTime),
+      sort: toNum(activity?.sort),
+      visible: activity?.visible === true,
+      enabled: activity?.enabled === true,
+      status: toNum(activity?.status),
+      statusLabel: weatherActivityStatusLabel(activity),
+      feature: feature || 'opaque',
+      protobufField: definition.protobufField,
+      protobufState: feature ? 'declared_read_only' : 'opaque_read_only',
+      protocolObserved: observedProtocolShape.some(entry => entry.path.split('.').includes(String(definition.protobufField))),
+      available: !!activity,
+    };
+  });
+  const exchangeNode = findDiscoveryActivity(root, 2026070301);
+  const drawNode = findDiscoveryActivity(root, 2026070303);
+  const exchangeShop = Array.isArray(exchangeNode?.details?.exchangeShop?.items)
+    ? exchangeNode.details.exchangeShop.items : [];
+  const draw = drawNode?.details?.draw || {
+    freeMax: 0,
+    freeUsed: 0,
+    freeRemaining: 0,
+    paidMax: 0,
+    paidUsed: 0,
+    paidRemaining: 0,
+    paidCurrencyId: 0,
+    paidPrice: 0,
+    fallbackPrice: 0,
+    rewardPool: [],
+  };
+  const weatherBottleShopItem = exchangeShop.find(item => toNum(item?.itemId) === WEATHER_BOTTLE_ITEM_ID);
+  const drawRewards = Array.isArray(draw.rewardPool) ? draw.rewardPool : [];
+  const drawReward = drawRewards.find(item => toNum(item?.itemId) === WEATHER_DRAW_REWARD_ITEM_ID);
+  const weatherBottleInfo = getItemById(WEATHER_BOTTLE_ITEM_ID) || {};
+  const drawRewardInfo = getItemById(WEATHER_DRAW_REWARD_ITEM_ID) || {};
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const startTime = toNum(root?.startTime);
+  const endTime = toNum(root?.endTime);
+  const inActivityWindow = startTime > 0 && endTime > 0
+    ? nowSeconds >= startTime && nowSeconds <= endTime
+    : false;
+
+  return {
+    uid: '',
+    uidConfirmed: false,
+    clientUiUid: WEATHER_CLIENT_UI_UID,
+    title: String(root?.title || '雨落成诗'),
+    activityId: WEATHER_ACTIVITY_ID,
+    startTime,
+    endTime,
+    visible: root?.visible === true,
+    enabled: root?.enabled === true,
+    status: toNum(root?.status),
+    active: inActivityWindow && subActivities.some(activity => activity.enabled),
+    readOnly: true,
+    inventoryAvailable: options.inventoryAvailable !== false,
+    writeOperationsSupported: false,
+    writeBoundary: '缺少成功请求样本或官方源码证据，未接入任何活动写操作',
+    rulesTitle: String(root?.payload?.tips?.title || exchangeNode?.payload?.tips?.title || '活动说明'),
+    ruleLines: normalizeWeatherRuleLines(root?.payload || exchangeNode?.payload),
+    items: {
+      weatherBottle: {
+        itemId: WEATHER_BOTTLE_ITEM_ID,
+        itemCount: Math.max(0, toNum(counts.get(WEATHER_BOTTLE_ITEM_ID))),
+        itemName: String(weatherBottleShopItem?.itemName || weatherBottleInfo.name || '天气采集瓶'),
+        image: String(weatherBottleShopItem?.image || getItemImageById(WEATHER_BOTTLE_ITEM_ID) || ''),
+      },
+      drawReward: {
+        itemId: WEATHER_DRAW_REWARD_ITEM_ID,
+        itemCount: Math.max(0, toNum(counts.get(WEATHER_DRAW_REWARD_ITEM_ID))),
+        itemName: String(drawReward?.itemName || drawRewardInfo.name || `物品${WEATHER_DRAW_REWARD_ITEM_ID}`),
+        image: String(drawReward?.image || getItemImageById(WEATHER_DRAW_REWARD_ITEM_ID) || ''),
+      },
+    },
+    exchangeShop,
+    draw: {
+      ...draw,
+      rewardPool: drawRewards,
+      currencyName: toNum(draw.paidCurrencyId) === WEATHER_BOTTLE_ITEM_ID
+        ? String(weatherBottleShopItem?.itemName || '天气采集瓶')
+        : String(getItemById(draw.paidCurrencyId)?.name || `物品${toNum(draw.paidCurrencyId)}`),
+    },
+    subActivities,
+    protocol: {
+      declaredReadOnlyFields: [102, 105],
+      opaqueReadOnlyFields: [114, 117, 118],
+      observedShape: observedProtocolShape,
+    },
+    summary: {
+      subActivityCount: subActivities.filter(activity => activity.available).length,
+      enabledCount: subActivities.filter(activity => activity.enabled).length,
+      exchangeItemCount: exchangeShop.length,
+      rewardPoolCount: drawRewards.length,
+    },
+  };
+}
+
+async function getWeatherActivity() {
+  const snapshot = await getActivityGroupSnapshot(WEATHER_ACTIVITY_ID, '');
+  const inventory = await getBagItemCounts([
+    WEATHER_BOTTLE_ITEM_ID,
+    WEATHER_DRAW_REWARD_ITEM_ID,
+  ]);
+  const activity = normalizeWeatherActivity(snapshot, inventory.counts, {
+    inventoryAvailable: inventory.available,
+  });
+  activityLogger.info('雨落成诗只读状态刷新', {
+    event: 'weather_activity_read',
+    activityId: WEATHER_ACTIVITY_ID,
+    active: activity.active,
+    subActivityCount: activity.summary.subActivityCount,
+    exchangeItemCount: activity.summary.exchangeItemCount,
+    rewardPoolCount: activity.summary.rewardPoolCount,
+  });
+  return activity;
 }
 
 /**
@@ -1447,6 +1629,24 @@ async function getBagItemCount(itemId) {
   }
 }
 
+async function getBagItemCounts(itemIds) {
+  const wanted = new Set((itemIds || []).map(toNum).filter(itemId => itemId > 0));
+  const counts = new Map([...wanted].map(itemId => [itemId, 0]));
+  if (wanted.size === 0) return { counts, available: true };
+  try {
+    const bag = await getBag();
+    for (const item of getBagItems(bag) || []) {
+      const itemId = toNum(item?.id);
+      if (!wanted.has(itemId)) continue;
+      counts.set(itemId, (counts.get(itemId) || 0) + Math.max(0, toNum(item?.count)));
+    }
+    return { counts, available: true };
+  } catch {
+    // 活动树仍可只读展示，道具数量退化为 0。
+    return { counts, available: false };
+  }
+}
+
 async function getQingmeiWineMaterialItems() {
   const bag = await getBag();
   return (getBagItems(bag) || [])
@@ -2025,7 +2225,6 @@ async function getStarActivity() {
       starSandBalance: 0,
       passport: null,
       solarTerms: null,
-      qingmei: await getQingmeiActivity(),
       warning: 'runtime connection is not open',
     };
   }
@@ -2052,11 +2251,10 @@ async function getStarActivity() {
   }
 
   const currencyId = toNum(shopItems.find(item => item.currencyId > 0)?.currencyId) || STAR_SAND_ITEM_ID;
-  const [passport, solarTerms, starSandBalance, qingmei] = await Promise.all([
+  const [passport, solarTerms, starSandBalance] = await Promise.all([
     getSeasonPassport().catch(err => ({ title: '千星游记', warning: err?.message || String(err), claimableLevels: 0 })),
     getSolarTermsInfo().catch(err => ({ terms: [], claimableCount: 0, warning: err?.message || String(err) })),
     currencyId > 0 ? getBagItemCount(currencyId) : Promise.resolve(0),
-    getQingmeiActivity(),
   ]);
 
   return {
@@ -2077,7 +2275,6 @@ async function getStarActivity() {
     starSandBalance,
     passport,
     solarTerms,
-    qingmei,
     summary: {
       starCount: normalizeStarRecord(recordNode).totalCount,
       exchangeShopCount: shopItems.length,
@@ -2614,6 +2811,10 @@ module.exports = {
   QIXI_ACTIVITY_ID,
   QIXI_BRIDGE_ACTIVITY_ID,
   QIXI_GIFT_ACTIVITY_ID,
+  WEATHER_ACTIVITY_ID,
+  WEATHER_CLIENT_UI_UID,
+  WEATHER_BOTTLE_ITEM_ID,
+  WEATHER_DRAW_REWARD_ITEM_ID,
   HELU_SUB_ACTIVITY_KEYS,
   NANGUA_SHOP_BUY_CMD,
   NANGUA_SHOP_REFRESH_CMD,
@@ -2624,6 +2825,8 @@ module.exports = {
   getActivityGroupSnapshot,
   normalizeDiscoveryActivity,
   summarizeActivityProtocolShape,
+  getWeatherActivity,
+  normalizeWeatherActivity,
   getNanguaShop,
   getHeluActivity,
   getStarActivity,

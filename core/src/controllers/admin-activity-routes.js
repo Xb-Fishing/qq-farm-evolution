@@ -4,6 +4,9 @@ const {
 const {
   registerAdminNanguaActivityRoutes,
 } = require("./admin-nangua-activity-routes");
+const {
+  registerAdminWeatherActivityRoutes,
+} = require('./admin-weather-activity-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 
 function registerAdminActivityRoutes({
@@ -25,6 +28,7 @@ function registerAdminActivityRoutes({
 
   registerAdminNanguaActivityRoutes(routeContext);
   registerAdminHeluActivityRoutes(routeContext);
+  registerAdminWeatherActivityRoutes(routeContext);
   registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken });
 }
 
