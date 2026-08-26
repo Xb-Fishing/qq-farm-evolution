@@ -3,6 +3,37 @@ const {
   requireConnectedAccount,
 } = require('./admin-activity-route-helpers');
 
+const WEATHER_ACTIVITY_UPSTREAM_CACHE_MS = 60 * 1000;
+
+function createActivityReadCache(options = {}) {
+  const ttlMs = Math.max(1_000, Number(options.ttlMs) || WEATHER_ACTIVITY_UPSTREAM_CACHE_MS);
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const values = new Map();
+  const inFlight = new Map();
+
+  async function read(key, loader) {
+    const cacheKey = String(key);
+    const cached = values.get(cacheKey);
+    if (cached && now() - cached.storedAt < ttlMs) {
+      return { value: cached.value, upstreamCached: true };
+    }
+    if (inFlight.has(cacheKey)) {
+      return { value: await inFlight.get(cacheKey), upstreamCached: true };
+    }
+    const pending = Promise.resolve().then(loader);
+    inFlight.set(cacheKey, pending);
+    try {
+      const value = await pending;
+      values.set(cacheKey, { value, storedAt: now() });
+      return { value, upstreamCached: false };
+    } finally {
+      inFlight.delete(cacheKey);
+    }
+  }
+
+  return { read };
+}
+
 function registerAdminWeatherActivityRoutes({
   app,
   provider,
@@ -14,6 +45,7 @@ function registerAdminWeatherActivityRoutes({
     getAccountIdFromRequest,
     canAccessAccount,
   };
+  const activityReader = createActivityReadCache();
 
   app.get('/api/activity/weather', async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);
@@ -22,11 +54,24 @@ function registerAdminWeatherActivityRoutes({
     try {
       if (!requireConnectedAccount(res, provider, accountId, '获取雨落成诗失败: 账号未运行'))
         return;
-      res.json({ ok: true, activity: await provider.getWeatherActivity(accountId) });
+      const result = await activityReader.read(
+        accountId,
+        () => provider.getWeatherActivity(accountId),
+      );
+      res.json({
+        ok: true,
+        activity: result.value,
+        upstreamCached: result.upstreamCached,
+        upstreamCacheMs: WEATHER_ACTIVITY_UPSTREAM_CACHE_MS,
+      });
     } catch (err) {
       sendProviderError(res, err);
     }
   });
 }
 
-module.exports = { registerAdminWeatherActivityRoutes };
+module.exports = {
+  WEATHER_ACTIVITY_UPSTREAM_CACHE_MS,
+  createActivityReadCache,
+  registerAdminWeatherActivityRoutes,
+};
