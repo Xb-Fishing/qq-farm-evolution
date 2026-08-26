@@ -42,3 +42,14 @@ test('扫描间隔带 ±20% 抖动，打破整点规律', () => {
   }
   assert.ok(samples.size > 1, '多次采样应产生不同间隔');
 });
+
+test('首扫等待账号启动，离线补扫保持低频且带抖动', () => {
+  const {
+    nextInitialScanDelayMs,
+    nextUnavailableRetryDelayMs,
+  } = require('../src/services/activity-update-monitor');
+  assert.equal(nextInitialScanDelayMs(() => 0), 15_000);
+  assert.equal(nextInitialScanDelayMs(() => 0.999999), 25_000);
+  assert.equal(nextUnavailableRetryDelayMs(() => 0), 60_000);
+  assert.equal(nextUnavailableRetryDelayMs(() => 0.999999), 90_000);
+});

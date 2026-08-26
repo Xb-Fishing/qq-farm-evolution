@@ -775,20 +775,26 @@ function launchEvolution(task, payload = {}) {
   return { ok: true };
 }
 
+function planActivityEvolution(report, state = {}) {
+  if (!report || report.status === 'unavailable') {
+    return { shouldRun: false, newUnknown: [], newEnded: [] };
+  }
+  const handledUnknown = new Set((state.handledUnknownIds || []).map(Number));
+  const handledEnded = new Set((state.handledEndedIds || []).map(Number));
+  const newUnknown = (report.unknownActivityIds || []).map(Number).filter(id => !handledUnknown.has(id));
+  const newEnded = (report.endedActivityIds || []).map(Number).filter(id => !handledEnded.has(id));
+  return { shouldRun: newUnknown.length > 0 || newEnded.length > 0, newUnknown, newEnded };
+}
+
 /**
- * 每次监控扫描后调用：有未处理的新活动/结束活动且当日未进化过，则触发活动进化。
+ * 每次监控扫描后调用：有未处理的新活动/结束活动就触发活动进化。
+ * handled 集合才是事件去重依据；凌晨无候选空跑过不能吞掉当天稍后开放的新活动。
  */
 function checkAndMaybeEvolve(report) {
   if (running) return;
-  if (!report || report.status === 'unavailable') return;
   const state = readState();
-  if (state.lastEvolveDate === getLocalDateKey()) return;
-
-  const handledUnknown = new Set(state.handledUnknownIds.map(Number));
-  const handledEnded = new Set(state.handledEndedIds.map(Number));
-  const newUnknown = (report.unknownActivityIds || []).map(Number).filter(id => !handledUnknown.has(id));
-  const newEnded = (report.endedActivityIds || []).map(Number).filter(id => !handledEnded.has(id));
-  if (newUnknown.length === 0 && newEnded.length === 0) return;
+  const { shouldRun, newUnknown, newEnded } = planActivityEvolution(report, state);
+  if (!shouldRun) return;
 
   launchEvolution('activity', { report, newUnknown, newEnded });
 }
@@ -811,11 +817,8 @@ function runEvolutionNow(task = 'activity') {
     };
   }
   const state = readState();
-  const handledUnknown = new Set(state.handledUnknownIds.map(Number));
-  const handledEnded = new Set(state.handledEndedIds.map(Number));
-  const newUnknown = (report.unknownActivityIds || []).map(Number).filter(id => !handledUnknown.has(id));
-  const newEnded = (report.endedActivityIds || []).map(Number).filter(id => !handledEnded.has(id));
-  if (newUnknown.length === 0 && newEnded.length === 0) {
+  const { shouldRun, newUnknown, newEnded } = planActivityEvolution(report, state);
+  if (!shouldRun) {
     return {
       ok: false,
       reason: 'no_candidates',
@@ -1175,6 +1178,7 @@ module.exports = {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  planActivityEvolution,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
 };

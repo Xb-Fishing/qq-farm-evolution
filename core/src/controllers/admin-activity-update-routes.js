@@ -14,6 +14,17 @@ const NON_FAILURE_EVOLUTION_START_REASONS = new Set([
   'no_candidates',
 ]);
 
+function selectUnknownOnlineActivities(activities, knownIds) {
+  const known = new Set((knownIds || []).map(Number));
+  const seen = new Set();
+  return (activities || []).filter((item) => {
+    const id = Number(item?.id);
+    if (!Number.isFinite(id) || id <= 0 || known.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function buildEvolutionStartResponse(result, evolve) {
   if (result?.ok) {
     return { statusCode: 200, body: { ok: true, started: true, evolve } };
@@ -78,8 +89,9 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
 
     const activities = await provider.getActivityDiscoveryList(account.id);
     const known = new Set((knownIds || []).map(Number));
-    const newestKnownId = known.size ? Math.max(...known) : 0;
-    const unknown = activities.filter(item => Number(item.id) > newestKnownId && !known.has(Number(item.id)));
+    // 活动 ID 是内容批次标识，不保证按开放日期单调递增。例如服务端可能在 8 月
+    // 才开放 7 月批次 ID；在线 List 已经是权威发现源，不能再用历史最大 ID 过滤。
+    const unknown = selectUnknownOnlineActivities(activities, knownIds);
     const groups = [];
     for (const item of unknown.slice(0, 20)) {
       try {
@@ -199,4 +211,8 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
   });
 }
 
-module.exports = { buildEvolutionStartResponse, registerAdminActivityUpdateRoutes };
+module.exports = {
+  buildEvolutionStartResponse,
+  registerAdminActivityUpdateRoutes,
+  selectUnknownOnlineActivities,
+};
