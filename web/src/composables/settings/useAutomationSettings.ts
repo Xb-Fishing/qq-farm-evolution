@@ -24,12 +24,6 @@ const defaultAutomation = {
   friend_help_exp_limit: false,
   star_passport_claim: false,
   star_record_claim: false,
-  qingmei_seed_claim: false,
-  qingmei_wine_brew: false,
-  qixi_dew_use: false,
-  qixi_bridge_build: false,
-  qixi_sachet_gift: false,
-  qixi_friend_priority: [] as number[],
   golden_bug_clear: true,
   fertilizer_gift: false,
   fertilizer_buy_organic: false,
@@ -123,7 +117,6 @@ export function useAutomationSettings({
         : { ...defaultAutomation }
 
       localAutomationSettings.value.automation.fertilizer_land_types = normalizeFertilizerLandTypes(localAutomationSettings.value.automation.fertilizer_land_types)
-      localAutomationSettings.value.automation.qixi_friend_priority = normalizeQixiFriendPriority(localAutomationSettings.value.automation.qixi_friend_priority)
       if (localAutomationSettings.value.automation.fertilizer_smart_seconds === undefined) {
         localAutomationSettings.value.automation.fertilizer_smart_seconds = 300
       }
@@ -147,12 +140,6 @@ export function useAutomationSettings({
     }
   }
 
-  function normalizeQixiFriendPriority(value: unknown) {
-    if (!Array.isArray(value))
-      return []
-    return [...new Set(value.map(Number).filter(gid => Number.isSafeInteger(gid) && gid > 0))]
-  }
-
   function normalizeAutoCodeRefreshInterval(value: unknown) {
     const minutes = Number(value)
     if (!Number.isFinite(minutes))
@@ -167,7 +154,6 @@ export function useAutomationSettings({
     automationSaving.value = true
     try {
       localAutoCodeRefresh.value.intervalMinutes = normalizeAutoCodeRefreshInterval(localAutoCodeRefresh.value.intervalMinutes)
-      localAutomationSettings.value.automation.qixi_friend_priority = normalizeQixiFriendPriority(localAutomationSettings.value.automation.qixi_friend_priority)
       const fullSettings = {
         ...settings.value,
         automation: localAutomationSettings.value.automation,
