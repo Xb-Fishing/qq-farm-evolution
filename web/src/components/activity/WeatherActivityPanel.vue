@@ -57,9 +57,14 @@ function featureLabel(activity: WeatherSubActivity) {
               去好友的雷雨农场采集天气，再回自己的农场召唤雷雨；闪电变异果实成熟后可按活动规则获得 4 倍售价。
             </p>
           </div>
-          <BaseButton variant="secondary" :loading="loading" @click="$emit('refresh')">
-            刷新只读状态
-          </BaseButton>
+          <div class="text-right">
+            <BaseButton variant="secondary" :loading="loading" @click="$emit('refresh')">
+              刷新只读状态
+            </BaseButton>
+            <p class="mt-1 text-xs text-white/65">
+              1 分钟内重复刷新复用本地结果
+            </p>
+          </div>
         </div>
         <div class="mt-4 flex flex-wrap gap-2 text-xs">
           <span class="rounded-full bg-white/15 px-2.5 py-1">

@@ -150,15 +150,16 @@ test('explicit read-only probe business failures stay in profile but not slowdow
     assert.equal(method.errCount, 20);
 });
 
-test('activity discovery exempts only returned business errors, not transport failures', () => {
+test('activity discovery only reads List roots and exempts business errors, not transport failures', () => {
     const snapshotStart = activitySrc.indexOf('async function getActivityGroupSnapshot');
     const snapshotEnd = activitySrc.indexOf('/**', snapshotStart + 10);
     assert.match(activitySrc.slice(snapshotStart, snapshotEnd), /discoveryProbe: true/);
     assert.match(networkSrc, /options\.breakerExemptBusinessError === true/);
     assert.match(networkSrc, /err\.isServerBusinessError === true/);
     assert.match(networkSrc, /error\.isServerBusinessError = true/);
-    assert.match(activityRouteSrc, /MAX_DATE_PROBES_PER_SCAN = 6/);
-    assert.match(activityRouteSrc, /for \(const id of selectedProbeIds\)/);
+    assert.match(activityRouteSrc, /selectActivitySnapshotRoots\(activities, unknown\)/);
+    assert.match(activityRouteSrc, /禁止枚举未由 ActivityService\.List 下发的活动 ID/);
+    assert.doesNotMatch(activityRouteSrc, /MAX_DATE_PROBES_PER_SCAN|selectedProbeIds|GetGroup probe/);
 });
 
 test('per-method budget trips before the total budget', () => {
