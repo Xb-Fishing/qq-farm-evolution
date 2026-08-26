@@ -291,6 +291,9 @@ interface ActivityRuleInsight {
 }
 
 const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'evidence'> & { pattern: RegExp }> = [
+  { key: 'star-daily', title: '观星礼录：星宿轮转与每日馈赠', description: '专属 UI 应展示二十八星宿逐日开放、每日奖励投放和当日馈赠关系。', kind: 'gameplay', pattern: /星宿轮转|观星礼录.*二十八个.*逐日点亮/ },
+  { key: 'star-claim', title: '星宿状态与一键领取流程', description: '专属 UI 应展示当日事件、奖励和可领取状态，并说明一键领取已解锁奖励。', kind: 'gameplay', pattern: /查看当日星宿事件|一键领取.*已解锁的全部星宿奖励/ },
+  { key: 'star-cycle-warning', title: '游记周期与补领边界', description: '专属 UI 应醒目提示活动结束、跨活动继承和超出补领范围的限制。', kind: 'warning', pattern: /不再开放新的每日奖励|当前游记周期|不跨活动继承|超出补领范围/ },
   { key: 'weather-mutation', title: '特殊天气与作物变化', description: '专属 UI 应说明触发天气、适用作物、变化结果和收益。', kind: 'gameplay', pattern: /雷雨天气|闪电变异|变异果实/ },
   { key: 'research', title: '研究任务与阶段奖励', description: '专属 UI 应展示任务来源、活动徽章、推进关系和奖励阶段。', kind: 'gameplay', pattern: /气象研究|雷电徽章/ },
   { key: 'weather-collect', title: '好友农场天气采集', description: '专属 UI 应展示目标农场条件、采集道具和采集产出。', kind: 'gameplay', pattern: /天气采集瓶/ },
