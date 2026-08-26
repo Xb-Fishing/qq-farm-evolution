@@ -89,6 +89,33 @@ test('disabled plans do not change new account defaults', () => {
   assert.equal(config.automation.farm, defaults.automation.farm);
 });
 
+test('ended activity automation keys are discarded from account configuration', () => {
+  const account = store.getAccountsByUser('alice').accounts[0];
+  const endedKeys = [
+    'qingmei_seed_claim',
+    'qingmei_wine_brew',
+    'qixi_dew_use',
+    'qixi_bridge_build',
+    'qixi_sachet_gift',
+    'qixi_friend_priority',
+  ];
+
+  const config = store.applyConfigSnapshot({
+    automation: {
+      qingmei_seed_claim: true,
+      qingmei_wine_brew: true,
+      qixi_dew_use: true,
+      qixi_bridge_build: true,
+      qixi_sachet_gift: true,
+      qixi_friend_priority: [12345],
+    },
+  }, { accountId: account.id, persist: false });
+
+  for (const key of endedKeys) {
+    assert.equal(key in config.automation, false, `${key} should no longer reach the worker`);
+  }
+});
+
 test('a saved plan can be applied to an existing account', () => {
   store.setUserDefaultAccountPlan('bob', {
     plantingStrategy: 'level',

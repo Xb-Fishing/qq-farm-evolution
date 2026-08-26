@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import api from '@/api'
+import { computed, ref } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -23,12 +22,6 @@ interface AutomationSettings {
     friend_help_exp_limit: boolean
     star_passport_claim: boolean
     star_record_claim: boolean
-    qingmei_seed_claim: boolean
-    qingmei_wine_brew: boolean
-    qixi_dew_use: boolean
-    qixi_bridge_build: boolean
-    qixi_sachet_gift: boolean
-    qixi_friend_priority: number[]
     golden_bug_clear: boolean
     fertilizer_gift: boolean
     fertilizer_buy_organic: boolean
@@ -62,7 +55,7 @@ interface AutoCodeRefreshConfig {
   intervalMinutes: number
 }
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   currentAccountName: string | null
   currentAccountId: string | number | null | undefined
   loading: boolean
@@ -117,43 +110,6 @@ function isFastMatureFertilizerMode(mode: string) {
 }
 
 const mysteryShopSettingsVisible = ref(false)
-const qixiFriends = ref<Array<{ gid: number, name: string, level?: number }>>([])
-function qixiPriority() {
-  return Array.isArray(settings.value.automation.qixi_friend_priority)
-    ? settings.value.automation.qixi_friend_priority
-    : []
-}
-async function loadQixiFriends() {
-  if (!props.currentAccountId)
-    return
-  try {
-    const { data } = await api.get('/api/activity/qixi', { headers: { 'x-account-id': props.currentAccountId } })
-    qixiFriends.value = data?.friends || []
-  }
-  catch { qixiFriends.value = [] }
-}
-function toggleQixiFriend(gid: number) {
-  const list = qixiPriority()
-  settings.value.automation.qixi_friend_priority = list.includes(gid) ? list.filter(id => id !== gid) : [...list, gid]
-}
-function moveQixiFriend(index: number, direction: number) {
-  const list = [...qixiPriority()]
-  const target = index + direction
-  if (target < 0 || target >= list.length)
-    return
-  const currentValue = list[index]
-  const targetValue = list[target]
-  if (currentValue === undefined || targetValue === undefined)
-    return
-  list[index] = targetValue
-  list[target] = currentValue
-  settings.value.automation.qixi_friend_priority = list
-}
-function qixiFriendName(gid: number) {
-  return qixiFriends.value.find(friend => friend.gid === gid)?.name || `好友 ${gid}`
-}
-onMounted(loadQixiFriends)
-watch(() => props.currentAccountId, loadQixiFriends)
 </script>
 
 <template>
@@ -269,30 +225,6 @@ watch(() => props.currentAccountId, loadQixiFriends)
           </div>
           <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
             <BaseSwitch v-model="settings.automation.star_record_claim" label="自动领取观星礼录" />
-          </div>
-          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-            <BaseSwitch v-model="settings.automation.qixi_dew_use" label="自动使用鹊羽灵露" />
-          </div>
-          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-            <BaseSwitch v-model="settings.automation.qixi_bridge_build" label="自动驻建鹊桥" />
-          </div>
-          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-            <BaseSwitch v-model="settings.automation.qixi_sachet_gift" label="自动赠送鹊羽香囊" />
-          </div>
-        </div>
-        <div v-if="settings.automation.qixi_sachet_gift" class="mt-3 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-          <div class="mb-3"><div class="text-sm font-medium text-gray-900 dark:text-white">香囊好友优先级</div><div class="mt-1 text-xs text-gray-500">只向所选好友赠送；序号越小优先级越高，名单外好友不会自动获赠。</div></div>
-          <div v-if="qixiPriority().length" class="mb-3 space-y-2">
-            <div v-for="(gid, index) in qixiPriority()" :key="gid" class="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm dark:bg-gray-900/40">
-              <span class="w-6 text-gray-400">{{ index + 1 }}</span><span class="min-w-0 flex-1 truncate">{{ qixiFriendName(gid) }}</span>
-              <button type="button" class="text-gray-500 disabled:opacity-30" :disabled="index === 0" @click="moveQixiFriend(index, -1)"><span class="i-carbon-arrow-up" /></button>
-              <button type="button" class="text-gray-500 disabled:opacity-30" :disabled="index === qixiPriority().length - 1" @click="moveQixiFriend(index, 1)"><span class="i-carbon-arrow-down" /></button>
-              <button type="button" class="text-red-500" @click="toggleQixiFriend(gid)"><span class="i-carbon-close" /></button>
-            </div>
-          </div>
-          <div class="flex max-h-44 flex-wrap gap-2 overflow-y-auto">
-            <button v-for="friend in qixiFriends.filter(item => !qixiPriority().includes(item.gid))" :key="friend.gid" type="button" class="rounded-full border border-gray-200 px-3 py-1.5 text-xs text-gray-700 hover:border-violet-400 dark:border-gray-700 dark:text-gray-200" @click="toggleQixiFriend(friend.gid)">+ {{ friend.name }}</button>
-            <span v-if="!qixiFriends.length" class="text-xs text-gray-500">账号运行后可加载好友列表。</span>
           </div>
         </div>
       </div>
