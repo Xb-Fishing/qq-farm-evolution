@@ -24,14 +24,24 @@ function createActivityReadCache(options = {}) {
     inFlight.set(cacheKey, pending);
     try {
       const value = await pending;
-      values.set(cacheKey, { value, storedAt: now() });
+      if (inFlight.get(cacheKey) === pending) {
+        values.set(cacheKey, { value, storedAt: now() });
+      }
       return { value, upstreamCached: false };
     } finally {
-      inFlight.delete(cacheKey);
+      if (inFlight.get(cacheKey) === pending) {
+        inFlight.delete(cacheKey);
+      }
     }
   }
 
-  return { read };
+  function clear(key) {
+    const cacheKey = String(key);
+    values.delete(cacheKey);
+    inFlight.delete(cacheKey);
+  }
+
+  return { read, clear };
 }
 
 function registerAdminWeatherActivityRoutes({

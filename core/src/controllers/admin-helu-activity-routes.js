@@ -2,6 +2,9 @@ const {
   getAuthorizedAccountId,
   requireConnectedAccount,
 } = require("./admin-activity-route-helpers");
+const { createActivityReadCache } = require('./admin-weather-activity-routes');
+
+const STAR_ACTIVITY_UPSTREAM_CACHE_MS = 60 * 1000;
 
 function isQingmeiClaimAlreadyHandledError(err) {
   const message = String(err?.message || err || "");
@@ -30,6 +33,7 @@ function registerAdminHeluActivityRoutes({
     getAccountIdFromRequest,
     canAccessAccount,
   };
+  const starActivityReader = createActivityReadCache({ ttlMs: STAR_ACTIVITY_UPSTREAM_CACHE_MS });
 
   app.get("/api/activity/star", async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);
@@ -38,7 +42,16 @@ function registerAdminHeluActivityRoutes({
     try {
       if (!requireConnectedAccount(res, provider, accountId, "获取心许千灯星垂野失败: 账号未运行"))
         return;
-      res.json({ ok: true, activity: await provider.getStarActivity(accountId) });
+      const result = await starActivityReader.read(
+        accountId,
+        () => provider.getStarActivity(accountId),
+      );
+      res.json({
+        ok: true,
+        activity: result.value,
+        upstreamCached: result.upstreamCached,
+        upstreamCacheMs: STAR_ACTIVITY_UPSTREAM_CACHE_MS,
+      });
     } catch (err) {
       sendProviderError(res, err);
     }
@@ -54,6 +67,8 @@ function registerAdminHeluActivityRoutes({
       res.json(await provider.claimStarRecordRewards(accountId));
     } catch (err) {
       sendProviderError(res, err);
+    } finally {
+      starActivityReader.clear(accountId);
     }
   });
 
@@ -76,6 +91,8 @@ function registerAdminHeluActivityRoutes({
       res.json(await provider.exchangeStarShopItem(accountId, slotId, count));
     } catch (err) {
       sendProviderError(res, err);
+    } finally {
+      starActivityReader.clear(accountId);
     }
   });
 
@@ -146,6 +163,8 @@ function registerAdminHeluActivityRoutes({
       res.json({ ok: true, ...result, activity: await provider.getStarActivity(accountId) });
     } catch (err) {
       sendProviderError(res, err);
+    } finally {
+      starActivityReader.clear(accountId);
     }
   });
 
@@ -181,6 +200,8 @@ function registerAdminHeluActivityRoutes({
       res.json({ ok: true, ...result, activity: await provider.getStarActivity(accountId) });
     } catch (err) {
       sendProviderError(res, err);
+    } finally {
+      starActivityReader.clear(accountId);
     }
   });
 
@@ -352,4 +373,7 @@ function registerAdminHeluActivityRoutes({
   });
 }
 
-module.exports = { registerAdminHeluActivityRoutes };
+module.exports = {
+  STAR_ACTIVITY_UPSTREAM_CACHE_MS,
+  registerAdminHeluActivityRoutes,
+};
