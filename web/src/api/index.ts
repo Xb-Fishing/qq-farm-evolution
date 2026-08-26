@@ -41,6 +41,10 @@ api.interceptors.response.use((response) => {
   const toast = useToastStore()
 
   if (error.response) {
+    const backendError = String(error.response.data?.error || error.response.data?.message || '')
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 300)
     if (error.response.status === 401) {
       if (!window.location.pathname.includes('/login')) {
         tokenRef.value = ''
@@ -49,14 +53,13 @@ api.interceptors.response.use((response) => {
       }
     }
     else if (error.response.status >= 500) {
-      const backendError = String(error.response.data?.error || error.response.data?.message || '')
       if (backendError === '账号未运行' || backendError === 'API Timeout' || backendError === 'Request Timeout') {
         return Promise.reject(error)
       }
       toast.error(`服务器错误 ${error.response.status} ${error.response.statusText}`)
     }
     else {
-      toast.error('请求失败，请联系管理员')
+      toast.error(backendError || `请求失败（${error.response.status}）`)
     }
   }
   else if (error.request) {
