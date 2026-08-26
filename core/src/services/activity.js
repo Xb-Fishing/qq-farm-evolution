@@ -119,7 +119,6 @@ const QIXI_ACTIVITY_ID = 2026081800;
 const QIXI_BRIDGE_ACTIVITY_ID = 2026081801;
 const QIXI_GIFT_ACTIVITY_ID = 2026081802;
 const QIXI_BRIDGE_CMD = 25;
-const QIXI_GIFT_OPEN_CMD = 7;
 const QIXI_GIFT_SEND_CMD = 26;
 const QIXI_FEATHER_ITEM_ID = 1024;
 const QIXI_SACHET_ITEM_ID = 1025;
@@ -199,6 +198,32 @@ function normalizeDiscoveryActivity(node) {
       payload = { text: payloadText.slice(0, 2000) };
     }
   }
+  const randomShop = normalizeRandomShopInfo(node?.random_shop || raw.random_shop);
+  const exchangeShop = node?.exchange_shop || raw.exchange_shop;
+  const drawInfo = normalizeDrawInfo(node?.draw_info || raw.draw_info);
+  const details = {};
+  if (randomShop) {
+    details.randomShop = {
+      ...randomShop,
+      items: randomShop.items.slice(0, 80),
+    };
+  }
+  if (exchangeShop) {
+    details.exchangeShop = {
+      items: (Array.isArray(exchangeShop.items) ? exchangeShop.items : [])
+        .map(normalizeExchangeShopItem)
+        .filter(Boolean)
+        .slice(0, 80),
+    };
+  }
+  if (drawInfo) {
+    const { _hasFreeRemaining, _hasPaidRemaining, ...safeDrawInfo } = drawInfo;
+    details.draw = {
+      ...safeDrawInfo,
+      rewardPool: safeDrawInfo.rewardPool.slice(0, 80),
+    };
+  }
+
   return {
     id: toNum(raw.id),
     parentId: toNum(raw.parent_id),
@@ -217,8 +242,50 @@ function normalizeDiscoveryActivity(node) {
       draw: !!(node?.draw_info || raw.draw_info),
       starRecord: !!node?.star_record,
     },
+    details,
     children: (node?.children || []).map(normalizeDiscoveryActivity),
   };
+}
+
+/**
+ * 只输出 protobuf 的字段路径、wire type、出现次数和长度，不保留字段值或原始字节。
+ * 新活动协议尚未加入 proto 时，这份结构证据可帮助进化 Agent 定位缺失字段，同时
+ * 不会把账号、好友或登录数据写入扫描报告。
+ */
+function summarizeActivityProtocolShape(rawBytes, options = {}) {
+  const maxDepth = Math.max(1, Math.min(6, Number(options.maxDepth) || 4));
+  const maxEntries = Math.max(20, Math.min(400, Number(options.maxEntries) || 180));
+  const aggregate = new Map();
+
+  const visit = (bytes, prefix = '', depth = 0) => {
+    if (depth >= maxDepth || aggregate.size >= maxEntries) return;
+    const entries = readProtoFields(bytes);
+    for (const entry of entries) {
+      if (aggregate.size >= maxEntries || entry.field <= 0) break;
+      const fieldPath = prefix ? `${prefix}.${entry.field}` : String(entry.field);
+      const key = `${fieldPath}:${entry.wire}`;
+      const current = aggregate.get(key) || {
+        path: fieldPath,
+        wire: entry.wire,
+        count: 0,
+        byteLengths: [],
+      };
+      current.count += 1;
+      if (entry.wire === 2) {
+        const length = Buffer.from(entry.value || []).length;
+        if (!current.byteLengths.includes(length) && current.byteLengths.length < 8) {
+          current.byteLengths.push(length);
+        }
+      }
+      aggregate.set(key, current);
+      if (entry.wire === 2 && Buffer.from(entry.value || []).length > 1) {
+        visit(entry.value, fieldPath, depth + 1);
+      }
+    }
+  };
+
+  visit(Buffer.from(rawBytes || []));
+  return [...aggregate.values()];
 }
 
 function flattenDiscoveryActivities(nodes, output = []) {
@@ -239,7 +306,24 @@ async function getActivityGroupSnapshot(activityId, uid = '') {
   // 自动发现会枚举尚未发布的日期 ID；服务端返回“活动不存在”是正常探测结果。
   // 仅豁免这种明确业务响应，网络超时/断线仍计入异常降速阈值。
   const reply = await getActivityGroup(activityId, uid, { discoveryProbe: true });
-  return normalizeDiscoveryActivity(reply?.group);
+  const snapshot = normalizeDiscoveryActivity(reply?.group);
+  const fallbackDetails = {};
+  const randomShop = scanRandomShopInfoFromRawBody(reply?.__rawBody);
+  const exchangeShop = scanExchangeShopInfoFromRawBody(reply?.__rawBody);
+  const drawInfo = scanDrawInfoFromRawBody(reply?.__rawBody);
+  if (randomShop) fallbackDetails.randomShop = randomShop;
+  if (exchangeShop) fallbackDetails.exchangeShop = exchangeShop;
+  if (drawInfo) {
+    const { _hasFreeRemaining, _hasPaidRemaining, ...safeDrawInfo } = drawInfo;
+    fallbackDetails.draw = safeDrawInfo;
+  }
+  return {
+    ...snapshot,
+    discoveryEvidence: {
+      fallbackDetails,
+      protocolShape: summarizeActivityProtocolShape(reply?.__rawBody),
+    },
+  };
 }
 
 /**
@@ -2538,6 +2622,8 @@ module.exports = {
   getActivityGroup,
   getActivityDiscoveryList,
   getActivityGroupSnapshot,
+  normalizeDiscoveryActivity,
+  summarizeActivityProtocolShape,
   getNanguaShop,
   getHeluActivity,
   getStarActivity,

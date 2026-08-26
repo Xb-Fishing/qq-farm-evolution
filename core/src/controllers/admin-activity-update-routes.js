@@ -171,7 +171,9 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
 
   app.post('/api/activity/update/evolve', requireAdminToken, (req, res) => {
     const task = String(req.query.task || req.body?.task || 'activity') === 'safety' ? 'safety' : 'activity';
-    const result = activityEvolver.runEvolutionNow(task);
+    const force = task === 'activity'
+      && ['1', 'true'].includes(String(req.query.force ?? req.body?.force ?? '').toLowerCase());
+    const result = activityEvolver.runEvolutionNow(task, { force });
     const response = buildEvolutionStartResponse(result, activityEvolver.getEvolveState());
     res.status(response.statusCode).json(response.body);
   });

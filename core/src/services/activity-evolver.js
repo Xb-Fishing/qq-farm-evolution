@@ -403,8 +403,30 @@ function markEvolutionAppliedAfterRestart(value) {
 
 function describeActivity(id, actById, groupById) {
   const item = actById.get(id) || groupById.get(id) || {};
-  const payloadText = item.payload ? redactExternalText(JSON.stringify(item.payload)).slice(0, 500) : '无';
-  return redactExternalText(`- ID ${id}：标题「${item.title || '未知'}」，type=${item.type ?? '?'}，parentId=${item.parentId ?? 0}，features=${JSON.stringify(item.features || {})}，payload=${payloadText}`);
+  const payloadText = item.payload ? redactExternalText(JSON.stringify(item.payload)).slice(0, 2500) : '无';
+  const detailsText = item.details && Object.keys(item.details).length > 0
+    ? redactExternalText(JSON.stringify(item.details)).slice(0, 5000)
+    : '无';
+  return redactExternalText(`- ID ${id}：标题「${item.title || '未知'}」，type=${item.type ?? '?'}，parentId=${item.parentId ?? 0}，features=${JSON.stringify(item.features || {})}，payload=${payloadText}，道具/玩法详情=${detailsText}`);
+}
+
+function indexActivityGroups(groups) {
+  const indexed = new Map();
+  const visit = (node) => {
+    const id = Number(node?.id);
+    if (id > 0 && !indexed.has(id)) indexed.set(id, node);
+    for (const child of node?.children || []) visit(child);
+  };
+  for (const group of groups || []) visit(group);
+  return indexed;
+}
+
+function buildActivityEvidence(groups) {
+  const safeGroups = redactExternalText(JSON.stringify(groups || []));
+  if (!safeGroups || safeGroups === '[]') return '当前没有 GetGroup 证据快照。';
+  const maxChars = 48_000;
+  if (safeGroups.length <= maxChars) return safeGroups;
+  return `${safeGroups.slice(0, maxChars)}\n[证据快照已按 ${maxChars} 字符截断；完整脱敏结构见 core/data/activity-update-report.json]`;
 }
 
 function buildRevisionContinuity(revisionContext) {
@@ -455,7 +477,7 @@ function buildPrompt(report, newUnknown, newEnded, userInstruction = '', revisio
   const acts = report?.online?.activities || [];
   const groups = report?.online?.groups || [];
   const actById = new Map(acts.map(item => [Number(item.id), item]));
-  const groupById = new Map(groups.map(item => [Number(item.id), item]));
+  const groupById = indexActivityGroups(groups);
 
   const sections = [];
   if (newUnknown.length > 0) {
@@ -463,6 +485,11 @@ function buildPrompt(report, newUnknown, newEnded, userInstruction = '', revisio
   }
   if (newEnded.length > 0) {
     sections.push(`【已结束的活动】\n${newEnded.map(id => `- ID ${id}：${describeActivity(id, actById, groupById).replace(/^- ID \d+：/, '')}`).join('\n')}`);
+  }
+  if (newUnknown.length > 0) {
+    sections.push(`【在线只读证据快照】
+以下 JSON 来自 ActivityService.List/GetGroup，只含活动配置、道具/奖池标准化结果与脱敏 protobuf 字段形状；不含原始字节、账号或凭据：
+${buildActivityEvidence(groups)}`);
   }
 
   return `你是 qq-farm-bot 项目的活动自动进化 agent，仓库根目录就是当前工作目录（已是 git 仓库；你只能创建本地提交，不能推送）。
@@ -473,15 +500,22 @@ ${sections.join('\n\n')}
 
 【任务】
 1. 先读 docs/HANDOFF.md 了解项目结构与硬约束。
-2. 新活动：参考 core/src/services/activity.js 与 core/src/controllers/admin-activity-routes.js 的现有活动实现（七夕/青梅/南瓜铺等模式）。只有当 payload/分组结构足以判断玩法时才添加活动 ID 常量、自动化开关与处理器；涉及新种子/植物时按现有条目格式补 core/src/gameConfig/EventPlants.json。
-3. 已结束的活动：停用或删除其自动化开关与每日例行调用入口。
-4. 禁止修改偷菜/化肥/调度/登录/设备串核心链：core/src/core/worker.js、fertilizer-watch.js、steal-schedule.js、friend-orchestrator.js、farming-orchestrator.js、device-fingerprint.js、network.js 及各登录模块。
-5. 如果实际改了代码，同步更新 docs/HANDOFF.md（沿用现有条目格式），写明本次进化改了什么、如何回滚。
-6. 如果没有足够证据支持安全改动，保持工作区完全不变并以 0 退出，不为了产生提交而改文档。
-7. 有实际改动时执行：cd core && node --test test/*.test.js。失败则必须用 git 还原所有改动，不得提交，说明失败原因后结束。
-8. 有实际改动且测试通过：git add -A && git commit（message 以「活动进化:」开头，含活动 ID 与摘要）。严禁执行 git push；父进程会先做隐私扫描再推送。不要重启 bot。
+2. 新活动不是只登记 ID，而要做端到端适配。参考 core/src/services/activity.js、core/src/controllers/admin-activity-routes.js、core/src/core/worker.js 中既有活动段，以及 web/src/views/Activity.vue 的七夕/青梅/南瓜铺等模式，逐项核对并在证据支持时完成：
+   - 活动根/子节点 ID、UID、时间、玩法状态和 protobuf 字段；
+   - 活动货币、种子、果实、礼包、装扮等道具名称/图片/配置；涉及活动植物时补 core/src/gameConfig/EventPlants.json，并按 AGENTS.md 核实 size（四格必须 size: 2）；
+   - 每一种玩法的只读状态、可执行操作、次数/库存/奖励刷新和失败边界；禁止猜测 cmd 或写操作字段；
+   - 后端服务、管理 API、默认开关、每日活动例行入口和运行日志；
+   - web/src/views/Activity.vue 及相关组件中的活动专属卡片、道具数量、玩法状态和安全操作按钮，不能只在“活动扫描”面板显示一个候选 ID。
+3. 证据按优先级使用：本 Prompt 的在线快照 → core/data/activity-update-report.json → 仓库现有 proto/抓包分析脚本 → AGENTS.md 指定的最新版官方 QQ 小游戏源码与 gamecaches。官方缓存存在时必须按 tsdk.wasm 修改时间选最新完整目录，先复制到临时目录再分析，绝不修改 QQ 缓存。若当前机器没有官方缓存，明确记录缺失证据；不得新增或泄露 API、网址、凭据、账号数据。
+4. 在线快照中的 details 用于道具/商店/奖池，discoveryEvidence.protocolShape 用于定位当前 proto 未声明的字段。对未知玩法可以先补“只读解析 + UI 状态”；只有成功请求样本或官方源码足以证明 cmd/参数时才能加自动执行。已有证据足以完成的道具、只读玩法和前端 UI 不得因为另一项写操作待抓包而全部跳过，也不得只改 HANDOFF 后结束。
+5. 已结束的活动：停用或删除其自动化开关、每日例行调用入口和已过期专属 UI；仍被通用历史展示使用的数据解析不要误删。
+6. 可以修改 core/src/core/worker.js，但仅限活动模块 import、活动默认配置、活动每日任务和对应管理调用这一小段。禁止触碰该文件中的收菜、偷菜、施肥监控、请求调度、登录、Code 保活和设备串链路；禁止修改 fertilizer-watch.js、steal-schedule.js、friend-orchestrator.js、farming-orchestrator.js、device-fingerprint.js、network.js 及各登录模块。
+7. 如果实际改了代码，同步更新 docs/HANDOFF.md（沿用现有条目格式），写明本次进化改了什么、证据来源、未接入边界、踩坑注意点和如何回滚。
+8. 如果所有候选都确实没有任何足够证据支持的代码/UI/配置改动，保持工作区完全不变并以 0 退出；禁止为了产生提交而只刷 HANDOFF 记录。
+9. 有实际改动时执行：cd core && node --test test/*.test.js；cd ../web && npm run build。任一失败都必须修复；无法修复时用 git 还原本轮所有改动，不得提交。
+10. 有实际改动且测试通过：git add -A && git commit（message 以「活动进化:」开头，含活动 ID 与摘要）。严禁执行 git push；父进程会先做隐私扫描再推送。不要重启 bot。
 
-【约束】最小改动；拿不准协议结构的活动只在 HANDOFF.md 增加「待接入活动」记录，不写猜测代码；不新增项目现有之外的依赖。`;
+【约束】最小且完整的活动域改动；不写猜测协议、不新增项目现有之外的依赖，但不能把“最小改动”理解成只登记 ID 或只写待办。`;
 }
 
 function buildRuntimeIssuePrompt(runtimeIssues = []) {
@@ -775,14 +809,17 @@ function launchEvolution(task, payload = {}) {
   return { ok: true };
 }
 
-function planActivityEvolution(report, state = {}) {
+function planActivityEvolution(report, state = {}, options = {}) {
   if (!report || report.status === 'unavailable') {
     return { shouldRun: false, newUnknown: [], newEnded: [] };
   }
+  const force = options.force === true;
   const handledUnknown = new Set((state.handledUnknownIds || []).map(Number));
   const handledEnded = new Set((state.handledEndedIds || []).map(Number));
-  const newUnknown = (report.unknownActivityIds || []).map(Number).filter(id => !handledUnknown.has(id));
-  const newEnded = (report.endedActivityIds || []).map(Number).filter(id => !handledEnded.has(id));
+  const newUnknown = (report.unknownActivityIds || []).map(Number)
+    .filter(id => force || !handledUnknown.has(id));
+  const newEnded = (report.endedActivityIds || []).map(Number)
+    .filter(id => force || !handledEnded.has(id));
   return { shouldRun: newUnknown.length > 0 || newEnded.length > 0, newUnknown, newEnded };
 }
 
@@ -800,7 +837,7 @@ function checkAndMaybeEvolve(report) {
 }
 
 /** 手动触发（面板按钮/验证用），跳过每日闸门。task: 'activity' | 'safety' */
-function runEvolutionNow(task = 'activity') {
+function runEvolutionNow(task = 'activity', options = {}) {
   if (task !== 'safety') task = 'activity';
   if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
@@ -817,12 +854,15 @@ function runEvolutionNow(task = 'activity') {
     };
   }
   const state = readState();
-  const { shouldRun, newUnknown, newEnded } = planActivityEvolution(report, state);
+  const force = options.force === true;
+  const { shouldRun, newUnknown, newEnded } = planActivityEvolution(report, state, { force });
   if (!shouldRun) {
     return {
       ok: false,
       reason: 'no_candidates',
-      error: '当前没有待处理的新活动或结束活动，无需启动 Agent',
+      error: force
+        ? '当前扫描报告没有可重新进化的活动候选'
+        : '当前没有待处理的新活动或结束活动，无需启动 Agent',
     };
   }
   return launchEvolution('activity', { report, newUnknown, newEnded });
@@ -1178,6 +1218,7 @@ module.exports = {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  buildActivityEvidence,
   planActivityEvolution,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,

@@ -85,9 +85,29 @@ interface ActivityGroup {
   visible?: boolean
   enabled?: boolean
   features?: ActivityFeatures
+  details?: {
+    randomShop?: { items?: ActivityItemDetail[] }
+    exchangeShop?: { items?: ActivityItemDetail[] }
+    draw?: { rewardPool?: ActivityItemDetail[], freeRemaining?: number, paidRemaining?: number }
+  }
+  discoveryEvidence?: {
+    fallbackDetails?: ActivityGroup['details']
+    protocolShape?: Array<{ path: string, wire: number, count: number, byteLengths?: number[] }>
+  }
   children?: ActivityGroup[]
   payload?: Record<string, unknown> | null
   error?: string
+}
+
+interface ActivityItemDetail {
+  id?: number
+  itemId?: number
+  itemName?: string
+  name?: string
+  itemCount?: number
+  count?: number
+  currencyName?: string
+  price?: number
 }
 
 interface EvolveState {
@@ -112,6 +132,7 @@ const intervalMs = ref(0)
 const nextScanAt = ref(0)
 const evolve = ref<EvolveState | null>(null)
 const evolving = ref(false)
+const forceEvolving = ref(false)
 const safetyRunning = ref(false)
 const applying = ref(false)
 const testingNotify = ref(false)
@@ -204,6 +225,24 @@ function contentSummary(group: ActivityGroup) {
   return parts.join(' · ')
 }
 
+function activityDetailItems(group: ActivityGroup) {
+  const details = group.details || group.discoveryEvidence?.fallbackDetails
+  return [
+    ...(details?.randomShop?.items || []),
+    ...(details?.exchangeShop?.items || []),
+    ...(details?.draw?.rewardPool || []),
+  ].filter(item => Number(item.itemId) > 0)
+}
+
+function activityItemLabel(item: ActivityItemDetail) {
+  const name = item.itemName || item.name || `道具 ${item.itemId}`
+  const count = Number(item.itemCount ?? item.count) || 0
+  const cost = Number(item.price) > 0
+    ? ` · ${item.currencyName || '货币'} ${item.price}`
+    : ''
+  return `${name}${count > 0 ? ` ×${count}` : ''}${cost}`
+}
+
 function plainActivityText(value: unknown) {
   return String(value ?? '')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -279,11 +318,14 @@ async function scanUpdates() {
   }
 }
 
-async function triggerEvolve() {
-  evolving.value = true
+async function triggerEvolve(force = false) {
+  if (force)
+    forceEvolving.value = true
+  else
+    evolving.value = true
   error.value = ''
   try {
-    const { data } = await api.post('/api/activity/update/evolve?task=activity')
+    const { data } = await api.post(`/api/activity/update/evolve?task=activity${force ? '&force=1' : ''}`)
     if (!data.ok)
       throw new Error(data.error || '启动进化失败')
     syncEvolveState(data.evolve)
@@ -291,13 +333,16 @@ async function triggerEvolve() {
       toast.warning(data.message || '当前无需启动活动进化')
       return
     }
-    toast.success('已启动活动进化任务，完成后飞书通知')
+    toast.success(force ? '已按当前扫描证据重新启动活动进化' : '已启动活动进化任务，完成后飞书通知')
   }
   catch (err: any) {
     error.value = err?.response?.data?.error || err.message || '启动进化失败'
   }
   finally {
-    evolving.value = false
+    if (force)
+      forceEvolving.value = false
+    else
+      evolving.value = false
   }
 }
 
@@ -568,10 +613,10 @@ onMounted(loadUpdateStatus)
           <p v-if="evolve?.summary" class="mt-1 text-xs break-all text-purple-700 dark:text-purple-300">
             {{ evolve.summary }}
           </p>
-          <div class="mt-2">
+          <div class="mt-2 flex flex-wrap gap-2">
             <button
               class="rounded bg-purple-600 px-3 py-1.5 text-xs text-white transition hover:bg-purple-700 disabled:opacity-50"
-              :disabled="evolutionBlocked"
+              :disabled="evolutionBlocked || safetyRunning || evolving || forceEvolving"
               @click="triggerSafetyEvolve"
             >
               {{ safetyRunning ? '启动中…' : '立即巡检' }}
@@ -585,13 +630,21 @@ onMounted(loadUpdateStatus)
           <div class="mt-1 text-xs text-purple-800 dark:text-purple-300">
             上次：{{ evolve?.lastEvolveDate || '未跑' }}
           </div>
-          <div class="mt-2">
+          <div class="mt-2 flex flex-wrap gap-2">
             <button
               class="rounded bg-purple-600 px-3 py-1.5 text-xs text-white transition hover:bg-purple-700 disabled:opacity-50"
-              :disabled="evolutionBlocked"
-              @click="triggerEvolve"
+              :disabled="evolutionBlocked || evolving || forceEvolving"
+              @click="triggerEvolve(false)"
             >
               {{ evolving ? '启动中…' : '立即进化' }}
+            </button>
+            <button
+              class="rounded border border-purple-400 bg-white px-3 py-1.5 text-xs text-purple-700 transition hover:bg-purple-50 disabled:opacity-50 dark:bg-gray-900 dark:text-purple-300"
+              :disabled="evolutionBlocked || evolving || forceEvolving || !report?.unknownActivityIds?.length"
+              title="忽略已处理标记，用最新在线证据重新适配当前候选活动"
+              @click="triggerEvolve(true)"
+            >
+              {{ forceEvolving ? '重新启动中…' : '重新进化当前活动' }}
             </button>
           </div>
         </div>
@@ -733,6 +786,15 @@ onMounted(loadUpdateStatus)
                 </div>
                 <div class="mt-1 text-xs text-gray-500">{{ activityNodeLabel(child) }} · {{ contentSummary(child) }}</div>
                 <p class="mt-2 text-xs leading-5 text-gray-500">{{ activityNodeDescription(child) }}</p>
+                <div v-if="activityDetailItems(child).length" class="mt-2 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="item in activityDetailItems(child).slice(0, 12)"
+                    :key="`${child.id}-${item.id || item.itemId}`"
+                    class="rounded bg-teal-50 px-2 py-1 text-xs text-teal-700 dark:bg-teal-900/30 dark:text-teal-200"
+                  >
+                    {{ activityItemLabel(item) }}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
