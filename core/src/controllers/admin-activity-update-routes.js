@@ -6,6 +6,32 @@ const {
 } = require('../services/activity-update-monitor');
 const activityEvolver = require('../services/activity-evolver');
 
+const NON_FAILURE_EVOLUTION_START_REASONS = new Set([
+  'busy',
+  'blocked',
+  'deferred',
+  'report_unavailable',
+  'no_candidates',
+]);
+
+function buildEvolutionStartResponse(result, evolve) {
+  if (result?.ok) {
+    return { statusCode: 200, body: { ok: true, started: true, evolve } };
+  }
+  const reason = String(result?.reason || 'failed');
+  const message = String(result?.error || '启动进化失败');
+  if (NON_FAILURE_EVOLUTION_START_REASONS.has(reason)) {
+    return {
+      statusCode: 200,
+      body: { ok: true, started: false, reason, message, evolve },
+    };
+  }
+  return {
+    statusCode: 400,
+    body: { ok: false, reason, error: message },
+  };
+}
+
 function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken }) {
   const MAX_DATE_PROBES_PER_SCAN = 6;
   const knownActivityIds = Object.entries(activity)
@@ -134,8 +160,8 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
   app.post('/api/activity/update/evolve', requireAdminToken, (req, res) => {
     const task = String(req.query.task || req.body?.task || 'activity') === 'safety' ? 'safety' : 'activity';
     const result = activityEvolver.runEvolutionNow(task);
-    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
-    res.json({ ok: true, evolve: activityEvolver.getEvolveState() });
+    const response = buildEvolutionStartResponse(result, activityEvolver.getEvolveState());
+    res.status(response.statusCode).json(response.body);
   });
 
   app.post('/api/activity/update/agent', requireAdminToken, (req, res) => {
@@ -173,4 +199,4 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
   });
 }
 
-module.exports = { registerAdminActivityUpdateRoutes };
+module.exports = { buildEvolutionStartResponse, registerAdminActivityUpdateRoutes };

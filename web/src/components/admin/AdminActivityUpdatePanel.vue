@@ -266,6 +266,8 @@ async function scanUpdates() {
     syncEvolveState(data.evolve)
     if (data.report?.status === 'update-found')
       toast.warning(`发现 ${data.report.unknownActivityIds.length} 个候选活动 ID`)
+    else if (data.report?.status === 'unavailable')
+      toast.warning(data.report?.online?.error || '活动扫描等待已连接的农场账号')
     else
       toast.success('活动更新扫描完成')
   }
@@ -285,6 +287,10 @@ async function triggerEvolve() {
     if (!data.ok)
       throw new Error(data.error || '启动进化失败')
     syncEvolveState(data.evolve)
+    if (data.started === false) {
+      toast.warning(data.message || '当前无需启动活动进化')
+      return
+    }
     toast.success('已启动活动进化任务，完成后飞书通知')
   }
   catch (err: any) {
@@ -303,6 +309,10 @@ async function triggerSafetyEvolve() {
     if (!data.ok)
       throw new Error(data.error || '启动安全巡检失败')
     syncEvolveState(data.evolve)
+    if (data.started === false) {
+      toast.warning(data.message || '当前暂不能启动安全巡检')
+      return
+    }
     toast.success('已启动防封安全巡检，完成后飞书通知')
   }
   catch (err: any) {

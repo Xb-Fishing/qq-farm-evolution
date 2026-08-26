@@ -575,12 +575,13 @@ async function notify(title, content) {
 
 function launchEvolution(task, payload = {}) {
   const tag = task === 'safety' ? '安全巡检' : '活动进化';
-  if (running) return { ok: false, error: '已有进化任务在执行' };
+  if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
   const current = readState();
   if (BLOCKING_STATUSES.has(current.status)) {
     return {
       ok: false,
+      reason: 'blocked',
       error: `上一轮进化尚未收口（状态：${current.status}），请先应用或处理推送失败`,
     };
   }
@@ -595,7 +596,7 @@ function launchEvolution(task, payload = {}) {
     deferred.summary = `${tag}已安全延期：检测到未提交文件（含未跟踪文件），为避免自动 agent 覆盖工作区，本次未启动、未改代码`;
     writeState(deferred);
     void notify(`农场 bot ${tag}已延期`, deferred.summary);
-    return { ok: false, error: deferred.summary };
+    return { ok: false, reason: 'deferred', error: deferred.summary };
   }
 
   // 每次自动/手动任务都读取持久化默认值；不是仅对某一次手动任务生效。
@@ -614,7 +615,7 @@ function launchEvolution(task, payload = {}) {
     else failed.lastEvolveDate = '';
     writeState(failed);
     void notify(`农场 bot ${tag}启动失败`, failed.summary);
-    return { ok: false, error: failed.summary };
+    return { ok: false, reason: 'missing_cli', error: failed.summary };
   }
 
   running = true;
@@ -795,7 +796,7 @@ function checkAndMaybeEvolve(report) {
 /** 手动触发（面板按钮/验证用），跳过每日闸门。task: 'activity' | 'safety' */
 function runEvolutionNow(task = 'activity') {
   if (task !== 'safety') task = 'activity';
-  if (running) return { ok: false, error: '已有进化任务在执行' };
+  if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
   if (task === 'safety') {
     return launchEvolution('safety', {});
@@ -803,7 +804,11 @@ function runEvolutionNow(task = 'activity') {
 
   const report = readLatestReport();
   if (!report || report.status === 'unavailable') {
-    return { ok: false, error: '暂无可用的活动扫描报告，请先执行扫描' };
+    return {
+      ok: false,
+      reason: 'report_unavailable',
+      error: '活动扫描暂不可用：当前没有已连接的农场账号，本次未启动 Agent',
+    };
   }
   const state = readState();
   const handledUnknown = new Set(state.handledUnknownIds.map(Number));
@@ -811,7 +816,11 @@ function runEvolutionNow(task = 'activity') {
   const newUnknown = (report.unknownActivityIds || []).map(Number).filter(id => !handledUnknown.has(id));
   const newEnded = (report.endedActivityIds || []).map(Number).filter(id => !handledEnded.has(id));
   if (newUnknown.length === 0 && newEnded.length === 0) {
-    return { ok: false, error: '没有待处理的新活动或结束活动' };
+    return {
+      ok: false,
+      reason: 'no_candidates',
+      error: '当前没有待处理的新活动或结束活动，无需启动 Agent',
+    };
   }
   return launchEvolution('activity', { report, newUnknown, newEnded });
 }

@@ -31,6 +31,32 @@ const {
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
 } = require('../src/services/activity-evolver');
+const {
+  buildEvolutionStartResponse,
+} = require('../src/controllers/admin-activity-update-routes');
+
+test('活动进化无数据或已有任务时是未启动状态，不误报管理员故障', () => {
+  const evolve = { status: 'no_change' };
+  for (const reason of ['busy', 'blocked', 'deferred', 'report_unavailable', 'no_candidates']) {
+    const response = buildEvolutionStartResponse({ ok: false, reason, error: 'expected state' }, evolve);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, {
+      ok: true,
+      started: false,
+      reason,
+      message: 'expected state',
+      evolve,
+    });
+  }
+
+  const failed = buildEvolutionStartResponse({ ok: false, reason: 'missing_cli', error: 'real failure' }, evolve);
+  assert.equal(failed.statusCode, 400);
+  assert.equal(failed.body.ok, false);
+
+  const started = buildEvolutionStartResponse({ ok: true }, { status: 'running' });
+  assert.equal(started.statusCode, 200);
+  assert.equal(started.body.started, true);
+});
 
 test('微信凭据按服务端有效期续期，不再每半小时真实刷新', () => {
   const now = Date.parse('2026-08-26T02:00:00Z');

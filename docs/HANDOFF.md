@@ -1,4 +1,4 @@
-# 交接文档：qq-farm-bot（更新 2026-08-26，微信凭据按真实有效期跨日续期）
+# 交接文档：qq-farm-bot（更新 2026-08-26，活动进化不再把可恢复状态误报为管理员故障）
 
 给下一个会话用。先读本文件，再动 `worker.js` / `friend-orchestrator.js` / `farming-orchestrator.js`。
 
@@ -573,6 +573,27 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 日志和自动进化收件箱只能记脱敏类别、有效秒数和 token 是否滚动，不得输出凭据值、OAuth 回调、服务地址、完整错误或运行时身份。
 - Node 20 凭据/会话/被踢定向测试 **34/34**、HANDOFF 要求的核心收益与登录组合 **116/116**、`core/test/*.test.js` 全量 **310/310** 通过；本轮相关后端 ESLint **0 error**，无前端改动。
 - 本轮没有修改自己收获、普通偷菜到点、重点用户 HOT/PREARM、请求治理、25 秒游戏心跳、设备串或 TSDK/ACE。回滚用 `git revert <本轮提交>`，然后只在既有 `farm:0.0` 重启；注意回滚会恢复过度刷新和每日重扫风险。
+
+## 活动进化“失败/联系管理员”误报（2026-08-26）
+
+### 现场证据与根因
+
+- 匿名核对本机管理会话后确认会话有效，没有被禁用或过期；最新活动进化 Agent 也是正常退出 0，状态为 `no_change`，不是 Agent 执行失败。
+- 当时活动扫描报告为 `unavailable`：没有已连接的农场账号，所以无法调用在线活动列表。另一条现场路径是安全巡检已在执行时再点活动进化，后端会正常返回“已有进化任务在执行”。这两种都是可恢复业务状态，不是系统故障。
+- 真正的误报位于 Dashboard 全局 Axios 拦截器：它把所有非 401、非 5xx 响应统一弹成“请求失败，请联系管理员”，丢掉了后端已经返回的安全原因。所以用户看到的“联系管理员”与实际进化结果不一致。
+
+### 本轮改动
+
+- `activity-evolver.js` 给手动启动结果增加结构化 `reason`：`busy/blocked/deferred/report_unavailable/no_candidates` 都是“本次未启动”；CLI 缺失等真实启动失败仍为 `missing_cli`。没有在线扫描证据或没有候选活动时不会为了按钮响应白白拉起 Agent。
+- `/api/activity/update/evolve` 对上述可恢复状态返回 HTTP 200 + `{ ok: true, started: false, reason, message }`，前端显示黄色提示和真实原因，不再标记“执行失败”。只有 CLI 找不到等真失败才保留 400；Agent 实际非零退出、隐私拦截和 GitHub 推送失败的原有状态机完全不变。
+- 全局 API 拦截器对 4xx 优先显示后端返回的原因（删除换行并限制 300 字符），没有原因时才显示状态码，删除没有诊断价值的统一“联系管理员”。手动扫描遇到无在线账号时也改为明确黄色等待提示，不假报“扫描完成”。
+
+### 踩坑、验证与回滚
+
+- 不能把所有 `runEvolutionNow()` 的 `ok:false` 都改成成功；本轮只对白名单的非故障原因返回 `started:false`。`missing_cli`、未知错误和 Agent 真失败必须继续可见，否则会把真问题吞成“无需处理”。
+- 活动报告 `unavailable` 时不得用空列表判定活动结束，也不得消费 `handledUnknownIds/handledEndedIds`。连上农场账号后重新扫描即可恢复，不需要联系管理员。安全巡检与活动进化仍共用一个互斥锁，不得为了让按钮可点并发两个 Agent。
+- 本轮在自动安全巡检正常以 `no_change` 收口、确认工作区干净后才开始写文件，没有把人工改动混入自动 Agent 提交。Node 20 进化/会话定向测试 **23/23**、HANDOFF 要求的核心收益与登录组合 **117/117**、`core/test/*.test.js` 全量 **311/311** 通过；相关后端与前端 ESLint **0 error**，前端生产构建通过，仍只有既有图标/格式 warning。
+- 本轮没有修改收菜、偷菜、重点用户 HOT/PREARM、请求治理、微信凭据续期、25 秒游戏心跳、设备串或 TSDK/ACE。回滚用 `git revert <本轮提交>`，然后只在既有 `farm:0.0` 重启；回滚只会恢复面板误报，不应借机改动业务调度。
 
 - 不要改 TSDK / WASM / ACE / 登录 fingerprint 轮换
 - 不要用盯梢节奏去刷所有好友
