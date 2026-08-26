@@ -28,6 +28,7 @@ const {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  buildActivityEvidence,
   planActivityEvolution,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
@@ -36,6 +37,10 @@ const {
   buildEvolutionStartResponse,
   selectUnknownOnlineActivities,
 } = require('../src/controllers/admin-activity-update-routes');
+const {
+  normalizeDiscoveryActivity,
+  summarizeActivityProtocolShape,
+} = require('../src/services/activity');
 
 test('在线活动发现不把 ID 大小误当开放顺序', () => {
   const activities = [
@@ -62,6 +67,53 @@ test('当天凌晨空跑不能阻断稍后出现的未处理活动', () => {
   });
   assert.equal(plan.shouldRun, true);
   assert.deepEqual(plan.newUnknown, [2026070300, 2026070301]);
+});
+
+test('人工重新进化会忽略已处理标记但仍只使用当前报告候选', () => {
+  const report = {
+    status: 'update-found',
+    unknownActivityIds: [2026070300, 2026070301],
+    endedActivityIds: [2026081800],
+  };
+  const state = {
+    handledUnknownIds: [2026070300, 2026070301],
+    handledEndedIds: [2026081800],
+  };
+  assert.equal(planActivityEvolution(report, state).shouldRun, false);
+  assert.deepEqual(planActivityEvolution(report, state, { force: true }), {
+    shouldRun: true,
+    newUnknown: [2026070300, 2026070301],
+    newEnded: [2026081800],
+  });
+});
+
+test('活动发现快照保留道具玩法详情且协议形状不包含字段值', () => {
+  const snapshot = normalizeDiscoveryActivity({
+    activity: {
+      id: 2026070301,
+      parent_id: 2026070300,
+      title: '测试活动',
+      type: 3,
+    },
+    exchange_shop: {
+      items: [{
+        id: 7,
+        item: { id: 1023, count: 2 },
+        cost: { id: 1018, count: 5 },
+        status: 1,
+        name: '测试道具',
+      }],
+    },
+  });
+  assert.equal(snapshot.details.exchangeShop.items.length, 1);
+  assert.equal(snapshot.details.exchangeShop.items[0].itemId, 1023);
+  assert.equal(snapshot.details.exchangeShop.items[0].currencyId, 1018);
+  assert.equal(snapshot.details.exchangeShop.items[0].price, 5);
+
+  const shape = summarizeActivityProtocolShape(Buffer.from([0x08, 0x63, 0x12, 0x02, 0x08, 0x2A]));
+  assert.deepEqual(shape.map(item => `${item.path}:${item.wire}`), ['1:0', '2:2', '2.1:0']);
+  assert.equal(JSON.stringify(shape).includes('value'), false);
+  assert.deepEqual(shape[1].byteLengths, [2]);
 });
 
 test('活动进化无数据或已有任务时是未启动状态，不误报管理员故障', () => {
@@ -324,6 +376,38 @@ test('拒绝重做继承上一轮提交、日志和变更摘要', () => {
   assert.match(activityPrompt, /git show --stat 1234567890abcdef/);
 });
 
+test('活动进化 Prompt 获得完整活动域职责和脱敏证据而非只登记 ID', () => {
+  const groups = [{
+    id: 2026070300,
+    title: '测试活动',
+    discoveryEvidence: {
+      protocolShape: [{ path: '1.2.102', wire: 2, count: 1, byteLengths: [42] }],
+    },
+    children: [{
+      id: 2026070301,
+      parentId: 2026070300,
+      details: {
+        exchangeShop: {
+          items: [{ itemId: 1023, itemName: '测试道具', price: 5 }],
+        },
+      },
+    }],
+  }];
+  const evidence = buildActivityEvidence(groups);
+  assert.match(evidence, /protocolShape/);
+  assert.match(evidence, /测试道具/);
+
+  const prompt = buildPrompt({ online: { activities: [], groups } }, [2026070301], []);
+  assert.match(prompt, /端到端适配/);
+  assert.match(prompt, /活动货币、种子、果实、礼包、装扮/);
+  assert.match(prompt, /web\/src\/views\/Activity\.vue/);
+  assert.match(prompt, /可以修改 core\/src\/core\/worker\.js/);
+  assert.match(prompt, /仅限活动模块 import、活动默认配置、活动每日任务/);
+  assert.match(prompt, /不得因为另一项写操作待抓包而全部跳过/);
+  assert.match(prompt, /npm run build/);
+  assert.doesNotMatch(prompt, /只在 HANDOFF\.md 增加「待接入活动」记录/);
+});
+
 test('飞书进化通知摘要列出提交说明、文件和增删行数', () => {
   const summary = formatEvolutionChangeSummary(
     '安全巡检: 降低重复请求',
@@ -395,6 +479,8 @@ test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitH
   assert.match(source, /\['revert', '--no-edit', rejectedCommit\]/);
   assert.match(panel, /拒绝本次并按要求重做（当前无待应用提交）/);
   assert.doesNotMatch(panel, /v-if="evolve\?\.status === 'pending_apply'"/);
+  assert.match(panel, /重新进化当前活动/);
+  assert.match(panel, /force=1/);
 });
 
 test('每日安全巡检和轻量活动核对顺序执行且失败只重试一次', () => {
