@@ -98,8 +98,11 @@ const STAR_RECORD_ACTIVITY_ID = 2026072701;
 const STAR_SHOP_ACTIVITY_ID = 2026072702;
 const STAR_SAND_ITEM_ID = 1023;
 const STAR_RECORD_CLAIM_CMD = 21;
-const STAR_SHOP_OPEN_CMD = 7;
 const STAR_SHOP_EXCHANGE_CMD = 1;
+const STAR_SUB_ACTIVITY_DEFS = [
+  { id: STAR_RECORD_ACTIVITY_ID, type: 13, feature: 'starRecord', title: '观星礼录', protobufField: 110 },
+  { id: STAR_SHOP_ACTIVITY_ID, type: 3, feature: 'exchangeShop', title: '星砂兑换商店', protobufField: 102 },
+];
 const QINGMEI_ACTIVITY_ID = 2026081200;
 const QINGMEI_SEED_CLAIM_ACTIVITY_ID = 2026081201;
 const QINGMEI_WINE_ACTIVITY_ID = 2026081202;
@@ -203,17 +206,20 @@ async function listActivityGroups() {
   return types.ActivityListReply.decode(body);
 }
 
+function parseActivityPayload(value) {
+  if (value && typeof value === 'object') return value;
+  const payloadText = String(value || '').trim();
+  if (!payloadText) return null;
+  try {
+    return JSON.parse(payloadText);
+  } catch {
+    return { text: payloadText.slice(0, 2000) };
+  }
+}
+
 function normalizeDiscoveryActivity(node) {
   const raw = node?.activity || node || {};
-  const payloadText = String(raw.payload || '').trim();
-  let payload = null;
-  if (payloadText) {
-    try {
-      payload = JSON.parse(payloadText);
-    } catch {
-      payload = { text: payloadText.slice(0, 2000) };
-    }
-  }
+  const payload = parseActivityPayload(raw.payload);
   const randomShop = normalizeRandomShopInfo(node?.random_shop || raw.random_shop);
   const exchangeShop = node?.exchange_shop || raw.exchange_shop;
   const drawInfo = normalizeDrawInfo(node?.draw_info || raw.draw_info);
@@ -319,8 +325,8 @@ async function getActivityDiscoveryList() {
 }
 
 async function getActivityGroupSnapshot(activityId, uid = '') {
-  // 自动发现会枚举尚未发布的日期 ID；服务端返回“活动不存在”是正常探测结果。
-  // 仅豁免这种明确业务响应，网络超时/断线仍计入异常降速阈值。
+  // 调用方只允许传入 ActivityService.List 已下发的根活动；这里读取该根的正常详情。
+  // 明确业务响应不触发普通异常降速，网络超时/断线仍照常计入。
   const reply = await getActivityGroup(activityId, uid, { discoveryProbe: true });
   const snapshot = normalizeDiscoveryActivity(reply?.group);
   const fallbackDetails = {};
@@ -2275,6 +2281,131 @@ function normalizeStarRecord(node) {
   };
 }
 
+function buildStarGameplayGuides(ruleLines) {
+  const dailyRule = findWeatherRuleLine(ruleLines, /星宿轮转|观星礼录.*二十八个.*逐日点亮/);
+  const claimRule = findWeatherRuleLine(ruleLines, /查看当日星宿事件|一键领取.*已解锁的全部星宿奖励/);
+  const definitions = [
+    {
+      key: 'daily',
+      title: '星宿轮转，每日馈赠',
+      icon: 'calendar',
+      evidence: dailyRule,
+      steps: ['二十八星宿作为当前活动主线', '星宿与奖励按日逐步开放', '点亮已开放星宿并领取当日馈赠'],
+    },
+    {
+      key: 'claim',
+      title: '查看状态并一键领取',
+      icon: 'claim',
+      evidence: claimRule,
+      steps: ['进入观星礼录面板', '查看当日星宿事件、每日奖励和可领取状态', '使用一键领取收取全部已解锁星宿奖励'],
+    },
+  ];
+
+  return definitions.filter(item => item.evidence).map(item => ({
+    ...item,
+    source: 'activity_rules',
+    operationSupported: false,
+  }));
+}
+
+function normalizeStarRuleData(recordNode) {
+  const payload = parseActivityPayload(recordNode?.activity?.payload || recordNode?.payload);
+  const ruleLines = normalizeWeatherRuleLines(payload);
+  return {
+    clientUiUid: String(payload?.uid || ''),
+    rulesTitle: String(payload?.tips?.title || '活动说明'),
+    ruleLines,
+    gameplayGuides: buildStarGameplayGuides(ruleLines),
+    ruleWarnings: ruleLines.filter(line => /不再开放新的每日奖励|当前游记周期|不跨活动继承|超出补领范围/.test(line)),
+  };
+}
+
+function starActivityStatusLabel(node) {
+  const activity = node?.activity || {};
+  if (!activity.visible) return '未展示';
+  if (activity.enabled) return '进行中';
+  const status = toNum(activity.status);
+  return status > 0 ? `未启用（状态 ${status}）` : '未启用';
+}
+
+function normalizeStarActivityTree(rootNode, recordNode, shopNode, options = {}) {
+  const root = rootNode?.activity || {};
+  const ruleData = normalizeStarRuleData(recordNode);
+  const starRecord = normalizeStarRecord(recordNode);
+  const shop = shopNode?.exchange_shop || shopNode?.exchangeShop || null;
+  const exchangeShop = (Array.isArray(shop?.items) ? shop.items : [])
+    .map(normalizeExchangeShopItem)
+    .filter(Boolean)
+    .map(item => ({
+      ...item,
+      currencyName: item.currencyId === STAR_SAND_ITEM_ID ? '星砂' : item.currencyName,
+    }));
+  const nodesById = new Map([
+    [STAR_RECORD_ACTIVITY_ID, recordNode],
+    [STAR_SHOP_ACTIVITY_ID, shopNode],
+  ]);
+  const subActivities = STAR_SUB_ACTIVITY_DEFS.map((definition) => {
+    const node = nodesById.get(definition.id);
+    const activity = node?.activity || {};
+    return {
+      ...definition,
+      parentId: toNum(activity.parent_id) || STAR_ACTIVITY_ID,
+      title: String(activity.title || definition.title),
+      sort: toNum(activity.sort),
+      visible: !!activity.visible,
+      enabled: !!activity.enabled,
+      status: toNum(activity.status),
+      statusLabel: starActivityStatusLabel(node),
+      available: !!node,
+      protocolObserved: definition.feature === 'starRecord'
+        ? !!(node?.star_record || node?.starRecord)
+        : !!(node?.exchange_shop || node?.exchangeShop),
+    };
+  });
+  const startTime = toNum(root.start_time);
+  const endTime = toNum(root.end_time);
+  const nowSeconds = Number(options.nowSeconds) || Math.floor(Date.now() / 1000);
+  const inActivityWindow = startTime > 0 && endTime > 0
+    ? nowSeconds >= startTime && nowSeconds <= endTime
+    : false;
+
+  return {
+    uid: ruleData.clientUiUid || STAR_ACTIVITY_UID,
+    uidConfirmed: ruleData.clientUiUid === STAR_ACTIVITY_UID,
+    clientUiUid: ruleData.clientUiUid || STAR_ACTIVITY_UID,
+    title: String(root.title || '心许千灯星垂野'),
+    activityId: toNum(root.id) || STAR_ACTIVITY_ID,
+    recordActivityId: STAR_RECORD_ACTIVITY_ID,
+    recordClaimCommand: STAR_RECORD_CLAIM_CMD,
+    shopActivityId: STAR_SHOP_ACTIVITY_ID,
+    startTime,
+    endTime,
+    visible: !!root.visible,
+    enabled: !!root.enabled,
+    status: toNum(root.status),
+    inActivityWindow,
+    starRecord,
+    exchangeShop,
+    shopReadOnly: false,
+    starSandCurrencyId: STAR_SAND_ITEM_ID,
+    starSandBalance: 0,
+    rulesTitle: ruleData.rulesTitle,
+    ruleLines: ruleData.ruleLines,
+    gameplayGuides: ruleData.gameplayGuides,
+    ruleWarnings: ruleData.ruleWarnings,
+    subActivities,
+    protocol: {
+      declaredReadOnlyFields: [110, 102],
+    },
+    writeOperationsDerivedFromRules: false,
+    summary: {
+      starCount: starRecord.totalCount,
+      exchangeShopCount: exchangeShop.length,
+      gameplayGuideCount: ruleData.gameplayGuides.length,
+    },
+  };
+}
+
 function findActivityNode(nodes, activityId) {
   for (const node of Array.isArray(nodes) ? nodes : []) {
     if (toNum(node?.activity?.id) === toNum(activityId)) return node;
@@ -2287,11 +2418,7 @@ function findActivityNode(nodes, activityId) {
 async function getStarActivity() {
   if (!getUserState()) {
     return {
-      uid: STAR_ACTIVITY_UID,
-      title: '心许千灯星垂野',
-      activityId: STAR_ACTIVITY_ID,
-      starRecord: normalizeStarRecord(null),
-      exchangeShop: [],
+      ...normalizeStarActivityTree(null, null, null),
       starSandBalance: 0,
       passport: null,
       solarTerms: null,
@@ -2300,27 +2427,32 @@ async function getStarActivity() {
   }
 
   const listed = await listActivityGroups();
-  const rootNode = findActivityNode(listed?.groups, STAR_ACTIVITY_ID);
-  const recordNode = findActivityNode(listed?.groups, STAR_RECORD_ACTIVITY_ID);
-  if (!rootNode || !recordNode) {
+  const listedRootNode = findActivityNode(listed?.groups, STAR_ACTIVITY_ID);
+  const listedRecordNode = findActivityNode(listed?.groups, STAR_RECORD_ACTIVITY_ID);
+  const listedShopNode = findActivityNode(listed?.groups, STAR_SHOP_ACTIVITY_ID);
+  if (!listedRootNode || !listedRecordNode) {
     throw new Error('未在活动列表中找到“心许千灯星垂野”');
   }
 
-  let shopItems = [];
-  let shopWarning = '';
+  let groupedRoot = null;
+  let groupWarning = '';
   try {
-    const shopReply = await operateActivityReply(STAR_SHOP_ACTIVITY_ID, STAR_SHOP_OPEN_CMD);
-    const shopNode = shopReply?.group || null;
-    const shop = shopNode?.exchange_shop || shopNode?.exchangeShop || null;
-    shopItems = (shop?.items || []).map(normalizeExchangeShopItem).filter(Boolean).map(item => ({
-      ...item,
-      currencyName: item.currencyId === STAR_SAND_ITEM_ID ? '星砂' : item.currencyName,
-    }));
+    const listedRules = normalizeStarRuleData(listedRecordNode);
+    const groupReply = await getActivityGroup(
+      STAR_ACTIVITY_ID,
+      listedRules.clientUiUid || STAR_ACTIVITY_UID,
+    );
+    groupedRoot = groupReply?.group || null;
   } catch (err) {
-    shopWarning = err?.message || String(err);
+    groupWarning = err?.message || String(err);
   }
 
-  const currencyId = toNum(shopItems.find(item => item.currencyId > 0)?.currencyId) || STAR_SAND_ITEM_ID;
+  const rootNode = findActivityNode(groupedRoot ? [groupedRoot] : [], STAR_ACTIVITY_ID) || listedRootNode;
+  const recordNode = findActivityNode(groupedRoot ? [groupedRoot] : [], STAR_RECORD_ACTIVITY_ID) || listedRecordNode;
+  const shopNode = findActivityNode(groupedRoot ? [groupedRoot] : [], STAR_SHOP_ACTIVITY_ID) || listedShopNode;
+  const normalized = normalizeStarActivityTree(rootNode, recordNode, shopNode);
+  const currencyId = toNum(normalized.exchangeShop.find(item => item.currencyId > 0)?.currencyId)
+    || STAR_SAND_ITEM_ID;
   const [passport, solarTerms, starSandBalance] = await Promise.all([
     getSeasonPassport().catch(err => ({ title: '千星游记', warning: err?.message || String(err), claimableLevels: 0 })),
     getSolarTermsInfo().catch(err => ({ terms: [], claimableCount: 0, warning: err?.message || String(err) })),
@@ -2328,27 +2460,14 @@ async function getStarActivity() {
   ]);
 
   return {
-    uid: STAR_ACTIVITY_UID,
-    title: String(rootNode?.activity?.title || '心许千灯星垂野'),
-    activityId: STAR_ACTIVITY_ID,
-    recordActivityId: STAR_RECORD_ACTIVITY_ID,
-    recordClaimCommand: STAR_RECORD_CLAIM_CMD,
-    shopActivityId: STAR_SHOP_ACTIVITY_ID,
-    shopOpenCommand: STAR_SHOP_OPEN_CMD,
-    startTime: toNum(rootNode?.activity?.start_time),
-    endTime: toNum(rootNode?.activity?.end_time),
-    starRecord: normalizeStarRecord(recordNode),
-    exchangeShop: shopItems,
-    shopReadOnly: false,
-    shopWarning,
+    ...normalized,
+    shopWarning: normalized.exchangeShop.length > 0
+      ? ''
+      : groupWarning || '当前只读活动组未返回兑换商品',
     starSandCurrencyId: currencyId,
     starSandBalance,
     passport,
     solarTerms,
-    summary: {
-      starCount: normalizeStarRecord(recordNode).totalCount,
-      exchangeShopCount: shopItems.length,
-    },
   };
 }
 
@@ -2906,6 +3025,9 @@ module.exports = {
   getNanguaShop,
   getHeluActivity,
   getStarActivity,
+  normalizeStarActivityTree,
+  normalizeStarRuleData,
+  buildStarGameplayGuides,
   claimStarRecordRewards,
   exchangeStarShopItem,
   getQingmeiActivity,

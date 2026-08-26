@@ -202,12 +202,44 @@ export interface StarRecordItem {
   rewards: HeluDrawReward[]
 }
 
+export interface StarGameplayGuide {
+  key: 'daily' | 'claim'
+  title: string
+  icon: 'calendar' | 'claim'
+  evidence: string
+  steps: string[]
+  source: 'activity_rules'
+  operationSupported: false
+}
+
+export interface StarSubActivity {
+  id: number
+  parentId: number
+  type: number
+  feature: 'starRecord' | 'exchangeShop'
+  title: string
+  protobufField: number
+  sort: number
+  visible: boolean
+  enabled: boolean
+  status: number
+  statusLabel: string
+  available: boolean
+  protocolObserved: boolean
+}
+
 export interface StarActivityData {
   uid: string
+  uidConfirmed?: boolean
+  clientUiUid?: string
   title: string
   activityId: number
   startTime?: number
   endTime?: number
+  visible?: boolean
+  enabled?: boolean
+  status?: number
+  inActivityWindow?: boolean
   starRecord: {
     status: number
     openedDays: number
@@ -222,6 +254,20 @@ export interface StarActivityData {
   shopWarning?: string
   starSandCurrencyId: number
   starSandBalance: number
+  rulesTitle?: string
+  ruleLines?: string[]
+  gameplayGuides?: StarGameplayGuide[]
+  ruleWarnings?: string[]
+  subActivities?: StarSubActivity[]
+  protocol?: {
+    declaredReadOnlyFields: number[]
+  }
+  writeOperationsDerivedFromRules?: boolean
+  summary?: {
+    starCount: number
+    exchangeShopCount: number
+    gameplayGuideCount: number
+  }
   passport?: HeluSeasonPassport | null
   solarTerms?: HeluSolarTerms | null
   qingmei?: QingmeiActivity | null

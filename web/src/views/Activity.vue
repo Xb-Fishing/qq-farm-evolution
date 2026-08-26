@@ -315,7 +315,7 @@ onMounted(refreshAll)
       />
       <StarRecordPanel
         v-else-if="activeSection === 'records'"
-        :record="activity?.starRecord"
+        :activity="activity"
         :loading="starRecordClaimLoading"
         @claim="claimRecords"
       />
