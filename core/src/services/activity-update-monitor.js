@@ -4,6 +4,10 @@ const { scanActivityUpdates } = require('./activity-update-scanner');
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000;
 const MIN_INTERVAL_MS = 60 * 1000;
+const INITIAL_SCAN_MIN_MS = 15 * 1000;
+const INITIAL_SCAN_JITTER_MS = 10 * 1000;
+const UNAVAILABLE_RETRY_MIN_MS = 60 * 1000;
+const UNAVAILABLE_RETRY_JITTER_MS = 30 * 1000;
 const STATE_FILE = getDataFile('activity-update-report.json');
 
 let timer = null;
@@ -145,7 +149,6 @@ async function runActivityUpdateScan() {
     return report;
   } finally {
     running = false;
-    nextScanAt = Date.now() + nextScanDelayMs();
   }
 }
 
@@ -155,19 +158,30 @@ function nextScanDelayMs(baseMs = intervalMs) {
   return Math.max(MIN_INTERVAL_MS, baseMs - spread + Math.floor(Math.random() * (spread * 2 + 1)));
 }
 
-function scheduleNextScan() {
+function nextInitialScanDelayMs(random = Math.random) {
+  return INITIAL_SCAN_MIN_MS + Math.floor(random() * (INITIAL_SCAN_JITTER_MS + 1));
+}
+
+function nextUnavailableRetryDelayMs(random = Math.random) {
+  return UNAVAILABLE_RETRY_MIN_MS + Math.floor(random() * (UNAVAILABLE_RETRY_JITTER_MS + 1));
+}
+
+function scheduleNextScan(delayMs = nextScanDelayMs()) {
   if (timer) clearTimeout(timer);
-  const delayMs = nextScanDelayMs();
-  nextScanAt = Date.now() + delayMs;
+  const delay = Math.max(0, Number(delayMs) || 0);
+  nextScanAt = Date.now() + delay;
   timer = setTimeout(async () => {
+    let result = null;
     try {
-      await runActivityUpdateScan();
+      result = await runActivityUpdateScan();
     } catch (error) {
       console.warn(`[活动更新] 定时分析失败: ${error.message}`);
     } finally {
-      scheduleNextScan();
+      scheduleNextScan(result?.status === 'unavailable'
+        ? nextUnavailableRetryDelayMs()
+        : nextScanDelayMs());
     }
-  }, delayMs);
+  }, delay);
   timer.unref?.();
 }
 
@@ -179,10 +193,9 @@ function startActivityUpdateMonitor(options = {}) {
     || String(process.env.ACTIVITY_LOCAL_SCAN_ENABLED || '').toLowerCase() === 'true';
   intervalMs = Math.max(MIN_INTERVAL_MS, Number(options.intervalMs) || Number(process.env.ACTIVITY_UPDATE_INTERVAL_MS) || DEFAULT_INTERVAL_MS);
   report = report || readSavedReport();
-  scheduleNextScan();
-  setImmediate(() => runActivityUpdateScan().catch(error => {
-    console.warn(`[活动更新] 初始分析失败: ${error.message}`);
-  }));
+  // 路由注册早于账号 Worker 完成登录。首扫稍作抖动等待，避免启动瞬间把旧报告
+  // 覆盖为 unavailable；若账号仍离线，只检查连接状态后低频重试，不发协议请求。
+  scheduleNextScan(nextInitialScanDelayMs());
 }
 
 function getActivityUpdateState() {
@@ -197,6 +210,8 @@ function getActivityUpdateState() {
 module.exports = {
   DEFAULT_INTERVAL_MS,
   nextScanDelayMs,
+  nextInitialScanDelayMs,
+  nextUnavailableRetryDelayMs,
   analyzeReport,
   getActivityUpdateState,
   runActivityUpdateScan,

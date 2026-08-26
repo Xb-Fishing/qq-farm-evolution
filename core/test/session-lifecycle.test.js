@@ -28,12 +28,41 @@ const {
   buildRevisionContinuity,
   buildEvolutionGuardrails,
   buildPrompt,
+  planActivityEvolution,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
 } = require('../src/services/activity-evolver');
 const {
   buildEvolutionStartResponse,
+  selectUnknownOnlineActivities,
 } = require('../src/controllers/admin-activity-update-routes');
+
+test('在线活动发现不把 ID 大小误当开放顺序', () => {
+  const activities = [
+    { id: 2026081800, title: '已登记活动' },
+    { id: 2026070300, title: '稍后开放但 ID 较小的活动' },
+    { id: 2026070301, title: '较小 ID 活动子节点' },
+    { id: 2026070301, title: '重复节点' },
+  ];
+  assert.deepEqual(
+    selectUnknownOnlineActivities(activities, [2026081800]),
+    [activities[1], activities[2]],
+  );
+});
+
+test('当天凌晨空跑不能阻断稍后出现的未处理活动', () => {
+  const plan = planActivityEvolution({
+    status: 'update-found',
+    unknownActivityIds: [2026070300, 2026070301],
+    endedActivityIds: [],
+  }, {
+    lastEvolveDate: '2026-08-26',
+    handledUnknownIds: [2026081800],
+    handledEndedIds: [],
+  });
+  assert.equal(plan.shouldRun, true);
+  assert.deepEqual(plan.newUnknown, [2026070300, 2026070301]);
+});
 
 test('活动进化无数据或已有任务时是未启动状态，不误报管理员故障', () => {
   const evolve = { status: 'no_change' };
