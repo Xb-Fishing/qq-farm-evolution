@@ -53,6 +53,16 @@ export interface WeatherSubActivity {
   available: boolean
 }
 
+export interface WeatherGameplayGuide {
+  key: 'mutation' | 'collect' | 'summon' | 'research' | 'prank'
+  title: string
+  icon: 'rain' | 'collect' | 'summon' | 'research' | 'prank'
+  evidence: string
+  steps: string[]
+  source: 'activity_rules'
+  operationSupported: boolean
+}
+
 export interface WeatherActivityData {
   uid: string
   uidConfirmed: boolean
@@ -71,6 +81,8 @@ export interface WeatherActivityData {
   writeBoundary: string
   rulesTitle: string
   ruleLines: string[]
+  gameplayGuides: WeatherGameplayGuide[]
+  ruleWarnings: string[]
   items: {
     weatherBottle: WeatherActivityItem
     drawReward: WeatherActivityItem
@@ -100,6 +112,7 @@ export interface WeatherActivityData {
     enabledCount: number
     exchangeItemCount: number
     rewardPoolCount: number
+    gameplayGuideCount: number
   }
 }
 
