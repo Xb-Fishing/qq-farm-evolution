@@ -20,8 +20,6 @@ interface AutomationSettings {
     friend_bad: boolean
     friend_golden_bug: boolean
     friend_help_exp_limit: boolean
-    star_passport_claim: boolean
-    star_record_claim: boolean
     golden_bug_clear: boolean
     fertilizer_gift: boolean
     fertilizer_buy_organic: boolean
@@ -208,26 +206,6 @@ const mysteryShopSettingsVisible = ref(false)
           </div>
         </div>
       </Transition>
-
-      <div class="border border-gray-200 rounded-lg bg-gray-50/70 p-4 dark:border-gray-700 dark:bg-gray-900/20">
-        <div class="mb-3 flex items-center gap-2">
-          <span class="h-8 w-8 inline-grid place-items-center rounded-lg bg-violet-50 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
-            <span class="i-carbon-events text-lg" />
-          </span>
-          <div>
-            <h4 class="text-sm text-gray-900 font-semibold dark:text-gray-100">活动控制</h4>
-            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">自动检查并领取活动中可领取的奖励。</p>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-            <BaseSwitch v-model="settings.automation.star_passport_claim" label="自动领取千星游记" />
-          </div>
-          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-            <BaseSwitch v-model="settings.automation.star_record_claim" label="自动领取观星礼录" />
-          </div>
-        </div>
-      </div>
 
       <div class="border border-gray-200 rounded bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-900/20">
         <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
