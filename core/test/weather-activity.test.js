@@ -244,6 +244,24 @@ test('活动只读缓存合并并发请求，过期后才重新读取腾讯上�
   assert.equal(upstreamReads, 2);
 });
 
+test('活动只读缓存也缓存短期失败，避免页面刷新放大上游异常', async () => {
+  let now = 1_000;
+  let upstreamReads = 0;
+  const cache = createActivityReadCache({ ttlMs: 10_000, now: () => now });
+  const loader = async () => {
+    upstreamReads += 1;
+    throw new Error('temporary upstream failure');
+  };
+
+  await assert.rejects(cache.read('account-A', loader), /temporary upstream failure/);
+  await assert.rejects(cache.read('account-A', loader), /temporary upstream failure/);
+  assert.equal(upstreamReads, 1);
+
+  now += 10_000;
+  await assert.rejects(cache.read('account-A', loader), /temporary upstream failure/);
+  assert.equal(upstreamReads, 2);
+});
+
 test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析仍保留', () => {
   const workerSource = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
   const activityViewSource = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');

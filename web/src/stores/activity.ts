@@ -116,6 +116,103 @@ export interface WeatherActivityData {
   }
 }
 
+export interface CharityActivityResource {
+  key: 'seed' | 'fruit' | 'loveValue'
+  kind: 'seed' | 'fruit' | 'currency'
+  name: string
+  itemId: number | null
+  count: number | null
+  image: string
+  evidence: string
+}
+
+export interface CharityGameplayGuide {
+  key: 'seed' | 'grow' | 'donate' | 'publicFund'
+  title: string
+  icon: 'task' | 'grow' | 'heart' | 'fund'
+  evidence: string
+  steps: string[]
+  source: 'activity_rules'
+  operationSupported: boolean
+}
+
+export interface CharityRewardGroup {
+  key: 'daily' | 'personal' | 'global'
+  title: string
+  condition: string
+  evidence: string
+  items: Array<{ name: string, count: number }>
+  source: 'activity_rules'
+  statusAvailable: boolean
+  operationSupported: boolean
+}
+
+export interface CharityNotice {
+  key: 'fundLimit' | 'authorization' | 'automation' | 'settlement'
+  title: string
+  text: string
+  evidence: string
+  source: 'activity_rules'
+}
+
+export interface CharityActivityData {
+  uid: string
+  uidConfirmed: boolean
+  clientUiUid: string
+  clientUiUidConfirmed: boolean
+  title: string
+  activityId: number
+  startTime: number
+  endTime: number
+  visible: boolean
+  enabled: boolean
+  status: number
+  active: boolean
+  participationEnabled: boolean
+  readOnly: boolean
+  progressAvailable: boolean
+  inventoryAvailable: boolean
+  imageEvidenceAvailable: boolean
+  writeOperationsSupported: boolean
+  manualOnly: boolean
+  writeBoundary: string
+  rulesTitle: string
+  ruleLines: string[]
+  gameplayGuides: CharityGameplayGuide[]
+  rewardGroups: CharityRewardGroup[]
+  notices: CharityNotice[]
+  resources: CharityActivityResource[]
+  subActivities: Array<{
+    id: number
+    parentId: number
+    type: number
+    title: string
+    startTime: number
+    endTime: number
+    visible: boolean
+    enabled: boolean
+    status: number
+    statusLabel: string
+    clientUiUid: string
+    protobufField: number
+    protobufState: 'opaque_read_only'
+    protocolObserved: boolean
+    available: boolean
+  }>
+  protocol: {
+    declaredReadOnlyFields: number[]
+    opaqueReadOnlyFields: number[]
+    observedShape: Array<{ path: string, wire: number, count: number, byteLengths: number[] }>
+  }
+  summary: {
+    subActivityCount: number
+    gameplayGuideCount: number
+    rewardGroupCount: number
+    noticeCount: number
+    resourceCount: number
+  }
+}
+
 export interface HeluDrawReward {
   itemId: number
   itemCount: number
@@ -380,12 +477,19 @@ export interface HeluActivityData {
 }
 
 export const useActivityStore = defineStore('activity', () => {
+  const charityActivity = ref<CharityActivityData | null>(null)
+  const charityLoading = ref(false)
+  const charityError = ref('')
+  let charityRequestId = 0
   const weatherActivity = ref<WeatherActivityData | null>(null)
   const weatherLoading = ref(false)
   const weatherError = ref('')
   let weatherRequestId = 0
 
   function clearActivityData() {
+    charityActivity.value = null
+    charityLoading.value = false
+    charityError.value = ''
     weatherActivity.value = null
     weatherLoading.value = false
     weatherError.value = ''
@@ -428,11 +532,46 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
+  async function fetchCharityActivity(accountId: string) {
+    if (!accountId)
+      return
+    const requestedId = String(accountId)
+    const requestId = ++charityRequestId
+    charityLoading.value = true
+    charityError.value = ''
+    try {
+      const { data } = await api.get('/api/activity/charity', {
+        headers: { 'x-account-id': accountId },
+      })
+      if (requestId !== charityRequestId || !isCurrentAccount(requestedId))
+        return data
+      if (data.ok)
+        charityActivity.value = data.activity || null
+      else
+        charityError.value = data.error || '获取公益小红花失败'
+      return data
+    }
+    catch (err: any) {
+      const error = err.message || '获取公益小红花失败'
+      if (requestId === charityRequestId && isCurrentAccount(requestedId))
+        charityError.value = error
+      return { ok: false, error }
+    }
+    finally {
+      if (requestId === charityRequestId)
+        charityLoading.value = false
+    }
+  }
+
   return {
+    charityActivity,
+    charityLoading,
+    charityError,
     weatherActivity,
     weatherLoading,
     weatherError,
     clearActivityData,
+    fetchCharityActivity,
     fetchWeatherActivity,
   }
 })
