@@ -16,6 +16,8 @@ const { createModuleLogger } = require('./logger');
 const { getBag, getBagItems } = require('./warehouse');
 
 const activityLogger = createModuleLogger('activity');
+// 历史活动写方法只保留解析结构上下文；即使以后被误接线，也必须在发包前失败。
+const RETIRED_ACTIVITY_WRITES_DISABLED = true;
 
 const HELU_DRAW_REQUEST_GAP_MS = 450;
 const HELU_DRAW_REFRESH_DELAY_MS = 350;
@@ -588,6 +590,9 @@ async function getWeatherActivity() {
  * 操作活动
  */
 async function operateActivity(activityId, cmd, options = {}) {
+  if (RETIRED_ACTIVITY_WRITES_DISABLED) {
+    throw new Error('历史活动写操作已退役，禁止重新接入线上调用');
+  }
   assertActivityConnection('活动操作');
 
   const payload = {
@@ -2979,6 +2984,25 @@ async function getNanguaShop() {
   return normalizeNanguaGroup(await getActivityGroup(NANGUA_SHOP_ACTIVITY_ID));
 }
 
+// 这些历史写实现只给同文件中的历史解析代码保留结构上下文；它们不导出、没有
+// controller/data-provider/Worker 调用入口，也没有定时任务。下列私有引用防止维护工具
+// 把“未导出”误报成漏接线；严禁把它们重新接回线上账号，后续迁移完解析夹具后可整段删除。
+void [
+  useQixiDew,
+  buildQixiBridge,
+  sendQixiSachet,
+  buyNanguaShopItem,
+  refreshNanguaShop,
+  claimQingmeiSeeds,
+  brewAndSellQingmeiWine,
+  claimSeasonPassportRewards,
+  claimSolarTermsReward,
+  claimStarRecordRewards,
+  exchangeStarShopItem,
+  drawHeluGiftLotus,
+  exchangeHeluShopItem,
+];
+
 module.exports = {
   NANGUA_ACTIVITY_UID,
   HELU_ACTIVITY_UID,
@@ -3022,31 +3046,11 @@ module.exports = {
   getWeatherActivity,
   normalizeWeatherActivity,
   buildWeatherGameplayGuides,
-  getNanguaShop,
-  getHeluActivity,
-  getStarActivity,
   normalizeStarActivityTree,
   normalizeStarRuleData,
   buildStarGameplayGuides,
-  claimStarRecordRewards,
-  exchangeStarShopItem,
-  getQingmeiActivity,
-  claimQingmeiSeeds,
-  brewAndSellQingmeiWine,
-  getQixiActivity,
-  buildQixiBridge,
-  sendQixiSachet,
-  useQixiDew,
   isQixiDewLandCandidate,
   normalizeQixiActivity,
-  getSeasonPassport,
-  claimSeasonPassportRewards,
-  getSolarTermsInfo,
-  claimSolarTermsReward,
-  exchangeHeluShopItem,
-  drawHeluGiftLotus,
-  buyNanguaShopItem,
-  refreshNanguaShop,
   normalizeNanguaGroup,
   normalizeHeluGroup,
 };
