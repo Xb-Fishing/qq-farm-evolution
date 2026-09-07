@@ -111,22 +111,28 @@ function guideIcon(icon: CharityGameplayGuide['icon']) {
             活动资源与当前可见状态
           </h3>
           <p class="mt-1 text-xs text-gray-500">
-            当前证据只确认名称和用途，未提供道具 ID、图片、库存、爱心值或任务进度字段，因此不显示伪造的 0。
+            当前农场土地已确认小红花植物映射，因此种子和果实显示对应 ID；图片、库存、爱心值和任务进度仍无证据，不显示伪造的 0。
           </p>
           <div class="grid mt-3 gap-3 md:grid-cols-3">
             <div v-for="resource in activity?.resources || []" :key="resource.key" class="flex items-center gap-3 rounded-xl bg-slate-50 p-4 dark:bg-gray-900/35">
               <div class="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-rose-100 dark:bg-rose-900/30">
-                <span :class="resource.kind === 'currency' ? 'i-carbon-favorite' : 'i-carbon-crop-growth'" class="text-2xl text-rose-700 dark:text-rose-200" />
+                <img v-if="resource.image" :src="resource.image" alt="" class="h-9 w-9 object-contain">
+                <span v-else :class="resource.kind === 'currency' ? 'i-carbon-favorite' : 'i-carbon-crop-growth'" class="text-2xl text-rose-700 dark:text-rose-200" />
               </div>
               <div>
                 <div class="text-sm text-gray-900 font-semibold dark:text-white">
                   {{ resource.name }}
                 </div>
                 <div class="mt-1 text-xs text-gray-500">
-                  名称来自活动说明
+                  <template v-if="resource.itemId">
+                    ID {{ resource.itemId }} · 当前土地映射
+                  </template>
+                  <template v-else>
+                    名称来自活动说明
+                  </template>
                 </div>
                 <div class="text-xs text-amber-700 dark:text-amber-300">
-                  ID / 图片 / 数量待官方证据
+                  {{ resource.itemId ? '图片 / 数量待官方证据' : 'ID / 图片 / 数量待官方证据' }}
                 </div>
               </div>
             </div>
@@ -177,10 +183,10 @@ function guideIcon(icon: CharityGameplayGuide['icon']) {
 
         <section class="border border-gray-100 rounded-xl p-4 dark:border-gray-700">
           <h3 class="text-gray-900 font-semibold dark:text-white">
-            官方客户端操作
+            怎么参与（只能在官方客户端手动完成）
           </h3>
           <p class="mt-1 text-xs text-gray-500">
-            当前没有官方自然成功请求样本，且活动规则禁止自动方式参与。以下仅标示玩家流程，不会发送任何写请求。
+            这个活动不能由 Bot 自动执行：活动规则禁止自动方式参与。请打开官方 QQ 农场的“公益小红花”入口，完成人工领取、种植、领奖和捐赠；以下按钮仅标示玩家流程，不发送写请求。
           </p>
           <div class="mt-3 flex flex-wrap gap-2">
             <button v-for="action in manualActions" :key="action" type="button" disabled class="cursor-not-allowed rounded-lg bg-gray-100 px-3 py-2 text-xs text-gray-400 dark:bg-gray-700 dark:text-gray-500">

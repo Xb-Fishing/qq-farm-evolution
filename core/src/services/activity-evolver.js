@@ -684,7 +684,7 @@ ${sections.join('\n\n')}
 1. 先读 docs/HANDOFF.md 了解项目结构与硬约束。
 2. 新活动不是只登记 ID，而要做端到端适配。参考 core/src/services/activity.js、core/src/controllers/admin-activity-routes.js、core/src/core/worker.js 中既有活动段，以及 web/src/views/Activity.vue 的七夕/青梅/南瓜铺等模式，逐项核对并在证据支持时完成：
    - 活动根/子节点 ID、UID、时间、玩法状态和 protobuf 字段；
-   - 活动货币、种子、果实、礼包、装扮等道具名称/图片/配置；涉及活动植物时补 core/src/gameConfig/EventPlants.json，并按 AGENTS.md 核实 size（四格必须 size: 2）；
+   - 活动货币、种子、果实、礼包、装扮等道具名称/图片/配置；涉及活动植物时必须同时核对当前土地/背包证据，补 core/src/gameConfig/EventPlants.json，并按 AGENTS.md 核实 size（四格必须 size: 2）；严禁把土地返回的 plant_id 当成 seed_id，不能让“植物 ID 裸显示 / seedId=0”留到下一轮；
    - 每一种玩法的只读状态、可执行操作、次数/库存/奖励刷新和失败边界；禁止猜测 cmd 或写操作字段；
    - 后端服务、管理 API、默认开关、每日活动例行入口和运行日志；
    - web/src/views/Activity.vue 及相关组件中的活动专属卡片、道具数量、玩法状态和安全操作按钮，不能只在“活动扫描”面板显示一个候选 ID。

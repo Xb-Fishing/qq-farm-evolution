@@ -591,6 +591,8 @@ test('活动进化 Prompt 获得完整活动域职责和脱敏证据而非只登
   const prompt = buildPrompt({ online: { activities: [], groups } }, [2026070301], []);
   assert.match(prompt, /端到端适配/);
   assert.match(prompt, /活动货币、种子、果实、礼包、装扮/);
+  assert.match(prompt, /严禁把土地返回的 plant_id 当成 seed_id/);
+  assert.match(prompt, /植物 ID 裸显示 \/ seedId=0/);
   assert.match(prompt, /web\/src\/views\/Activity\.vue/);
   assert.match(prompt, /可以修改 core\/src\/core\/worker\.js/);
   assert.match(prompt, /仅限活动模块 import、活动默认配置、活动每日任务/);

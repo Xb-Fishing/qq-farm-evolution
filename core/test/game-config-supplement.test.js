@@ -64,6 +64,25 @@ test('star bell flower is configured as a 2x2 crop', () => {
   assert.equal(getPlantBySeedId(29003)?.size, 2);
 });
 
+test('charity red flower maps the observed plant to its activity seed as a single-grid crop', () => {
+  const plant = getPlantBySeedId(20883);
+  assert.deepEqual({
+    id: plant?.id,
+    seedId: plant?.seed_id,
+    fruitId: plant?.fruit?.id,
+    name: plant?.name,
+    size: plant?.size,
+  }, {
+    id: 1020883,
+    seedId: 20883,
+    fruitId: 40883,
+    name: '小红花',
+    size: 1,
+  });
+  assert.equal(getItemById(20883)?.name, '小红花种子');
+  assert.equal(getItemById(40883)?.name, '小红花');
+});
+
 test('qixi activity items resolve official static icons', () => {
   const expected = new Map([
     [1024, '/activity/qixi/qixi-feather.png'],
