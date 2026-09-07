@@ -1549,11 +1549,6 @@ async function handleApiCall(msg) {
                 result = await abandonMysteryShop();
                 break;
             }
-            case 'getActivityShop': {
-                const { getNanguaShop } = require('../services/activity');
-                result = await getNanguaShop();
-                break;
-            }
             case 'getActivityDiscoveryList': {
                 const { getActivityDiscoveryList } = require('../services/activity');
                 result = await getActivityDiscoveryList();
@@ -1564,89 +1559,9 @@ async function handleApiCall(msg) {
                 result = await getActivityGroupSnapshot(args[0], args[1]);
                 break;
             }
-            case 'buyActivityShopItem': {
-                const { buyNanguaShopItem } = require('../services/activity');
-                result = await buyNanguaShopItem(args[0], args[1]);
-                break;
-            }
-            case 'refreshActivityShop': {
-                const { refreshNanguaShop } = require('../services/activity');
-                result = await refreshNanguaShop();
-                break;
-            }
-            case 'getHeluActivity': {
-                const { getHeluActivity } = require('../services/activity');
-                result = await getHeluActivity();
-                break;
-            }
-            case 'getStarActivity': {
-                const { getStarActivity } = require('../services/activity');
-                result = await getStarActivity();
-                break;
-            }
             case 'getWeatherActivity': {
                 const { getWeatherActivity } = require('../services/activity');
                 result = await getWeatherActivity();
-                break;
-            }
-            case 'claimStarRecordRewards': {
-                const { claimStarRecordRewards } = require('../services/activity');
-                result = await claimStarRecordRewards();
-                break;
-            }
-            case 'exchangeStarShopItem': {
-                const { exchangeStarShopItem } = require('../services/activity');
-                result = await exchangeStarShopItem(args[0], args[1]);
-                break;
-            }
-            case 'getQixiActivity': {
-                const { getQixiActivity } = require('../services/activity');
-                result = await getQixiActivity();
-                break;
-            }
-            case 'buildQixiBridge': {
-                const { buildQixiBridge } = require('../services/activity');
-                result = await buildQixiBridge();
-                break;
-            }
-            case 'sendQixiSachet': {
-                const { sendQixiSachet } = require('../services/activity');
-                result = await sendQixiSachet(args[0], args[1]);
-                break;
-            }
-            case 'useQixiDew': {
-                const { useQixiDew } = require('../services/activity');
-                result = await useQixiDew(args[0] || {});
-                break;
-            }
-            case 'exchangeHeluShopItem': {
-                const { exchangeHeluShopItem } = require('../services/activity');
-                result = await exchangeHeluShopItem(args[0], args[1]);
-                break;
-            }
-            case 'drawHeluGiftLotus': {
-                const { drawHeluGiftLotus } = require('../services/activity');
-                result = await drawHeluGiftLotus(args[0] || {});
-                break;
-            }
-            case 'claimSeasonPassportRewards': {
-                const { claimSeasonPassportRewards } = require('../services/activity');
-                result = await claimSeasonPassportRewards();
-                break;
-            }
-            case 'claimSolarTermsReward': {
-                const { claimSolarTermsReward } = require('../services/activity');
-                result = await claimSolarTermsReward(args[0]);
-                break;
-            }
-            case 'claimQingmeiSeeds': {
-                const { claimQingmeiSeeds } = require('../services/activity');
-                result = await claimQingmeiSeeds();
-                break;
-            }
-            case 'brewAndSellQingmeiWine': {
-                const { brewAndSellQingmeiWine } = require('../services/activity');
-                result = await brewAndSellQingmeiWine(args[0] || {});
                 break;
             }
             case 'getIllustratedList': {

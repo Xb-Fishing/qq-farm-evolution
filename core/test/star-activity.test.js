@@ -3,17 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const activityService = require('../src/services/activity');
 const {
   STAR_ACTIVITY_ID,
   STAR_RECORD_ACTIVITY_ID,
   STAR_SHOP_ACTIVITY_ID,
   normalizeStarActivityTree,
   normalizeStarRuleData,
-} = require('../src/services/activity');
-const {
-  STAR_ACTIVITY_UPSTREAM_CACHE_MS,
-  registerAdminHeluActivityRoutes,
-} = require('../src/controllers/admin-helu-activity-routes');
+} = activityService;
 
 function createStarActivityTree() {
   const recordNode = {
@@ -132,56 +129,6 @@ test('千星活动没有说明证据时不凭 type 或 protobuf 字段猜玩法'
   assert.deepEqual(rules.ruleWarnings, []);
 });
 
-test('千星管理读取缓存合并页面刷新，写操作后清除旧状态', async () => {
-  const routes = new Map();
-  let upstreamReads = 0;
-  const activity = normalizeStarActivityTree(...Object.values(createStarActivityTree()));
-  registerAdminHeluActivityRoutes({
-    app: {
-      get: (route, handler) => routes.set(`GET ${route}`, handler),
-      post: (route, handler) => routes.set(`POST ${route}`, handler),
-    },
-    provider: {
-      getStatus: () => ({ connection: { connected: true } }),
-      getStarActivity: async () => {
-        upstreamReads += 1;
-        return activity;
-      },
-      claimStarRecordRewards: async () => ({ ok: true, recordIds: [1], activity }),
-    },
-    getAccountIdFromRequest: () => 'account-A',
-    canAccessAccount: () => true,
-    sendProviderError: (_res, error) => { throw error; },
-  });
-
-  const response = () => {
-    const state = { body: null, statusCode: 200 };
-    return {
-      state,
-      json: body => { state.body = body; },
-      status: (statusCode) => {
-        state.statusCode = statusCode;
-        return { json: body => { state.body = body; } };
-      },
-    };
-  };
-
-  let res = response();
-  await routes.get('GET /api/activity/star')({}, res);
-  assert.equal(res.state.body.upstreamCached, false);
-  res = response();
-  await routes.get('GET /api/activity/star')({}, res);
-  assert.equal(res.state.body.upstreamCached, true);
-  assert.equal(res.state.body.upstreamCacheMs, STAR_ACTIVITY_UPSTREAM_CACHE_MS);
-  assert.equal(upstreamReads, 1);
-
-  await routes.get('POST /api/activity/star/records/claim')({ body: {} }, response());
-  res = response();
-  await routes.get('GET /api/activity/star')({}, res);
-  assert.equal(res.state.body.upstreamCached, false);
-  assert.equal(upstreamReads, 2);
-});
-
 test('千星历史只读状态使用 List 验证后的 GetGroup，扫描面板仍能解释说明玩法', () => {
   const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/activity.js'), 'utf8');
   const getStarStart = serviceSource.indexOf('async function getStarActivity()');
@@ -203,6 +150,9 @@ test('过期千星自动开关、例行入口和专属页面已停用，历史�
   const settingsSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/settings/AutomationSettingsTab.vue'), 'utf8');
   const activityViewSource = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');
   const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/activity.js'), 'utf8');
+  const routeSource = fs.readFileSync(path.join(__dirname, '../src/controllers/admin-activity-routes.js'), 'utf8');
+  const providerSource = fs.readFileSync(path.join(__dirname, '../src/runtime/data-provider.js'), 'utf8');
+  const activityStoreSource = fs.readFileSync(path.join(__dirname, '../../web/src/stores/activity.ts'), 'utf8');
 
   assert.doesNotMatch(workerSource, /runStarActivityAutoClaims|star_activity_claim/);
   assert.doesNotMatch(storeSource, /star_passport_claim|star_record_claim/);
@@ -211,5 +161,23 @@ test('过期千星自动开关、例行入口和专属页面已停用，历史�
   assert.doesNotMatch(activityViewSource, /fetchHeluActivity|千星游记|观星礼录|星砂兑换商店|节令小札/);
   assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
   assert.match(serviceSource, /normalizeStarActivityTree|normalizeStarRuleData/);
-  assert.match(workerSource, /case 'getStarActivity'/);
+  assert.doesNotMatch(routeSource, /admin-helu-activity-routes|admin-nangua-activity-routes/);
+  assert.doesNotMatch(providerSource, /getStarActivity|claimStarRecordRewards|getQixiActivity|getActivityShop/);
+  assert.doesNotMatch(workerSource, /case '(?:getStarActivity|claimStarRecordRewards|getQixiActivity|getActivityShop)'/);
+  assert.doesNotMatch(activityStoreSource, /\/api\/activity\/(?:star|helu|qingmei)/);
+  assert.match(serviceSource, /RETIRED_ACTIVITY_WRITES_DISABLED = true/);
+  const retiredGuard = serviceSource.indexOf("throw new Error('历史活动写操作已退役");
+  const firstOperateSend = serviceSource.indexOf("sendMsgAsync('gamepb.activitypb.ActivityService', 'Operate'");
+  assert.ok(retiredGuard > 0 && retiredGuard < firstOperateSend);
+  for (const name of [
+    'getNanguaShop', 'buyNanguaShopItem', 'refreshNanguaShop',
+    'getHeluActivity', 'drawHeluGiftLotus', 'exchangeHeluShopItem',
+    'getStarActivity', 'claimStarRecordRewards', 'exchangeStarShopItem',
+    'getQingmeiActivity', 'claimQingmeiSeeds', 'brewAndSellQingmeiWine',
+    'getQixiActivity', 'buildQixiBridge', 'sendQixiSachet', 'useQixiDew',
+    'getSeasonPassport', 'claimSeasonPassportRewards',
+    'getSolarTermsInfo', 'claimSolarTermsReward',
+  ]) {
+    assert.equal(Object.hasOwn(activityService, name), false, `${name} 不应继续暴露`);
+  }
 });

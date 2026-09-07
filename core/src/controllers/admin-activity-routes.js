@@ -1,10 +1,4 @@
 const {
-  registerAdminHeluActivityRoutes,
-} = require("./admin-helu-activity-routes");
-const {
-  registerAdminNanguaActivityRoutes,
-} = require("./admin-nangua-activity-routes");
-const {
   registerAdminWeatherActivityRoutes,
 } = require('./admin-weather-activity-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
@@ -26,8 +20,6 @@ function registerAdminActivityRoutes({
     sendProviderError,
   };
 
-  registerAdminNanguaActivityRoutes(routeContext);
-  registerAdminHeluActivityRoutes(routeContext);
   registerAdminWeatherActivityRoutes(routeContext);
   registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken });
 }
