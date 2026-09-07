@@ -8,6 +8,9 @@ const {
   CHARITY_FLOW_ACTIVITY_ID,
   CHARITY_CLIENT_UI_UID,
   CHARITY_PROTOBUF_FIELD,
+  CHARITY_PLANT_ID,
+  CHARITY_SEED_ITEM_ID,
+  CHARITY_FRUIT_ITEM_ID,
   getCharityActivity,
   normalizeCharityActivity,
 } = require('../src/services/activity');
@@ -73,6 +76,9 @@ test('公益小红花按在线说明标准化流程、奖励、边界和不透�
   assert.equal(CHARITY_FLOW_ACTIVITY_ID, 2026090901);
   assert.equal(CHARITY_CLIENT_UI_UID, 'CharityRedFlower');
   assert.equal(CHARITY_PROTOBUF_FIELD, 116);
+  assert.equal(CHARITY_PLANT_ID, 1020883);
+  assert.equal(CHARITY_SEED_ITEM_ID, 20883);
+  assert.equal(CHARITY_FRUIT_ITEM_ID, 40883);
   assert.equal(activity.uid, '');
   assert.equal(activity.uidConfirmed, false);
   assert.equal(activity.clientUiUid, 'CharityRedFlower');
@@ -86,6 +92,12 @@ test('公益小红花按在线说明标准化流程、奖励、边界和不透�
   assert.deepEqual(activity.gameplayGuides.map(item => item.key), ['seed', 'grow', 'donate', 'publicFund']);
   assert.deepEqual(activity.rewardGroups.map(item => item.key), ['daily', 'personal', 'global']);
   assert.deepEqual(activity.resources.map(item => item.name), ['小红花种子', '小红花果实', '爱心值']);
+  assert.deepEqual(activity.resources.map(item => item.itemId), [20883, 40883, null]);
+  assert.deepEqual(activity.resources.map(item => item.itemIdSource), [
+    'current_farm_plant_mapping',
+    'current_farm_plant_mapping',
+    '',
+  ]);
   assert.equal(activity.rewardGroups[0].items[0].count, 2);
   assert.equal(activity.rewardGroups[1].items.at(-1).name, '公益小红花做好事头像框');
   assert.deepEqual(activity.rewardGroups[2].items.map(item => item.count), [20, 200, 300]);
@@ -189,7 +201,8 @@ test('公益小红花专属 UI、管理转发和已知活动注册完整且无�
   assert.match(panelSource, /活动规则禁止自动方式参与/);
   assert.match(panelSource, /领取公益礼包.*捐赠爱心值.*送出公益金/s);
   assert.match(panelSource, /disabled/);
-  assert.match(panelSource, /ID \/ 图片 \/ 数量待官方证据/);
+  assert.match(panelSource, /ID \{\{ resource\.itemId \}\} · 当前土地映射/);
+  assert.match(panelSource, /这个活动不能由 Bot 自动执行/);
   assert.match(scanSource, /公益小红花玩法节点/);
   assert.match(scanSource, /每日任务与分享领种子/);
   assert.match(scanSource, /活动禁止自动方式参与/);

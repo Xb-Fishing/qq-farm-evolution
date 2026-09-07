@@ -286,4 +286,7 @@ test('雨落成诗专属 UI 按活动说明展示玩法，协议节点只作为�
   assert.doesNotMatch(scanSource, /个候选或当前活动入口/);
   assert.match(scanSource, /本次新活动候选组/);
   assert.match(source, /1 分钟内重复刷新复用本地结果/);
+  assert.match(source, /当前请在官方 QQ 农场活动页人工执行/);
+  assert.match(source, /必须先取得当前官方客户端自然操作产生的成功请求样本/);
+  assert.doesNotMatch(source, /操作协议待确认，当前不提供执行按钮/);
 });

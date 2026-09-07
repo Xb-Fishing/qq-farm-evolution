@@ -74,7 +74,7 @@ function featureLabel(activity: WeatherSubActivity) {
             已从活动说明识别 {{ activity?.summary?.gameplayGuideCount || 0 }} 种玩法
           </span>
           <span class="rounded-full bg-amber-300/20 px-2.5 py-1 text-amber-100">
-            只读展示 · 操作协议待确认
+            只读展示 · 需官方自然成功样本
           </span>
         </div>
       </div>
@@ -140,10 +140,19 @@ function featureLabel(activity: WeatherSubActivity) {
                 </li>
               </ol>
               <div class="mt-3 border-t border-gray-100 pt-2 text-xs text-amber-700 dark:border-gray-700 dark:text-amber-300">
-                操作协议待确认，当前不提供执行按钮
+                当前请在官方 QQ 农场活动页人工执行；Bot 不会试探未知写接口
               </div>
             </article>
           </div>
+        </section>
+
+        <section class="rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-800/60 dark:bg-sky-950/20">
+          <h3 class="text-sm text-sky-900 font-semibold dark:text-sky-100">
+            怎么执行
+          </h3>
+          <p class="mt-2 text-xs text-sky-800 leading-5 dark:text-sky-200">
+            目前只能打开官方 QQ 农场的“雨落成诗”活动页，按上方流程人工使用天气瓶、推进研究或抽取奖励。要在本面板开放执行按钮，必须先取得当前官方客户端自然操作产生的成功请求样本，确认活动仍允许该操作，并补齐命令、参数、次数限制和失败边界；在此之前不会用线上账号猜接口。
+          </p>
         </section>
 
         <section v-if="activity?.ruleWarnings?.length" class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800/60 dark:bg-amber-950/20">
