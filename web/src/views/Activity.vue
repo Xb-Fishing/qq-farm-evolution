@@ -1,12 +1,7 @@
 <script setup lang="ts">
-import type { ActivityLabels, ActivitySection, ActivitySectionKey } from '@/components/activity/types'
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import api from '@/api'
-import HeluExchangePanel from '@/components/activity/HeluExchangePanel.vue'
-import HeluPassportPanel from '@/components/activity/HeluPassportPanel.vue'
-import HeluSolarTermsPanel from '@/components/activity/HeluSolarTermsPanel.vue'
-import StarRecordPanel from '@/components/activity/StarRecordPanel.vue'
 import WeatherActivityPanel from '@/components/activity/WeatherActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -15,78 +10,17 @@ import { useActivityStore } from '@/stores/activity'
 import { useToastStore } from '@/stores/toast'
 import { useUserStore } from '@/stores/user'
 
-const L: ActivityLabels = {
-  title: '活动中心',
-  currentAccount: '当前账号',
-  none: '未选择',
-  needAccount: '请先选择账号，再查看活动数据。',
-  refresh: '刷新',
-  loading: '正在加载活动数据...',
-  empty: '暂无数据',
-  warningTitle: '活动提示',
-  heluTitle: '心许千灯星垂野',
-  giftLotusTab: '观星礼录',
-  shopTab: '星砂兑换商店',
-  journeyTab: '千星游记',
-  notesTab: '节令小札',
-  pool: '奖池',
-  recent: '最近结果',
-  freeRemain: '免费剩余',
-  paidRemain: '点券剩余',
-  dailyUsed: '今日已用',
-  dailyRemain: '今日剩余',
-  helu: '星砂',
-  heluBalance: '星砂余额',
-  exchangeGoods: '兑换奖励',
-  drawOne: '点亮',
-  drawBatch: '一键点亮',
-  drawDone: '点亮完成',
-  batchDone: '点亮完成',
-  drawFail: '点亮失败',
-  exchangeDone: '兑换成功：',
-  exchangeFail: '兑换失败',
-  canExchange: '立即兑换',
-  unavailable: '暂不可用',
-  owned: '已拥有',
-  noHelu: '星砂不足',
-  unsupportedCurrency: '暂不支持该货币',
-  priceLabel: '价格',
-  stateLabel: '状态',
-  drawCostLabel: '操作说明',
-  freeDraw: '免费',
-  paidDraw: '消耗',
-  recentCost: '本次消耗',
-  rewardPoolCount: '星宿奖励',
-  exchangeCount: '兑换奖励',
-  typeFallback: '活动奖励',
-  gold: '金币',
-  coupon: '点券',
-  activityCurrency: '星砂',
-  defaultHeluTitle: '心许千灯星垂野',
-  decorationLabel: '装扮',
-  subActivityUnavailable: '暂未读取到活动数据。',
-  activityStatus: '活动状态',
-}
-
 const accountStore = useAccountStore()
 const activityStore = useActivityStore()
 const toast = useToastStore()
 const userStore = useUserStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const {
-  heluActivity: activity,
-  heluLoading,
-  passportClaimLoading,
-  solarClaimLoading,
-  starRecordClaimLoading,
-  exchangeLoading,
-  heluError,
   weatherActivity,
   weatherLoading,
   weatherError,
 } = storeToRefs(activityStore)
 
-const activeSection = ref<ActivitySectionKey>('weather')
 const showActivityAnalysis = ref(false)
 type EvolutionAgent = 'claude' | 'codex'
 const evolutionDefaultAgent = ref<EvolutionAgent>('claude')
@@ -94,21 +28,10 @@ const evolutionAgentLoading = ref(false)
 const evolutionRunning = ref(false)
 const evolutionNextRunAt = ref(0)
 const evolutionIssueCount = ref(0)
-const sections = computed<ActivitySection[]>(() => [
-  { key: 'weather', label: '雨落成诗', icon: 'i-carbon-rain-heavy', count: weatherActivity.value?.draw.paidRemaining || 0 },
-  { key: 'journey', label: '千星游记', icon: 'i-carbon-map', count: activity.value?.passport?.claimableLevels || 0 },
-  { key: 'records', label: '观星礼录', icon: 'i-carbon-star', count: activity.value?.starRecord?.claimableCount || 0 },
-  { key: 'shop', label: '星砂兑换商店', icon: 'i-carbon-store', count: activity.value?.exchangeShop?.length || 0 },
-  { key: 'notes', label: '节令小札', icon: 'i-carbon-notebook', count: activity.value?.solarTerms?.claimableCount || 0 },
-])
 
 async function refreshAll() {
-  if (currentAccountId.value) {
-    await Promise.all([
-      activityStore.fetchHeluActivity(String(currentAccountId.value)),
-      activityStore.fetchWeatherActivity(String(currentAccountId.value)),
-    ])
-  }
+  if (currentAccountId.value)
+    await activityStore.fetchWeatherActivity(String(currentAccountId.value))
 }
 
 function syncEvolutionAgent(evolve: {
@@ -163,44 +86,6 @@ async function refreshWeather() {
   result?.ok ? toast.success('雨落成诗只读状态已刷新') : toast.error(result?.error || '雨落成诗刷新失败')
 }
 
-async function claimRecords() {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.claimStarRecords(currentAccountId.value)
-  if (result?.ok) {
-    const count = result.recordIds?.length || 0
-    toast.success(count ? `已点亮并领取 ${count} 个星宿奖励` : '观星礼录领取完成')
-  }
-  else {
-    toast.error(result?.error || '观星礼录领取失败')
-  }
-}
-
-async function claimPassport() {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.claimHeluPassport(currentAccountId.value)
-  result?.ok ? toast.success('千星游记奖励领取完成') : toast.error(result?.error || '千星游记领取失败')
-}
-
-async function claimSolar(term: { id: number, title?: string }) {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.claimHeluSolar(currentAccountId.value, term.id)
-  result?.ok
-    ? toast.success(`节令小札领取完成：${term.title || term.id}`)
-    : toast.error(result?.error || '节令小札领取失败')
-}
-
-async function exchangeStarSand(item: { id: number, itemName?: string, name?: string }, count: number) {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.exchangeStarSand(currentAccountId.value, item.id, count)
-  result?.ok
-    ? toast.success(`${L.exchangeDone}${item.itemName || item.name || item.id} ×${count}`)
-    : toast.error(result?.error || L.exchangeFail)
-}
-
 watch(currentAccountId, () => {
   activityStore.clearActivityData()
   refreshAll()
@@ -214,52 +99,23 @@ onMounted(refreshAll)
 
 <template>
   <section class="space-y-4">
-    <header class="relative min-h-40 overflow-hidden rounded-lg bg-[#071b43] shadow-sm">
-      <img
-        src="/activity/star-festival/star-sky.png"
-        alt=""
-        class="absolute inset-0 h-full w-full object-cover opacity-80"
-      >
-      <div class="absolute inset-0 bg-gradient-to-r from-[#061632]/95 via-[#0b2e61]/80 to-[#0b2e61]/25" />
-      <img
-        src="/activity/star-festival/star-farm.png"
-        alt=""
-        class="pointer-events-none absolute -bottom-32 right-0 hidden h-96 w-96 object-contain opacity-85 lg:block"
-      >
-
+    <header class="relative min-h-36 overflow-hidden rounded-lg from-slate-800 via-sky-800 to-indigo-900 bg-gradient-to-r shadow-sm">
+      <div class="absolute -right-12 -top-20 h-64 w-64 rounded-full bg-sky-300/15 blur-3xl" />
       <div class="relative flex min-h-40 flex-col justify-between gap-4 p-4 xl:flex-row xl:items-center">
-        <div class="min-w-0">
-          <img
-            src="/activity/star-festival/event-title.png"
-            :alt="activity?.title || L.heluTitle"
-            class="h-auto w-72 max-w-full object-contain object-left"
-          >
-          <div class="mt-1 text-xs text-sky-100/75">
-            活动中心 · {{ L.currentAccount }} {{ currentAccount?.name || L.none }}
+        <div class="flex min-w-0 items-center gap-3">
+          <span class="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-white/10 text-3xl text-sky-100">
+            <span class="i-carbon-events" />
+          </span>
+          <div>
+            <h1 class="text-xl text-white font-bold">活动中心</h1>
+            <div class="mt-1 text-xs text-sky-100/75">
+              当前账号 {{ currentAccount?.name || '未选择' }} · 当前活动按在线说明与只读证据展示
+            </div>
           </div>
         </div>
         <div class="flex min-w-0 flex-wrap items-center gap-2 xl:max-w-[68%] xl:justify-end">
-          <span class="inline-flex items-center rounded-lg border border-sky-200/20 bg-[#071b43]/70 px-3 py-1.5 text-xs text-sky-50 backdrop-blur-sm">
-            <img src="/activity/star-festival/star-token.png" alt="" class="mr-1.5 h-5 w-7 object-contain">
-            {{ L.heluBalance }} {{ Number(activity?.starSandBalance || 0).toLocaleString() }}
-          </span>
-          <div class="max-w-full overflow-x-auto">
-            <div class="min-w-max inline-flex border border-sky-200/20 rounded-lg bg-[#071b43]/70 p-0.5 backdrop-blur-sm">
-              <button
-                v-for="section in sections"
-                :key="section.key"
-                class="rounded-md px-3 py-1.5 text-sm transition"
-                :class="activeSection === section.key ? 'text-white' : 'text-sky-100/80 hover:text-white'"
-                :style="activeSection === section.key ? { backgroundColor: 'var(--theme-primary)' } : {}"
-                @click="activeSection = section.key"
-              >
-                {{ section.label }}
-                <span v-if="section.count" class="ml-1 opacity-80">{{ section.count }}</span>
-              </button>
-            </div>
-          </div>
-          <BaseButton variant="primary" :loading="heluLoading" :disabled="!currentAccountId" @click="refreshAll">
-            {{ L.refresh }}
+          <BaseButton variant="primary" :loading="weatherLoading" :disabled="!currentAccountId" @click="refreshAll">
+            刷新
           </BaseButton>
           <label
             v-if="userStore.isAdmin"
@@ -291,60 +147,16 @@ onMounted(refreshAll)
     </header>
 
     <div v-if="!currentAccountId" class="rounded-lg bg-white p-10 text-center text-sm text-gray-500 shadow dark:bg-gray-800">
-      {{ L.needAccount }}
+      请先选择账号，再查看活动数据。
     </div>
     <template v-else>
-      <div v-if="heluError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
-        {{ heluError }}
-      </div>
       <div v-if="weatherError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ weatherError }}
       </div>
-      <div v-if="activity?.warning" class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
-        {{ activity.warning }}
-      </div>
-      <div v-if="heluLoading && !activity" class="rounded-lg bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:bg-sky-900/20 dark:text-sky-100">
-        {{ L.loading }}
-      </div>
-
       <WeatherActivityPanel
-        v-if="activeSection === 'weather'"
         :activity="weatherActivity"
         :loading="weatherLoading"
         @refresh="refreshWeather"
-      />
-      <StarRecordPanel
-        v-else-if="activeSection === 'records'"
-        :activity="activity"
-        :loading="starRecordClaimLoading"
-        @claim="claimRecords"
-      />
-      <div v-else-if="activeSection === 'shop'" class="space-y-3">
-        <div v-if="activity?.shopWarning" class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
-          {{ activity.shopWarning }}
-        </div>
-        <HeluExchangePanel
-          :items="activity?.exchangeShop || []"
-          :balance="activity?.starSandBalance || 0"
-          :exchange-loading="exchangeLoading"
-          :read-only="activity?.shopReadOnly"
-          :labels="L"
-          @exchange="exchangeStarSand"
-        />
-      </div>
-      <HeluPassportPanel
-        v-else-if="activeSection === 'journey'"
-        :passport="activity?.passport"
-        :loading="passportClaimLoading"
-        :labels="L"
-        @claim="claimPassport"
-      />
-      <HeluSolarTermsPanel
-        v-else
-        :solar-terms="activity?.solarTerms"
-        :loading="solarClaimLoading"
-        :labels="L"
-        @claim="claimSolar"
       />
     </template>
 

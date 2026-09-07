@@ -22,8 +22,6 @@ const defaultAutomation = {
   friend_bad: false,
   friend_golden_bug: false,
   friend_help_exp_limit: false,
-  star_passport_claim: false,
-  star_record_claim: false,
   golden_bug_clear: true,
   fertilizer_gift: false,
   fertilizer_buy_organic: false,

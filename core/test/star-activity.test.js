@@ -182,22 +182,34 @@ test('千星管理读取缓存合并页面刷新，写操作后清除旧状态',
   assert.equal(upstreamReads, 2);
 });
 
-test('千星只读状态使用 List 验证后的 GetGroup，专属 UI 与扫描面板覆盖说明玩法', () => {
+test('千星历史只读状态使用 List 验证后的 GetGroup，扫描面板仍能解释说明玩法', () => {
   const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/activity.js'), 'utf8');
   const getStarStart = serviceSource.indexOf('async function getStarActivity()');
   const getStarEnd = serviceSource.indexOf('async function claimStarRecordRewards()', getStarStart);
   const getStarSource = serviceSource.slice(getStarStart, getStarEnd);
-  const panelSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/activity/StarRecordPanel.vue'), 'utf8');
   const scanSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
 
   assert.match(getStarSource, /listActivityGroups\(\)/);
   assert.match(getStarSource, /getActivityGroup\(/);
   assert.doesNotMatch(getStarSource, /operateActivityReply\(/);
   assert.doesNotMatch(serviceSource, /STAR_SHOP_OPEN_CMD/);
-  assert.match(panelSource, /观星礼录玩法流程/);
-  assert.match(panelSource, /补领与周期边界/);
-  assert.match(panelSource, /协议节点（诊断信息）/);
-  assert.match(panelSource, /1 分钟内重复刷新复用本地结果/);
   assert.match(scanSource, /星宿轮转与每日馈赠/);
   assert.match(scanSource, /游记周期与补领边界/);
+});
+
+test('过期千星自动开关、例行入口和专属页面已停用，历史协议解析仍保留', () => {
+  const workerSource = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
+  const storeSource = fs.readFileSync(path.join(__dirname, '../src/models/store.js'), 'utf8');
+  const settingsSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/settings/AutomationSettingsTab.vue'), 'utf8');
+  const activityViewSource = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');
+  const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/activity.js'), 'utf8');
+
+  assert.doesNotMatch(workerSource, /runStarActivityAutoClaims|star_activity_claim/);
+  assert.doesNotMatch(storeSource, /star_passport_claim|star_record_claim/);
+  assert.doesNotMatch(settingsSource, /star_passport_claim|star_record_claim|自动领取千星/);
+  assert.doesNotMatch(activityViewSource, /StarRecordPanel|HeluPassportPanel|HeluSolarTermsPanel|HeluExchangePanel/);
+  assert.doesNotMatch(activityViewSource, /fetchHeluActivity|千星游记|观星礼录|星砂兑换商店|节令小札/);
+  assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
+  assert.match(serviceSource, /normalizeStarActivityTree|normalizeStarRuleData/);
+  assert.match(workerSource, /case 'getStarActivity'/);
 });

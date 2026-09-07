@@ -41,7 +41,7 @@ test('worker startup consults persisted daily state without forcing completed RP
   assert.match(worker, /runDailyRoutineStep\('vip_daily_gift'/);
   assert.match(worker, /withPersistedDone\('mall_free_gifts'/);
   const start = worker.indexOf('function startDailyRoutineTimer');
-  const end = worker.indexOf('// ==================== 活动自动控制', start);
+  const end = worker.indexOf('// 神秘商人可能在登录后的任意时间出现', start);
   const timer = worker.slice(start, end);
   assert.match(timer, /runDailyRoutines\(false\)\.catch/);
   assert.doesNotMatch(timer, /runDailyRoutines\(true\)/);

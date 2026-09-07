@@ -247,11 +247,8 @@ test('活动只读缓存合并并发请求，过期后才重新读取腾讯上�
 test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析仍保留', () => {
   const workerSource = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
   const activityViewSource = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');
-  const autoStart = workerSource.indexOf('async function runStarActivityAutoClaims()');
-  const autoEnd = workerSource.indexOf('function stopStarActivityClaimTimer()', autoStart);
-  const autoSource = workerSource.slice(autoStart, autoEnd);
 
-  assert.doesNotMatch(autoSource, /qixi_|Qixi|qingmei_|Qingmei/);
+  assert.doesNotMatch(workerSource, /runQixi|startQixi|qixi_activity_/);
   assert.doesNotMatch(activityViewSource, /QixiActivityPanel|鹊桥寄情/);
   assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
   assert.match(workerSource, /case 'getQixiActivity'/);

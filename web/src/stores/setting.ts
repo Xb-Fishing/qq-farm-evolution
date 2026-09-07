@@ -11,8 +11,6 @@ export interface AutomationConfig {
   land_upgrade?: boolean
   friend?: boolean
   task?: boolean
-  star_passport_claim?: boolean
-  star_record_claim?: boolean
   sell?: boolean
   fertilizer_gift?: boolean
   fertilizer_buy_organic?: boolean
