@@ -299,6 +299,15 @@ const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'eviden
   { key: 'weather-collect', title: '好友农场天气采集', description: '专属 UI 应展示目标农场条件、采集道具和采集产出。', kind: 'gameplay', pattern: /天气采集瓶/ },
   { key: 'weather-summon', title: '自己的农场召唤天气', description: '专属 UI 应展示使用位置、召唤结果以及特殊天气冲突条件。', kind: 'gameplay', pattern: /雷雨召唤瓶/ },
   { key: 'weather-prank', title: '好友天气互动', description: '专属 UI 应展示互动道具、使用对象和经验奖励。', kind: 'gameplay', pattern: /使坏天气瓶|青蛙使坏瓶|乌云使坏瓶/ },
+  { key: 'charity-seed', title: '每日任务与分享领种子', description: '专属 UI 应展示每日任务/分享、小红花种子和后续种植关系。', kind: 'gameplay', pattern: /完成每日任务或每日分享.*小红花种子/ },
+  { key: 'charity-grow', title: '种植收获与爱心值', description: '专属 UI 应展示种植小红花、收获果实和获得爱心值的主流程。', kind: 'gameplay', pattern: /种植并收获小红花果实.*爱心值/ },
+  { key: 'charity-donate', title: '捐赠爱心值与公益助力', description: '专属 UI 应展示爱心值捐赠、公益项目助力和公益金资格关系。', kind: 'gameplay', pattern: /捐赠爱心值.*公益项目助力/ },
+  { key: 'charity-daily-reward', title: '每日公益礼包', description: '专属 UI 应展示每日收获条件、每日领取上限和礼包奖励。', kind: 'gameplay', pattern: /公益礼包：.*每日收获小红花/ },
+  { key: 'charity-personal-reward', title: '个人爱心值档位奖励', description: '专属 UI 应分档展示有机化肥、点券和活动头像框。', kind: 'gameplay', pattern: /个人爱心值档位奖励/ },
+  { key: 'charity-global-reward', title: '全服公益结算礼包', description: '专属 UI 应展示全服目标、参与条件、单角色上限和结算奖励。', kind: 'gameplay', pattern: /全服公益结算礼包/ },
+  { key: 'charity-fund-warning', title: '公益金使用与次数限制', description: '专属 UI 应醒目提示公益金不可变现及单用户资格限制。', kind: 'warning', pattern: /公益金使用限制|不支持提现、兑换、转让、售卖/ },
+  { key: 'charity-authorization-warning', title: '公益平台授权与账号对接', description: '专属 UI 应说明参与前需由用户在官方客户端确认授权。', kind: 'warning', pattern: /参与本活动需同意.*公益平台/ },
+  { key: 'charity-automation-warning', title: '活动禁止自动方式参与', description: '专属 UI 与后端都不得提供自动领取、捐赠或刷奖入口。', kind: 'warning', pattern: /机器人软件、蜘蛛软件、爬虫软件、刷奖软件|任何自动方式/ },
   { key: 'limited-warning', title: '限时道具与活动结束提示', description: '专属 UI 应把失效、出售或活动结束后的保留规则放在醒目提示区。', kind: 'warning', pattern: /限时活动道具|活动结束后|不会因活动结束/ },
 ]
 
@@ -321,6 +330,8 @@ function groupContainsUnknown(group: ActivityGroup) {
 function activityNodeLabel(node: ActivityGroup) {
   if (!node.parentId || node.type === 1)
     return '主活动'
+  if (node.id === 2026090901)
+    return '公益小红花玩法节点'
   if (node.type === 15)
     return '核心玩法节点'
   if (node.type === 16)
@@ -329,6 +340,8 @@ function activityNodeLabel(node: ActivityGroup) {
 }
 
 function activityNodeDescription(node: ActivityGroup) {
+  if (node.id === 2026090901)
+    return '活动说明已确认每日任务/分享、种植收获、爱心值捐赠和三类奖励；field 116 仍只作不透明诊断，不能据此推测写操作。'
   if (node.type === 15)
     return '活动核心玩法配置节点；具体玩法名称优先按活动说明识别，协议字段仍需只读快照或官方证据确认。'
   if (node.type === 16)

@@ -144,6 +144,10 @@ const WEATHER_SUB_ACTIVITY_DEFS = [
   { id: WEATHER_TYPE20_ACTIVITY_ID, type: 20, feature: '', protobufField: 118 },
   { id: WEATHER_TYPE6_ACTIVITY_ID, type: 6, feature: '', protobufField: 117 },
 ];
+const CHARITY_ACTIVITY_ID = 2026090900;
+const CHARITY_FLOW_ACTIVITY_ID = 2026090901;
+const CHARITY_CLIENT_UI_UID = 'CharityRedFlower';
+const CHARITY_PROTOBUF_FIELD = 116;
 const HELU_PASSPORT_UID = 'SAIJI_PASSPORT';
 const HELU_TITLE = '荷风十里蝉初鸣';
 const HELU_SUB_ACTIVITY_KEYS = {
@@ -582,6 +586,286 @@ async function getWeatherActivity() {
     subActivityCount: activity.summary.subActivityCount,
     exchangeItemCount: activity.summary.exchangeItemCount,
     rewardPoolCount: activity.summary.rewardPoolCount,
+  });
+  return activity;
+}
+
+function normalizeCharityRuleLines(payload) {
+  const entries = Array.isArray(payload?.tips?.txt) ? payload.tips.txt : [];
+  return entries
+    .filter(entry => typeof entry === 'string')
+    .flatMap(entry => entry.replace(/<br\s*\/?>/gi, '\n').split('\n'))
+    .map(entry => entry.replace(/<[^>]*>/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 80);
+}
+
+function findCharityRuleLine(ruleLines, pattern) {
+  return (ruleLines || []).find(line => pattern.test(String(line || ''))) || '';
+}
+
+function buildCharityGameplayGuides(ruleLines) {
+  const participationRule = findCharityRuleLine(ruleLines, /完成每日任务或每日分享.*小红花种子/);
+  const plantingRule = findCharityRuleLine(ruleLines, /种植并收获小红花果实.*爱心值/);
+  const donationRule = findCharityRuleLine(ruleLines, /捐赠爱心值.*公益项目助力/);
+  const publicFundRule = findCharityRuleLine(ruleLines, /送出公益金.*1元公益助力/);
+  const definitions = [
+    {
+      key: 'seed',
+      title: '每日任务与分享领种子',
+      icon: 'task',
+      evidence: participationRule,
+      steps: ['完成活动每日任务或每日分享', '获得小红花种子', '种子与任务次数只在官方客户端确认'],
+    },
+    {
+      key: 'grow',
+      title: '种植收获积累爱心值',
+      icon: 'grow',
+      evidence: plantingRule,
+      steps: ['在农场种植小红花种子', '收获小红花果实', '按活动规则获得对应爱心值'],
+    },
+    {
+      key: 'donate',
+      title: '捐赠爱心值助力公益',
+      icon: 'heart',
+      evidence: donationRule,
+      steps: ['积累活动爱心值', '在官方活动界面选择捐赠', '为活动内公益项目助力并推进奖励条件'],
+    },
+    {
+      key: 'publicFund',
+      title: '送出公益金',
+      icon: 'fund',
+      evidence: publicFundRule,
+      steps: ['满足活动参与条件并取得资格', '在官方客户端人工确认授权', '点击“送出公益金”完成 1 元公益助力'],
+    },
+  ];
+
+  return definitions.filter(item => item.evidence).map(item => ({
+    ...item,
+    source: 'activity_rules',
+    operationSupported: false,
+  }));
+}
+
+function buildCharityRewardGroups(ruleLines) {
+  const rulesText = (ruleLines || []).join('\n');
+  const dailyEvidence = findCharityRuleLine(
+    ruleLines,
+    /公益礼包：.*每日收获小红花.*化肥（1小时）\s*\*\s*2.*每日限领/,
+  );
+  const personalHeading = findCharityRuleLine(ruleLines, /个人爱心值档位奖励/);
+  const personalEvidence = personalHeading
+    && ['有机化肥', '点券*50', '点券*100', '头像框'].every(value => rulesText.includes(value))
+    ? personalHeading
+    : '';
+  const globalEvidence = findCharityRuleLine(ruleLines, /全服公益结算礼包：.*礼包内含.*单角色限领/);
+  const definitions = [
+    {
+      key: 'daily',
+      title: '每日公益礼包',
+      condition: '活动期间每日收获小红花后可领取，每日限 1 次',
+      evidence: dailyEvidence,
+      items: [{ name: '化肥（1小时）', count: 2 }],
+    },
+    {
+      key: 'personal',
+      title: '个人爱心值档位奖励',
+      condition: '累计爱心值达到对应档位；当前说明未给出各档位阈值',
+      evidence: personalEvidence,
+      items: [
+        { name: '有机化肥（8小时）', count: 1 },
+        { name: '点券', count: 50 },
+        { name: '有机化肥（8小时）', count: 2 },
+        { name: '点券', count: 100 },
+        { name: '公益小红花做好事头像框', count: 1 },
+      ],
+    },
+    {
+      key: 'global',
+      title: '全服公益结算礼包',
+      condition: '全服达成公益目标且角色满足参与条件，单角色限领 1 次',
+      evidence: globalEvidence,
+      items: [
+        { name: '化肥礼包', count: 20 },
+        { name: '金豆豆', count: 200 },
+        { name: '点券', count: 300 },
+      ],
+    },
+  ];
+
+  return definitions.filter(group => group.evidence).map(group => ({
+    ...group,
+    source: 'activity_rules',
+    statusAvailable: false,
+    operationSupported: false,
+  }));
+}
+
+function buildCharityNotices(ruleLines) {
+  const fundLimit = findCharityRuleLine(ruleLines, /公益金使用限制|不支持提现、兑换、转让、售卖/);
+  const authorization = findCharityRuleLine(ruleLines, /参与本活动需同意.*公益平台/);
+  const automation = findCharityRuleLine(ruleLines, /机器人软件、蜘蛛软件、爬虫软件、刷奖软件|任何自动方式/);
+  const settlement = findCharityRuleLine(ruleLines, /活动结束后结算|总金额不超过200万元/);
+  const definitions = [
+    {
+      key: 'fundLimit',
+      title: '公益金不可变现',
+      text: '公益金仅限支持本活动内公益项目，不能提现、兑换、转让或售卖，活动期间单用户最多获得 1 次资格。',
+      evidence: fundLimit,
+    },
+    {
+      key: 'authorization',
+      title: '需由用户在官方客户端授权',
+      text: '参与活动涉及公益平台协议授权和账号数据对接；本项目不代替用户确认授权。',
+      evidence: authorization,
+    },
+    {
+      key: 'automation',
+      title: '活动规则禁止自动参与',
+      text: '活动规则明确禁止机器人、爬虫、刷奖软件或其他自动方式参与，因此这里只提供只读信息。',
+      evidence: automation,
+    },
+    {
+      key: 'settlement',
+      title: '公益金统一结算',
+      text: '送出的公益金由活动方在活动结束后统一结算并拨付，具体金额和执行情况以公益平台公示为准。',
+      evidence: settlement,
+    },
+  ];
+
+  return definitions.filter(item => item.evidence).map(item => ({
+    ...item,
+    source: 'activity_rules',
+  }));
+}
+
+function charityActivityStatusLabel(activity, nowSeconds) {
+  if (!activity) return '当前回包未包含';
+  if (!activity.visible) return '未展示';
+  if (toNum(activity.startTime) > nowSeconds) return '未开始';
+  if (toNum(activity.endTime) > 0 && toNum(activity.endTime) < nowSeconds) return '已结束';
+  if (activity.enabled) return '已启用';
+  const status = toNum(activity.status);
+  return status > 0 ? `活动期内 · 状态 ${status}` : '活动期内 · 节点未启用';
+}
+
+function normalizeCharityActivity(snapshot, options = {}) {
+  const root = findDiscoveryActivity(snapshot, CHARITY_ACTIVITY_ID) || snapshot || {};
+  const flow = findDiscoveryActivity(root, CHARITY_FLOW_ACTIVITY_ID);
+  const payload = flow?.payload || root?.payload || {};
+  const ruleLines = normalizeCharityRuleLines(payload);
+  const gameplayGuides = buildCharityGameplayGuides(ruleLines);
+  const rewardGroups = buildCharityRewardGroups(ruleLines);
+  const notices = buildCharityNotices(ruleLines);
+  const nowSeconds = Number.isFinite(Number(options.nowSeconds))
+    ? Number(options.nowSeconds)
+    : Math.floor(Date.now() / 1000);
+  const startTime = toNum(root?.startTime) || toNum(flow?.startTime);
+  const endTime = toNum(root?.endTime) || toNum(flow?.endTime);
+  const inActivityWindow = startTime > 0 && endTime > 0
+    ? nowSeconds >= startTime && nowSeconds <= endTime
+    : false;
+  const observedProtocolShape = (Array.isArray(snapshot?.discoveryEvidence?.protocolShape)
+    ? snapshot.discoveryEvidence.protocolShape : [])
+    .filter(entry => String(entry?.path || '').split('.').includes(String(CHARITY_PROTOBUF_FIELD)))
+    .slice(0, 40)
+    .map(entry => ({
+      path: String(entry.path || ''),
+      wire: toNum(entry.wire),
+      count: Math.max(0, toNum(entry.count)),
+      byteLengths: (Array.isArray(entry.byteLengths) ? entry.byteLengths : [])
+        .map(toNum)
+        .filter(length => length >= 0)
+        .slice(0, 8),
+    }));
+  const participationEvidence = findCharityRuleLine(ruleLines, /完成每日任务或每日分享.*小红花种子/);
+
+  return {
+    uid: '',
+    uidConfirmed: false,
+    clientUiUid: String(payload?.uid || CHARITY_CLIENT_UI_UID),
+    clientUiUidConfirmed: String(payload?.uid || '') === CHARITY_CLIENT_UI_UID,
+    title: String(root?.title || flow?.title || '公益小红花'),
+    activityId: CHARITY_ACTIVITY_ID,
+    startTime,
+    endTime,
+    visible: root?.visible === true,
+    enabled: root?.enabled === true,
+    status: toNum(root?.status),
+    active: inActivityWindow && root?.visible === true,
+    participationEnabled: flow?.enabled === true,
+    readOnly: true,
+    progressAvailable: false,
+    inventoryAvailable: false,
+    imageEvidenceAvailable: false,
+    writeOperationsSupported: false,
+    manualOnly: notices.some(item => item.key === 'authorization' || item.key === 'automation'),
+    writeBoundary: '活动要求用户授权且规则禁止自动参与；缺少官方自然成功请求样本，未接入领取、捐赠或公益金写操作',
+    rulesTitle: String(payload?.tips?.title || '活动说明'),
+    ruleLines,
+    gameplayGuides,
+    rewardGroups,
+    notices,
+    resources: [
+      { key: 'seed', kind: 'seed', name: '小红花种子', itemId: null, count: null, image: '', evidence: participationEvidence },
+      { key: 'fruit', kind: 'fruit', name: '小红花果实', itemId: null, count: null, image: '', evidence: participationEvidence },
+      { key: 'loveValue', kind: 'currency', name: '爱心值', itemId: null, count: null, image: '', evidence: participationEvidence },
+    ].filter(item => item.evidence),
+    subActivities: [{
+      id: CHARITY_FLOW_ACTIVITY_ID,
+      parentId: toNum(flow?.parentId) || CHARITY_ACTIVITY_ID,
+      type: toNum(flow?.type) || 19,
+      title: String(flow?.title || root?.title || '公益小红花'),
+      startTime: toNum(flow?.startTime) || startTime,
+      endTime: toNum(flow?.endTime) || endTime,
+      visible: flow?.visible === true,
+      enabled: flow?.enabled === true,
+      status: toNum(flow?.status),
+      statusLabel: charityActivityStatusLabel(flow, nowSeconds),
+      clientUiUid: String(flow?.payload?.uid || ''),
+      protobufField: CHARITY_PROTOBUF_FIELD,
+      protobufState: 'opaque_read_only',
+      protocolObserved: observedProtocolShape.length > 0,
+      available: !!flow,
+    }],
+    protocol: {
+      declaredReadOnlyFields: [],
+      opaqueReadOnlyFields: [CHARITY_PROTOBUF_FIELD],
+      observedShape: observedProtocolShape,
+    },
+    summary: {
+      subActivityCount: flow ? 1 : 0,
+      gameplayGuideCount: gameplayGuides.length,
+      rewardGroupCount: rewardGroups.length,
+      noticeCount: notices.length,
+      resourceCount: participationEvidence ? 3 : 0,
+    },
+  };
+}
+
+async function getCharityActivity(options = {}) {
+  const listReader = typeof options.getActivityDiscoveryList === 'function'
+    ? options.getActivityDiscoveryList
+    : getActivityDiscoveryList;
+  const snapshotReader = typeof options.getActivityGroupSnapshot === 'function'
+    ? options.getActivityGroupSnapshot
+    : getActivityGroupSnapshot;
+  const activities = await listReader();
+  const listedRoot = (activities || []).find(activity => (
+    toNum(activity?.id) === CHARITY_ACTIVITY_ID && toNum(activity?.parentId) === 0
+  ));
+  if (!listedRoot) {
+    throw new Error('公益小红花未由当前 ActivityService.List 下发，停止读取活动详情');
+  }
+  const snapshot = await snapshotReader(CHARITY_ACTIVITY_ID, '');
+  const activity = normalizeCharityActivity(snapshot, options);
+  activityLogger.info('公益小红花只读状态刷新', {
+    event: 'charity_activity_read',
+    activityId: CHARITY_ACTIVITY_ID,
+    active: activity.active,
+    participationEnabled: activity.participationEnabled,
+    gameplayGuideCount: activity.summary.gameplayGuideCount,
+    rewardGroupCount: activity.summary.rewardGroupCount,
   });
   return activity;
 }
@@ -3033,6 +3317,10 @@ module.exports = {
   WEATHER_CLIENT_UI_UID,
   WEATHER_BOTTLE_ITEM_ID,
   WEATHER_DRAW_REWARD_ITEM_ID,
+  CHARITY_ACTIVITY_ID,
+  CHARITY_FLOW_ACTIVITY_ID,
+  CHARITY_CLIENT_UI_UID,
+  CHARITY_PROTOBUF_FIELD,
   HELU_SUB_ACTIVITY_KEYS,
   NANGUA_SHOP_BUY_CMD,
   NANGUA_SHOP_REFRESH_CMD,
@@ -3046,6 +3334,11 @@ module.exports = {
   getWeatherActivity,
   normalizeWeatherActivity,
   buildWeatherGameplayGuides,
+  getCharityActivity,
+  normalizeCharityActivity,
+  buildCharityGameplayGuides,
+  buildCharityRewardGroups,
+  buildCharityNotices,
   normalizeStarActivityTree,
   normalizeStarRuleData,
   buildStarGameplayGuides,
