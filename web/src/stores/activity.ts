@@ -121,6 +121,7 @@ export interface CharityActivityResource {
   kind: 'seed' | 'fruit' | 'currency'
   name: string
   itemId: number | null
+  itemIdSource: 'current_farm_plant_mapping' | ''
   count: number | null
   image: string
   evidence: string

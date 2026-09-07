@@ -148,6 +148,9 @@ const CHARITY_ACTIVITY_ID = 2026090900;
 const CHARITY_FLOW_ACTIVITY_ID = 2026090901;
 const CHARITY_CLIENT_UI_UID = 'CharityRedFlower';
 const CHARITY_PROTOBUF_FIELD = 116;
+const CHARITY_PLANT_ID = 1020883;
+const CHARITY_SEED_ITEM_ID = 20883;
+const CHARITY_FRUIT_ITEM_ID = 40883;
 const HELU_PASSPORT_UID = 'SAIJI_PASSPORT';
 const HELU_TITLE = '荷风十里蝉初鸣';
 const HELU_SUB_ACTIVITY_KEYS = {
@@ -807,9 +810,36 @@ function normalizeCharityActivity(snapshot, options = {}) {
     rewardGroups,
     notices,
     resources: [
-      { key: 'seed', kind: 'seed', name: '小红花种子', itemId: null, count: null, image: '', evidence: participationEvidence },
-      { key: 'fruit', kind: 'fruit', name: '小红花果实', itemId: null, count: null, image: '', evidence: participationEvidence },
-      { key: 'loveValue', kind: 'currency', name: '爱心值', itemId: null, count: null, image: '', evidence: participationEvidence },
+      {
+        key: 'seed',
+        kind: 'seed',
+        name: '小红花种子',
+        itemId: CHARITY_SEED_ITEM_ID,
+        itemIdSource: 'current_farm_plant_mapping',
+        count: null,
+        image: getItemImageById(CHARITY_SEED_ITEM_ID),
+        evidence: participationEvidence,
+      },
+      {
+        key: 'fruit',
+        kind: 'fruit',
+        name: '小红花果实',
+        itemId: CHARITY_FRUIT_ITEM_ID,
+        itemIdSource: 'current_farm_plant_mapping',
+        count: null,
+        image: getItemImageById(CHARITY_FRUIT_ITEM_ID),
+        evidence: participationEvidence,
+      },
+      {
+        key: 'loveValue',
+        kind: 'currency',
+        name: '爱心值',
+        itemId: null,
+        itemIdSource: '',
+        count: null,
+        image: '',
+        evidence: participationEvidence,
+      },
     ].filter(item => item.evidence),
     subActivities: [{
       id: CHARITY_FLOW_ACTIVITY_ID,
@@ -3321,6 +3351,9 @@ module.exports = {
   CHARITY_FLOW_ACTIVITY_ID,
   CHARITY_CLIENT_UI_UID,
   CHARITY_PROTOBUF_FIELD,
+  CHARITY_PLANT_ID,
+  CHARITY_SEED_ITEM_ID,
+  CHARITY_FRUIT_ITEM_ID,
   HELU_SUB_ACTIVITY_KEYS,
   NANGUA_SHOP_BUY_CMD,
   NANGUA_SHOP_REFRESH_CMD,
