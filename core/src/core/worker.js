@@ -241,7 +241,6 @@ let onClientVersionUpdate = null;
 let wsErrorHandledAt = 0;
 let lastDailyRunDate = '';
 let friendSyncPaused = false;
-let starActivityClaimRunning = false;
 
 const workerScheduler = createScheduler('worker');
 
@@ -304,89 +303,6 @@ function startDailyRoutineTimer() {
             .then(() => runBadOnceOnStartup(true))
             .catch(() => null);
     });
-}
-
-// ==================== 活动自动控制 ====================
-
-async function runStarActivityAutoClaims() {
-    if (!loginReady || friendSyncPaused || starActivityClaimRunning) return;
-
-    const automation = getAutomation() || {};
-    const claimPassport = automation.star_passport_claim === true;
-    const claimRecords = automation.star_record_claim === true;
-    if (!claimPassport && !claimRecords) return;
-
-    starActivityClaimRunning = true;
-    try {
-        const {
-            getStarActivity,
-            claimSeasonPassportRewards,
-            claimStarRecordRewards
-        } = require('../services/activity');
-        const activity = await getStarActivity();
-        if (claimPassport && Number(activity?.passport?.claimableLevels || 0) > 0) {
-            try {
-                const result = await claimSeasonPassportRewards();
-                log('活动', `自动领取千星游记完成：${  Number(result?.claimedLevels || 0)  } 级奖励`, {
-                    module: 'activity',
-                    event: '千星游记自动领取',
-                    result: 'success',
-                    claimedLevels: Number(result?.claimedLevels || 0)
-                });
-            } catch (err) {
-                log('活动', `自动领取千星游记失败: ${  err.message}`, {
-                    module: 'activity',
-                    event: '千星游记自动领取',
-                    result: 'error'
-                });
-            }
-        }
-
-        if (claimRecords && Number(activity?.starRecord?.claimableCount || 0) > 0) {
-            try {
-                const result = await claimStarRecordRewards();
-                log('活动', `自动领取观星礼录完成：${  result?.recordIds?.length || 0  } 个星宿`, {
-                    module: 'activity',
-                    event: '观星礼录自动领取',
-                    result: 'success',
-                    recordCount: result?.recordIds?.length || 0
-                });
-            } catch (err) {
-                log('活动', `自动领取观星礼录失败: ${  err.message}`, {
-                    module: 'activity',
-                    event: '观星礼录自动领取',
-                    result: 'error'
-                });
-            }
-        }
-
-    } catch (err) {
-        if (!isTransientNetworkError(err)) {
-            log('活动', `活动自动领取检查失败: ${  err.message}`, {
-                module: 'activity',
-                event: '活动自动领取检查',
-                result: 'error'
-            });
-        }
-    } finally {
-        starActivityClaimRunning = false;
-    }
-}
-
-function stopStarActivityClaimTimer() {
-    workerScheduler.clear('star_activity_claim_initial');
-    workerScheduler.clear('star_activity_claim_interval');
-    starActivityClaimRunning = false;
-}
-
-function startStarActivityClaimTimer() {
-    stopStarActivityClaimTimer();
-    workerScheduler.setTimeoutTask('star_activity_claim_initial', 10000, () => {
-        runStarActivityAutoClaims().catch(() => null);
-    });
-    workerScheduler.setIntervalTask('star_activity_claim_interval', 5 * 60 * 1000, () => {
-        runStarActivityAutoClaims().catch(() => null);
-    }, { preventOverlap: true });
 }
 
 // 神秘商人可能在登录后的任意时间出现；登录后先检查，并持续短周期探测。
@@ -1094,17 +1010,6 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
         if (hasAutomation) {
             const newAuto = getAutomation();
 
-            const starClaimBecameEnabled = (
-                !prevAuto?.star_passport_claim && newAuto?.star_passport_claim
-            ) || (
-                !prevAuto?.star_record_claim && newAuto?.star_record_claim
-            );
-            if (starClaimBecameEnabled) {
-                workerScheduler.setTimeoutTask('star_activity_claim_after_save', 2000, () => {
-                    runStarActivityAutoClaims().catch(() => null);
-                });
-            }
-
             const mysteryShopConfigChanged = [
                 'mystery_shop_auto_buy',
                 'mystery_shop_allow_gold',
@@ -1366,7 +1271,6 @@ async function startBot(config) {
 
         // 启动每日定时器
         startDailyRoutineTimer();
-        startStarActivityClaimTimer();
         startMysteryShopAutoBuyTimer();
 
         syncStatus();
@@ -1426,7 +1330,6 @@ async function stopBot() {
     stopFarmCheckLoop();
     stopFriendCheckLoop();
     stopDailyRoutineTimer();
-    stopStarActivityClaimTimer();
     cleanupTaskSystem();
     workerScheduler.clearAll();
     stopNetwork('账号停止');
