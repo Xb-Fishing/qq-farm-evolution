@@ -2,7 +2,7 @@
  * 访客互动记录服务 - 获取和解析好友互动记录
  *
  * 功能：
- * - 多 RPC 路由尝试获取访客记录
+ * - 使用既有主路由获取访客记录，异常时不试探其他 RPC
  * - 互动类型识别（偷取/帮忙/捣乱）
  * - 作物名称解析
  */
@@ -11,14 +11,11 @@ const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { logWarn, toNum, toTimeSec, sleep } = require('../utils/utils');
 
-// ---- RPC 路由候选（按优先级尝试） ----
+// ---- RPC 路由 ----
 
-const RPC_CANDIDATES = [
-  ['gamepb.interactpb.InteractService', 'InteractRecords'],
-  ['gamepb.interactpb.InteractService', 'GetInteractRecords'],
-  ['gamepb.interactpb.VisitorService', 'InteractRecords'],
-  ['gamepb.interactpb.VisitorService', 'GetInteractRecords'],
-];
+// 仅保留已有主路由。不得在错误后改猜 service/method；新路由必须先有
+// 当前官方客户端自然流量证据。
+const RPC_ROUTE = ['gamepb.interactpb.InteractService', 'InteractRecords'];
 
 // ---- 并发锁与最小间隔 ----
 
@@ -27,6 +24,11 @@ let lastFetchInteractTime = 0;
 
 // 两次请求最小间隔：500ms
 const FETCH_INTERACT_MIN_INTERVAL_MS = 500;
+const INTERACT_RECORDS_CACHE_MS = 60 * 1000;
+let interactRecordsCache = null;
+let interactRecordsCacheAt = 0;
+let interactRecordsInFlight = null;
+let interactRecordsRetryAfter = 0;
 
 // ---- 互动类型标签 ----
 
@@ -138,7 +140,7 @@ function normalizeInteractRecord(raw, index) {
 // ---- RPC 调用 ----
 
 /**
- * 获取互动记录（多路由尝试）
+ * 获取互动记录（单路由，未知错误立即停手）
  */
 async function fetchInteractReply() {
   if (!types.InteractRecordsRequest || !types.InteractRecordsReply) {
@@ -165,34 +167,18 @@ async function fetchInteractReply() {
       types.InteractRecordsRequest.create({})
     ).finish();
 
-    const errors = [];
-
-    for (let i = 0; i < RPC_CANDIDATES.length; i++) {
-      const [service, method] = RPC_CANDIDATES[i];
-      try {
-        // 非首个请求间隔 500ms
-        if (i > 0) await sleep(500);
-        const { body } = await sendMsgAsync(service, method, request);
-        return types.InteractRecordsReply.decode(body);
-      } catch (err) {
-        const msg = err && err.message ? err.message : String(err || 'unknown');
-        errors.push(`${service}.${method}: ${msg}`);
-
-        // 服务端返回了业务错误码（如 code=1020002 网络繁忙），
-        // 说明该接口存在于服务端但被拒绝了，不必继续尝试其他路由
-        if (msg.includes('code=')) {
-          break;
-        }
-      }
+    const [service, method] = RPC_ROUTE;
+    try {
+      const { body } = await sendMsgAsync(service, method, request);
+      return types.InteractRecordsReply.decode(body);
+    } catch (err) {
+      logWarn('好友', `访客记录读取失败，已停止且不尝试其他 RPC: ${err.message}`, {
+        module: 'friend',
+        event: 'interact_records',
+        result: 'error',
+      });
+      throw new Error('访客记录接口当前不可用，已停止请求');
     }
-
-    logWarn('好友', `访客记录接口调用失败: ${errors.join(' | ')}`, {
-      module: 'friend',
-      event: 'interact_records',
-      result: 'error',
-    });
-
-    throw new Error('访客记录接口调用失败，请确认服务名和方法名是否与当前版本一致');
   } finally {
     fetchInteractLock = false;
   }
@@ -205,19 +191,46 @@ async function fetchInteractReply() {
  * 按时间降序 → 访客ID降序 → 操作类型降序排列
  */
 async function getInteractRecords() {
-  const reply = await fetchInteractReply();
-  const records = Array.isArray(reply && reply.records) ? reply.records : [];
+  const now = Date.now();
+  if (interactRecordsCache && now - interactRecordsCacheAt < INTERACT_RECORDS_CACHE_MS) {
+    return interactRecordsCache;
+  }
+  if (interactRecordsInFlight) return interactRecordsInFlight;
+  if (now < interactRecordsRetryAfter) {
+    throw new Error('访客记录接口暂停请求，请稍后再试');
+  }
 
-  return records
-    .map((raw, idx) => normalizeInteractRecord(raw, idx))
-    .sort(
-      (a, b) =>
-        b.serverTimeSec - a.serverTimeSec ||
-        b.visitorGid - a.visitorGid ||
-        b.actionType - a.actionType
-    );
+  const pending = (async () => {
+    try {
+      const reply = await fetchInteractReply();
+      const records = Array.isArray(reply && reply.records) ? reply.records : [];
+      const normalized = records
+        .map((raw, idx) => normalizeInteractRecord(raw, idx))
+        .sort(
+          (a, b) =>
+            b.serverTimeSec - a.serverTimeSec ||
+            b.visitorGid - a.visitorGid ||
+            b.actionType - a.actionType
+        );
+      interactRecordsCache = normalized;
+      interactRecordsCacheAt = Date.now();
+      interactRecordsRetryAfter = 0;
+      return normalized;
+    } catch (err) {
+      interactRecordsRetryAfter = Date.now() + INTERACT_RECORDS_CACHE_MS;
+      throw err;
+    }
+  })();
+
+  interactRecordsInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (interactRecordsInFlight === pending) interactRecordsInFlight = null;
+  }
 }
 
 module.exports = {
+  INTERACT_RECORDS_CACHE_MS,
   getInteractRecords,
 };
