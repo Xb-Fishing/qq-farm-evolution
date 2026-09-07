@@ -380,39 +380,15 @@ export interface HeluActivityData {
 }
 
 export const useActivityStore = defineStore('activity', () => {
-  const heluActivity = ref<StarActivityData | null>(null)
   const weatherActivity = ref<WeatherActivityData | null>(null)
   const weatherLoading = ref(false)
   const weatherError = ref('')
-
-  const heluLoading = ref(false)
-  const drawLoading = ref(false)
-  const exchangeLoading = ref(false)
-  const passportClaimLoading = ref(false)
-  const solarClaimLoading = ref(false)
-  const starRecordClaimLoading = ref(false)
-  const qingmeiClaimLoading = ref(false)
-  const qingmeiSellLoading = ref(false)
-
-  const heluError = ref('')
-
-  let heluRequestId = 0
   let weatherRequestId = 0
 
   function clearActivityData() {
-    heluActivity.value = null
     weatherActivity.value = null
     weatherLoading.value = false
     weatherError.value = ''
-    heluLoading.value = false
-    drawLoading.value = false
-    exchangeLoading.value = false
-    passportClaimLoading.value = false
-    solarClaimLoading.value = false
-    starRecordClaimLoading.value = false
-    qingmeiClaimLoading.value = false
-    qingmeiSellLoading.value = false
-    heluError.value = ''
   }
 
   function isCurrentAccount(accountId: string) {
@@ -452,197 +428,11 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
-  async function fetchHeluActivity(accountId: string) {
-    if (!accountId)
-      return
-    const requestedId = String(accountId)
-    const requestId = ++heluRequestId
-    heluLoading.value = true
-    heluError.value = ''
-    try {
-      const { data } = await api.get('/api/activity/star', {
-        headers: { 'x-account-id': accountId },
-      })
-      if (requestId !== heluRequestId || !isCurrentAccount(requestedId))
-        return
-      if (data.ok)
-        heluActivity.value = data.activity || null
-      else
-        heluError.value = data.error || '获取心许千灯星垂野失败'
-    }
-    catch (err: any) {
-      if (requestId === heluRequestId && isCurrentAccount(requestedId))
-        heluError.value = err.message || '获取心许千灯星垂野失败'
-    }
-    finally {
-      if (requestId === heluRequestId)
-        heluLoading.value = false
-    }
-  }
-
-  async function claimStarRecords(accountId: string) {
-    const requestedId = String(accountId)
-    starRecordClaimLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/star/records/claim', {}, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      starRecordClaimLoading.value = false
-    }
-  }
-
-  async function drawHelu(accountId: string, payload: { mode?: string, count?: number } = {}) {
-    const requestedId = String(accountId)
-    drawLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/helu/draw', payload, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      drawLoading.value = false
-    }
-  }
-
-  async function exchangeHelu(accountId: string, slotId: number, count: number) {
-    const requestedId = String(accountId)
-    exchangeLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/helu/exchange', {
-        slotId,
-        count,
-      }, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      exchangeLoading.value = false
-    }
-  }
-
-  async function exchangeStarSand(accountId: string, slotId: number, count: number) {
-    const requestedId = String(accountId)
-    exchangeLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/star/exchange', {
-        slotId,
-        count,
-      }, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      exchangeLoading.value = false
-    }
-  }
-
-  async function claimHeluPassport(accountId: string) {
-    const requestedId = String(accountId)
-    passportClaimLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/star/passport/claim', {}, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      passportClaimLoading.value = false
-    }
-  }
-
-  async function claimHeluSolar(accountId: string, termId?: number) {
-    const requestedId = String(accountId)
-    solarClaimLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/star/solar/claim', {
-        termId,
-      }, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      solarClaimLoading.value = false
-    }
-  }
-
-  async function claimQingmeiSeeds(accountId: string) {
-    const requestedId = String(accountId)
-    qingmeiClaimLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/qingmei/claim', {}, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity) {
-        heluActivity.value = data.activity
-      }
-      return data
-    }
-    finally {
-      qingmeiClaimLoading.value = false
-    }
-  }
-
-  async function brewAndSellQingmeiWine(accountId: string) {
-    const requestedId = String(accountId)
-    qingmeiSellLoading.value = true
-    try {
-      const { data } = await api.post('/api/activity/qingmei/wine/sell', {
-        share: true,
-      }, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
-      return data
-    }
-    finally {
-      qingmeiSellLoading.value = false
-    }
-  }
-
   return {
-    heluActivity,
     weatherActivity,
     weatherLoading,
     weatherError,
-    heluLoading,
-    drawLoading,
-    exchangeLoading,
-    passportClaimLoading,
-    solarClaimLoading,
-    starRecordClaimLoading,
-    qingmeiClaimLoading,
-    qingmeiSellLoading,
-    heluError,
     clearActivityData,
-    fetchHeluActivity,
     fetchWeatherActivity,
-    claimStarRecords,
-    drawHelu,
-    exchangeHelu,
-    exchangeStarSand,
-    claimHeluPassport,
-    claimHeluSolar,
-    claimQingmeiSeeds,
-    brewAndSellQingmeiWine,
   }
 })

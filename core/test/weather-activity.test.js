@@ -251,7 +251,7 @@ test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析�
   assert.doesNotMatch(workerSource, /runQixi|startQixi|qixi_activity_/);
   assert.doesNotMatch(activityViewSource, /QixiActivityPanel|鹊桥寄情/);
   assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
-  assert.match(workerSource, /case 'getQixiActivity'/);
+  assert.doesNotMatch(workerSource, /case 'getQixiActivity'/);
 });
 
 test('雨落成诗专属 UI 按活动说明展示玩法，协议节点只作为诊断信息', () => {
