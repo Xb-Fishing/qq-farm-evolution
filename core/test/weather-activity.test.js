@@ -11,6 +11,7 @@ const {
   WEATHER_TYPE20_ACTIVITY_ID,
   WEATHER_TYPE6_ACTIVITY_ID,
   WEATHER_CLIENT_UI_UID,
+  getWeatherActivity,
   normalizeWeatherActivity,
 } = require('../src/services/activity');
 const {
@@ -165,6 +166,31 @@ test('没有活动说明证据时不凭协议节点猜玩法 UI', () => {
   assert.deepEqual(activity.gameplayGuides, []);
   assert.deepEqual(activity.ruleWarnings, []);
   assert.equal(activity.summary.gameplayGuideCount, 0);
+});
+
+test('雨落成诗只读读取先验证 List 根节点，活动结束后不再触发 GetGroup', async () => {
+  let snapshotReads = 0;
+  await assert.rejects(getWeatherActivity({
+    getActivityDiscoveryList: async () => [],
+    getActivityGroupSnapshot: async () => {
+      snapshotReads += 1;
+      return createWeatherSnapshot();
+    },
+  }), /未由当前 ActivityService\.List 下发/);
+  assert.equal(snapshotReads, 0);
+});
+
+test('雨落成诗只读读取使用 List 已下发根节点和空 UID', async () => {
+  let request = null;
+  const activity = await getWeatherActivity({
+    getActivityDiscoveryList: async () => [{ id: WEATHER_ACTIVITY_ID, parentId: 0 }],
+    getActivityGroupSnapshot: async (activityId, uid) => {
+      request = { activityId, uid };
+      return createWeatherSnapshot();
+    },
+  });
+  assert.deepEqual(request, { activityId: WEATHER_ACTIVITY_ID, uid: '' });
+  assert.equal(activity.activityId, WEATHER_ACTIVITY_ID);
 });
 
 test('雨落成诗根节点和全部子节点都进入已知活动注册表', () => {

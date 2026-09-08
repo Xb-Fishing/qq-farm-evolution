@@ -573,8 +573,21 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
   };
 }
 
-async function getWeatherActivity() {
-  const snapshot = await getActivityGroupSnapshot(WEATHER_ACTIVITY_ID, '');
+async function getWeatherActivity(options = {}) {
+  const listReader = typeof options.getActivityDiscoveryList === 'function'
+    ? options.getActivityDiscoveryList
+    : getActivityDiscoveryList;
+  const snapshotReader = typeof options.getActivityGroupSnapshot === 'function'
+    ? options.getActivityGroupSnapshot
+    : getActivityGroupSnapshot;
+  const activities = await listReader();
+  const listedRoot = (activities || []).find(activity => (
+    toNum(activity?.id) === WEATHER_ACTIVITY_ID && toNum(activity?.parentId) === 0
+  ));
+  if (!listedRoot) {
+    throw new Error('雨落成诗未由当前 ActivityService.List 下发，停止读取活动详情');
+  }
+  const snapshot = await snapshotReader(WEATHER_ACTIVITY_ID, '');
   const inventory = await getBagItemCounts([
     WEATHER_BOTTLE_ITEM_ID,
     WEATHER_DRAW_REWARD_ITEM_ID,
