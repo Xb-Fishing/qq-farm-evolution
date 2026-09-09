@@ -34,7 +34,23 @@ function requireConnectedAccount(res, provider, accountId, error) {
   return false;
 }
 
+function isActivityNotListedError(error) {
+  return /未由当前 ActivityService\.List 下发/.test(String(error?.message || error || ''));
+}
+
+function sendActivityUnavailable(res, error) {
+  if (!isActivityNotListedError(error)) return false;
+  res.json({
+    ok: false,
+    unavailable: true,
+    error: String(error.message || error),
+  });
+  return true;
+}
+
 module.exports = {
   getAuthorizedAccountId,
+  isActivityNotListedError,
   requireConnectedAccount,
+  sendActivityUnavailable,
 };
