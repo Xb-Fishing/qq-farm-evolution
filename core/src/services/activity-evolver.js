@@ -610,6 +610,36 @@ function classifyEvolutionExit(code, signal, evolved, pushVerified = true, priva
   return 'failed';
 }
 
+function isAgentCapacityFailure(logFile) {
+  try {
+    const stat = fs.statSync(logFile);
+    const start = Math.max(0, stat.size - 64 * 1024);
+    const fd = fs.openSync(logFile, 'r');
+    const buffer = Buffer.alloc(stat.size - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+    fs.closeSync(fd);
+    return /selected model is at capacity|model.+capacity.+try a different model/i.test(buffer.toString('utf8'));
+  } catch {
+    return false;
+  }
+}
+
+function readAgentFailureReason(logFile) {
+  try {
+    const text = fs.readFileSync(logFile, 'utf8');
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const candidate = [...lines].reverse().find(line => /^(?:error:|error\b|fatal:|failed\b)|(?:error|failed|exception|capacity|expired)/i.test(line));
+    return candidate ? redactExternalText(candidate).slice(0, 300) : '';
+  } catch {
+    return '';
+  }
+}
+
+function isModelUnavailableFailure(logFile) {
+  const reason = readAgentFailureReason(logFile).toLowerCase();
+  return /model[^\n]*(?:expired|not found|invalid|unavailable|does not exist)|(?:expired|invalid|unavailable)[^\n]*model/.test(reason);
+}
+
 function markEvolutionAppliedAfterRestart(value) {
   const state = { ...defaultState(), ...(value || {}) };
   if (state.status !== 'applying') return { changed: false, state };
@@ -1016,7 +1046,13 @@ function launchEvolution(task, payload = {}) {
         privacyRollback = false;
       }
     }
-    let outcome = classifyEvolutionExit(code, signal, evolved, pushResult.ok, privacyBlocked);
+    const capacityFailure = !evolved && !signal && code !== 0 && isAgentCapacityFailure(logFile);
+    const modelUnavailable = !evolved && !signal && code !== 0 && isModelUnavailableFailure(logFile);
+    const retryableAgentFailure = !evolved && !signal && code !== 0 && !modelUnavailable;
+    const agentFailureReason = readAgentFailureReason(logFile);
+    let outcome = retryableAgentFailure
+      ? 'interrupted'
+      : classifyEvolutionExit(code, signal, evolved, pushResult.ok, privacyBlocked);
     if (outcome === 'privacy_blocked' && !privacyRollback) outcome = 'privacy_blocked_local';
     running = false;
     const interrupted = outcome === 'interrupted';
@@ -1034,6 +1070,8 @@ function launchEvolution(task, payload = {}) {
         ? `${tag}（${agentLabel}）已生成本地提交 ${headAfter.slice(0, 8)}，但 GitHub 推送/远端校验失败（${pushResult.error}）；为防止本地与远端分叉，当前禁止应用和启动下一轮`
         : code === 0
           ? `${tag}（${agentLabel}）完成：agent 判断无需代码改动`
+          : retryableAgentFailure
+            ? `${tag}（${agentLabel}）${capacityFailure ? '执行器模型暂时满载' : '执行器临时失败'}，已中止本轮并安排自动重试${agentFailureReason ? `：${agentFailureReason}` : ''}，详见 ${path.basename(logFile)}`
           : interrupted
             ? `${tag}（${agentLabel}）已中止（${signal || `退出码 ${code}`}），未标记为审计失败、未应用代码；可在工作区空闲时重新执行`
             : `${tag}（${agentLabel}）执行失败（${launchError || `退出码 ${code}`}），详见 ${path.basename(logFile)}`;
@@ -1095,6 +1133,10 @@ function launchEvolution(task, payload = {}) {
         + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS);
       if (task === 'safety') scheduleDailySafetyRetry(dailyDate, dailyRetryCount + 1, retryDelay);
       else scheduleDailyActivityFollowup(dailyDate, retryDelay, dailyRetryCount + 1);
+    } else if (retryableAgentFailure && !running) {
+      // 手动触发或已用完当日普通失败重试时，临时执行器故障恢复后仍应再给一次机会。
+      if (task === 'safety') scheduleDailySafetyRetry(dailyDate, dailyRetryCount + 1, DAILY_RETRY_MS);
+      else scheduleDailyActivityFollowup(dailyDate, DAILY_RETRY_MS, dailyRetryCount + 1);
     } else if (task === 'safety' && payload.dailyFollowup && !BLOCKING_STATUSES.has(outcome)) {
       scheduleDailyActivityFollowup(dailyDate);
     }
@@ -1772,4 +1814,7 @@ module.exports = {
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
   resolveTmuxPaneForProcess,
+  isAgentCapacityFailure,
+  isModelUnavailableFailure,
+  readAgentFailureReason,
 };
