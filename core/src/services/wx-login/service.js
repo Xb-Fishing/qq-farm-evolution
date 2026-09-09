@@ -48,7 +48,7 @@ async function request(url, cookies, init = {}, timeout = 35e3) {
         for (let redirects = 0; redirects <= 5; redirects++) {
             const headers = new Headers(init.headers);
             headers.set("User-Agent", USER_AGENT);
-            if (cookies.size)
+            if (cookies.size && !headers.has("Cookie"))
                 headers.set("Cookie", cookieHeader(cookies));
             const response = await fetch(currentUrl, { ...init, method, body, headers, redirect: "manual", signal: controller.signal });
             storeCookies(cookies, response.headers);
@@ -226,14 +226,23 @@ class WxLoginService {
         const response = await request(REFRESH_TOKEN_URL, session.cookies, {
             method: "POST",
             body: payload,
-            headers: { "Content-Type": "application/json", "Ual-Access-Businessid": "pc_yyb_auth", "Ual-Access-Timestamp": timestamp, "Ual-Access-Nonce": nonce, "Ual-Access-Signature": signature }
+            headers: {
+                "Content-Type": "application/json",
+                "Ual-Access-Businessid": "pc_yyb_auth",
+                "Ual-Access-Timestamp": timestamp,
+                "Ual-Access-Nonce": nonce,
+                "Ual-Access-Signature": signature,
+                // 应用宝在长时间运行后会按 Cookie 校验授权范围；只放 body
+                // 中的 refreshToken 会在跨日/重启后的续期返回 40188。
+                "Cookie": `openid=${session.openid}; accesstoken=${session.accesstoken || ""}; refreshtoken=${session.refreshtoken}`
+            }
         });
         if (response.status < 200 || response.status >= 300)
             throw new Error(`Unable to refresh WeChat token (HTTP ${response.status})`);
         const data = asRecord(JSON.parse(response.body.toString("utf8")));
         if (data.code !== 0)
             throw new Error(`WeChat token refresh failed: code=${String(data.code)} msg=${String(data.msg)}`);
-        const info = asRecord(data.user_info || data.userInfo);
+        const info = asRecord(data.user_info || data.userInfo || asRecord(data.data).user_info || asRecord(data.data).userInfo);
         const accessToken = String(info.access_token || info.accessToken || info.accesstoken || "");
         const refreshToken = String(info.refresh_token || info.refreshToken || info.refreshtoken || session.refreshtoken);
         const expiresIn = positiveSeconds(info.expires_in || info.expiresIn);

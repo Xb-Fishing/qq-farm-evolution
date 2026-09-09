@@ -35,7 +35,6 @@ const STATE_FILE = getDataFile('activity-evolve-state.json');
 const EVOLVE_LOG_DIR = path.join(path.dirname(STATE_FILE), 'logs');
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const APPLY_SCRIPT = path.join(REPO_ROOT, 'scripts', 'apply-evolution.sh');
-const APPLY_TMUX_TARGET = process.env.FARM_TMUX_TARGET || 'farm:0.0';
 // 进程被杀/卡死时，超过该时长的 running 状态视为失败，避免永久卡住每日闸门
 const STALE_RUN_MS = 2 * 60 * 60 * 1000;
 const EVOLUTION_WATCH_POLL_MS = 30 * 1000;
@@ -57,6 +56,68 @@ const COMPLETED_STATUSES = new Set(['pending_apply', 'no_change']);
 const EVOLUTION_AGENTS = new Set(['claude', 'codex']);
 const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
 const execFileAsync = promisify(execFile);
+
+/**
+ * 找到拥有指定进程的 tmux pane。
+ *
+ * `TMUX_PANE` 只是启动环境的快照，Bot 被 pnpm/corepack 包装或从已有
+ * pane 重启后可能指向旧 pane。沿进程父链匹配 pane_pid 才能确定当前
+ * Bot 实际运行在哪个 pane。
+ */
+function parentPid(pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 1) return 0;
+  try {
+    const stat = fs.readFileSync(`/proc/${value}/stat`, 'utf8');
+    const end = stat.lastIndexOf(')');
+    if (end >= 0) {
+      const fields = stat.slice(end + 2).trim().split(/\s+/);
+      const ppid = Number(fields[1]);
+      if (Number.isInteger(ppid) && ppid > 0) return ppid;
+    }
+  } catch { /* macOS 没有 /proc，走 ps 回退 */ }
+  try {
+    const output = execFileSync('ps', ['-o', 'ppid=', '-p', String(value)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const ppid = Number(String(output).trim());
+    return Number.isInteger(ppid) && ppid > 0 ? ppid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function isProcessInPane(processPid, panePid) {
+  const wanted = Number(processPid);
+  const pane = Number(panePid);
+  if (!Number.isInteger(wanted) || !Number.isInteger(pane) || wanted <= 0 || pane <= 0) return false;
+  const seen = new Set();
+  let current = wanted;
+  for (let depth = 0; current > 1 && !seen.has(current) && depth < 64; depth += 1) {
+    if (current === pane) return true;
+    seen.add(current);
+    current = parentPid(current);
+  }
+  return false;
+}
+
+function resolveTmuxPaneForProcess(processPid = process.pid) {
+  let output;
+  try {
+    output = execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}\t#{pane_pid}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return '';
+  }
+  for (const line of String(output).split(/\r?\n/)) {
+    const [paneId, panePid] = line.trim().split(/\s+/);
+    if (paneId && isProcessInPane(processPid, panePid)) return paneId;
+  }
+  return '';
+}
 
 const scheduler = createScheduler('activity_evolver');
 let deps = {};
@@ -1190,22 +1251,26 @@ function applyEvolution() {
   if (!fs.existsSync(APPLY_SCRIPT)) {
     return { ok: false, error: `缺少重启脚本 ${APPLY_SCRIPT}` };
   }
+  const tmuxTarget = resolveTmuxPaneForProcess(process.pid);
+  if (!tmuxTarget) {
+    return { ok: false, error: '未找到当前 Bot 进程所属的 tmux 窗格，已取消重启（不会新建窗口或后台进程）' };
+  }
   try {
-    execFileSync('tmux', ['display-message', '-p', '-t', APPLY_TMUX_TARGET, '#{pane_id}'], {
+    execFileSync('tmux', ['display-message', '-p', '-t', tmuxTarget, '#{pane_id}'], {
       cwd: REPO_ROOT,
       stdio: 'ignore',
     });
   } catch {
-    return { ok: false, error: `未找到既有 tmux 窗格 ${APPLY_TMUX_TARGET}，已取消重启（不会新建窗口或后台进程）` };
+    return { ok: false, error: `当前 Bot 所属 tmux 窗格 ${tmuxTarget} 不可用，已取消重启（不会新建窗口或后台进程）` };
   }
   state.status = 'applying';
-  state.summary = `正在既有 tmux 窗格 ${APPLY_TMUX_TARGET} 重启应用进化…`;
+  state.summary = `正在当前 Bot 所属 tmux 窗格 ${tmuxTarget} 重启应用进化…`;
   writeState(state);
   const child = spawn('bash', [APPLY_SCRIPT], {
     cwd: REPO_ROOT,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env },
+    env: { ...process.env, FARM_TMUX_TARGET: tmuxTarget },
   });
   child.once('error', error => {
     const failed = readState();
@@ -1683,4 +1748,5 @@ module.exports = {
   evolutionWatchDecision,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
+  resolveTmuxPaneForProcess,
 };
