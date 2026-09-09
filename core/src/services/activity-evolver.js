@@ -1532,6 +1532,25 @@ function reconcileLegacyRunningState(state) {
     next.status = 'interrupted';
     next.summary = '旧版进化因主进程重启失去子进程收口信号；当前仓库已与 origin/main 一致，未重复上传，可按增量检查点重试';
   }
+  if (getRuntimeIssueSnapshot().length > 0 || next.lastTask === 'safety') {
+    // 有待复盘运行问题时优先重新排入 safety，不能被旧的每日日期闸门跳过。
+    next.lastSafetyEvolveDate = '';
+  } else {
+    next.lastEvolveDate = '';
+  }
+  return next;
+}
+
+function reconcileSynchronizedPrivacyBlock(state) {
+  if (state.status !== 'privacy_blocked_local'
+      || !/HEAD 与 origin\/main 不一致/.test(String(state.summary || ''))) return state;
+  const trackedMain = gitRefHead('origin/main');
+  if (!trackedMain || gitHead() !== trackedMain || worktreeChanges()) return state;
+  const next = state;
+  next.status = 'interrupted';
+  next.summary = '本地已与 origin/main 同步，解除旧的安全阻断，待重新复盘运行问题';
+  next.commit = '';
+  next.privacyFindings = [];
   if (next.lastTask === 'safety') next.lastSafetyEvolveDate = '';
   else next.lastEvolveDate = '';
   return next;
@@ -1542,7 +1561,7 @@ function startActivityEvolver(options = {}) {
   scheduler.clearAll();
 
   // apply-evolution.sh 只有在旧进程退出后才能生效，新进程启动就是可靠的已应用边界。
-  const initial = reconcileLegacyRunningState(readState());
+  const initial = reconcileSynchronizedPrivacyBlock(reconcileLegacyRunningState(readState()));
   const reconciled = markEvolutionAppliedAfterRestart(initial);
   if (reconciled.changed) {
     acknowledgeRuntimeIssues(reconciled.state.runtimeIssueBatch);

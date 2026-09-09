@@ -1,6 +1,7 @@
 const {
   getAuthorizedAccountId,
   requireConnectedAccount,
+  sendActivityUnavailable,
 } = require('./admin-activity-route-helpers');
 const { createActivityReadCache } = require('./admin-weather-activity-routes');
 
@@ -37,6 +38,7 @@ function registerAdminCharityActivityRoutes({
         upstreamCacheMs: CHARITY_ACTIVITY_UPSTREAM_CACHE_MS,
       });
     } catch (err) {
+      if (sendActivityUnavailable(res, err)) return;
       sendProviderError(res, err);
     }
   });
