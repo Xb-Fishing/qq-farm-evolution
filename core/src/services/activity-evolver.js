@@ -1538,8 +1538,12 @@ function reconcileLegacyRunningState(state) {
 }
 
 function reconcileSynchronizedPrivacyBlock(state) {
-  if (state.status !== 'privacy_blocked_local'
-      || !/HEAD 与 origin\/main 不一致/.test(String(state.summary || ''))) return state;
+  const summary = String(state.summary || '');
+  const blockedForHeadMismatch = state.status === 'privacy_blocked_local'
+    && /HEAD 与 origin\/main 不一致/.test(summary);
+  const alreadyRecovered = state.status === 'interrupted'
+    && summary.startsWith('本地已与 origin/main 同步，解除旧的安全阻断');
+  if (!blockedForHeadMismatch && !alreadyRecovered) return state;
   const trackedMain = gitRefHead('origin/main');
   if (!trackedMain || gitHead() !== trackedMain || worktreeChanges()) return state;
   const next = state;
