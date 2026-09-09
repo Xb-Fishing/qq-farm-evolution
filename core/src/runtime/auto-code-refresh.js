@@ -159,7 +159,7 @@ function createAutoCodeRefreshService(deps) {
   }
 
   async function refreshAccountCode(accountId, reason = 'timer') {
-    const account = findAccount(accountId);
+    let account = findAccount(accountId);
     if (!account) return false;
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account) && reason !== 'manual_start') {
       return false;
@@ -184,6 +184,14 @@ function createAutoCodeRefreshService(deps) {
     }
 
     try {
+      // Bot 停止超过一个凭据周期后，不能先拿已经过期的 loginBuffer 去启动
+      // Worker。先滚动长凭据，成功后再申请游戏 Code，确保重启跨日也不需要扫码。
+      const expiresAt = Number(account.wxCredentialExpiresAt) || 0;
+      const credentialNearExpiry = expiresAt <= 0 || expiresAt <= Date.now() + WX_KEEPALIVE_AHEAD_MAX_MS;
+      if (credentialNearExpiry && account.loginBuffer && account.refreshtoken) {
+        const keptAlive = await keepCredentialAlive(account);
+        if (keptAlive && keptAlive.Success) account = findAccount(accountId) || account;
+      }
       const code = await requestFarmCode(account, wxConfig);
       // 只写本轮生成的 Code；断线保活可能刚刚滚动过 loginBuffer/token，
       // 不能用函数开头读取的旧 account 快照把新长凭据覆盖回去。
@@ -407,7 +415,13 @@ function createAutoCodeRefreshService(deps) {
     const taskName = `relogin_${key}`;
     scheduler.clear(taskName);
     scheduler.setTimeoutTask(taskName, delayMs, () => {
-      refreshAccountCode(accountId, reason);
+      Promise.resolve(refreshAccountCode(accountId, reason)).then((ok) => {
+        // 换 Code 失败时不能把这次定时任务消费掉，否则账号会永久停在离线状态。
+        // 由统一熔断规则决定是否继续排程，成功后 startWorker 会清理旧任务。
+        if (!ok) scheduleKickoutRelogin(accountId, reason, sessionMs);
+      }).catch(() => {
+        scheduleKickoutRelogin(accountId, reason, sessionMs);
+      });
     });
     // stopWorker 会先清理在线保活；等待接管期间必须立即重新挂载长凭据保活，
     // 但不能提前申请游戏 Code 或启动 Worker。
@@ -438,7 +452,13 @@ function createAutoCodeRefreshService(deps) {
     const taskName = `relogin_${String(accountId || '')}`;
     scheduler.clear(taskName);
     scheduler.setTimeoutTask(taskName, cfg.intervalMinutes * 60000, () => {
-      refreshAccountCode(accountId, reason);
+      Promise.resolve(refreshAccountCode(accountId, reason)).then((ok) => {
+        // 失败后继续按原间隔排程，直到每日/连续失败熔断；成功后由
+        // scheduleAccount 清掉该任务并重新挂载在线保活。
+        if (!ok) scheduleRelogin(accountId, reason);
+      }).catch(() => {
+        scheduleRelogin(accountId, reason);
+      });
     });
     armOfflineCredentialKeepalive(accountId);
     log('系统', `账号 ${account.name} 将在 ${cfg.intervalMinutes} 分钟后自动刷新凭证并重登`, {
