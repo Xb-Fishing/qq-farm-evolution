@@ -1,6 +1,7 @@
 const {
   getAuthorizedAccountId,
   requireConnectedAccount,
+  sendActivityUnavailable,
 } = require('./admin-activity-route-helpers');
 
 const WEATHER_ACTIVITY_UPSTREAM_CACHE_MS = 60 * 1000;
@@ -87,6 +88,7 @@ function registerAdminWeatherActivityRoutes({
         upstreamCacheMs: WEATHER_ACTIVITY_UPSTREAM_CACHE_MS,
       });
     } catch (err) {
+      if (sendActivityUnavailable(res, err)) return;
       sendProviderError(res, err);
     }
   });
