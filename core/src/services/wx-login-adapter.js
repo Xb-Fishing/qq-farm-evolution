@@ -9,6 +9,7 @@ exports.getAccountAvatar = getAccountAvatar;
 exports.getFarmCode = getFarmCode;
 exports.getQRCode = getQRCode;
 exports.isDefinitiveWxCredentialError = isDefinitiveWxCredentialError;
+exports.shouldRefreshWxCredentialForCodeError = shouldRefreshWxCredentialForCodeError;
 exports.keepWxCredentialAlive = keepWxCredentialAlive;
 exports.peekPendingWxInfo = peekPendingWxInfo;
 exports.withAccountCredentialLock = withAccountCredentialLock;
@@ -48,6 +49,16 @@ function isDefinitiveWxCredentialError(raw) {
     return (message.includes('refresh') || message.includes('token') || message.includes('凭证'))
         && (message.includes('expired') || message.includes('invalid') || message.includes('过期') || message.includes('失效'));
 }
+function shouldRefreshWxCredentialForCodeError(raw) {
+    const message = String(raw || '').toLowerCase();
+    return message.includes('manualauth rejected')
+        || message.includes('invalid scope')
+        || message.includes('40188')
+        || message.includes('40030')
+        || message.includes('42007')
+        || message.includes('credential expired')
+        || message.includes('凭证已失效');
+}
 function buildCredentialMetadata(source, previous = {}, includeSuccess = false) {
     const data = asRecord(source);
     const result = {};
@@ -63,8 +74,11 @@ function buildCredentialMetadata(source, previous = {}, includeSuccess = false) 
         || (hasRefreshToken && !Number(previous.wxRefreshTokenObservedAt))) {
         result.wxRefreshTokenObservedAt = observedAt > 0 ? Math.floor(observedAt) : Date.now();
     }
-    if (includeSuccess)
+    if (includeSuccess) {
         result.wxCredentialLastSuccessAt = Date.now();
+        if (hasRefreshToken)
+            result.wxRefreshTokenObservedAt = Date.now();
+    }
     return result;
 }
 function asRotatedCredentialError(error) {
@@ -365,9 +379,9 @@ async function issueFarmCode(openid, options = {}) {
         }
         catch (issueError) {
             const msg = errorMessage(issueError);
-            if (refreshtoken && msg.includes('ManualAuth rejected')) {
+            if (refreshtoken && shouldRefreshWxCredentialForCodeError(msg)) {
                 try {
-                    // 传空 cookie jar（refresh 请求不依赖 OAuth 回调 cookie，Ual-Access 头鉴权）
+                    // refresh 请求使用显式的 openid/access/refresh Cookie，不依赖进程内 OAuth 会话。
                     const refreshed = await wxLogin.refreshLoginBuffer({ openid: String(openid), refreshtoken, accesstoken, cookies: new Map() });
                     loginBuffer = refreshed.loginBuffer;
                     refreshtoken = refreshed.refreshtoken;
