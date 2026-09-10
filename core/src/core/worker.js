@@ -1559,14 +1559,9 @@ async function handleApiCall(msg) {
                 result = await getActivityGroupSnapshot(args[0], args[1]);
                 break;
             }
-            case 'getCharityActivity': {
-                const { getCharityActivity } = require('../services/activity');
-                result = await getCharityActivity();
-                break;
-            }
-            case 'getWeatherActivity': {
-                const { getWeatherActivity } = require('../services/activity');
-                result = await getWeatherActivity();
+            case 'getBearActivity': {
+                const { getBearActivity } = require('../services/activity');
+                result = await getBearActivity();
                 break;
             }
             case 'getIllustratedList': {

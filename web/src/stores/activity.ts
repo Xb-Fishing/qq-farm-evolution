@@ -477,23 +477,60 @@ export interface HeluActivityData {
   }
 }
 
+export interface BearActivityData {
+  activityId: number
+  title: string
+  startTime: number
+  endTime: number
+  statusLabel: string
+  uid: string
+  uidConfirmed: boolean
+  clientUiUid: string
+  inventoryAvailable: boolean
+  gameplayGuides: Array<{
+    key: string
+    title: string
+    steps: string[]
+    missingState: string
+    actionLabel: string
+    sourceId: number
+    operationSupported: false
+    statusAvailable: false
+  }>
+  notices: string[]
+  conflicts: Array<{ title: string, text: string }>
+  resources: Array<{ key: string, name: string, itemId: number | null, purpose: string, count: number | null, image: string }>
+  exchangeShop: Array<ActivityExchangeShopItem & { inventoryCount: number | null, operationSupported: false }>
+  records: Array<{ id: number, title: string, unlocked: boolean | null, claimed: boolean | null, rewards: WeatherActivityItem[] }>
+  recordStateAvailable: boolean
+  subActivities: Array<{
+    id: number
+    title: string
+    type: number
+    parentId: number
+    startTime: number
+    endTime: number
+    statusLabel: string
+    clientUiUid: string
+    protobufField: number
+    protocolObserved: boolean
+  }>
+  protocol: { declaredReadOnlyFields: number[], opaqueReadOnlyFields: number[] }
+  ruleSections: Array<{ sourceId: number, key: string, title: string, lines: string[] }>
+  missingEvidence: string[]
+}
+
 export const useActivityStore = defineStore('activity', () => {
-  const charityActivity = ref<CharityActivityData | null>(null)
-  const charityLoading = ref(false)
-  const charityError = ref('')
-  let charityRequestId = 0
-  const weatherActivity = ref<WeatherActivityData | null>(null)
-  const weatherLoading = ref(false)
-  const weatherError = ref('')
-  let weatherRequestId = 0
+  const bearActivity = ref<BearActivityData | null>(null)
+  const bearLoading = ref(false)
+  const bearError = ref('')
+  let bearRequestId = 0
 
   function clearActivityData() {
-    charityActivity.value = null
-    charityLoading.value = false
-    charityError.value = ''
-    weatherActivity.value = null
-    weatherLoading.value = false
-    weatherError.value = ''
+    ++bearRequestId
+    bearActivity.value = null
+    bearLoading.value = false
+    bearError.value = ''
   }
 
   function isCurrentAccount(accountId: string) {
@@ -502,77 +539,37 @@ export const useActivityStore = defineStore('activity', () => {
     return currentId === String(accountId)
   }
 
-  async function fetchWeatherActivity(accountId: string) {
+  async function fetchBearActivity(accountId: string) {
     if (!accountId)
       return
     const requestedId = String(accountId)
-    const requestId = ++weatherRequestId
-    weatherLoading.value = true
-    weatherError.value = ''
+    const requestId = ++bearRequestId
+    bearLoading.value = true
+    bearError.value = ''
     try {
-      const { data } = await api.get('/api/activity/weather', {
+      const { data } = await api.get('/api/activity/bear', {
         headers: { 'x-account-id': accountId },
       })
-      if (requestId !== weatherRequestId || !isCurrentAccount(requestedId))
+      if (requestId !== bearRequestId || !isCurrentAccount(requestedId))
         return data
-      if (data.ok)
-        weatherActivity.value = data.activity || null
-      else
-        weatherError.value = data.error || '获取雨落成诗失败'
+      bearActivity.value = data.ok ? data.activity || null : null
+      if (!data.ok)
+        bearError.value = data.error || '获取 S3 萌宠失败'
       return data
     }
     catch (err: any) {
-      const error = err.message || '获取雨落成诗失败'
-      if (requestId === weatherRequestId && isCurrentAccount(requestedId))
-        weatherError.value = error
+      const error = err.message || '获取 S3 萌宠失败'
+      if (requestId === bearRequestId && isCurrentAccount(requestedId)) {
+        bearActivity.value = null
+        bearError.value = error
+      }
       return { ok: false, error }
     }
     finally {
-      if (requestId === weatherRequestId)
-        weatherLoading.value = false
+      if (requestId === bearRequestId)
+        bearLoading.value = false
     }
   }
 
-  async function fetchCharityActivity(accountId: string) {
-    if (!accountId)
-      return
-    const requestedId = String(accountId)
-    const requestId = ++charityRequestId
-    charityLoading.value = true
-    charityError.value = ''
-    try {
-      const { data } = await api.get('/api/activity/charity', {
-        headers: { 'x-account-id': accountId },
-      })
-      if (requestId !== charityRequestId || !isCurrentAccount(requestedId))
-        return data
-      if (data.ok)
-        charityActivity.value = data.activity || null
-      else
-        charityError.value = data.error || '获取公益小红花失败'
-      return data
-    }
-    catch (err: any) {
-      const error = err.message || '获取公益小红花失败'
-      if (requestId === charityRequestId && isCurrentAccount(requestedId))
-        charityError.value = error
-      return { ok: false, error }
-    }
-    finally {
-      if (requestId === charityRequestId)
-        charityLoading.value = false
-    }
-  }
-
-  return {
-    charityActivity,
-    charityLoading,
-    charityError,
-    weatherActivity,
-    weatherLoading,
-    weatherError,
-    clearActivityData,
-    fetchCharityActivity,
-    fetchWeatherActivity,
-  }
+  return { bearActivity, bearLoading, bearError, clearActivityData, fetchBearActivity }
 })

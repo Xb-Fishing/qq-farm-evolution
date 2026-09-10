@@ -11,14 +11,11 @@ const {
   WEATHER_TYPE20_ACTIVITY_ID,
   WEATHER_TYPE6_ACTIVITY_ID,
   WEATHER_CLIENT_UI_UID,
-  getWeatherActivity,
   normalizeWeatherActivity,
 } = require('../src/services/activity');
 const {
   createActivityReadCache,
-  registerAdminWeatherActivityRoutes,
-  WEATHER_ACTIVITY_UPSTREAM_CACHE_MS,
-} = require('../src/controllers/admin-weather-activity-routes');
+} = require('../src/controllers/activity-read-cache');
 
 function createWeatherSnapshot() {
   return {
@@ -168,31 +165,6 @@ test('没有活动说明证据时不凭协议节点猜玩法 UI', () => {
   assert.equal(activity.summary.gameplayGuideCount, 0);
 });
 
-test('雨落成诗只读读取先验证 List 根节点，活动结束后不再触发 GetGroup', async () => {
-  let snapshotReads = 0;
-  await assert.rejects(getWeatherActivity({
-    getActivityDiscoveryList: async () => [],
-    getActivityGroupSnapshot: async () => {
-      snapshotReads += 1;
-      return createWeatherSnapshot();
-    },
-  }), /未由当前 ActivityService\.List 下发/);
-  assert.equal(snapshotReads, 0);
-});
-
-test('雨落成诗只读读取使用 List 已下发根节点和空 UID', async () => {
-  let request = null;
-  const activity = await getWeatherActivity({
-    getActivityDiscoveryList: async () => [{ id: WEATHER_ACTIVITY_ID, parentId: 0 }],
-    getActivityGroupSnapshot: async (activityId, uid) => {
-      request = { activityId, uid };
-      return createWeatherSnapshot();
-    },
-  });
-  assert.deepEqual(request, { activityId: WEATHER_ACTIVITY_ID, uid: '' });
-  assert.equal(activity.activityId, WEATHER_ACTIVITY_ID);
-});
-
 test('雨落成诗根节点和全部子节点都进入已知活动注册表', () => {
   const knownIds = [
     WEATHER_ACTIVITY_ID,
@@ -210,37 +182,6 @@ test('雨落成诗根节点和全部子节点都进入已知活动注册表', ()
     2026070304,
     2026070305,
   ]);
-});
-
-test('雨落成诗管理接口只读取已连接账号状态', async () => {
-  const routes = new Map();
-  const activity = normalizeWeatherActivity(createWeatherSnapshot());
-  let upstreamReads = 0;
-  registerAdminWeatherActivityRoutes({
-    app: { get: (route, handler) => routes.set(route, handler) },
-    provider: {
-      getStatus: () => ({ connection: { connected: true } }),
-      getWeatherActivity: async () => {
-        upstreamReads += 1;
-        return activity;
-      },
-    },
-    getAccountIdFromRequest: () => 'account-A',
-    canAccessAccount: () => true,
-    sendProviderError: (_res, error) => { throw error; },
-  });
-
-  let body = null;
-  await routes.get('/api/activity/weather')({}, { json: value => { body = value; } });
-  assert.equal(body.ok, true);
-  assert.equal(body.activity.activityId, WEATHER_ACTIVITY_ID);
-  assert.equal(body.activity.writeOperationsSupported, false);
-  assert.equal(body.upstreamCached, false);
-
-  await routes.get('/api/activity/weather')({}, { json: value => { body = value; } });
-  assert.equal(body.upstreamCached, true);
-  assert.equal(body.upstreamCacheMs, WEATHER_ACTIVITY_UPSTREAM_CACHE_MS);
-  assert.equal(upstreamReads, 1);
 });
 
 test('活动只读缓存合并并发请求，过期后才重新读取腾讯上游', async () => {
@@ -294,25 +235,6 @@ test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析�
 
   assert.doesNotMatch(workerSource, /runQixi|startQixi|qixi_activity_/);
   assert.doesNotMatch(activityViewSource, /QixiActivityPanel|鹊桥寄情/);
-  assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
+  assert.match(activityViewSource, /BearActivityPanel|S3 萌宠/);
   assert.doesNotMatch(workerSource, /case 'getQixiActivity'/);
-});
-
-test('雨落成诗专属 UI 按活动说明展示玩法，协议节点只作为诊断信息', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../web/src/components/activity/WeatherActivityPanel.vue'), 'utf8');
-  const scanSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
-
-  assert.match(source, /天气瓶主线/);
-  assert.match(source, /玩法说明与参与条件/);
-  assert.match(source, /活动注意事项/);
-  assert.match(source, /协议接入状态（诊断信息）/);
-  assert.doesNotMatch(source, /未命名玩法/);
-  assert.match(scanSource, /根据活动说明识别的 UI 检查项/);
-  assert.match(scanSource, /它们不能作为写操作命令或参数的证据/);
-  assert.doesNotMatch(scanSource, /个候选或当前活动入口/);
-  assert.match(scanSource, /本次新活动候选组/);
-  assert.match(source, /1 分钟内重复刷新复用本地结果/);
-  assert.match(source, /当前请在官方 QQ 农场活动页人工执行/);
-  assert.match(source, /必须先取得当前官方客户端自然操作产生的成功请求样本/);
-  assert.doesNotMatch(source, /操作协议待确认，当前不提供执行按钮/);
 });
