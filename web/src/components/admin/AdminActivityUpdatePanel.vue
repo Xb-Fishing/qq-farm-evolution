@@ -262,23 +262,24 @@ function plainActivityText(value: unknown) {
 function activityRuleSections(group: ActivityGroup) {
   return flattenGroup(group).flatMap((node) => {
     const payload = node.payload as Record<string, unknown> | null | undefined
-    const tipsValue = payload && typeof payload === 'object'
-      ? payload.tips
-      : null
-    if (!tipsValue || typeof tipsValue !== 'object')
-      return []
-    const tips = tipsValue as Record<string, unknown>
-    const lines = Array.isArray(tips.txt)
-      ? tips.txt.map(plainActivityText).filter(Boolean)
-      : []
-    if (!lines.length)
-      return []
-    return [{
-      id: node.id,
-      title: plainActivityText(tips.title) || '活动说明',
-      uid: plainActivityText(payload?.uid),
-      lines,
-    }]
+    return ['tips', 'tips1', 'tips2'].flatMap((key) => {
+      const tipsValue = payload?.[key]
+      if (!tipsValue || typeof tipsValue !== 'object')
+        return []
+      const tips = tipsValue as Record<string, unknown>
+      const lines = Array.isArray(tips.txt)
+        ? tips.txt.filter(entry => typeof entry === 'string').map(plainActivityText).filter(Boolean)
+        : []
+      if (!lines.length)
+        return []
+      return [{
+        id: node.id,
+        key: `${node.id}-${key}`,
+        title: plainActivityText(tips.title) || '活动说明',
+        uid: plainActivityText(payload?.uid),
+        lines,
+      }]
+    })
   })
 }
 
@@ -291,6 +292,18 @@ interface ActivityRuleInsight {
 }
 
 const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'evidence'> & { pattern: RegExp }> = [
+  { key: 'bear-grow', title: '比熊领养与投喂成长', description: '已接入流程卡；成长进度、元气糕库存与投喂协议待确认。', kind: 'gameplay', pattern: /投喂.*培育比熊|投喂.*比熊幼崽/ },
+  { key: 'bear-care', title: '看护与比熊变异', description: '已接入看护条件；商城与玩法说明的产量/售价差异单独提示，当前看护状态待确认。', kind: 'gameplay', pattern: /比熊处于看护状态/ },
+  { key: 'bear-treasure', title: '成年寻宝', description: '已接入消耗与奖励关系；剩余次数、消耗数和挑战书掉落规则待确认。', kind: 'gameplay', pattern: /寻宝玩法/ },
+  { key: 'bear-escort', title: '宝藏护送与结算', description: '已接入自动护送与结束条件；倒计时/资金状态待确认，350/400 初始价值存在说明差异。', kind: 'gameplay', pattern: /宝藏护送/ },
+  { key: 'bear-raid', title: '好友夺宝与挑战书', description: '已接入三档收益、每日上限和目标条件；目标状态/库存/等额边界及操作协议待确认。', kind: 'gameplay', pattern: /夺宝博弈|夺宝条件/ },
+  { key: 'bear-pity', title: '骰子胜负与安慰礼', description: '已接入胜负分配和连续失败保底；当前失败次数、奖励状态待确认。', kind: 'gameplay', pattern: /胜负与保底|夺宝安慰礼/ },
+  { key: 'bear-album', title: '爪印手记与故事奖励', description: '已接入解锁与领奖流程；field 110 奖励记录不可直接认定为手记，当前进度待确认。', kind: 'gameplay', pattern: /爪印手记.*照片墙|每解锁一则手记/ },
+  { key: 'bear-tactics', title: '锦囊选择与刷新', description: '已接入五类锦囊及免费/付费刷新边界；2/3 个每日锦囊有说明差异，当前次数待确认。', kind: 'gameplay', pattern: /锦囊系统/ },
+  { key: 'bear-shop', title: '幸运星游记商城', description: '已接入商品、价格、库存与原始状态码；兑换协议与状态码语义待确认。', kind: 'gameplay', pattern: /幸运星.*兑换.*限定奖励/ },
+  { key: 'bear-rank', title: '幸运星好友排名', description: '已接入排名说明；排名当前状态与读取路径待确认。', kind: 'gameplay', pattern: /幸运星排行榜/ },
+  { key: 'bear-gift', title: '每日免费稀有种子礼包', description: '已接入每日刷新与累计规则；礼包/种子/植物 ID 及占地、领取态待官方证据。', kind: 'gameplay', pattern: /每日.*赠送.*稀有种子礼包|每日.*免费.*稀有种子礼包/ },
+  { key: 'bear-end', title: '萌宠赛季结束与回收', description: '已接入成年永久保留、幼崽回收、道具换金币、护送结算和手记图片清空提示。', kind: 'warning', pattern: /赛季结束|活动结束.*比熊|活动结束.*护送/ },
   { key: 'star-daily', title: '观星礼录：星宿轮转与每日馈赠', description: '专属 UI 应展示二十八星宿逐日开放、每日奖励投放和当日馈赠关系。', kind: 'gameplay', pattern: /星宿轮转|观星礼录.*二十八个.*逐日点亮/ },
   { key: 'star-claim', title: '星宿状态与一键领取流程', description: '专属 UI 应展示当日事件、奖励和可领取状态，并说明一键领取已解锁奖励。', kind: 'gameplay', pattern: /查看当日星宿事件|一键领取.*已解锁的全部星宿奖励/ },
   { key: 'star-cycle-warning', title: '游记周期与补领边界', description: '专属 UI 应醒目提示活动结束、跨活动继承和超出补领范围的限制。', kind: 'warning', pattern: /不再开放新的每日奖励|当前游记周期|不跨活动继承|超出补领范围/ },
@@ -330,6 +343,12 @@ function groupContainsUnknown(group: ActivityGroup) {
 function activityNodeLabel(node: ActivityGroup) {
   if (!node.parentId || node.type === 1)
     return '主活动'
+  if (node.id === 2026090101)
+    return '萌宠成长与寻宝夺宝'
+  if (node.id === 2026090102)
+    return '游记奖励记录'
+  if (node.id === 2026090103)
+    return '幸运星游记商城'
   if (node.id === 2026090901)
     return '公益小红花玩法节点'
   if (node.type === 15)
@@ -340,6 +359,12 @@ function activityNodeLabel(node: ActivityGroup) {
 }
 
 function activityNodeDescription(node: ActivityGroup) {
+  if (node.id === 2026090101)
+    return '说明已拆分为成长、看护、寻宝、护送、夺宝、安慰礼、手记、锦囊与每日礼包；field 115 仍为不透明诊断。'
+  if (node.id === 2026090102)
+    return 'field 110 已声明，可只读展示奖励记录；不能凭类型或旧赛季命令接入领取，也不能推断为爪印手记。'
+  if (node.id === 2026090103)
+    return 'field 102 展示商品价格与状态码；说明与玩法节点的金额、锦囊数量和掉落描述存在差异。'
   if (node.id === 2026090901)
     return '活动说明已确认每日任务/分享、种植收获、爱心值捐赠和三类奖励；field 116 仍只作不透明诊断，不能据此推测写操作。'
   if (node.type === 15)
@@ -891,7 +916,7 @@ onMounted(loadUpdateStatus)
               <h5 class="font-semibold text-gray-900 dark:text-white">玩法规则与完整活动说明</h5>
               <section
                 v-for="section in activityRuleSections(group)"
-                :key="section.id"
+                :key="section.key"
                 class="mt-3 rounded-lg bg-gray-50 p-4 dark:bg-gray-900/40"
               >
                 <div class="flex flex-wrap items-center justify-between gap-2">
