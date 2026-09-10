@@ -70,6 +70,7 @@ function createAutoCodeRefreshService(deps) {
   const scheduler = createScheduler('auto_code_refresh');
   const recoveryState = new Map();
   const keepaliveGeneration = new Map();
+  const definitiveCredentialFailures = new Map();
   const MAX_DAILY_RECOVERIES = 5;
   const MAX_CONSECUTIVE_FAILURES = 3;
 
@@ -101,6 +102,20 @@ function createAutoCodeRefreshService(deps) {
     const data = getAccounts();
     const accounts = Array.isArray(data && data.accounts) ? data.accounts : [];
     return accounts.find(acc => String(acc.id) === String(accountId));
+  }
+
+  function isDefinitiveCredentialFailure(error) {
+    return typeof wxLoginAdapter.isDefinitiveWxCredentialError === 'function'
+      && wxLoginAdapter.isDefinitiveWxCredentialError(error && error.message ? error.message : error);
+  }
+
+  function isCredentialBlocked(accountId) {
+    const blockedToken = definitiveCredentialFailures.get(String(accountId || ''));
+    if (!blockedToken) return false;
+    const account = findAccount(accountId);
+    if (!account || String(account.refreshtoken || '') === blockedToken) return true;
+    definitiveCredentialFailures.delete(String(accountId || ''));
+    return false;
   }
 
   function normalizeConfig(accountId) {
@@ -208,9 +223,15 @@ function createAutoCodeRefreshService(deps) {
         accountName: account.name,
       });
       if (recovery) recovery.failures = 0;
+      definitiveCredentialFailures.delete(String(accountId));
       return true;
     } catch (err) {
       if (recovery) recovery.failures += 1;
+      if (isDefinitiveCredentialFailure(err)) {
+        definitiveCredentialFailures.set(String(accountId), String(account.refreshtoken || ''));
+        addAccountLog('auto_relogin_blocked', '微信授权已明确失效，请重新扫码后再继续自动登录',
+          account.id, account.name, { reason });
+      }
       recordEvolutionIssue('code_refresh_failed', 'error');
       addAccountLog('auto_code_refresh_failed', `自动刷新 Code 失败: ${  err.message}`,
         account.id, account.name, { reason });
@@ -271,8 +292,10 @@ function createAutoCodeRefreshService(deps) {
             accountId: accountKey, accountName: latest.name,
           });
         } finally {
-          // 静默只停 Worker 业务巡查；主进程长凭据始终按有效期续期，不申请游戏 Code。
-          scheduleNextKeepalive(nextReason);
+          // 明确失效（如 40188 invalid scope）只能由重新扫码恢复，停止定时器，
+          // 避免每隔数小时重复请求同一份已终止授权。重新扫码后 scheduleAccount
+          // 会用新凭据重新挂载保活。
+          if (nextReason !== 'definitive') scheduleNextKeepalive(nextReason);
         }
       });
     };
@@ -418,9 +441,9 @@ function createAutoCodeRefreshService(deps) {
       Promise.resolve(refreshAccountCode(accountId, reason)).then((ok) => {
         // 换 Code 失败时不能把这次定时任务消费掉，否则账号会永久停在离线状态。
         // 由统一熔断规则决定是否继续排程，成功后 startWorker 会清理旧任务。
-        if (!ok) scheduleKickoutRelogin(accountId, reason, sessionMs);
+        if (!ok && !isCredentialBlocked(accountId)) scheduleKickoutRelogin(accountId, reason, sessionMs);
       }).catch(() => {
-        scheduleKickoutRelogin(accountId, reason, sessionMs);
+        if (!isCredentialBlocked(accountId)) scheduleKickoutRelogin(accountId, reason, sessionMs);
       });
     });
     // stopWorker 会先清理在线保活；等待接管期间必须立即重新挂载长凭据保活，
@@ -455,9 +478,9 @@ function createAutoCodeRefreshService(deps) {
       Promise.resolve(refreshAccountCode(accountId, reason)).then((ok) => {
         // 失败后继续按原间隔排程，直到每日/连续失败熔断；成功后由
         // scheduleAccount 清掉该任务并重新挂载在线保活。
-        if (!ok) scheduleRelogin(accountId, reason);
+        if (!ok && !isCredentialBlocked(accountId)) scheduleRelogin(accountId, reason);
       }).catch(() => {
-        scheduleRelogin(accountId, reason);
+        if (!isCredentialBlocked(accountId)) scheduleRelogin(accountId, reason);
       });
     });
     armOfflineCredentialKeepalive(accountId);
