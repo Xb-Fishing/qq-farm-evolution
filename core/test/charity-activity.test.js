@@ -1,7 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const {
   CHARITY_ACTIVITY_ID,
@@ -11,14 +9,8 @@ const {
   CHARITY_PLANT_ID,
   CHARITY_SEED_ITEM_ID,
   CHARITY_FRUIT_ITEM_ID,
-  getCharityActivity,
   normalizeCharityActivity,
 } = require('../src/services/activity');
-const {
-  CHARITY_ACTIVITY_UPSTREAM_CACHE_MS,
-  registerAdminCharityActivityRoutes,
-} = require('../src/controllers/admin-charity-activity-routes');
-
 function createCharitySnapshot() {
   return {
     id: 2026090900,
@@ -121,95 +113,4 @@ test('没有活动说明证据时不凭 type 19 或 field 116 猜玩法和奖励
   assert.deepEqual(activity.notices, []);
   assert.deepEqual(activity.resources, []);
   assert.equal(activity.subActivities[0].protocolObserved, true);
-});
-
-test('公益小红花读取只允许 List 已下发根节点，并使用空 GetGroup UID', async () => {
-  let snapshotReads = 0;
-  await assert.rejects(getCharityActivity({
-    getActivityDiscoveryList: async () => [],
-    getActivityGroupSnapshot: async () => {
-      snapshotReads += 1;
-      return createCharitySnapshot();
-    },
-  }), /未由当前 ActivityService\.List 下发/);
-  assert.equal(snapshotReads, 0);
-
-  let request = null;
-  const activity = await getCharityActivity({
-    nowSeconds: 1788800000,
-    getActivityDiscoveryList: async () => [
-      { id: 2026090901, parentId: 2026090900 },
-      { id: 2026090900, parentId: 0 },
-    ],
-    getActivityGroupSnapshot: async (activityId, uid) => {
-      request = { activityId, uid };
-      return createCharitySnapshot();
-    },
-  });
-  assert.deepEqual(request, { activityId: 2026090900, uid: '' });
-  assert.equal(activity.activityId, 2026090900);
-});
-
-test('公益小红花管理接口仅提供有缓存的只读状态', async () => {
-  const routes = new Map();
-  const activity = normalizeCharityActivity(createCharitySnapshot(), { nowSeconds: 1788800000 });
-  let upstreamReads = 0;
-  registerAdminCharityActivityRoutes({
-    app: { get: (route, handler) => routes.set(route, handler) },
-    provider: {
-      getStatus: () => ({ connection: { connected: true } }),
-      getCharityActivity: async () => {
-        upstreamReads += 1;
-        return activity;
-      },
-    },
-    getAccountIdFromRequest: () => 'account-A',
-    canAccessAccount: () => true,
-    sendProviderError: (_res, error) => { throw error; },
-  });
-
-  let body = null;
-  await routes.get('/api/activity/charity')({}, { json: value => { body = value; } });
-  assert.equal(body.ok, true);
-  assert.equal(body.activity.activityId, CHARITY_ACTIVITY_ID);
-  assert.equal(body.activity.writeOperationsSupported, false);
-  assert.equal(body.upstreamCached, false);
-
-  await routes.get('/api/activity/charity')({}, { json: value => { body = value; } });
-  assert.equal(body.upstreamCached, true);
-  assert.equal(body.upstreamCacheMs, CHARITY_ACTIVITY_UPSTREAM_CACHE_MS);
-  assert.equal(upstreamReads, 1);
-});
-
-test('公益小红花专属 UI、管理转发和已知活动注册完整且无自动入口', () => {
-  const activityViewSource = fs.readFileSync(path.join(__dirname, '../../web/src/views/Activity.vue'), 'utf8');
-  const panelSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/activity/CharityRedFlowerPanel.vue'), 'utf8');
-  const scanSource = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
-  const storeSource = fs.readFileSync(path.join(__dirname, '../../web/src/stores/activity.ts'), 'utf8');
-  const activitySource = fs.readFileSync(path.join(__dirname, '../src/services/activity.js'), 'utf8');
-  const routeSource = fs.readFileSync(path.join(__dirname, '../src/controllers/admin-activity-routes.js'), 'utf8');
-  const providerSource = fs.readFileSync(path.join(__dirname, '../src/runtime/data-provider.js'), 'utf8');
-  const workerSource = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
-  const charityBlock = activitySource.slice(
-    activitySource.indexOf('function normalizeCharityRuleLines'),
-    activitySource.indexOf('/**\n * 操作活动', activitySource.indexOf('function normalizeCharityRuleLines')),
-  );
-
-  assert.match(activityViewSource, /CharityRedFlowerPanel/);
-  assert.match(panelSource, /公益小红花参与流程/);
-  assert.match(panelSource, /三类活动奖励/);
-  assert.match(panelSource, /活动规则禁止自动方式参与/);
-  assert.match(panelSource, /领取公益礼包.*捐赠爱心值.*送出公益金/s);
-  assert.match(panelSource, /disabled/);
-  assert.match(panelSource, /ID \{\{ resource\.itemId \}\} · 当前土地映射/);
-  assert.match(panelSource, /这个活动不能由 Bot 自动执行/);
-  assert.match(scanSource, /公益小红花玩法节点/);
-  assert.match(scanSource, /每日任务与分享领种子/);
-  assert.match(scanSource, /活动禁止自动方式参与/);
-  assert.match(storeSource, /fetchCharityActivity/);
-  assert.match(routeSource, /registerAdminCharityActivityRoutes/);
-  assert.match(providerSource, /getCharityActivity/);
-  assert.match(workerSource, /case 'getCharityActivity'/);
-  assert.doesNotMatch(charityBlock, /operateActivity|sendMsgAsync/);
-  assert.doesNotMatch(workerSource, /charity_activity_(claim|donate)|runCharity|startCharity/i);
 });

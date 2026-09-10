@@ -3,11 +3,10 @@ const {
   requireConnectedAccount,
   sendActivityUnavailable,
 } = require('./admin-activity-route-helpers');
-const { createActivityReadCache } = require('./admin-weather-activity-routes');
+const { createActivityReadCache, ACTIVITY_UPSTREAM_CACHE_MS } = require('./activity-read-cache');
 
-const CHARITY_ACTIVITY_UPSTREAM_CACHE_MS = 60 * 1000;
 
-function registerAdminCharityActivityRoutes({
+function registerAdminBearActivityRoutes({
   app,
   provider,
   getAccountIdFromRequest,
@@ -18,24 +17,24 @@ function registerAdminCharityActivityRoutes({
     getAccountIdFromRequest,
     canAccessAccount,
   };
-  const activityReader = createActivityReadCache({ ttlMs: CHARITY_ACTIVITY_UPSTREAM_CACHE_MS });
+  const activityReader = createActivityReadCache({ ttlMs: ACTIVITY_UPSTREAM_CACHE_MS });
 
-  app.get('/api/activity/charity', async (req, res) => {
+  app.get('/api/activity/bear', async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);
     if (!accountId) return;
 
     try {
-      if (!requireConnectedAccount(res, provider, accountId, '获取公益小红花失败: 账号未运行'))
+      if (!requireConnectedAccount(res, provider, accountId, '获取S3 萌宠失败: 账号未运行'))
         return;
       const result = await activityReader.read(
         accountId,
-        () => provider.getCharityActivity(accountId),
+        () => provider.getBearActivity(accountId),
       );
       res.json({
         ok: true,
         activity: result.value,
         upstreamCached: result.upstreamCached,
-        upstreamCacheMs: CHARITY_ACTIVITY_UPSTREAM_CACHE_MS,
+        upstreamCacheMs: ACTIVITY_UPSTREAM_CACHE_MS,
       });
     } catch (err) {
       if (sendActivityUnavailable(res, err)) return;
@@ -45,6 +44,6 @@ function registerAdminCharityActivityRoutes({
 }
 
 module.exports = {
-  CHARITY_ACTIVITY_UPSTREAM_CACHE_MS,
-  registerAdminCharityActivityRoutes,
+  ACTIVITY_UPSTREAM_CACHE_MS,
+  registerAdminBearActivityRoutes,
 };

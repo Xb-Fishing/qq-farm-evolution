@@ -159,7 +159,7 @@ test('过期千星自动开关、例行入口和专属页面已停用，历史�
   assert.doesNotMatch(settingsSource, /star_passport_claim|star_record_claim|自动领取千星/);
   assert.doesNotMatch(activityViewSource, /StarRecordPanel|HeluPassportPanel|HeluSolarTermsPanel|HeluExchangePanel/);
   assert.doesNotMatch(activityViewSource, /fetchHeluActivity|千星游记|观星礼录|星砂兑换商店|节令小札/);
-  assert.match(activityViewSource, /WeatherActivityPanel|雨落成诗/);
+  assert.match(activityViewSource, /BearActivityPanel|S3 萌宠/);
   assert.match(serviceSource, /normalizeStarActivityTree|normalizeStarRuleData/);
   assert.doesNotMatch(routeSource, /admin-helu-activity-routes|admin-nangua-activity-routes/);
   assert.doesNotMatch(providerSource, /getStarActivity|claimStarRecordRewards|getQixiActivity|getActivityShop/);

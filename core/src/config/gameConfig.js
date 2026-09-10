@@ -169,6 +169,22 @@ function loadConfigs() {
         console.warn('[配置] 加载 ItemInfo.json 失败:', err.message);
     }
 
+    // 活动只读证据补名称，不推断物品类型或可执行操作。
+    try {
+        const eventItemsPath = path.join(basePath, 'EventItems.json');
+        if (fs.existsSync(eventItemsPath)) {
+            for (const entry of JSON.parse(fs.readFileSync(eventItemsPath, 'utf8'))) {
+                const id = Number(entry.id);
+                if (id > 0 && typeof entry.name === 'string') {
+                    itemInfoMap.set(id, { ...(itemInfoMap.get(id) || {}), id, name: entry.name });
+                }
+            }
+            itemInfoConfig = [...itemInfoMap.values()];
+        }
+    } catch (err) {
+        console.warn('[配置] 加载 EventItems.json 失败:', err.message);
+    }
+
     // 4. 加载种子图片映射
     try {
         const seedImagesPath = path.join(basePath, 'seed_images_named');

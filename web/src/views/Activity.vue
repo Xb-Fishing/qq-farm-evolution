@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import api from '@/api'
-import CharityRedFlowerPanel from '@/components/activity/CharityRedFlowerPanel.vue'
-import WeatherActivityPanel from '@/components/activity/WeatherActivityPanel.vue'
+import BearActivityPanel from '@/components/activity/BearActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
@@ -16,14 +15,7 @@ const activityStore = useActivityStore()
 const toast = useToastStore()
 const userStore = useUserStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
-const {
-  charityActivity,
-  charityLoading,
-  charityError,
-  weatherActivity,
-  weatherLoading,
-  weatherError,
-} = storeToRefs(activityStore)
+const { bearActivity, bearLoading, bearError } = storeToRefs(activityStore)
 
 const showActivityAnalysis = ref(false)
 type EvolutionAgent = 'claude' | 'codex'
@@ -32,12 +24,10 @@ const evolutionAgentLoading = ref(false)
 const evolutionRunning = ref(false)
 const evolutionNextRunAt = ref(0)
 const evolutionIssueCount = ref(0)
-const activityLoading = computed(() => charityLoading.value || weatherLoading.value)
 
 async function refreshAll() {
   if (currentAccountId.value) {
-    await activityStore.fetchCharityActivity(String(currentAccountId.value))
-    await activityStore.fetchWeatherActivity(String(currentAccountId.value))
+    await activityStore.fetchBearActivity(String(currentAccountId.value))
   }
 }
 
@@ -86,18 +76,11 @@ async function saveEvolutionAgent(event: Event) {
   }
 }
 
-async function refreshWeather() {
+async function refreshBear() {
   if (!currentAccountId.value)
     return
-  const result = await activityStore.fetchWeatherActivity(String(currentAccountId.value))
-  result?.ok ? toast.success('雨落成诗只读状态已刷新') : toast.error(result?.error || '雨落成诗刷新失败')
-}
-
-async function refreshCharity() {
-  if (!currentAccountId.value)
-    return
-  const result = await activityStore.fetchCharityActivity(String(currentAccountId.value))
-  result?.ok ? toast.success('公益小红花只读状态已刷新') : toast.error(result?.error || '公益小红花刷新失败')
+  const result = await activityStore.fetchBearActivity(String(currentAccountId.value))
+  result?.ok ? toast.success('S3 萌宠只读状态已刷新') : toast.error(result?.error || 'S3 萌宠刷新失败')
 }
 
 watch(currentAccountId, () => {
@@ -128,7 +111,7 @@ onMounted(refreshAll)
           </div>
         </div>
         <div class="flex min-w-0 flex-wrap items-center gap-2 xl:max-w-[68%] xl:justify-end">
-          <BaseButton variant="primary" :loading="activityLoading" :disabled="!currentAccountId" @click="refreshAll">
+          <BaseButton variant="primary" :loading="bearLoading" :disabled="!currentAccountId" @click="refreshAll">
             刷新
           </BaseButton>
           <label
@@ -164,22 +147,10 @@ onMounted(refreshAll)
       请先选择账号，再查看活动数据。
     </div>
     <template v-else>
-      <div v-if="charityError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
-        {{ charityError }}
+      <div v-if="bearError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+        {{ bearError }}
       </div>
-      <CharityRedFlowerPanel
-        :activity="charityActivity"
-        :loading="charityLoading"
-        @refresh="refreshCharity"
-      />
-      <div v-if="weatherError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
-        {{ weatherError }}
-      </div>
-      <WeatherActivityPanel
-        :activity="weatherActivity"
-        :loading="weatherLoading"
-        @refresh="refreshWeather"
-      />
+      <BearActivityPanel :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" />
     </template>
 
     <Teleport to="body">

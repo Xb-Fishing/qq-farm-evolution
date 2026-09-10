@@ -16,6 +16,7 @@ const { createModuleLogger } = require('./logger');
 const { getBag, getBagItems } = require('./warehouse');
 
 const activityLogger = createModuleLogger('activity');
+const bearActivity = require('./season-bear-activity');
 // 历史活动写方法只保留解析结构上下文；即使以后被误接线，也必须在发包前失败。
 const RETIRED_ACTIVITY_WRITES_DISABLED = true;
 
@@ -245,6 +246,19 @@ function normalizeDiscoveryActivity(node) {
         .map(normalizeExchangeShopItem)
         .filter(Boolean)
         .slice(0, 80),
+    };
+  }
+  if (node?.star_record) {
+    const configs = new Map((node.star_record.configs || []).map(item => [toNum(item.id), item]));
+    const states = new Map((node.star_record.records || []).map(item => [toNum(item.id), item]));
+    const ids = [...new Set([...configs.keys(), ...states.keys()])].filter(id => id > 0).slice(0, 80);
+    details.starRecord = {
+      records: ids.map(id => ({
+        id, title: String(configs.get(id)?.title || ''),
+        unlocked: states.has(id) ? states.get(id).unlocked === true : null,
+        claimed: states.has(id) ? states.get(id).claimed === true : null,
+        rewards: (states.get(id)?.rewards || []).slice(0, 30).map(normalizeCoreItem),
+      })),
     };
   }
   if (drawInfo) {
@@ -573,39 +587,6 @@ function normalizeWeatherActivity(snapshot, itemCounts = new Map(), options = {}
   };
 }
 
-async function getWeatherActivity(options = {}) {
-  const listReader = typeof options.getActivityDiscoveryList === 'function'
-    ? options.getActivityDiscoveryList
-    : getActivityDiscoveryList;
-  const snapshotReader = typeof options.getActivityGroupSnapshot === 'function'
-    ? options.getActivityGroupSnapshot
-    : getActivityGroupSnapshot;
-  const activities = await listReader();
-  const listedRoot = (activities || []).find(activity => (
-    toNum(activity?.id) === WEATHER_ACTIVITY_ID && toNum(activity?.parentId) === 0
-  ));
-  if (!listedRoot) {
-    throw new Error('雨落成诗未由当前 ActivityService.List 下发，停止读取活动详情');
-  }
-  const snapshot = await snapshotReader(WEATHER_ACTIVITY_ID, '');
-  const inventory = await getBagItemCounts([
-    WEATHER_BOTTLE_ITEM_ID,
-    WEATHER_DRAW_REWARD_ITEM_ID,
-  ]);
-  const activity = normalizeWeatherActivity(snapshot, inventory.counts, {
-    inventoryAvailable: inventory.available,
-  });
-  activityLogger.info('雨落成诗只读状态刷新', {
-    event: 'weather_activity_read',
-    activityId: WEATHER_ACTIVITY_ID,
-    active: activity.active,
-    subActivityCount: activity.summary.subActivityCount,
-    exchangeItemCount: activity.summary.exchangeItemCount,
-    rewardPoolCount: activity.summary.rewardPoolCount,
-  });
-  return activity;
-}
-
 function normalizeCharityRuleLines(payload) {
   const entries = Array.isArray(payload?.tips?.txt) ? payload.tips.txt : [];
   return entries
@@ -886,29 +867,31 @@ function normalizeCharityActivity(snapshot, options = {}) {
   };
 }
 
-async function getCharityActivity(options = {}) {
-  const listReader = typeof options.getActivityDiscoveryList === 'function'
-    ? options.getActivityDiscoveryList
-    : getActivityDiscoveryList;
-  const snapshotReader = typeof options.getActivityGroupSnapshot === 'function'
-    ? options.getActivityGroupSnapshot
-    : getActivityGroupSnapshot;
+async function getBearActivity(options = {}) {
+  const listReader = options.getActivityDiscoveryList || getActivityDiscoveryList;
+  const snapshotReader = options.getActivityGroupSnapshot || getActivityGroupSnapshot;
+  const inventoryReader = options.getBagItemCounts || getBagItemCounts;
   const activities = await listReader();
-  const listedRoot = (activities || []).find(activity => (
-    toNum(activity?.id) === CHARITY_ACTIVITY_ID && toNum(activity?.parentId) === 0
-  ));
-  if (!listedRoot) {
-    throw new Error('公益小红花未由当前 ActivityService.List 下发，停止读取活动详情');
+  if (!(activities || []).some(node => toNum(node.id) === bearActivity.BEAR_ACTIVITY_ID && toNum(node.parentId) === 0)) {
+    throw new Error('S3 萌宠未由当前 ActivityService.List 下发，停止读取活动详情');
   }
-  const snapshot = await snapshotReader(CHARITY_ACTIVITY_ID, '');
-  const activity = normalizeCharityActivity(snapshot, options);
-  activityLogger.info('公益小红花只读状态刷新', {
-    event: 'charity_activity_read',
-    activityId: CHARITY_ACTIVITY_ID,
-    active: activity.active,
-    participationEnabled: activity.participationEnabled,
-    gameplayGuideCount: activity.summary.gameplayGuideCount,
-    rewardGroupCount: activity.summary.rewardGroupCount,
+  const snapshot = await snapshotReader(bearActivity.BEAR_ACTIVITY_ID, '');
+  if (toNum(snapshot?.id) !== bearActivity.BEAR_ACTIVITY_ID) {
+    throw new Error('S3 萌宠活动组不匹配，停止读取');
+  }
+  const shop = snapshot.children?.find(node => toNum(node.id) === bearActivity.BEAR_SHOP_ACTIVITY_ID);
+  const ids = [bearActivity.BEAR_CURRENCY_ITEM_ID, ...(shop?.details?.exchangeShop?.items || []).map(item => item.itemId)];
+  let inventory = { counts: new Map(), available: false };
+  try {
+    inventory = await inventoryReader([...new Set(ids)]);
+  } catch { /* 背包失败仍展示活动说明，数量保持未知，不循环重试。 */ }
+  const activity = bearActivity.normalizeBearActivity(snapshot, {
+    ...options, counts: inventory.counts, inventoryAvailable: inventory.available,
+  });
+  activityLogger.info('S3 萌宠只读状态刷新', {
+    event: 'bear_activity_read', activityId: bearActivity.BEAR_ACTIVITY_ID,
+    gameplayCount: activity.gameplayGuides.length, exchangeItemCount: activity.exchangeShop.length,
+    inventoryAvailable: activity.inventoryAvailable,
   });
   return activity;
 }
@@ -3331,6 +3314,8 @@ void [
 ];
 
 module.exports = {
+  ...bearActivity,
+  getBearActivity,
   NANGUA_ACTIVITY_UID,
   HELU_ACTIVITY_UID,
   STAR_ACTIVITY_UID,
@@ -3377,10 +3362,8 @@ module.exports = {
   getActivityGroupSnapshot,
   normalizeDiscoveryActivity,
   summarizeActivityProtocolShape,
-  getWeatherActivity,
   normalizeWeatherActivity,
   buildWeatherGameplayGuides,
-  getCharityActivity,
   normalizeCharityActivity,
   buildCharityGameplayGuides,
   buildCharityRewardGroups,
