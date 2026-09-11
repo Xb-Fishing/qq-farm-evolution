@@ -259,6 +259,14 @@ async function loadData() {
 }
 
 useIntervalFn(() => {
+  friends.value = friends.value.map((friend: any) => {
+    if (!friend?.plant || Number(friend.plant.matureInSec) <= 0)
+      return friend
+    return {
+      ...friend,
+      plant: { ...friend.plant, matureInSec: Math.max(0, Number(friend.plant.matureInSec) - 1) },
+    }
+  })
   for (const gid in friendLands.value) {
     if (friendLands.value[gid]) {
       friendLands.value[gid] = friendLands.value[gid].map((l: any) =>
@@ -267,6 +275,13 @@ useIntervalFn(() => {
     }
   }
 }, 1000)
+
+// 后台巡查/重点巡田可能在用户不展开好友卡片时读到新的地块墙钟；
+// 重新取本地好友快照即可刷新显示，不会额外请求腾讯好友接口。
+useIntervalFn(() => {
+  if (currentAccountId.value && currentAccount.value?.running)
+    friendStore.fetchFriends(currentAccountId.value)
+}, 30_000)
 
 watch(currentAccountId, (newId, oldId) => {
   expandedFriends.value.clear()
@@ -398,9 +413,19 @@ function getFriendStatusText(friend: any) {
 }
 
 function getFriendStatusHint(friend: any) {
+  if (!friend?.plant)
+    return '当前摘要没有成熟时刻，后台会按低频节奏重新发现；进入好友详情后可读取精确地块时间。'
   const plant = friend?.plant || {}
   if (Number(plant.stealNum || 0) > 0)
     return `当前可偷 ${plant.stealNum} 块地，适合优先展开查看。`
+  if (Number(plant.matureInSec || 0) > 0) {
+    const minutes = Math.max(1, Math.ceil(Number(plant.matureInSec) / 60))
+    return plant.timeSource === 'lands'
+      ? `已读取地块成熟时刻，约 ${minutes} 分钟后可偷。`
+      : `已知摘要成熟时刻，约 ${minutes} 分钟后可偷。`
+  }
+  if (plant.timeSource === 'unknown')
+    return '当前摘要没有成熟时刻，后台会按低频节奏重新发现；进入好友详情后可读取精确地块时间。'
   if (Number(plant.dryNum || 0) > 0 || Number(plant.weedNum || 0) > 0 || Number(plant.insectNum || 0) > 0)
     return '当前有可帮忙状态，可展开查看浇水、除草和除虫详情。'
   return '当前没有明显的手动互动提示，可先作为普通好友资料查看。'

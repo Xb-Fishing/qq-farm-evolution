@@ -398,28 +398,33 @@ function noteFriendSummaries(friends, options = {}) {
       : 0;
     const prev = ripeSnapshots.get(gid);
     const name = friend.remark || friend.name || prev?.name || `GID:${gid}`;
-    const advanceMs = prev && prev.dueAt && dueAt
-      ? Math.max(0, Number(prev.dueAt) - Number(dueAt))
+    // wx 普通好友摘要经常把 ripe_time_sec 省略/置 0。一次“看不到”不能
+    // 覆盖之前从实际地块 phases 读到的精确墙钟，否则面板会在用户打开好友
+    // 详情前后跳来跳去，偷菜调度也会退化成错误的长时间占位。
+    const effectiveDueAt = dueAt || Number(prev?.dueAt) || 0;
+    const advanceMs = prev && prev.dueAt && effectiveDueAt
+      ? Math.max(0, Number(prev.dueAt) - Number(effectiveDueAt))
       : 0;
     const jumped = !!prev && ripeJumpedEarly(
       prev.dueAt,
-      dueAt,
+      effectiveDueAt,
       isPriorityGid(gid) ? randomBetween(PRIORITY_JUMP_SLACK_MIN_MS, PRIORITY_JUMP_SLACK_MAX_MS) : JUMP_SLACK_MS
     );
     const shockMs = isPriorityGid(gid) ? PRIORITY_SUMMARY_SHOCK_MS : SUMMARY_SHOCK_MS;
     const shock = jumped && advanceMs >= shockMs;
     ripeSnapshots.set(gid, {
-      dueAt,
+      dueAt: effectiveDueAt,
       at: now,
       name,
       previousDueAt: Number(prev?.dueAt) || 0,
       advanceMs,
       shock,
+      source: dueAt ? 'summary' : (prev?.source || 'unknown'),
     });
     if (!jumped) continue;
     activateHot(gid, name, {
       now,
-      ripeAt: dueAt,
+      ripeAt: effectiveDueAt,
       advanceMs,
       reason: shock ? 'summary_ripe_shock_30m' : 'summary_ripe_advanced',
     });
@@ -510,6 +515,16 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
   const ripeAt = earliestMature > 0
     ? now + Math.max(0, earliestMature - server) * 1000
     : 0;
+  const previousRipe = ripeSnapshots.get(id);
+  if (ripeAt > 0 || previousRipe) {
+    ripeSnapshots.set(id, {
+      ...(previousRipe || {}),
+      dueAt: ripeAt,
+      at: now,
+      name: resolvedName,
+      source: 'lands',
+    });
+  }
   if (strongReasons.size > 0) {
     activateHot(id, resolvedName, {
       now,
@@ -597,6 +612,21 @@ function getMaturityCacheForTests(gid) {
   return snapshot ? { ...snapshot } : null;
 }
 
+function getFriendRipeSnapshot(gid, now = Date.now()) {
+  const snapshot = ripeSnapshots.get(toNum(gid));
+  if (!snapshot || !snapshot.dueAt || snapshot.dueAt < now - PREARM_GRACE_MS) return null;
+  return { ...snapshot };
+}
+
+function getFriendRipeSnapshots(now = Date.now()) {
+  return [...ripeSnapshots.entries()]
+    .map(([gid]) => {
+      const snapshot = getFriendRipeSnapshot(gid, now);
+      return snapshot ? { gid, ...snapshot } : null;
+    })
+    .filter(Boolean);
+}
+
 function resetFertilizerWatchForTests() {
   watches.clear();
   ripeSnapshots.clear();
@@ -623,5 +653,7 @@ module.exports = {
   isFertilizerHot,
   getWatchStateForTests,
   getMaturityCacheForTests,
+  getFriendRipeSnapshot,
+  getFriendRipeSnapshots,
   resetFertilizerWatchForTests,
 };

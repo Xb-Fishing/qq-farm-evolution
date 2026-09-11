@@ -1,5 +1,5 @@
 const { toNum } = require('../utils/utils');
-const { getItemById, getItemImageById } = require('../config/gameConfig');
+const { getItemById, getItemImageById, registerRuntimeItem } = require('../config/gameConfig');
 
 const BEAR_ACTIVITY_ID = 2026090100;
 const BEAR_PLAY_ACTIVITY_ID = 2026090101;
@@ -106,6 +106,9 @@ function normalizeBearActivity(snapshot, options = {}) {
     inventoryCount: countFor(toNum(item.itemId)),
     operationSupported: false,
   }));
+  for (const item of exchangeShop) {
+    if (item.itemId > 0 && item.name) registerRuntimeItem(item.itemId, { name: item.name });
+  }
   const evidenceText = rules.gameplayGuides.flatMap(guide => guide.steps).join('\n');
   const resources = [
     ['currency', '幸运星', BEAR_CURRENCY_ITEM_ID, /幸运星.*兑换/, '寻宝、投喂与夺宝产出，用于游记商城'],

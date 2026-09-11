@@ -19,6 +19,7 @@ const itemInfoMap = new Map();       // itemId → itemInfo
 const seedItemMap = new Map();       // seedItemId → itemInfo
 const seedImageMap = new Map();      // seedId/itemId → imageUrl
 const seedAssetImageMap = new Map(); // assetName → imageUrl
+const seedNameImageMap = new Map();  // normalized display name → imageUrl
 const plantPhaseImageMap = new Map();// assetName → { phase: imageUrl }
 let plantPhaseManifestPath = '';
 let plantPhaseManifestMtimeMs = -1;
@@ -169,14 +170,15 @@ function loadConfigs() {
         console.warn('[配置] 加载 ItemInfo.json 失败:', err.message);
     }
 
-    // 活动只读证据补名称，不推断物品类型或可执行操作。
+    // 活动只读证据补名称。名称明确带“种子”时，它本身就是背包种子证据，
+    // 不能因为静态 ItemInfo 尚未更新而把它降级成普通未知道具。
     try {
         const eventItemsPath = path.join(basePath, 'EventItems.json');
         if (fs.existsSync(eventItemsPath)) {
             for (const entry of JSON.parse(fs.readFileSync(eventItemsPath, 'utf8'))) {
                 const id = Number(entry.id);
                 if (id > 0 && typeof entry.name === 'string') {
-                    itemInfoMap.set(id, { ...(itemInfoMap.get(id) || {}), id, name: entry.name });
+                    registerRuntimeItem(id, { name: entry.name });
                 }
             }
             itemInfoConfig = [...itemInfoMap.values()];
@@ -190,6 +192,7 @@ function loadConfigs() {
         const seedImagesPath = path.join(basePath, 'seed_images_named');
         seedImageMap.clear();
         seedAssetImageMap.clear();
+        seedNameImageMap.clear();
         if (fs.existsSync(seedImagesPath)) {
             const files = fs.readdirSync(seedImagesPath);
             for (const filename of files) {
@@ -202,6 +205,14 @@ function loadConfigs() {
                     const seedId = Number(namedMatch[1]) || 0;
                     if (seedId > 0 && !seedImageMap.has(seedId)) {
                         seedImageMap.set(seedId, imageUrl);
+                    }
+                    const displayPart = name
+                        .replace(/^\d+_/, '')
+                        .replace(/\.(?:png|jpg|jpeg|webp|gif)$/i, '')
+                        .split('_')[0];
+                    const normalizedName = normalizeDisplayName(displayPart);
+                    if (normalizedName && !seedNameImageMap.has(normalizedName)) {
+                        seedNameImageMap.set(normalizedName, imageUrl);
                     }
                 }
 
@@ -303,6 +314,12 @@ function getPlantById(plantId) {
     return plantMap.get(plantId);
 }
 
+/** 根据服务端可能返回的植物 ID 或种子 ID 找到植物配置。 */
+function getPlantByIdOrSeedId(id) {
+    const numericId = Number(id) || 0;
+    return plantMap.get(numericId) || seedToPlant.get(numericId);
+}
+
 /** 根据种子ID获取植物 */
 function getPlantBySeedId(seedId) {
     return seedToPlant.get(seedId);
@@ -314,10 +331,28 @@ function getPlantName(plantId) {
     return plant ? plant.name : `植物${  plantId}`;
 }
 
+/** 只返回配置中确认过的名称；未知时返回空串，供服务端名称优先的展示链路使用。 */
+function getKnownPlantName(plantId) {
+    return getPlantByIdOrSeedId(plantId)?.name || '';
+}
+
 /** 根据种子ID获取植物名 */
 function getPlantNameBySeedId(seedId) {
     const plant = seedToPlant.get(seedId);
-    return plant ? plant.name : `种子${  seedId}`;
+    if (plant) return plant.name;
+    const itemName = seedItemMap.get(Number(seedId) || 0)?.name;
+    if (itemName) {
+        const value = String(itemName);
+        return value.endsWith('种子') ? value.slice(0, -2) : value;
+    }
+    return `种子${  seedId}`;
+}
+
+function normalizeDisplayName(value) {
+    return String(value || '')
+        .replace(/\s+/g, '')
+        .replace(/种子$/, '')
+        .toLowerCase();
 }
 
 /**
@@ -458,6 +493,19 @@ function getSeedImageBySeedId(seedId) {
     return getMappedSeedImage(seedId);
 }
 
+/** 按活动/服务端返回的名称寻找已随游戏资源导出的种子贴图。 */
+function getSeedImageByName(name) {
+    return seedNameImageMap.get(normalizeDisplayName(name)) || '';
+}
+
+/** 未知活动作物也至少使用游戏通用种子阶段贴图，不再显示空白占位。 */
+function getFallbackPlantImageByPhase(phase = 1) {
+    loadPlantPhaseManifest();
+    const common = plantPhaseImageMap.get('__common');
+    if (Number(phase) === 1) return common?.seed || '';
+    return common?.seed || '';
+}
+
 /**
  * 重新加载官方植物阶段图片清单。导出工具更新 manifest 后无需重启服务。
  */
@@ -493,8 +541,8 @@ function getPlantImageByPhase(plantId, phase) {
         const commonImages = plantPhaseImageMap.get('__common');
         return commonImages && commonImages.seed || '';
     }
-    const plant = plantMap.get(Number(plantId) || 0);
-    if (!plant) return '';
+    const plant = getPlantByIdOrSeedId(plantId);
+    if (!plant) return getFallbackPlantImageByPhase(phase);
     const seedId = Number(plant.seed_id) || 0;
     const itemInfo = itemInfoMap.get(seedId);
     const assetName = String(
@@ -502,11 +550,11 @@ function getPlantImageByPhase(plantId, phase) {
         || (itemInfo && itemInfo.asset_name)
         || (seedId > 20000 ? `Crop_${seedId - 20000}` : `Plant_${plant.id}`)
     ).trim();
-    if (!assetName) return '';
+    if (!assetName) return getFallbackPlantImageByPhase(phase);
     const phases = plantPhaseImageMap.get(assetName);
-    if (!phases) return '';
+    if (!phases) return getFallbackPlantImageByPhase(phase);
     const numericPhase = Number(phase) || 1;
-    return phases[String(numericPhase)] || '';
+    return phases[String(numericPhase)] || getFallbackPlantImageByPhase(phase);
 }
 
 /**
@@ -587,12 +635,42 @@ function getItemImageById(itemId) {
     const skinImg = skinDetailImageMap.get(numericId);
     if (skinImg) return skinImg;
 
+    // 活动道具可能只有在线说明里的名称，没有及时进入静态 ItemInfo；
+    // 资源文件名仍可能包含同名贴图，按名称补一次映射。
+    const namedImage = getSeedImageByName(itemInfoMap.get(numericId)?.name);
+    if (namedImage) return namedImage;
+
     return '';
 }
 
 /** 根据物品ID获取物品信息 */
 function getItemById(itemId) {
     return itemInfoMap.get(Number(itemId) || 0);
+}
+
+/**
+ * 将当前官方活动回包中的已确认道具名称合并到运行时索引。
+ * 这不会写入仓库或猜测植物关系；它只让当天背包/种植策略立即认识
+ * ActivityService.List/GetGroup 明确下发的道具，下一次进程启动再由活动扫描重建。
+ */
+function registerRuntimeItem(itemId, metadata = {}) {
+    const id = Number(itemId) || 0;
+    const name = String(metadata.name || '').trim();
+    if (id <= 0 || !name) return null;
+    const current = itemInfoMap.get(id) || {};
+    const isSeed = Number(metadata.type) === 5
+        || String(metadata.interaction_type || '').toLowerCase() === 'plant'
+        || name.endsWith('种子');
+    const next = {
+        ...current,
+        ...metadata,
+        id,
+        name,
+        ...(isSeed ? { type: 5, interaction_type: 'plant' } : {}),
+    };
+    itemInfoMap.set(id, next);
+    if (isSeed) seedItemMap.set(id, next);
+    return next;
 }
 
 /** 判断是否是种子物品 */
@@ -687,8 +765,10 @@ module.exports = {
     getLevelExpTable,
     getLevelExpProgress,
     getPlantById,
+    getPlantByIdOrSeedId,
     getPlantBySeedId,
     getPlantName,
+    getKnownPlantName,
     getPlantNameBySeedId,
     getPlantGrowTime,
     getPlantGrowPhases,
@@ -698,6 +778,7 @@ module.exports = {
     getFruitName,
     getPlantByFruitId,
     getItemById,
+    registerRuntimeItem,
     getItemImageById,
     isSeedItem,
     getSeedPrice,
@@ -705,6 +786,7 @@ module.exports = {
     getFruitLayerBySeedId,
     getFruitLayerByFruitId,
     getSeedImageBySeedId,
+    getSeedImageByName,
     getPlantImageByPhase,
     getMutantDisplayPlantId,
     getMutantPlantImageByPhase,

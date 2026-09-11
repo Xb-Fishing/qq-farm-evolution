@@ -16,6 +16,8 @@ const {
   getItemImageById,
   getSeedLevel,
   getSeedImageBySeedId,
+  getSeedImageByName,
+  getPlantImageByPhase,
   isSeedItem,
 } = require('../config/gameConfig');
 const { isAutomationOn } = require('../models/store');
@@ -144,6 +146,10 @@ async function batchUseItems(entries) {
 
 function isFruitItemId(id) {
   return !!getPlantByFruitId(Number(id));
+}
+
+function isActivitySeedInfo(info) {
+  return !!(info && String(info.name || '').trim().endsWith('种子'));
 }
 
 /**
@@ -282,7 +288,7 @@ async function autoOpenFertilizerGiftPacks() {
       try {
         await batchUseItems([{ itemId, count, uid: 0 }]);
         used = count;
-      } catch (_) {
+      } catch {
         used = 0;
       }
 
@@ -411,8 +417,8 @@ async function getBagDetail() {
     else if (getPlantByFruitId(id)) {
       if (!name) name = `${getFruitName(id)  }果实`;
       category = 'fruit';
-    } else if (seedPlant) {
-      if (!name) name = `${seedPlant.name || '未知'  }种子`;
+    } else if (seedPlant || isActivitySeedInfo(info)) {
+      if (!name) name = `${seedPlant?.name || '未知'}种子`;
       category = 'seed';
     }
 
@@ -432,7 +438,8 @@ async function getBagDetail() {
         id,
         count: 0,
         name,
-        image: getItemImageById(id),
+        image: getItemImageById(id)
+          || (category === 'seed' ? getSeedImageByName(name) || getPlantImageByPhase(0, 1) : ''),
         category,
         itemType: info ? Number(info.type) || 0 : 0,
         priceId: effectivePriceId,
@@ -579,7 +586,7 @@ async function sellAllFruits() {
         const bagAfter = await getBag();
         const bagGold = getGoldFromItems(getBagItems(bagAfter));
         if (bagGold > prevGold) bagGoldGain = bagGold - prevGold;
-      } catch (_) {}
+      } catch {}
     }
 
     const totalGoldGain = Math.max(totalGoldFromReply, goldByState, bagGoldGain);
@@ -649,12 +656,12 @@ async function getBagSeeds() {
     const plant = getPlantBySeedId(id);
     const info = getItemById(id) || null;
     const interactionType = String(info && info.interaction_type || '').toLowerCase();
-    const seedLike = !!plant || isSeedItem(id) || interactionType === 'plant';
+    const seedLike = !!plant || isSeedItem(id) || interactionType === 'plant' || isActivitySeedInfo(info);
     if (!seedLike) continue;
 
     if (!plant && fallbackSeedIds.length < 20) fallbackSeedIds.push(id);
 
-    const rawName = plant && plant.name ? String(plant.name) : String(info && info.name || `??#${id}`);
+    const rawName = plant && plant.name ? `${plant.name}种子` : String(info && info.name || `未知种子${id}`);
     const name = rawName.endsWith('??') ? rawName.slice(0, -2) : rawName;
     const requiredLevel = plant
       ? Math.max(0, Number(plant.land_level_need || 0))
@@ -666,7 +673,10 @@ async function getBagSeeds() {
       name,
       count: 0,
       requiredLevel,
-      image: getSeedImageBySeedId(id) || getItemImageById(id),
+      image: getSeedImageBySeedId(id)
+        || getItemImageById(id)
+        || getSeedImageByName(name)
+        || getPlantImageByPhase(0, 1),
       plantSize,
     };
     existing.count += count;

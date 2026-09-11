@@ -1,9 +1,11 @@
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
 const {
   getPlantName,
-  getPlantById,
+  getKnownPlantName,
+  getPlantByIdOrSeedId,
   getPlantGrowTime,
   getSeedImageBySeedId,
+  isSeedItem,
   getMutantDisplayPlantId,
   getMutantPlantImageByPhase,
   getMutantEffectsByIds,
@@ -37,7 +39,7 @@ const {
   isOccupiedSlaveLand,
   getQixiDewStatus,
 } = require('./farm-land-analyzer');
-const { inspectFriendLands } = require('./fertilizer-watch');
+const { inspectFriendLands, getFriendRipeSnapshot } = require('./fertilizer-watch');
 
 const GOLDEN_BUG_ITEM_ID = 301101;
 const GOLDEN_BUG_SOCIAL_TYPE = 2;
@@ -72,11 +74,14 @@ function analyzeFriendLands(lands, myGid, friendName = '', options = {}) {
     const plant = land.plant;
     if (!plant || !plant.phases || plant.phases.length === 0) continue;
 
+    const rawPlantId = toNum(plant.id);
+    const plantConfig = getPlantByIdOrSeedId(rawPlantId);
+    const canonicalPlantId = toNum(plantConfig?.id) || rawPlantId;
     const currentPhase = getCurrentPhase(
       plant.phases,
       false,
       `[${friendName}]土地#${landId}`,
-      plant.id
+      canonicalPlantId
     );
     if (!currentPhase) continue;
 
@@ -94,10 +99,12 @@ function analyzeFriendLands(lands, myGid, friendName = '', options = {}) {
     // Mature & stealable
     if (phase === PlantPhase.MATURE) {
       if (plant.stealable) {
-        const plantId = toNum(plant.id);
-        const plantName = getPlantName(plantId) || plant.name || '未知';
-        const plantInfo = getPlantById(plantId);
-        const seedId = plantInfo ? toNum(plantInfo.seed_id) : 0;
+        const plantId = canonicalPlantId;
+        const plantName = getKnownPlantName(plantId) || String(plant.name || '').trim() || getPlantName(plantId);
+        const plantInfo = plantConfig;
+        const seedId = toNum(plantInfo?.seed_id)
+          || toNum(plant.seed_id)
+          || (isSeedItem(rawPlantId) ? rawPlantId : 0);
 
         // Respect plant blacklist
         if (plantBlacklist && seedId > 0 && plantBlacklist.includes(seedId)) continue;
@@ -255,13 +262,35 @@ async function batchGetFriendDogInfo(friends) {
 // ===== Friends list =====
 let friendsListCache = null;
 
+function mergeRipeSnapshotIntoFriend(friend) {
+  const gid = toNum(friend?.gid);
+  const ripe = gid ? getFriendRipeSnapshot(gid) : null;
+  if (!ripe) return friend;
+  return {
+    ...friend,
+    plant: {
+      ...(friend.plant || {}),
+      ripeAt: Number(ripe.dueAt) || 0,
+      matureInSec: Math.max(0, Math.ceil((Number(ripe.dueAt) - Date.now()) / 1000)),
+      timeSource: ripe.source || 'summary',
+    },
+  };
+}
+
+function mergeRipeSnapshotsIntoFriends(friends) {
+  return (Array.isArray(friends) ? friends : []).map(mergeRipeSnapshotIntoFriend);
+}
+
 /**
  * Get a processed friends list with dog info from cache if available.
  * Filters out fake NPCs (name "小小农夫" with level 1).
  */
 async function getFriendsList(forceRefresh = false) {
   try {
-    if (!forceRefresh && friendsListCache) return friendsListCache;
+    if (!forceRefresh && friendsListCache) {
+      friendsListCache = mergeRipeSnapshotsIntoFriends(friendsListCache);
+      return friendsListCache;
+    }
 
     log('好友', '开始获取好友列表', {
       module: 'friend',
@@ -299,14 +328,19 @@ async function getFriendsList(forceRefresh = false) {
           gold: toNum(friend.gold),
           dogId: cachedDog ? cachedDog.dogId : 0,
           dogName: cachedDog ? cachedDog.dogName : '',
-          plant: friend.plant
-            ? {
-                stealNum: toNum(friend.plant.steal_plant_num),
-                dryNum: toNum(friend.plant.dry_num),
-                weedNum: toNum(friend.plant.weed_num),
-                insectNum: toNum(friend.plant.insect_num),
-              }
-            : null,
+          plant: (() => {
+            const ripe = getFriendRipeSnapshot(gid);
+            if (!friend.plant && !ripe) return null;
+            return {
+              stealNum: toNum(friend.plant?.steal_plant_num),
+              dryNum: toNum(friend.plant?.dry_num),
+              weedNum: toNum(friend.plant?.weed_num),
+              insectNum: toNum(friend.plant?.insect_num),
+              ripeAt: Number(ripe?.dueAt) || 0,
+              matureInSec: ripe?.dueAt ? Math.max(0, Math.ceil((ripe.dueAt - Date.now()) / 1000)) : 0,
+              timeSource: ripe?.source || (ripe?.dueAt ? 'summary' : 'unknown'),
+            };
+          })(),
         };
       })
       .sort((a, b) => {
@@ -315,7 +349,7 @@ async function getFriendsList(forceRefresh = false) {
         return (a.gid || 0) - (b.gid || 0);
       });
 
-    friendsListCache = friends;
+    friendsListCache = mergeRipeSnapshotsIntoFriends(friends);
 
     const cachedDogCount = dogInfoCache ? Object.keys(dogInfoCache).length : 0;
     log('好友',
@@ -330,7 +364,7 @@ async function getFriendsList(forceRefresh = false) {
       }
     );
 
-    return friends;
+    return friendsListCache;
   } catch (err) {
     log('好友', `获取好友列表失败: ${err.message}`, {
       module: 'friend',
@@ -485,7 +519,10 @@ async function getFriendLandsDetail(gid) {
         continue;
       }
 
-      const currentPhase = getCurrentPhase(targetPlant.phases, false, '', targetPlant.id);
+      const rawPlantId = toNum(targetPlant.id);
+      const targetConfig = getPlantByIdOrSeedId(rawPlantId);
+      const canonicalPlantId = toNum(targetConfig?.id) || rawPlantId;
+      const currentPhase = getCurrentPhase(targetPlant.phases, false, '', canonicalPlantId);
       if (!currentPhase) {
         detailLands.push({
           id: landId,
@@ -503,12 +540,17 @@ async function getFriendLandsDetail(gid) {
       }
 
       const phase = currentPhase.phase;
-      const plantId = toNum(targetPlant.id);
+      const plantId = canonicalPlantId;
       const mutantConfigIds = targetPlant.mutant_config_ids || [];
       const displayPlantId = getMutantDisplayPlantId(plantId, mutantConfigIds);
-      const plantName = getPlantName(displayPlantId) || getPlantName(plantId) || targetPlant.name || '未知';
-      const plantInfo = getPlantById(plantId);
-      const seedId = toNum(plantInfo && plantInfo.seed_id);
+      const plantName = getKnownPlantName(displayPlantId)
+        || getKnownPlantName(plantId)
+        || String(targetPlant.name || '').trim()
+        || getPlantName(plantId);
+      const plantInfo = targetConfig;
+      const seedId = toNum(plantInfo?.seed_id)
+        || toNum(targetPlant.seed_id)
+        || (isSeedItem(rawPlantId) ? rawPlantId : 0);
       const seedImage = seedId > 0 ? getSeedImageBySeedId(seedId) : '';
       const plantImage = getMutantPlantImageByPhase(plantId, mutantConfigIds, toNum(currentPhase.image_phase));
       const plantSize = Math.max(1, toNum(plantInfo && plantInfo.size) || 1);
@@ -579,7 +621,16 @@ async function getFriendLandsDetail(gid) {
       });
     }
 
-    return { lands: detailLands, summary: analysis };
+    const ripe = getFriendRipeSnapshot(gid);
+    return {
+      lands: detailLands,
+      summary: {
+        ...analysis,
+        ripeAt: Number(ripe?.dueAt) || 0,
+        matureInSec: ripe?.dueAt ? Math.max(0, Math.ceil((ripe.dueAt - Date.now()) / 1000)) : 0,
+        timeSource: ripe?.source || 'lands',
+      },
+    };
   } catch {
     return { lands: [], summary: {} };
   }
