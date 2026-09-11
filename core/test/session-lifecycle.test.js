@@ -533,6 +533,9 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.match(guardrails, /待人工提交/);
   assert.match(guardrails, /bag_unclassified_item/);
   assert.match(guardrails, /背包种植不是白名单/);
+  assert.match(guardrails, /活动 Agent 的每日职责固定为五个闭环/);
+  assert.match(guardrails, /每日安全 Agent 必须先检索最近 24 小时/);
+  assert.match(guardrails, /外部 RAG 仅作脱敏只读参考/);
 
   const publicReference = buildPublicReferenceGuidance();
   assert.match(publicReference, /LuckyTiger12138\/QQ_Farm/);
