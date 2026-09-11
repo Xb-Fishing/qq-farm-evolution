@@ -75,6 +75,20 @@ test('fertilizer decrease is compared per land instead of using the farm minimum
   assert.ok(getNextWatchDueAt(now + 1000) > now + 1000);
 });
 
+test('maturity transition with a fertilizer counter reset does not trigger HOT', () => {
+  const now = Date.now();
+  const sec = Math.floor(now / 1000);
+  inspectFriendLands(181, '成熟切换', [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
+  ], now);
+  // Mature/harvest response can retain the same plant id while the old
+  // maturity phase is no longer future and the counter becomes zero.
+  inspectFriendLands(181, '成熟切换', [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 0, phases: [{ begin_time: sec - 1 }] } },
+  ], now);
+  assert.equal(getWatchStateForTests(181, now), null);
+});
+
 test('maturity advance is compared per land even when another land remains earliest', () => {
   const now = Date.now();
   const sec = Math.floor(now / 1000);
