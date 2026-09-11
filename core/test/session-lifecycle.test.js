@@ -527,6 +527,12 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.match(guardrails, /提交范围、新增行、提交标题和文件名做隐私扫描/);
   assert.match(guardrails, /进化记忆、登录材料、Webhook\/Token 等 ignored 运行数据没有被 Git 跟踪/);
   assert.match(guardrails, /严禁执行 git push/);
+  // 图标抓取与背包种子闭环硬门（2026-09-11）
+  assert.match(guardrails, /npm run fetch:official-icons/);
+  assert.match(guardrails, /抓到的 PNG 属于新增二进制，绝对禁止 git add/);
+  assert.match(guardrails, /待人工提交/);
+  assert.match(guardrails, /bag_unclassified_item/);
+  assert.match(guardrails, /背包种植不是白名单/);
 
   const publicReference = buildPublicReferenceGuidance();
   assert.match(publicReference, /LuckyTiger12138\/QQ_Farm/);

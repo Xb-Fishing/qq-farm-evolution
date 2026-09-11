@@ -155,11 +155,14 @@ const {
   bagSeedsLoading,
   bagSeedsError,
   sortedBagSeeds,
+  unplannedBagSeeds,
   preferredSeedOptions,
   strategyPreviewLabel,
   resetBagSeedPriority,
   moveBagSeed,
   removeBagSeedPriority,
+  addBagSeedToPriority,
+  addAllBagSeedsToPriority,
   startBagSeedDrag,
   dragOverBagSeed,
   dropBagSeed,
@@ -302,11 +305,14 @@ onMounted(async () => {
           :strategy-preview-label="strategyPreviewLabel"
           :bag-seeds="bagSeeds"
           :sorted-bag-seeds="sortedBagSeeds"
+          :unplanned-bag-seeds="unplannedBagSeeds"
           :bag-seeds-loading="bagSeedsLoading"
           :bag-seeds-error="bagSeedsError"
           @reset-bag-seed-priority="resetBagSeedPriority"
           @move-bag-seed="moveBagSeed"
           @remove-bag-seed="removeBagSeedPriority"
+          @add-bag-seed="addBagSeedToPriority"
+          @add-all-bag-seeds="addAllBagSeedsToPriority"
           @start-bag-seed-drag="startBagSeedDrag"
           @drag-over-bag-seed="dragOverBagSeed"
           @drop-bag-seed="dropBagSeed"

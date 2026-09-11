@@ -21,6 +21,7 @@ const { createSessionStore } = require('./session-store');
 const { createMitmProxyManager } = require('./mitm-proxy');
 const { createCaptureApi } = require('./api-server');
 const { createFriendExtractor } = require('./friend-extractor');
+const { createResourceUrlRecorder } = require('./resource-url-recorder');
 
 /** 组合并导出 CA 模块接口（供代理管理器使用） */
 function buildCaModule(ca) {
@@ -48,6 +49,12 @@ function createCaptureCore(options = {}) {
   const rootCa = loadOrCreateRootCa(dataDir);
   const ca = buildCaModule(rootCa);
   const sessionStore = createSessionStore({ config });
+  // 官方资源 URL 被动记录（ignored 运行数据，0600）：抓包会话期间游戏
+  // 客户端加载的官方贴图/ bundle 地址会落盘，供 fetch-official-icons 使用。
+  const resourceUrlRecorder = createResourceUrlRecorder({
+    filePath: require('node:path').join(dataDir, 'resource-urls.json'),
+    log,
+  });
 
   let proxyManager = null;
   let cleanupTimer = null;
@@ -55,7 +62,7 @@ function createCaptureCore(options = {}) {
 
   const ready = (async () => {
     const friendExtractor = await createFriendExtractor();
-    proxyManager = createMitmProxyManager({ config, ca, friendExtractor, sessionStore, log });
+    proxyManager = createMitmProxyManager({ config, ca, friendExtractor, sessionStore, resourceUrlRecorder, log });
     log('info', '好友 GID 提取器就绪（proto 加载完成）');
   })();
   ready.catch((error) => {
@@ -87,6 +94,7 @@ function createCaptureCore(options = {}) {
       const session = sessionStore.getSession(id);
       if (session) await proxyManager.stopForSession(session);
     }
+    resourceUrlRecorder.stop();
     log('info', '抓包服务核心已停止');
   }
 

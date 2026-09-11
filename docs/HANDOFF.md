@@ -930,3 +930,43 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 定向 Node 20 回归：配置/背包/活动 **21/21** 通过；串行核心全量 **359/359** 通过。Node 20 前端 `vue-tsc -b && vite build` 通过；仅保留既有 UnoCSS 图标提示（`carbon-search-1`、`carbon-login-filled`）。
 - 临时 Bag/Activity 原始回包写出开关已删除，正常启动不再写 `/tmp` 调试文件。没有新增活动写操作、自动领取、兑换命令或上游探测；只读 List 根校验、缓存、收菜/偷菜/重点监控、登录保活和设备链路未改。
 - 若官方后续下发专属资源或土地证据，先补证据与资源，再替换通用图并补 `EventPlants`/`size` 回归；若证据推翻当前物品语义，回滚本节对应提交并重新按 Bag/活动记录交叉核对。回滚仍只允许复用用户已有的 `farm:0.0` pane。
+
+## 背包种子全量识别与官方图标抓取管道（2026-09-11）
+
+### 用户裁定与本轮根因
+
+- **背包种子白名单设计已废弃（用户 2026-09-11 明确指示）**：旧 `plantFromBagSeeds()` 在优先列表非空时只种列表内种子，列表外的背包种子既不显示也不种（2026-08-23 曾把它标为“设计（列表即白名单）”）。背包回包 `corepb.Item` 只有 id/count/uid，识别全靠本地索引，白名单叠加索引缺口后新活动种子（如 29004 萌宠元气糕种子）直接消失。丢弃不是解决方案：**优先列表只决定顺序，全部背包种子都要识别、都可种**。
+- 三个丢种子环节：①种植白名单（主根因，见上）；②前端自动把新种子补进优先列表只在用户打开设置页时执行，后台种植从不消费它；③ `getBagSeedsFromItems()` 对本地索引完全没有条目的未知物品静默 continue，连日志都没有。
+- **跨物品顶替图是错误方案（用户同日裁定）**：上一轮给 S3 装饰商品（比熊小屋/街道/狗窝/木牌/仓库/栅栏/围栏/头像框/铭牌）和元气糕 20516 用了**别的道具**的官方图当“类别回退”。图标必须是真的官方专属图。
+
+### 本轮修复
+
+1. **种植不再丢弃任何种子**：`planting-service.js` `plantFromBagSeeds()` 删除 `customPrioritySeeds` 过滤分支，种植集=全部可用 1x1 背包种子，`sortBagSeedsForPlanting()` 的优先列表内排前/列表外按等级→ID 兜底排序真正生效；成功日志新增 `plantedSeedIds`/`outsidePrioritySeedIds` 审计字段。2x2 路径本就传全部 plantSize===2 种子，未改。29004 无植物映射但协议 `PlantRequest` 直接接受 seed_id，种下后 PlantReply/AllLands 回包就是植物 ID+占地证据——自进化闭环自然补 `EventPlants.json`。
+2. **未知物品不再静默**：`warehouse.js` `getBagSeedsFromItems()` 对本地索引无条目的背包物品记 `bag_unclassified_item` 日志（只记脱敏 item id/count，按 id 去重，上限 20/次）；已知果实/化肥/货币等非种子物品不记避免刷屏。每日巡检按该日志补 `EventItems.json` 映射（EventPlants 仍需土地证据，禁止猜测）。
+3. **面板全量可见**：`BagSeedPriorityPanel.vue` 分两组渲染——优先列表有序组 + “未加入优先列表的背包种子”组（含「加入优先」「全部加入优先」按钮）；`useStrategySettings.ts` 新增 `unplannedBagSeeds` computed 与 `addBagSeedToPriority/addAllBagSeedsToPriority`；`DefaultPlanSettingsTab.vue` 同步。前端“迁移自动补列表”逻辑保留（只影响顺序显示，后端种植已不依赖它）。
+4. **删除跨物品顶替图**：`gameConfig.js` `staticItemImageMap` 删除 201010/207010/205009/202009/206009/203010/208010/2161/401005/20516 的替代行（`EventItems.json` 里 20516 的 image 字段同删）；保留 29004/20522/20523 的**官方通用种子图**（`common/seed.png`，官方类别资产，语义诚实）并新增导出 `getGenericFallbackItemIds()`——这个集合非空=仍有图标缺口，是自进化闭环的可度量信号。缺图商品前端只显示名称（`v-if="item.image"` 优雅降级），不用别的道具图冒充。
+5. **官方 CDN 地址发现机制**：`capture/mitm-proxy.js` 的 MITM 与明文 HTTP 请求头解析处新增 `recordResourceUrl()`——GET 且 path 匹配资源样式（png/jpg/webp/gif/astc/json/plist/atlas 或 import//native//config. 标记）时，把 `https://{host}{path}`（剥 query）经 `capture/resource-url-recorder.js`（去重、上限 2000、debounce 2s 落盘、0600）写入 ignored 的 `core/data/capture/resource-urls.json`。只记 URL 不存响应体，记录器异常静默绝不影响抓包转发/登录 code/GID 提取；`capture/index.js` 创建单例并在 stop 时同步 flush。
+6. **官方图标抓取脚本**：`core/scripts/fetch-official-icons.js`（`npm run fetch:official-icons`）——Wanted=活动报告中带 `extra.res` 的道具；URL 池=①抓包记录 ②macOS gamecaches（不存在跳过）③`--cdn-base`/`FARM_RESOURCE_CDN_BASE`/ignored `private-config.json` 的 `resourceCdnBase`；解析复用 extract-plant-phase-images 的官方模式（bundle config → decodeUuid → import spriteFrame JSON 拿 texture uuid+rect → native ASTC/PNG → astcenc 解码 → ffmpeg 按 rect 裁剪），输出 `seed_images_named/{itemId}_{name}.png`（自动进 seedImageMap 索引，重启生效）。无 URL 证据时打印缺证据清单、退出码 0、零网络请求。
+7. **自进化硬门接线**：`activity-evolver.js` guardrails 第 10 条扩展——图标闭环必须区分「官方专属图」与「通用回退」；`getGenericFallbackItemIds()` 非空或存在空图时必须运行 `cd core && npm run fetch:official-icons`；**抓到的 PNG 属于新增二进制，绝对禁止 git add**（父进程隐私扫描对新增二进制整笔阻断，夹带会连累同轮代码提交被丢弃），PNG 留工作区、总结写明“已抓取待人工提交”；人工提交图标后下一轮才可删对应回退行；任何情况不得用其他道具图片顶替。附 `bag_unclassified_item` 当日复盘硬门与“背包种植不是白名单，不得改回”约束；活动 prompt 任务段同步。
+
+### 抓取管道首次使用（需要用户配合一次）
+
+1. 下次需要抓包登录时，按现有流程开抓包会话；**登录后让游戏开着并进一下活动页/商城**，官方资源 URL 会自动记录到 `core/data/capture/resource-urls.json`（会上限 2000 条，足够）。
+2. 之后随时 `cd core && npm run fetch:official-icons`（或 `--dry-run` 先看清单）。
+3. 抓到的 PNG 落在 `core/src/gameConfig/seed_images_named/`：**人工审查内容后手动 `git add` 提交**（确认不是敏感内容；这些是官方公开资源）。自动进化 agent 碰到也会留着等你。
+4. 提交后重启 bot 生效；下一轮自进化会删掉 `getGenericFallbackItemIds()` 里已补专属图的回退行。
+
+### 踩坑与注意点
+
+- `planting-service.js` 顶部解构 `sendMsgAsync`：测试 mock 必须在 `require` 服务**之前**注入 require.cache（`bag-seed-recognition.test.js` 有完整示例），事后替换无效。
+- recorder 的 `stop()` 必须在置 `stopped=true` 之后仍执行最终 flush（首轮实现 `flush()` 里查 `stopped` 导致 stop 后永不落盘，已修并有回归）。
+- “未知物品”日志只对本地索引无条目的物品生效：背包里正常存在的果实/化肥/金币都是已知非种子，全记会刷屏。
+- `getGenericFallbackItemIds()` 与 `staticItemImageMap` 的通用回退行必须成对维护：补专属图后先删 map 行，集合同步更新。
+- 20516 的替代图有两个来源（staticItemImageMap + EventItems.json 的 image 字段），只删一处会漏。
+
+### 验证与回滚
+
+- Node 20 串行核心全量 **376/376** 通过（其中一次并行运行的长凭据 60ms 定时断言偶发失败为 HANDOFF 既有已知项，单独复跑通过）；新增 `bag-seed-recognition` 4 条、`fetch-official-icons` 9 条、`capture-resource-url-recorder` 4 条，扩展 `game-config-supplement`/`season-bear-activity`/`session-lifecycle` 断言。
+- Node 20 前端 `vue-tsc -b && vite build` 通过；改动文件 ESLint 0 error（仅保留既有 warning）。
+- 本轮无 PNG 可提交（本机 Linux 无 gamecaches、无抓包 URL 证据，首次真实抓图由下次抓包会话触发，属预期）。
+- 回滚 `git revert <本轮提交>` 后重启：会恢复种植白名单、静默丢弃、跨物品顶替图；不得只回滚一半（删了顶替图又回滚种植识别会让缺口更大）。收菜/偷菜/盯梢/登录/设备/请求治理链路本轮未触碰。

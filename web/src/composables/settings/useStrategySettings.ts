@@ -102,6 +102,31 @@ export function useStrategySettings({
     return orderedSeeds
   })
 
+  // 背包中存在、但未加入优先列表的种子：识别结果全量可见（后端种植已不丢种子，这里只影响顺序）。
+  const unplannedBagSeeds = computed(() => {
+    const priority = localStrategySettings.value.bagSeedPriority || []
+    const prioritySet = new Set(priority.map(seedId => Number(seedId)))
+    return bagSeeds.value
+      .filter((seed) => {
+        const seedId = Number(seed.seedId)
+        return seedId > 0 && !prioritySet.has(seedId)
+      })
+      .sort((a, b) => (a.requiredLevel - b.requiredLevel) || (a.seedId - b.seedId))
+  })
+
+  function addBagSeedToPriority(seedId: number) {
+    const id = Number(seedId)
+    if (!id || localStrategySettings.value.bagSeedPriority.includes(id))
+      return
+    localStrategySettings.value.bagSeedPriority = [...localStrategySettings.value.bagSeedPriority, id]
+  }
+
+  function addAllBagSeedsToPriority() {
+    const currentIds = bagSeeds.value.map(seed => Number(seed.seedId)).filter(seedId => seedId > 0)
+    const priority = localStrategySettings.value.bagSeedPriority || []
+    localStrategySettings.value.bagSeedPriority = [...new Set([...priority, ...currentIds])]
+  }
+
   async function fetchBagSeeds() {
     const accountId = currentAccountId.value
     if (!accountId)
@@ -378,11 +403,14 @@ export function useStrategySettings({
     bagSeedsLoading,
     bagSeedsError,
     sortedBagSeeds,
+    unplannedBagSeeds,
     preferredSeedOptions,
     strategyPreviewLabel,
     resetBagSeedPriority,
     moveBagSeed,
     removeBagSeedPriority,
+    addBagSeedToPriority,
+    addAllBagSeedsToPriority,
     startBagSeedDrag,
     dragOverBagSeed,
     dropBagSeed,

@@ -21,6 +21,7 @@ const net = require('node:net');
 const tls = require('node:tls');
 const { extractLoginInfo, isCaptureHost, parseHttpHead } = require('./code-extractor');
 const { WsFrameParser } = require('./ws-parser');
+const { createResourceUrlRecorder } = require('./resource-url-recorder');
 
 const MAX_CONNECT_HEAD_BYTES = 64 * 1024;
 
@@ -77,11 +78,25 @@ function findHeadEnd(buffer) {
  * @param {object} deps.ca - CA 模块（getSecureContextForHost）
  * @param {object} deps.friendExtractor - createFriendExtractor() 的结果
  * @param {object} deps.sessionStore - 会话存储
+ * @param {object} [deps.resourceUrlRecorder] - 官方资源 URL 被动记录器（可选）
  * @param {Function} deps.log - (level, message, extra)
  */
 function createMitmProxyManager(deps = {}) {
-  const { config, ca, friendExtractor, sessionStore, log = () => {} } = deps;
+  const { config, ca, friendExtractor, sessionStore, resourceUrlRecorder = null, log = () => {} } = deps;
   const activeServers = new Map(); // sessionId -> { port, servers, stop, autoStopTimer }
+
+  // 资源 URL 记录失败绝不影响抓包转发；只对 GET 生效。
+  function recordResourceUrl(host, target, method) {
+    if (!resourceUrlRecorder) return;
+    try {
+      if (String(method || '').toUpperCase() !== 'GET') return;
+      if (resourceUrlRecorder.record(host, target)) {
+        log('info', `记录官方资源 URL: ${String(target || '').split('?')[0]}`);
+      }
+    } catch {
+      // 记录器异常静默
+    }
+  }
 
   async function listenOnPortPool(bindTargets, handler) {
     const candidates = [];
@@ -379,6 +394,7 @@ function createMitmProxyManager(deps = {}) {
 
       // 提取登录 code / openID
       const parsed = parseHttpHead(headBytes);
+      recordResourceUrl(host, parsed && parsed.target, parsed && parsed.method);
       const info = extractLoginInfo({ host, parsedHead: parsed, config });
       if (info.code || info.openId) {
         sessionStore.addCode(session, { code: info.code, openId: info.openId });
@@ -446,6 +462,11 @@ function createMitmProxyManager(deps = {}) {
     if (!isBypass && (info.code || info.openId)) {
       sessionStore.addCode(session, { code: info.code, openId: info.openId });
     }
+
+    // 明文路径同样记录资源 URL（少见，但保持一致）
+    const headLines = String(head || '').split('\r\n');
+    const headParts = (headLines[0] || '').split(WHITESPACE_RE);
+    recordResourceUrl(host, path, headParts[0]);
 
     const upstream = net.connect({ host, port });
     upstream.once('connect', () => {
