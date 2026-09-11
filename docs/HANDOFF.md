@@ -977,7 +977,7 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 - 重启后 `bag_unclassified_item` 日志立刻抓到静默丢弃实锤：背包中 `1027,5001,5005,25995,101604` 五个物品完全不在本地索引，面板显示“物品XXXX”（修复前连日志都没有）。其中 `101604` 来自邮箱领取（`email_rewards` 日志），`5001` 有硬证据：`activity.js` `WEATHER_BOTTLE_ITEM_ID=5001`，即雨落成诗 field 102 兑换商店解出的“天气采集瓶”，活动 2026-09-08 结束后留存。
 - 其余四个（1027/5005/25995/101604）在本机所有静态源（ItemInfo/EventItems/Plant/nong.me/活动报告/全部历史日志）均无名称证据，按硬门不猜。
-- 根因修复钥匙：`corepb.proto` 的 Item 消息有原作者注释 `// ItemShow show = 100; // 展示信息 (略)`——服务端在 Bag 回包为每个物品下发展示信息，原作者抓包确认过字段号但跳过了解析。这是服务端权威名称来源，优于任何本地猜测。
+- 根因修复钥匙：`corepb.proto` 的 Item 消息有原作者注释 `// ItemShow show = 100; // 展示信息 (略)`——原作者抓包确认过字段号但跳过了解析。本轮实现观察器验证了这一点：字段号在 schema 里存在，但**当前 Bag 回包实际不填充**（线上实测 4 个未知物品全部 `no_show_field`）。观察器保留的价值在于：未来服务端开始下发、或其他物品携带时能自动拿到服务端权威名称，不依赖本地索引猜。
 
 ### 本轮改动
 
@@ -986,10 +986,17 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 3. `EventItems.json` 按既有证据登记 5001（天气采集瓶）、5002（雷雨召唤瓶）——两者都来自 activity.js 常量 + HANDOFF 记录的 GetGroup 解码证据。
 4. 观察边界：只解码我们自己 Bag RPC 回包的既有字段，不构造新请求、不探测、不改 proto；名称是服务端游戏数据（与既有 item 名称日志同级别），不是用户身份。
 
+### 线上实测结论（重启后已验证）
+
+- `5001` 登记生效：`bag_unclassified_item` 清单实时从 5 个变为 4 个（`1027,5005,25995,101604`）。
+- **Bag 回包实际不携带 ItemShow（field 100）**：观察器线上实测 4 个未知物品全部 `no_show_field`。`corepb.proto` 的注释只是 schema 声明，实际 Bag 响应不填充该字段——这已是确定性否定证据，不要在后续轮次反复试。这 4 个物品的名称只存在于官方客户端本地配置（miniapp 资源包）里，本机 Linux 无证据源，按硬门保持待证、禁止猜名称。
+- 收口路径（二选一）：①用户在官方客户端背包里人工确认这 4 个 ID 显示的名称，按 runbook“人工识图临时名”规则登记并标注来源；②下次抓包登录开着游戏进背包/活动页，MITM 记录官方资源 URL 后从官方管道拉客户端配置。**注意 25995 在 2xxxx 种子编号段**：若游戏内显示为某“XX种子”，登记后会立即进入种植链（本轮 showName 逻辑已支持无映射种子直接可种）。
+- `101604` 来自邮箱领取（`email_rewards` 日志可溯）；`1027` 邻近 1024 鹊羽/1026 鹊羽香囊（10xx 活动道具段）但无直接证据，不得按编号段外推。
+
 ### 后续闭环
 
-- 重启后第一次 Bag 读取会为 1027/5005/25995/101604 输出 `bag_item_show_evidence`：有名称则面板立即显示真实名称（种子里有“种子”后缀则可种）；无 ItemShow 则该日志明确记“回包未携带”，说明名称只在官方客户端本地配置里，需等抓包会话/macOS 缓存补官方资源。
-- 自进化每日巡检新增：`bag_item_show_evidence` 出现 `server_name` 时，把该名称按证据写入 `EventItems.json`（EventPlants 仍需土地证据）；`no_show_field` 的物品保持待证，禁止猜名称。
+- `bag_item_show_evidence` 出现 `server_name` 时（未来服务端开始下发、或其他物品携带），巡检把该名称按证据写入 `EventItems.json`（EventPlants 仍需土地证据）；`no_show_field` 的物品保持待证，禁止猜名称。
+- 自进化每日巡检新增：`bag_item_show_evidence` 与 `bag_unclassified_item` 是背包识别缺口的两大权威信号，出现新 ID 必须当日复盘。
 
 ### 踩坑与回滚
 
