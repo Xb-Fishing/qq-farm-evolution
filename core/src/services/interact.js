@@ -6,7 +6,7 @@
  * - 互动类型识别（偷取/帮忙/捣乱）
  * - 作物名称解析
  */
-const { getFruitName, getPlantByFruitId, getPlantById, getPlantName } = require('../config/gameConfig');
+const { getFruitName, getPlantByFruitId, getPlantByIdOrSeedId, getKnownPlantName } = require('../config/gameConfig');
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { logWarn, toNum, toTimeSec, sleep } = require('../utils/utils');
@@ -86,7 +86,7 @@ function resolveCropName(cropId) {
   const id = Number(cropId) || 0;
   if (id <= 0) return '';
 
-  if (getPlantById(id)) return getPlantName(id);
+  if (getPlantByIdOrSeedId(id)) return getKnownPlantName(id);
   if (getPlantByFruitId(id)) return getFruitName(id);
 
   return '';
