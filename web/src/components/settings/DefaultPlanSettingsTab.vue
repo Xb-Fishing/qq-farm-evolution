@@ -135,6 +135,24 @@ const sortedBagSeeds = computed(() => {
     .filter((seed): seed is BagSeedItem => !!seed)
 })
 
+// 背包中存在、但默认方案优先列表没有的种子：全量可见，可一键加入。
+const unplannedBagSeeds = computed(() => {
+  const planned = new Set(strategySettings.value.bagSeedPriority.map(id => Number(id)))
+  return props.bagSeeds
+    .filter(seed => seed.seedId > 0 && !planned.has(seed.seedId))
+    .sort((a, b) => (a.requiredLevel - b.requiredLevel) || (a.seedId - b.seedId))
+})
+
+function addBagSeedToPriority(seedId: number) {
+  if (seedId > 0 && !strategySettings.value.bagSeedPriority.includes(seedId))
+    strategySettings.value.bagSeedPriority = [...strategySettings.value.bagSeedPriority, seedId]
+}
+
+function addAllBagSeedsToPriority() {
+  const currentIds = props.bagSeeds.map(seed => seed.seedId).filter(seedId => seedId > 0)
+  strategySettings.value.bagSeedPriority = [...new Set([...strategySettings.value.bagSeedPriority, ...currentIds])]
+}
+
 const strategyPreviewLabel = computed(() => {
   const option = props.plantingStrategyOptions.find(item => item.value === strategySettings.value.plantingStrategy)
   return option?.label || '默认策略'
@@ -347,11 +365,14 @@ onMounted(fetchPlan)
       :strategy-preview-label="strategyPreviewLabel"
       :bag-seeds="bagSeeds"
       :sorted-bag-seeds="sortedBagSeeds"
+      :unplanned-bag-seeds="unplannedBagSeeds"
       :bag-seeds-loading="bagSeedsLoading"
       :bag-seeds-error="bagSeedsError"
       @reset-bag-seed-priority="resetBagSeedPriority"
       @move-bag-seed="moveBagSeed"
       @remove-bag-seed="removeBagSeedPriority"
+      @add-bag-seed="addBagSeedToPriority"
+      @add-all-bag-seeds="addAllBagSeedsToPriority"
       @start-bag-seed-drag="startBagSeedDrag"
       @drag-over-bag-seed="() => {}"
       @drop-bag-seed="dropBagSeed"

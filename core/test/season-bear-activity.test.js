@@ -26,7 +26,9 @@ test('S3 说明覆盖全部玩法、结束提示和来源冲突，状态缺失�
   assert.equal(activity.resources.find(item => item.key === 'seed').itemId, 29004);
   assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 20516);
   assert.match(activity.resources.find(item => item.key === 'seed').image, /plant_images\/common\/seed/);
-  assert.match(activity.resources.find(item => item.key === 'cake').image, /harvest/);
+  // 20516 的图标曾用通用收获图顶替，已删除：专属官方图待 fetch-official-icons 抓取，
+  // 在此之前保持空图（前端只显示名称），不用其他道具的图冒充
+  assert.equal(activity.resources.find(item => item.key === 'cake').image, '');
   assert.match(activity.statusLabel, /节点未启用/);
   assert.equal(activity.recordStateAvailable, false);
   assert.deepEqual(activity.protocol.opaqueReadOnlyFields, [115]);

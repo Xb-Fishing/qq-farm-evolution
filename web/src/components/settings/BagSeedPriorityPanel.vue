@@ -10,6 +10,7 @@ interface BagSeedItem {
 defineProps<{
   seeds: BagSeedItem[]
   sortedSeeds: BagSeedItem[]
+  unplannedSeeds: BagSeedItem[]
   loading: boolean
   error: string | null
 }>()
@@ -18,6 +19,8 @@ const emit = defineEmits<{
   reset: []
   move: [seedId: number, direction: -1 | 1]
   remove: [seedId: number]
+  add: [seedId: number]
+  addAll: []
   dragStart: [seedId: number, event: DragEvent]
   dragOver: [seedId: number, event: DragEvent]
   drop: [seedId: number, event: DragEvent]
@@ -40,6 +43,13 @@ const emit = defineEmits<{
         @click="emit('reset')"
       >
         重置顺序
+      </button>
+      <button
+        v-if="unplannedSeeds.length > 0"
+        class="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-700 transition dark:bg-emerald-900/50 hover:bg-emerald-200 dark:text-emerald-300 dark:hover:bg-emerald-900/70"
+        @click="emit('addAll')"
+      >
+        全部加入优先
       </button>
     </div>
 
@@ -99,6 +109,37 @@ const emit = defineEmits<{
             @click="emit('move', seed.seedId, 1)"
           >
             <div class="i-carbon-arrow-down text-sm" />
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="unplannedSeeds.length > 0" class="space-y-2">
+      <div class="text-xs text-amber-700/90 dark:text-amber-300/90">
+        背包中还有 {{ unplannedSeeds.length }} 种未加入优先列表的种子（后台种植仍会按兜底顺序消耗，可加入后调整顺序）：
+      </div>
+      <div class="grid gap-2 lg:grid-cols-3 sm:grid-cols-2">
+        <div
+          v-for="seed in unplannedSeeds"
+          :key="seed.seedId"
+          class="flex items-center gap-2 border border-amber-300 rounded-lg border-dashed bg-white/60 p-2 dark:border-amber-700/60 dark:bg-gray-800/60"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-sm text-gray-800 font-medium dark:text-gray-200">
+              {{ seed.name }}
+              <span v-if="seed.plantSize === 2" class="ml-1 text-xs text-emerald-600 dark:text-emerald-400">2×2</span>
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+              数量: {{ seed.count }} | 等级: {{ seed.requiredLevel }}
+            </div>
+          </div>
+          <button
+            class="rounded p-1 text-emerald-500 transition hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/20"
+            title="加入优先列表"
+            aria-label="加入优先列表"
+            @click="emit('add', seed.seedId)"
+          >
+            <div class="i-carbon-add text-sm" />
           </button>
         </div>
       </div>

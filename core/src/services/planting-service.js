@@ -532,24 +532,16 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
   const bagSeeds = await getBagSeeds();
   const allSeeds = Array.isArray(bagSeeds) ? bagSeeds : [];
   const seedPriority = getBagSeedPriority(accountId);
-  const prioritySet = new Set(
-    Array.isArray(seedPriority) ? seedPriority.map(id => Number(id)) : []
-  );
-  const hasCustomPriority = prioritySet.size > 0;
 
+  // 优先列表只决定种植顺序，不是白名单：背包内全部可用 1x1 种子都会被种下，
+  // 列表外种子按等级/ID 兜底排序排在列表内种子之后（用户 2026-09-11 指示，废弃旧白名单设计）。
   const usableBagSeeds = allSeeds.filter(s =>
     Number(s && s.count) > 0 &&
     Number(s && s.plantSize) === 1
   );
-  const customPrioritySeeds = hasCustomPriority
-    ? usableBagSeeds.filter(s => prioritySet.has(Number(s.seedId)))
-    : [];
 
-  // ??????????????????????????? 1x1 ?????
-  const availableSeeds = sortBagSeedsForPlanting(
-    customPrioritySeeds.length > 0 ? customPrioritySeeds : usableBagSeeds,
-    customPrioritySeeds.length > 0 ? seedPriority : []
-  );
+  // 列表内种子按用户顺序排前，列表外种子不丢弃
+  const availableSeeds = sortBagSeedsForPlanting(usableBagSeeds, seedPriority);
 
   if (availableSeeds.length === 0) {
     const hasAnySeeds = allSeeds.some(s => Number(s && s.count) > 0);
@@ -569,6 +561,7 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
   let totalPlanted = 0;
   let totalOccupied = 0;
   const allPlantedIds = [];
+  const plantedSeedIds = [];
   const batches = [];
 
   for (const seed of availableSeeds) {
@@ -590,6 +583,7 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
       totalPlanted += plantResult.planted;
       totalOccupied += occupiedIds.length > 0 ? occupiedIds.length : plantResult.planted;
       allPlantedIds.push(...plantedIds);
+      plantedSeedIds.push(Number(seed.seedId));
       remainingIds = remainingIds.filter(id => !occupiedIds.includes(id));
       batches.push(`${seed.name  }x${  plantResult.planted}`);
     }
@@ -607,7 +601,11 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
   if (batches.length > 0) {
     log('种植', `已按背包优先策略种植: ${batches.join('，')}`, {
       module: 'farm', event: '种植种子', result: 'ok',
-      strategy: 'bag_priority', count: totalPlanted
+      strategy: 'bag_priority', count: totalPlanted,
+      plantedSeedIds: [...new Set(plantedSeedIds)],
+      outsidePrioritySeedIds: [...new Set(availableSeeds
+        .map(seed => Number(seed.seedId))
+        .filter(seedId => seedId > 0 && !seedPriority.includes(seedId)))],
     });
   }
 

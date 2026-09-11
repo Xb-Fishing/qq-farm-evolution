@@ -717,7 +717,7 @@ function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) 
 7. 腾讯上游游戏协议与本项目下游管理 API 必须分层：下游页面可以频繁读取本地状态，但必须用缓存/并发合并阻止每次刷新穿透到腾讯。接口存在、字段可见、List 下发、返回成功甚至 bot 试调成功，都不能单独证明接口安全；禁止枚举未下发 ID、试探未知 cmd/字段或用线上账号做协议发现。新写操作至少同时具备“当前官方客户端可达调用路径”和“官方客户端自然操作产生的成功请求样本”，否则只能只读展示。
 8. 没有可靠问题证据、没有明确安全收益，或现有逻辑已经符合要求时，允许完全不改代码、不改 HANDOFF、不生成提交；禁止为了“完成进化”制造改动或只刷巡检记录。
 9. 只要实际修改代码，必须同步更新 docs/HANDOFF.md，记录改了什么、踩坑注意点、验证结果、风险边界和回滚方法；全量测试通过后只创建本地提交，由父进程对提交范围、新增行、提交标题和文件名做隐私扫描，通过后才能推送 GitHub。
-10. 每日巡检必须专门检查活动种子闭环：活动说明/商城道具/field 110 奖励、Bag 原始物品、/api/bag/seeds、土地 plant.id、配置中的 seed_id/fruit_id/size、土地阶段图和前端名称是否一致。活动奖励新 ID 不能只停留在“活动记录已解析”：必须确认背包优先列表能看到种子、种子名称不再是“物品<ID>”/“未知种子<ID>”、活动商城和奖励组件都有本地可加载图标；ItemShow 只提供价格等展示扩展时，不能把它误当成类型证据。plant.id 可能是植物 ID，也可能是服务端回包使用的种子 ID，必须先做双向映射再展示或计算，不能出现“植物<ID>”、裸 seedId、背包优先策略漏掉活动种子或空贴图；植物 ID/果实 ID/专属资产缺土地或官方资源证据时，明确保留待确认并使用已存在的官方通用回退图，不能猜资产。
+10. 每日巡检必须专门检查活动种子闭环：活动说明/商城道具/field 110 奖励、Bag 原始物品、/api/bag/seeds、土地 plant.id、配置中的 seed_id/fruit_id/size、土地阶段图和前端名称是否一致。活动奖励新 ID 不能只停留在“活动记录已解析”：必须确认背包优先列表能看到种子、种子名称不再是“物品<ID>”/“未知种子<ID>”、活动商城和奖励组件都有本地可加载图标；ItemShow 只提供价格等展示扩展时，不能把它误当成类型证据。plant.id 可能是植物 ID，也可能是服务端回包使用的种子 ID，必须先做双向映射再展示或计算，不能出现“植物<ID>”、裸 seedId、背包优先策略漏掉活动种子或空贴图；植物 ID/果实 ID/专属资产缺土地或官方资源证据时，明确保留待确认并使用已存在的官方通用回退图，不能猜资产。图标闭环必须区分「官方专属图」与「通用回退」：core/src/config/gameConfig.js 的 getGenericFallbackItemIds() 非空或存在空图道具时，必须运行 cd core && npm run fetch:official-icons 尝试抓取（URL 证据来自 core/data/capture/resource-urls.json，抓包会话开着游戏进活动页会自动记录）。抓到的 PNG 属于新增二进制，绝对禁止 git add——父进程隐私扫描会对新增二进制整笔阻断，连累同轮代码提交被丢弃；PNG 留在工作区，在总结/HANDOFF 写明“已抓取待人工提交”。人工提交图标后，下一轮才允许删除 getGenericFallbackItemIds 对应回退行；任何情况下不得用其他道具的图片顶替。日志出现 bag_unclassified_item（背包里本地索引没有条目的未知物品）时必须当日复盘：按当前活动回包/商城证据补 core/src/gameConfig/EventItems.json 映射（EventPlants 仍需土地证据，禁止猜测）。背包种植不是白名单：plantFromBagSeeds 会种下背包内全部可用种子（优先列表只决定顺序），这是用户确认的设计，不得改回“列表外不种”。
 11. 每日巡检必须检查好友偷菜时间的语义：摘要没有 ripe_time_sec 时不能把 0 当成“没有成熟”或用自己农场时钟冒充好友时钟；已从地块 phases 读到的精确墙钟不能被后续摘要覆盖。面板要区分“下一次检查”“已知最早成熟”和“成熟时间未读取”；不能为了补齐普通好友显示恢复全好友高频 Enter。
 `;
 
@@ -778,7 +778,7 @@ ${sections.join('\n\n')}
 1. 先读 docs/HANDOFF.md 了解项目结构与硬约束。
 2. 新活动不是只登记 ID，而要做端到端适配。参考 core/src/services/activity.js、core/src/controllers/admin-activity-routes.js、core/src/core/worker.js 中既有活动段，以及 web/src/views/Activity.vue 的七夕/青梅/南瓜铺等模式，逐项核对并在证据支持时完成：
    - 活动根/子节点 ID、UID、时间、玩法状态和 protobuf 字段；
-   - 活动货币、种子、果实、礼包、装扮等道具名称/图片/配置；涉及活动植物时必须同时核对当前土地/背包证据，补 core/src/gameConfig/EventPlants.json，并按 AGENTS.md 核实 size（四格必须 size: 2）；严禁把土地返回的 plant_id 当成 seed_id，不能让“植物 ID 裸显示 / seedId=0”留到下一轮；
+   - 活动货币、种子、果实、礼包、装扮等道具名称/图片/配置；涉及活动植物时必须同时核对当前土地/背包证据，补 core/src/gameConfig/EventPlants.json，并按 AGENTS.md 核实 size（四格必须 size: 2）；严禁把土地返回的 plant_id 当成 seed_id，不能让“植物 ID 裸显示 / seedId=0”留到下一轮。道具图标缺失或仍是通用回退时，运行 cd core && npm run fetch:official-icons 抓取官方专属图（URL 证据在 core/data/capture/resource-urls.json）；抓到的 PNG 留在工作区严禁 git add，仅在总结写明待人工提交；
    - 每一种玩法的只读状态、可执行操作、次数/库存/奖励刷新和失败边界；禁止猜测 cmd 或写操作字段；
    - 后端服务、管理 API、默认开关、每日活动例行入口和运行日志；
    - web/src/views/Activity.vue 及相关组件中的活动专属卡片、道具数量、玩法状态和安全操作按钮，不能只在“活动扫描”面板显示一个候选 ID。
