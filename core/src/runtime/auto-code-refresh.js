@@ -265,6 +265,7 @@ function createAutoCodeRefreshService(deps) {
     const account = findAccount(accountId);
     if (!account || !account.loginBuffer || !account.refreshtoken) return false;
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) return false;
+    if (isCredentialBlocked(accountId)) return false;
 
     let consecutiveFailures = 0;
     const scheduleNextKeepalive = (reason = 'normal') => {
@@ -338,6 +339,12 @@ function createAutoCodeRefreshService(deps) {
 
     const account = findAccount(accountId);
     if (account && store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) {
+      return;
+    }
+    if (account && isCredentialBlocked(accountId)) {
+      log('系统', `微信授权已失效，等待重新扫码后再登录: ${account.name}`, {
+        accountId: String(accountId), accountName: account.name,
+      });
       return;
     }
     if (!account || !String(account.wxid || '').trim()) {
