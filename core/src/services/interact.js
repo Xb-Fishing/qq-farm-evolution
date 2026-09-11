@@ -19,7 +19,6 @@ const RPC_ROUTE = ['gamepb.interactpb.InteractService', 'InteractRecords'];
 
 // ---- 并发锁与最小间隔 ----
 
-let fetchInteractLock = false;
 let lastFetchInteractTime = 0;
 
 // 两次请求最小间隔：500ms
@@ -147,11 +146,6 @@ async function fetchInteractReply() {
     throw new Error('访客记录 proto 未加载');
   }
 
-  // 并发锁
-  while (fetchInteractLock) {
-    await sleep(100);
-  }
-
   // 最小间隔检查
   const now = Date.now();
   const elapsed = now - lastFetchInteractTime;
@@ -159,28 +153,23 @@ async function fetchInteractReply() {
     await sleep(FETCH_INTERACT_MIN_INTERVAL_MS - elapsed);
   }
 
-  fetchInteractLock = true;
   lastFetchInteractTime = Date.now();
 
-  try {
-    const request = types.InteractRecordsRequest.encode(
-      types.InteractRecordsRequest.create({})
-    ).finish();
+  const request = types.InteractRecordsRequest.encode(
+    types.InteractRecordsRequest.create({})
+  ).finish();
 
-    const [service, method] = RPC_ROUTE;
-    try {
-      const { body } = await sendMsgAsync(service, method, request);
-      return types.InteractRecordsReply.decode(body);
-    } catch (err) {
-      logWarn('好友', `访客记录读取失败，已停止且不尝试其他 RPC: ${err.message}`, {
-        module: 'friend',
-        event: 'interact_records',
-        result: 'error',
-      });
-      throw new Error('访客记录接口当前不可用，已停止请求');
-    }
-  } finally {
-    fetchInteractLock = false;
+  const [service, method] = RPC_ROUTE;
+  try {
+    const { body } = await sendMsgAsync(service, method, request);
+    return types.InteractRecordsReply.decode(body);
+  } catch (err) {
+    logWarn('好友', `访客记录读取失败，已停止且不尝试其他 RPC: ${err.message}`, {
+      module: 'friend',
+      event: 'interact_records',
+      result: 'error',
+    });
+    throw new Error('访客记录接口当前不可用，已停止请求');
   }
 }
 
