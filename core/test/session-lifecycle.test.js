@@ -593,6 +593,10 @@ test('活动进化 Prompt 获得完整活动域职责和脱敏证据而非只登
   assert.match(prompt, /活动货币、种子、果实、礼包、装扮/);
   assert.match(prompt, /严禁把土地返回的 plant_id 当成 seed_id/);
   assert.match(prompt, /植物 ID 裸显示 \/ seedId=0/);
+  assert.match(prompt, /背包优先策略漏掉活动种子/);
+  assert.match(prompt, /阶段图和前端名称是否一致/);
+  assert.match(prompt, /摘要没有 ripe_time_sec/);
+  assert.match(prompt, /不能为了补齐普通好友显示恢复全好友高频 Enter/);
   assert.match(prompt, /web\/src\/views\/Activity\.vue/);
   assert.match(prompt, /可以修改 core\/src\/core\/worker\.js/);
   assert.match(prompt, /仅限活动模块 import、活动默认配置、活动每日任务/);
