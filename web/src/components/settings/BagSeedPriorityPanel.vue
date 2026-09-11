@@ -4,6 +4,7 @@ interface BagSeedItem {
   name: string
   count: number
   requiredLevel: number
+  image?: string
   plantSize: number
 }
 
@@ -78,9 +79,11 @@ const emit = defineEmits<{
         <div class="h-8 w-8 flex shrink-0 items-center justify-center rounded bg-amber-100 text-xs text-amber-700 font-bold dark:bg-amber-900/50 dark:text-amber-300">
           {{ index + 1 }}
         </div>
+        <img v-if="seed.image" :src="seed.image" :alt="seed.name" class="h-9 w-9 shrink-0 object-contain">
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm text-gray-800 font-medium dark:text-gray-200">
             {{ seed.name }}
+            <span v-if="seed.plantSize === 0" class="ml-1 text-xs text-amber-600">占地待确认</span>
             <span v-if="seed.plantSize === 2" class="ml-1 text-xs text-emerald-600 dark:text-emerald-400">2×2</span>
           </div>
           <div class="text-xs text-gray-500 dark:text-gray-400">
@@ -124,9 +127,11 @@ const emit = defineEmits<{
           :key="seed.seedId"
           class="flex items-center gap-2 border border-amber-300 rounded-lg border-dashed bg-white/60 p-2 dark:border-amber-700/60 dark:bg-gray-800/60"
         >
+          <img v-if="seed.image" :src="seed.image" :alt="seed.name" class="h-9 w-9 shrink-0 object-contain">
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm text-gray-800 font-medium dark:text-gray-200">
               {{ seed.name }}
+              <span v-if="seed.plantSize === 0" class="ml-1 text-xs text-amber-600">占地待确认</span>
               <span v-if="seed.plantSize === 2" class="ml-1 text-xs text-emerald-600 dark:text-emerald-400">2×2</span>
             </div>
             <div class="text-xs text-gray-500 dark:text-gray-400">

@@ -25,6 +25,7 @@ const { sendMsgAsync, networkEvents, getUserState } = require('../utils/network'
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
 const { updateStatusGold } = require('./status');
+const { auditBagSeedCoverage } = require('./seed-catalog-audit');
 
 // ---- 常量 ----
 
@@ -78,136 +79,22 @@ function getDateKey() {
 
 // ---- RPC 调用 ----
 
-// ---- Item.show (field 100) 只读观察 ----
-// corepb.proto 的 Item 消息注释记录了服务端会为每个背包物品下发 ItemShow
-// 展示信息（原作者抓包确认过字段号）。本地索引缺条目时（bag_unclassified_item），
-// 从原始回包字节只读提取服务端名称候选——不猜本地没有的映射，只用服务端
-// 主动下发的数据。观察日志按物品 ID 去重，避免每个农场 tick 刷屏。
-const BAG_SHOW_LOGGED_IDS = new Set();
-
-function readVarint(buf, pos) {
-  let value = 0;
-  let shift = 0;
-  let next = pos;
-  while (next < buf.length && shift <= 56) {
-    const byte = buf[next];
-    next += 1;
-    value += (byte & 0x7F) * 2 ** shift;
-    if (byte < 0x80) return { value, next };
-    shift += 7;
-  }
-  return { value, next };
-}
-
-/** 极简 protobuf 字段遍历（只用于观察 Bag 回包的既有字段，不用于构造请求）。 */
-function walkProtobufFields(buf, visit) {
-  let pos = 0;
-  while (pos < buf.length) {
-    const tag = readVarint(buf, pos);
-    if (tag.next <= pos) break;
-    pos = tag.next;
-    const field = Math.floor(tag.value / 8);
-    const wire = tag.value % 8;
-    if (wire === 0) {
-      const value = readVarint(buf, pos);
-      if (value.next <= pos) break;
-      pos = value.next;
-      visit(field, wire, value.value);
-    } else if (wire === 2) {
-      const len = readVarint(buf, pos);
-      if (len.next <= pos) break;
-      pos = len.next;
-      const end = pos + len.value;
-      if (end > buf.length) break;
-      visit(field, wire, buf.subarray(pos, end));
-      pos = end;
-    } else if (wire === 5) {
-      visit(field, wire, buf.subarray(pos, pos + 4));
-      pos += 4;
-    } else if (wire === 1) {
-      visit(field, wire, buf.subarray(pos, pos + 8));
-      pos += 8;
-    } else {
-      break; // wire 3/4 已废弃；异常结构直接停止
-    }
-  }
-}
-
-function looksLikeItemName(text) {
-  if (!text || text.length > 40) return false;
-  for (const ch of text) {
-    const code = ch.codePointAt(0);
-    if (code < 0x20 || code === 0x7F) return false;
-  }
-  return /[\u4E00-\u9FFF]/.test(text);
-}
-
-function extractShowName(showBytes) {
-  let best = '';
-  walkProtobufFields(showBytes, (field, wire, value) => {
-    if (wire !== 2 || !Buffer.isBuffer(value)) return;
-    const text = value.toString('utf8');
-    if (looksLikeItemName(text) && text.length > best.length) best = text;
-  });
-  return best;
-}
-
-/**
- * 从 BagReply 原始字节为未知物品提取服务端 ItemShow(field 100) 名称。
- * 返回 itemId -> 名称（无 ItemShow 或无名称候选时不产生条目）。
- */
-function extractBagItemShowNames(rawBody, wantedIds) {
-  const names = new Map();
-  if (!Buffer.isBuffer(rawBody) || !wantedIds || wantedIds.size === 0) return names;
-  walkProtobufFields(rawBody, (field, wire, value) => {
-    if (field !== 1 || wire !== 2 || !Buffer.isBuffer(value)) return; // corepb.ItemBag
-    walkProtobufFields(value, (itemField, itemWire, itemBytes) => {
-      if (itemField !== 1 || itemWire !== 2 || !Buffer.isBuffer(itemBytes)) return; // corepb.Item
-      let itemId = 0;
-      let showBytes = null;
-      walkProtobufFields(itemBytes, (f, w, v) => {
-        if (f === 1 && w === 0) itemId = Number(v);
-        else if (f === 100 && w === 2 && Buffer.isBuffer(v)) showBytes = v;
-      });
-      if (itemId > 0 && wantedIds.has(itemId) && showBytes) {
-        names.set(itemId, extractShowName(showBytes));
-      }
-    });
-  });
-  return names;
-}
-
-function attachBagShowNames(reply, names) {
-  if (!names || names.size === 0) return;
-  const items = getBagItems(reply);
-  for (const item of items || []) {
-    const id = toNum(item && item.id);
-    if (id > 0 && names.has(id)) {
-      item.showName = names.get(id) || '';
-    }
-  }
-}
+// 观察既有 field 100 的结构；没有经过 schema 核实的文字不能自动变成种子。
+const { inspectBagItemShows } = require('./bag-item-evidence');
+const bagShowStates = new Map();
 
 function observeUnknownBagItems(rawBody, reply) {
-  const unknownIds = new Set();
-  for (const item of getBagItems(reply) || []) {
-    const id = toNum(item && item.id);
-    const count = toNum(item && item.count);
-    if (id > 0 && count > 0 && !getItemById(id)) unknownIds.add(id);
-  }
-  if (unknownIds.size === 0) return;
-  const names = extractBagItemShowNames(rawBody, unknownIds);
-  attachBagShowNames(reply, names);
-  for (const id of unknownIds) {
-    if (BAG_SHOW_LOGGED_IDS.has(id)) continue;
-    BAG_SHOW_LOGGED_IDS.add(id);
-    const name = names.get(id) || '';
-    log('仓库', `未知背包物品 ${id} 服务端展示信息: ${name || '（回包未携带 ItemShow）'}`, {
-      module: 'warehouse',
-      event: 'bag_item_show_evidence',
-      itemId: id,
-      showName: name,
-      result: name ? 'server_name' : 'no_show_field',
+  const unknownIds = new Set(getBagItems(reply)
+    .map(item => toNum(item.id)).filter(id => id > 0 && !getItemById(id)));
+  const observations = inspectBagItemShows(rawBody, unknownIds);
+  for (const [id, evidence] of observations) {
+    const signature = JSON.stringify(evidence);
+    if (bagShowStates.get(id) === signature) continue;
+    if (bagShowStates.size >= 200 && !bagShowStates.has(id)) continue;
+    bagShowStates.set(id, signature);
+    log('仓库', `背包物品 ${id} 展示字段观察: ${evidence.state}`, {
+      module: 'warehouse', event: 'bag_item_show_evidence', itemId: id,
+      result: evidence.state, showBytes: evidence.showBytes, fields: evidence.fields,
     });
   }
 }
@@ -285,7 +172,7 @@ function isFruitItemId(id) {
 }
 
 function isActivitySeedInfo(info) {
-  return !!(info && String(info.name || '').trim().endsWith('种子'));
+  return !!(info && !Number(info.type) && String(info.name || '').trim().endsWith('种子'));
 }
 
 /**
@@ -557,7 +444,7 @@ async function getBagDetail() {
     } else if (Number(info && info.type) === 4) {
       // 活动产出物可能尚未进入 Plant.json，但活动回包已确认它是果实/产出物。
       category = 'fruit';
-    } else if (seedPlant || isActivitySeedInfo(info) || serverShowName.endsWith('种子')) {
+    } else if (seedPlant || isSeedItem(id) || isActivitySeedInfo(info) || serverShowName.endsWith('种子')) {
       if (!name) name = `${seedPlant?.name || serverShowName.replace(/种子$/, '') || '未知'}种子`;
       category = 'seed';
     }
@@ -588,7 +475,7 @@ async function getBagDetail() {
         sellable: Boolean(directSell || getPlantByFruitId(id)),
         usable: Number(info && info.can_use) === 1 || interactionType === 'use',
         level: info ? Number(info.level) || 0 : 0,
-        plantSize: seedPlant ? Math.max(1, Number(seedPlant.size || 1)) : 1,
+        plantSize: seedPlant ? Math.max(1, Number(seedPlant.size || 1)) : category === 'seed' ? 0 : 1,
         interactionType,
         hoursText: '',
       });
@@ -623,6 +510,7 @@ async function getBagDetail() {
     totalKinds: resultItems.length,
     items: resultItems,
     originalItems,
+    seedRecognition: auditBagSeedCoverage(originalItems, getBagSeedsFromItems(items)),
   };
 }
 
@@ -794,10 +682,9 @@ function getBagSeedsFromItems(items) {
 
     const plant = getPlantBySeedId(id);
     const info = getItemById(id) || null;
-    const interactionType = String(info && info.interaction_type || '').toLowerCase();
     const serverShowName = String(item && item.showName || '').trim();
-    const seedLike = !!plant || isSeedItem(id) || interactionType === 'plant'
-      || isActivitySeedInfo(info) || serverShowName.endsWith('种子');
+    const seedLike = !!plant || isSeedItem(id) || isActivitySeedInfo(info)
+      || (!info && serverShowName.endsWith('种子'));
     if (!seedLike) {
       // 只记录本地索引完全没有条目的未知物品（可能是新活动种子/道具）；
       // 已知果实、化肥、货币等非种子物品不算识别缺口，不记录避免刷屏。
@@ -814,7 +701,7 @@ function getBagSeedsFromItems(items) {
     const requiredLevel = plant
       ? Math.max(0, Number(plant.land_level_need || 0))
       : Math.max(0, Number(info && info.level || getSeedLevel(id) || 0));
-    const plantSize = plant ? Math.max(1, Number(plant.size || 1)) : 1;
+    const plantSize = plant ? Math.max(1, Number(plant.size || 1)) : 0;
 
     const existing = seedMap.get(id) || {
       seedId: id,
@@ -880,5 +767,5 @@ module.exports = {
   getBagSeeds,
   getContainerHoursFromBagItems,
   getBagSeedsFromItems,
-  extractBagItemShowNames,
+  inspectBagItemShows,
 };

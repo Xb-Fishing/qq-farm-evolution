@@ -103,6 +103,9 @@ function loadConfigs() {
                         count: Number(entry.fruit_count) || Number(existing && existing.fruit && existing.fruit.count) || 0,
                     },
                     size: Math.max(1, Number(entry.size) || Number(existing && existing.size) || 1),
+                    land_level_need: Number(entry.land_level_need ?? existing?.land_level_need) || 0,
+                    special_fruit: entry.special_fruit || existing?.special_fruit || '',
+                    all_state_spine: entry.all_state_spine || existing?.all_state_spine || '',
                     seasons: Number(entry.seasons) || Number(existing && existing.seasons) || 1,
                     grow_phases: entry.grow_phases || existing && existing.grow_phases || '',
                     exp: Number(entry.exp) || Number(existing && existing.exp) || 0,
@@ -619,7 +622,7 @@ function getItemImageById(itemId) {
     if (numericId <= 0) return '';
 
     const staticImage = staticItemImageMap.get(numericId);
-    if (staticImage) return staticImage;
+    if (staticImage && !genericFallbackItemIds.has(numericId)) return staticImage;
 
     const tryGetImage = (targetId) => {
         const img = seedImageMap.get(targetId);
@@ -657,7 +660,7 @@ function getItemImageById(itemId) {
     const namedImage = getSeedImageByName(itemInfoMap.get(numericId)?.name);
     if (namedImage) return namedImage;
 
-    return '';
+    return staticImage || '';
 }
 
 /** 根据物品ID获取物品信息 */
@@ -676,9 +679,10 @@ function registerRuntimeItem(itemId, metadata = {}) {
     if (id <= 0 || !name) return null;
     const current = itemInfoMap.get(id) || {};
     const { image: rawImage, ...safeMetadata } = metadata || {};
-    const isSeed = Number(metadata.type) === 5
-        || String(metadata.interaction_type || '').toLowerCase() === 'plant'
-        || name.endsWith('种子');
+    const itemType = Number(metadata.type ?? current.type) || 0;
+    const isSeed = itemType > 0 ? itemType === 5
+        : String(metadata.interaction_type || current.interaction_type || '').toLowerCase() === 'plant'
+            || name.endsWith('种子');
     const safeImage = String(rawImage || '').trim();
     const next = {
         ...current,
@@ -692,6 +696,7 @@ function registerRuntimeItem(itemId, metadata = {}) {
     };
     itemInfoMap.set(id, next);
     if (isSeed) seedItemMap.set(id, next);
+    else seedItemMap.delete(id);
     return next;
 }
 
@@ -702,7 +707,7 @@ function isSeedItem(itemId) {
 
 /** 图标仍是官方通用回退（非专属官方图）的物品 ID 列表；非空=有图标缺口。 */
 function getGenericFallbackItemIds() {
-    return Array.from(genericFallbackItemIds);
+    return Array.from(genericFallbackItemIds).filter(id => !getMappedSeedImage(id));
 }
 
 /** 获取种子价格 */

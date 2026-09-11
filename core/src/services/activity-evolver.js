@@ -359,6 +359,7 @@ function activityEvidenceFingerprint(report) {
     ended: (report?.endedActivityIds || []).map(Number).filter(id => id > 0).sort((a, b) => a - b),
     checked: (report?.online?.checkedActivityIds || []).map(Number).filter(id => id > 0).sort((a, b) => a - b),
     groups: redactExternalText(JSON.stringify(groups)),
+    seedRecognition: report?.online?.seedRecognition || null,
   };
   return crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
 }
@@ -718,6 +719,9 @@ function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) 
 8. 没有可靠问题证据、没有明确安全收益，或现有逻辑已经符合要求时，允许完全不改代码、不改 HANDOFF、不生成提交；禁止为了“完成进化”制造改动或只刷巡检记录。
 9. 只要实际修改代码，必须同步更新 docs/HANDOFF.md，记录改了什么、踩坑注意点、验证结果、风险边界和回滚方法；全量测试通过后只创建本地提交，由父进程对提交范围、新增行、提交标题和文件名做隐私扫描，通过后才能推送 GitHub。
 10. 每日巡检必须专门检查活动种子闭环：活动说明/商城道具/field 110 奖励、Bag 原始物品、/api/bag/seeds、土地 plant.id、配置中的 seed_id/fruit_id/size、土地阶段图和前端名称是否一致。活动奖励新 ID 不能只停留在“活动记录已解析”：必须确认背包优先列表能看到种子、种子名称不再是“物品<ID>”/“未知种子<ID>”、活动商城和奖励组件都有本地可加载图标；ItemShow 只提供价格等展示扩展时，不能把它误当成类型证据。plant.id 可能是植物 ID，也可能是服务端回包使用的种子 ID，必须先做双向映射再展示或计算，不能出现“植物<ID>”、裸 seedId、背包优先策略漏掉活动种子或空贴图；植物 ID/果实 ID/专属资产缺土地或官方资源证据时，明确保留待确认并使用已存在的官方通用回退图，不能猜资产。图标闭环必须区分「官方专属图」与「通用回退」：core/src/config/gameConfig.js 的 getGenericFallbackItemIds() 非空或存在空图道具时，必须运行 cd core && npm run fetch:official-icons 尝试抓取（URL 证据来自 core/data/capture/resource-urls.json，抓包会话开着游戏进活动页会自动记录）。抓到的 PNG 属于新增二进制，绝对禁止 git add——父进程隐私扫描会对新增二进制整笔阻断，连累同轮代码提交被丢弃；PNG 留在工作区，在总结/HANDOFF 写明“已抓取待人工提交”。人工提交图标后，下一轮才允许删除 getGenericFallbackItemIds 对应回退行；任何情况下不得用其他道具的图片顶替。日志出现 bag_unclassified_item（背包里本地索引没有条目的未知物品）时必须当日复盘：按当前活动回包/商城证据补 core/src/gameConfig/EventItems.json 映射（EventPlants 仍需土地证据，禁止猜测）。背包种植不是白名单：plantFromBagSeeds 会种下背包内全部可用种子（优先列表只决定顺序），这是用户确认的设计，不得改回“列表外不种”。
+10a. 种子识别必须核对已命名的错误分类：20516=狗尾草种子、25995=芦苇种子、29004=泡泡棉花糖种子(size=2)、1028=萌宠元气糕。禁止再次用编号段/奖励数量配对命名；商品名称、ItemInfo.type/asset_name、Plant.seed_id/fruit/size/land_level_need、Bag 与官方图片须交叉核对。物品 level 是展示等级，不能代替 Plant.land_level_need。活动资源缺口不能被指纹未变的 no_change 跳过。
+10b. 每日执行 cd core && npm run audit:seed-catalog；可传 --items/--plants 指定审阅过的客户端配置 JSON 或 Cocos JsonAsset，默认读取 ignored 的 client-config-evidence 快照。evidence_missing 是缺证据，不是检查通过。公开仓库配置只作线索：记录 owner/repo/SHA，交叉核对当前 Bag 和官方资源后才采用最小数据补丁，不执行其脚本、不整表替换、不移植 RPC。取得新版官方源码时从 settings 的 assets.server/bundleVers 找精确 config 哈希，再从 config/ItemInfo、config/Plant 的 uuid/import hash 解表；不能猜 config.index.json。
+10c. ItemShow 有字段但没有名称、空字段、无字段、解析失败是四种状态。Reader 必须支持 Buffer/Uint8Array 和 10 字节 varint；不能把任意中文或最长文本（例如“道具过期后”、好友昵称）注册成种子。未知占地返回 0 并等待核对，不能把默认单格称为安全回退，更不能用生产 Plant 试种发现大小。
 11. 每日巡检必须检查好友偷菜时间的语义：摘要没有 ripe_time_sec 时不能把 0 当成“没有成熟”或用自己农场时钟冒充好友时钟；已从地块 phases 读到的精确墙钟不能被后续摘要覆盖。面板要区分“下一次检查”“已知最早成熟”和“成熟时间未读取”；不能为了补齐普通好友显示恢复全好友高频 Enter。
 `;
 
@@ -762,6 +766,7 @@ ${currentReviewIds.map(id => describeActivity(id, actById, groupById)).join('\n'
   }
   if (groups.length > 0) {
     sections.push(`【在线只读证据快照】
+背包种子识别审计（物品 ID 与缺口类别）：${JSON.stringify(report?.online?.seedRecognition || { available: false })}
 以下 JSON 来自 ActivityService.List/GetGroup，只含活动配置、道具/奖池标准化结果与脱敏 protobuf 字段形状；不含原始字节、账号或凭据：
 ${buildActivityEvidence(groups)}`);
   }
@@ -1202,18 +1207,21 @@ function planDailyActivityEvolution(report, state = {}) {
     && memory.reviewedHead !== gitHead()
     && changedPaths.length === 0;
   const activityPathsChanged = reviewHistoryUnavailable
-    || changedPaths.some(file => /^(?:core\/src\/(?:services\/activity|controllers\/admin-.*activity|core\/worker|models\/store)|core\/src\/gameConfig\/EventPlants|core\/test\/.*activity|web\/src\/(?:views\/Activity|components\/activity|components\/admin\/AdminActivityUpdatePanel|stores\/activity)|docs\/HANDOFF\.md)/.test(file));
+    || changedPaths.some(file => /^(?:core\/src\/(?:services\/activity|controllers\/admin-.*activity|core\/worker|models\/store)|core\/src\/(?:gameConfig|config\/gameConfig|services\/(?:warehouse|seed-catalog-audit|bag-item-evidence|planting-service|season-bear-activity))|core\/test\/.*activity|web\/src\/(?:views\/Activity|components\/activity|components\/admin\/AdminActivityUpdatePanel|stores\/activity)|docs\/HANDOFF\.md)/.test(file));
   const evidenceChanged = fingerprint !== memory.evidenceFingerprint;
-  const reviewIds = eventPlan.shouldRun || evidenceChanged || activityPathsChanged
+  const seedRecognitionNeedsReview = report?.online?.seedRecognition?.available === false
+    || (report?.online?.seedRecognition?.issues || []).length > 0;
+  const reviewIds = eventPlan.shouldRun || evidenceChanged || activityPathsChanged || seedRecognitionNeedsReview
     ? [...new Set((report?.online?.checkedActivityIds || []).map(Number))].filter(id => id > 0)
     : [];
   return {
     ...eventPlan,
-    shouldRun: eventPlan.shouldRun || evidenceChanged || activityPathsChanged,
+    shouldRun: eventPlan.shouldRun || evidenceChanged || activityPathsChanged || seedRecognitionNeedsReview,
     reviewIds,
     fingerprint,
     evidenceChanged,
     activityPathsChanged,
+    seedRecognitionNeedsReview,
   };
 }
 

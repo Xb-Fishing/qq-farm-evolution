@@ -135,8 +135,16 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
         groups.push({ id: item.id, title: item.title, reviewKind: 'known-active', error: error.message || String(error) });
       }
     }
+    // 每轮既有低频活动扫描只补一次 Bag，报告保留匿名识别缺口。
+    // Worker 内同一份 Bag 同时生成详情和种子列表，避免跨回包数量漂移。
+    let seedRecognition = { available: false, issues: [] };
+    try {
+      const bag = await provider.getBag(account.id);
+      if (bag?.seedRecognition) seedRecognition = bag.seedRecognition;
+    } catch { /* 无库存证据不等于没有识别缺口。 */ }
     return {
       available: true,
+      seedRecognition,
       accountName: account.name || account.nick || '在线账号',
       scannedAt: Date.now(),
       activities,

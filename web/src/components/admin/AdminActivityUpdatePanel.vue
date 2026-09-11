@@ -302,7 +302,7 @@ const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'eviden
   { key: 'bear-tactics', title: '锦囊选择与刷新', description: '已接入五类锦囊及免费/付费刷新边界；2/3 个每日锦囊有说明差异，当前次数待确认。', kind: 'gameplay', pattern: /锦囊系统/ },
   { key: 'bear-shop', title: '幸运星游记商城', description: '已接入商品、价格、库存与原始状态码；兑换协议与状态码语义待确认。', kind: 'gameplay', pattern: /幸运星.*兑换.*限定奖励/ },
   { key: 'bear-rank', title: '幸运星好友排名', description: '已接入排名说明；排名当前状态与读取路径待确认。', kind: 'gameplay', pattern: /幸运星排行榜/ },
-  { key: 'bear-gift', title: '每日免费稀有种子礼包', description: '已接入每日刷新与累计规则；field 110 + Bag 已确认萌宠元气糕种子/产出物，植物 ID、占地、专属贴图和领取态继续按土地/官方资源证据巡检。', kind: 'gameplay', pattern: /每日.*赠送.*稀有种子礼包|每日.*免费.*稀有种子礼包/ },
+  { key: 'bear-gift', title: '每日免费稀有种子礼包', description: '已接入每日刷新与累计规则；种子配置已核对狗尾草、芦苇与四格泡泡棉花糖；元气糕为额外掉落道具，继续巡检背包识别缺口。', kind: 'gameplay', pattern: /每日.*赠送.*稀有种子礼包|每日.*免费.*稀有种子礼包/ },
   { key: 'bear-end', title: '萌宠赛季结束与回收', description: '已接入成年永久保留、幼崽回收、道具换金币、护送结算和手记图片清空提示。', kind: 'warning', pattern: /赛季结束|活动结束.*比熊|活动结束.*护送/ },
   { key: 'star-daily', title: '观星礼录：星宿轮转与每日馈赠', description: '专属 UI 应展示二十八星宿逐日开放、每日奖励投放和当日馈赠关系。', kind: 'gameplay', pattern: /星宿轮转|观星礼录.*二十八个.*逐日点亮/ },
   { key: 'star-claim', title: '星宿状态与一键领取流程', description: '专属 UI 应展示当日事件、奖励和可领取状态，并说明一键领取已解锁奖励。', kind: 'gameplay', pattern: /查看当日星宿事件|一键领取.*已解锁的全部星宿奖励/ },
