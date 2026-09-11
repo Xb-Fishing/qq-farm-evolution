@@ -176,7 +176,8 @@ function time(value: number) {
             <p class="mt-1 text-xs text-gray-500">
               {{ record.unlocked === null ? '解锁状态未知' : record.unlocked ? '已解锁' : '未解锁' }} · {{ record.claimed === null ? '领取状态未知' : record.claimed ? '已领取' : '未领取' }}
             </p>
-            <p v-for="(reward, index) in record.rewards" :key="index" class="mt-1 text-xs">
+            <p v-for="(reward, index) in record.rewards" :key="index" class="mt-1 flex items-center gap-1 text-xs">
+              <img v-if="reward.image" :src="reward.image" :alt="reward.itemName" class="h-6 w-6 object-contain">
               {{ reward.itemName }} ×{{ reward.itemCount }}
             </p>
           </article>

@@ -24,10 +24,9 @@ test('S3 说明覆盖全部玩法、结束提示和来源冲突，状态缺失�
   assert.equal(activity.resources.length, 8);
   assert.ok(activity.resources.every(item => item.count === null));
   assert.equal(activity.resources.find(item => item.key === 'seed').itemId, 29004);
-  assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 20516);
-  assert.match(activity.resources.find(item => item.key === 'seed').image, /plant_images\/common\/seed/);
-  // 20516 的图标曾用通用收获图顶替，已删除：专属官方图待 fetch-official-icons 抓取，
-  // 在此之前保持空图（前端只显示名称），不用其他道具的图冒充
+  assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 1028);
+  assert.match(activity.resources.find(item => item.key === 'seed').image, /29004_Crop_9004_Seed/);
+  // 元气糕 1028 无专属图时保持空，不能拿任何种子图顶替。
   assert.equal(activity.resources.find(item => item.key === 'cake').image, '');
   assert.match(activity.statusLabel, /节点未启用/);
   assert.equal(activity.recordStateAvailable, false);
@@ -65,7 +64,7 @@ test('S3 商城保留全部道具和原始状态码，只补证实的名称，�
   assert.ok(activity.exchangeShop.every(item => item.currencyName === '幸运星' && item.operationSupported === false));
   for (const item of activity.exchangeShop) assert.equal(getItemById(item.itemId).name, item.name);
   assert.equal(getItemById(1029).name, '幸运星');
-  assert.equal(getPlantBySeedId(20522), undefined);
+  assert.equal(getPlantBySeedId(20522).size, 1);
   assert.equal(isSeedItem(20522), true);
   assert.equal(getItemById(20522).type, 5);
   assert.equal(getItemById(20522).interaction_type, 'plant');
@@ -87,11 +86,14 @@ test('S3 field 110 奖励记录为活动种子和产出物补名称与图标', (
   const activity = normalizeBearActivity(input, { inventoryAvailable: true, counts: new Map([[29004, 3], [20516, 56]]) });
   const seed = activity.resources.find(item => item.key === 'seed');
   const cake = activity.resources.find(item => item.key === 'cake');
-  assert.deepEqual({ itemId: seed.itemId, count: seed.count, name: seed.name }, { itemId: 29004, count: 3, name: '萌宠元气糕种子' });
-  assert.deepEqual({ itemId: cake.itemId, count: cake.count, name: cake.name }, { itemId: 20516, count: 56, name: '萌宠元气糕' });
+  assert.deepEqual({ itemId: seed.itemId, count: seed.count, name: seed.name }, { itemId: 29004, count: 3, name: '泡泡棉花糖种子' });
+  assert.deepEqual({ itemId: cake.itemId, count: cake.count, name: cake.name }, { itemId: 1028, count: 0, name: '萌宠元气糕' });
   const reward = activity.records[0].rewards.find(item => item.itemId === 29004);
-  assert.equal(reward.itemName, '萌宠元气糕种子');
-  assert.match(reward.image, /plant_images\/common\/seed/);
+  assert.equal(reward.itemName, '泡泡棉花糖种子');
+  assert.equal(activity.records[0].rewards.find(item => item.itemId === 20516).itemName, '狗尾草种子');
+  assert.equal(isSeedItem(20516), true);
+  assert.equal(getItemById(20516).name, '狗尾草种子');
+  assert.match(reward.image, /29004_Crop_9004_Seed/);
 });
 
 test('已有 field 110 只读解析保留无配置的奖励、未知领取态，不泄露额外字段', () => {
@@ -137,7 +139,7 @@ test('S3 只读取正常根详情和一次已知道具库存；失败不探测�
   const activity = await getBearActivity(options);
   assert.deepEqual(calls[0], [2026090100, '']);
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].length, 14);
+  assert.equal(calls[1].length, 16);
   assert.equal(activity.inventoryAvailable, false);
   assert.equal(activity.resources[0].count, null);
   assert.equal(activity.gameplayGuides.length, 11);

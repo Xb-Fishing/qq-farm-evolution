@@ -95,46 +95,25 @@ test('活动商城明确标为种子的道具进入背包优先种子索引', ()
   assert.equal(getPlantNameBySeedId(20522), '金币果');
 });
 
-test('S3 萌宠活动种子在未建立 Plant 映射时仍进入背包优先索引', () => {
+test('S3 种子区分狗尾草、芦苇与四格泡泡棉花糖，元气糕不会进入种子列表', () => {
   const seeds = getBagSeedsFromItems([
-    { id: 29004, count: 3 },
-    { id: 20516, count: 56 },
-    { id: 80001, count: 2 },
+    { id: 20516, count: 56 }, { id: 25995, count: 30 }, { id: 29004, count: 3 },
+    { id: 1028, count: 100 }, { id: 80001, count: 2 },
   ]);
-  assert.deepEqual(seeds.map(item => [item.seedId, item.name, item.count, item.plantSize]), [
-    [29004, '萌宠元气糕种子', 3, 1],
+  assert.deepEqual(seeds.map(item => [item.seedId, item.name, item.count, item.plantSize, item.requiredLevel]), [
+    [20516, '狗尾草种子', 56, 1, 1], [25995, '芦苇种子', 30, 1, 1], [29004, '泡泡棉花糖种子', 3, 2, 1],
   ]);
-  assert.match(seeds[0].image, /plant_images\/common\/seed\.png$/);
-  assert.equal(getItemById(20516)?.name, '萌宠元气糕');
-  // 20516 的图标是上一轮用通用收获图标顶替的，已删除；专属官方图待抓取
-  assert.equal(getItemImageById(20516), '');
+  for (const seed of seeds) assertImageExists(seed.seedId, seed.name);
+  assert.equal(getItemById(1028)?.name, '萌宠元气糕');
+  assert.equal(isSeedItem(1028), false);
 });
 
-test('S3 商城种子类商品使用官方通用种子回退图，装饰类不再用其他道具的图顶替', () => {
-  const {
-    getGenericFallbackItemIds,
-  } = require('../src/config/gameConfig');
-  const genericFallback = new Set(getGenericFallbackItemIds());
-
-  // 种子类：官方通用种子图回退，明确标记为 generic fallback
-  for (const itemId of [20522, 20523]) {
-    const image = getItemImageById(itemId);
-    assert.equal(image, '/game-config/plant_images/common/seed.png', `item ${itemId} generic seed image`);
-    assert.equal(genericFallback.has(itemId), true, `item ${itemId} in generic fallback set`);
-    assert.equal(
-      fs.existsSync(path.join(__dirname, '..', 'src', 'gameConfig', 'plant_images', 'common', 'seed.png')),
-      true,
-      'common seed image file',
-    );
-  }
-  assert.equal(genericFallback.has(29004), true);
-
-  // 装饰类：上一轮的跨物品类别顶替图已删除（那是别的道具的官方图，不是这些道具的图）。
-  // 缺专属官方图时返回空字符串，由前端仅显示名称；等 fetch-official-icons 抓到真实图后
-  // 人工提交并在下一轮删除对应回退。
-  for (const itemId of [201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005, 20516]) {
-    assert.equal(getItemImageById(itemId), '', `item ${itemId} must not use another item's image`);
-    assert.equal(genericFallback.has(itemId), false, `item ${itemId} not in generic fallback set`);
+test('S3 专属种子 PNG 优先于通用回退，装扮不使用跨物品顶替图', () => {
+  const { getGenericFallbackItemIds } = require('../src/config/gameConfig');
+  assert.deepEqual(getGenericFallbackItemIds(), []);
+  for (const id of [20516, 25995, 29004, 20522, 20523]) assertImageExists(id, 'official seed image');
+  for (const id of [201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005]) {
+    assert.equal(getItemImageById(id), '');
   }
 });
 

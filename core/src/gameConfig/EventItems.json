@@ -41,25 +41,47 @@
   },
   {
     "id": 29004,
-    "name": "萌宠元气糕种子",
+    "name": "泡泡棉花糖种子",
     "type": 5,
     "interaction_type": "plant",
-    "image": "/game-config/plant_images/common/seed.png",
-    "evidence": "S3 萌宠 field 110 奖励记录与背包回包；29xxx 为活动种子编号段"
+    "asset_name": "Crop_9004",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "种植后，可以收获一定数量的泡泡棉花糖。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
     "id": 20516,
-    "name": "萌宠元气糕",
-    "type": 4,
-    "evidence": "S3 萌宠说明将其定义为稀有作物产出物，field 110 奖励数量与种子成对出现"
+    "name": "狗尾草种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_516",
+    "rarity": 2,
+    "rarity_color": "A8C1F4",
+    "desc": "种植后，可以收获一定数量的狗尾草。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
     "id": 20522,
-    "name": "金币果种子"
+    "name": "金币果种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_522",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的金币果。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
     "id": 20523,
-    "name": "经验蘑菇种子"
+    "name": "经验蘑菇种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_523",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的经验蘑菇。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
     "id": 5001,
@@ -70,5 +92,56 @@
     "id": 5002,
     "name": "雷雨召唤瓶",
     "evidence": "雨落成诗 2026070303 field 105 抽奖奖池解码（activity.js WEATHER_DRAW_REWARD_ITEM_ID）"
+  },
+  {
+    "id": 25995,
+    "name": "芦苇种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_5995",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的芦苇。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 1027,
+    "name": "雷电徽章",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_weatherBottle_lightningBadge/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "活动特殊货币，通过雨落成诗产出，可解锁气象研究节点，活动结束后可出售为金币。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 1028,
+    "name": "萌宠元气糕",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s3_petCost/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "萌宠成长日记活动专属道具，是比熊犬最爱的食物；收获活动稀有作物时掉落；活动结束后可出售为金币。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 5005,
+    "name": "青蛙使坏瓶",
+    "type": 23,
+    "icon_res": "gui/texture/icon/icon_weatherBottle_5/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "雨落成诗活动道具，在好友农场放出一只捣乱的小青蛙，可得30经验。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 101604,
+    "name": "公益小红花结算礼包",
+    "type": 11,
+    "icon_res": "gui/texture/icon/pack_redFlower/spriteFrame",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "公益小红花活动结算礼包，打开后，可获得化肥礼包*20、金豆豆*200、点券*300",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   }
 ]
