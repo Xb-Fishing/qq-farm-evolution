@@ -99,6 +99,24 @@ test('a new activity plant without static growth config still uses protocol matu
   }]).harvestable, [10]);
 });
 
+test('土地回包的活动作物名称优先于植物 ID 占位文本', () => {
+  const analysis = analyzeLands([{
+    id: 11,
+    unlocked: true,
+    plant: {
+      id: 1999999,
+      name: '活动新作物',
+      phases: [{ phase: 6, phase_id: 19, begin_time: 1 }],
+    },
+  }]);
+  assert.deepEqual(analysis.harvestableInfo, [{
+    landId: 11,
+    plantId: 1999999,
+    name: '活动新作物',
+    exp: 0,
+  }]);
+});
+
 test('every configured plant recognizes all observed mature protocol variants', () => {
   const matureVariants = [
     [{ phase: 6, phase_id: 19, begin_time: 1 }],

@@ -6,7 +6,10 @@ const test = require('node:test');
 const {
   getItemById,
   getItemImageById,
+  getPlantNameBySeedId,
   getPlantBySeedId,
+  getPlantByIdOrSeedId,
+  isSeedItem,
   getPlantGrowPhases,
 } = require('../src/config/gameConfig');
 
@@ -81,6 +84,19 @@ test('charity red flower maps the observed plant to its activity seed as a singl
   });
   assert.equal(getItemById(20883)?.name, '小红花种子');
   assert.equal(getItemById(40883)?.name, '小红花');
+});
+
+test('活动商城明确标为种子的道具进入背包优先种子索引', () => {
+  assert.equal(isSeedItem(20522), true);
+  assert.equal(isSeedItem(20523), true);
+  assert.equal(getItemById(20522)?.name, '金币果种子');
+  assert.equal(getItemById(20523)?.name, '经验蘑菇种子');
+  assert.equal(getPlantNameBySeedId(20522), '金币果');
+});
+
+test('土地回包使用 seed id 时通过同一映射得到活动植物配置', () => {
+  assert.equal(getPlantByIdOrSeedId(29003)?.id, 1029003);
+  assert.equal(getPlantByIdOrSeedId(29003)?.seed_id, 29003);
 });
 
 test('qixi activity items resolve official static icons', () => {

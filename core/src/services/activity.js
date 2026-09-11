@@ -11,7 +11,7 @@ const protobuf = require('protobufjs/minimal');
 const { sendMsgAsync, getUserState, isConnected } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum } = require('../utils/utils');
-const { getItemImageById, getItemById } = require('../config/gameConfig');
+const { getItemImageById, getItemById, registerRuntimeItem } = require('../config/gameConfig');
 const { createModuleLogger } = require('./logger');
 const { getBag, getBagItems } = require('./warehouse');
 
@@ -1570,12 +1570,14 @@ function normalizeActivityItem(raw) {
   if (itemId <= 0) return null;
 
   const info = getItemById(itemId);
+  const rawName = String(decoded.name || raw.name || '').trim();
+  if (rawName) registerRuntimeItem(itemId, { name: rawName });
   const image = getItemImageById(itemId) || '';
 
   return {
     itemId,
     count,
-    name: (info && info.name) || `物品${itemId}`,
+    name: rawName || (info && info.name) || `物品${itemId}`,
     image,
   };
 }
@@ -1747,9 +1749,13 @@ function normalizeExchangeShopItem(raw) {
   if (!item) return null;
 
   const itemInfo = getItemById(item.itemId) || {};
-  const itemType = toNum(itemInfo.type);
-  const interactionType = String(itemInfo.interaction_type || itemInfo.interactionType || '');
   const name = String(raw?.name || item.name || '').trim() || item.name;
+  const runtimeInfo = name ? registerRuntimeItem(item.itemId, {
+    name,
+  }) : null;
+  const effectiveItemInfo = runtimeInfo || itemInfo;
+  const itemType = toNum(effectiveItemInfo.type);
+  const interactionType = String(effectiveItemInfo.interaction_type || effectiveItemInfo.interactionType || '');
   const status = toNum(raw?.status);
   const owned = raw?.owned === true;
   const isRepeatable = itemType === 7 || interactionType === 'fertilizer' || interactionType === 'fertilizerpro';

@@ -15,6 +15,7 @@ const {
   isFertilizerHot,
   getWatchStateForTests,
   getMaturityCacheForTests,
+  getFriendRipeSnapshot,
   resetFertilizerWatchForTests,
 } = require('../src/services/fertilizer-watch');
 
@@ -197,6 +198,21 @@ test('a first partial mature-land notify cannot prove the whole farm stopped gro
   ], now + 2000, { partial: true });
   assert.equal(getWatchStateForTests(23, now + 2000).status, WATCH_STATUS.HOT);
   assert.ok(getNextWatchDueAt(now + 2000) > 0);
+});
+
+test('缺少 ripe_time_sec 的好友摘要不会覆盖已经读取的精确地块墙钟', () => {
+  const now = 1_700_000_000_000;
+  noteFriendSummaries([
+    { gid: 24, name: '时钟好友', plant: { ripe_time_sec: 600 } },
+  ], { now, myGid: 1 });
+  const first = getFriendRipeSnapshot(24, now);
+  assert.ok(first && first.dueAt > now);
+
+  noteFriendSummaries([
+    { gid: 24, name: '时钟好友', plant: { steal_plant_num: 0, ripe_time_sec: 0 } },
+  ], { now: now + 30_000, myGid: 1 });
+  const after = getFriendRipeSnapshot(24, now + 30_000);
+  assert.equal(after?.dueAt, first.dueAt);
 });
 
 test('summary jump within eight seconds still creates a close watch', () => {
