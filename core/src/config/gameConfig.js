@@ -26,8 +26,26 @@ let plantPhaseManifestMtimeMs = -1;
 const skinDetailImageMap = new Map();// itemId → skinDetailImageUrl
 const staticItemImageMap = new Map([
     [1023, '/activity/star-festival/star-token.png'],
+    [1029, '/activity/star-festival/star-token.png'],
     [1024, '/activity/qixi/qixi-feather.png'],
     [301103, '/activity/qixi/qixi-dew.png'],
+    // S3 萌宠当前回包只给出道具 ID（装扮图片在 extra.res 中），
+    // 使用仓库内已经导出的官方类别图，避免活动页出现空白图标。
+    [201010, '/game-config/seed_images_named/skinDetail/img_skin_house.png'],
+    [207010, '/game-config/seed_images_named/skinDetail/img_skin_road.png'],
+    [205009, '/game-config/seed_images_named/skinDetail/img_skin_house.png'],
+    [202009, '/game-config/seed_images_named/skinDetail/img_skin_board.png'],
+    [206009, '/game-config/seed_images_named/skinDetail/img_skin_warehouse.png'],
+    [203010, '/game-config/seed_images_named/skinDetail/img_skin_barrier.png'],
+    [208010, '/game-config/seed_images_named/skinDetail/img_skin_barrier.png'],
+    [2161, '/game-config/seed_images_named/skinDetail/2150_img_nangua_head_bg.png'],
+    [401005, '/game-config/seed_images_named/skinDetail/img_skin_board.png'],
+    // 活动新作物尚未随当前仓库导出专属 Crop 贴图；这是官方通用种子/收获图，
+    // 明确作为可见回退，不伪造不存在的 Crop_9004 资源。
+    [29004, '/game-config/plant_images/common/seed.png'],
+    [20516, '/game-config/seed_images_named/10001_%E6%94%B6%E8%8E%B7_icon_harvest.png'],
+    [20522, '/game-config/plant_images/common/seed.png'],
+    [20523, '/game-config/plant_images/common/seed.png'],
 ]);
 
 // 变异效果配置
@@ -178,7 +196,7 @@ function loadConfigs() {
             for (const entry of JSON.parse(fs.readFileSync(eventItemsPath, 'utf8'))) {
                 const id = Number(entry.id);
                 if (id > 0 && typeof entry.name === 'string') {
-                    registerRuntimeItem(id, { name: entry.name });
+                    registerRuntimeItem(id, entry);
                 }
             }
             itemInfoConfig = [...itemInfoMap.values()];
@@ -612,6 +630,10 @@ function getItemImageById(itemId) {
         const img = seedImageMap.get(targetId);
         if (img) return img;
         const info = itemInfoMap.get(targetId);
+        const explicitImage = String(info && info.image || '').trim();
+        if (explicitImage.startsWith('/game-config/') || explicitImage.startsWith('/activity/')) {
+            return explicitImage;
+        }
         const assetName = info && info.asset_name ? String(info.asset_name) : '';
         if (assetName) {
             const assetImg = seedAssetImageMap.get(assetName);
@@ -658,14 +680,19 @@ function registerRuntimeItem(itemId, metadata = {}) {
     const name = String(metadata.name || '').trim();
     if (id <= 0 || !name) return null;
     const current = itemInfoMap.get(id) || {};
+    const { image: rawImage, ...safeMetadata } = metadata || {};
     const isSeed = Number(metadata.type) === 5
         || String(metadata.interaction_type || '').toLowerCase() === 'plant'
         || name.endsWith('种子');
+    const safeImage = String(rawImage || '').trim();
     const next = {
         ...current,
-        ...metadata,
+        ...safeMetadata,
         id,
         name,
+        ...(safeImage.startsWith('/game-config/') || safeImage.startsWith('/activity/')
+            ? { image: safeImage }
+            : {}),
         ...(isSeed ? { type: 5, interaction_type: 'plant' } : {}),
     };
     itemInfoMap.set(id, next);
