@@ -215,7 +215,12 @@ function createRuntimeEngine(options = {}) {
                 }
                 if (acc.platform === 'wx' && acc.loginBuffer) {
                     const refreshed = await autoCodeRefresh.refreshAccountCode(acc.id, 'startup');
-                    if (!refreshed) startWorker(acc);
+                    // 明确的 OAuth 授权失效不能拿旧 Code 启动 Worker；否则
+                    // Worker 会立即收到 400，再次进入普通重登排程。临时
+                    // 网络失败仍保留旧 Code 作为受控回退。
+                    const credentialBlocked = typeof autoCodeRefresh.isCredentialBlocked === 'function'
+                        && autoCodeRefresh.isCredentialBlocked(acc.id);
+                    if (!refreshed && !credentialBlocked) startWorker(acc);
                 } else {
                     startWorker(acc);
                 }
