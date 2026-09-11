@@ -7,21 +7,9 @@ const BEAR_RECORD_ACTIVITY_ID = 2026090102;
 const BEAR_SHOP_ACTIVITY_ID = 2026090103;
 const BEAR_CURRENCY_ITEM_ID = 1029;
 const BEAR_CLIENT_UI_UID = 'SEASON_BEAR_CAMPAIGN';
-// field 110 的奖励记录与 Bag 回包共同确认了这一对当前赛季道具：
-// 29xxx 是活动种子编号段，20xxx 是该稀有作物的产出物。植物 ID、果实
-// ID 和占地大小仍没有土地证据，所以这里只补物品层，不伪造 EventPlants 映射。
+// 物品语义来自核对后的 ItemInfo/Plant；奖励数量和编号段不能证明名称或类型。
 const BEAR_SEED_ITEM_ID = 29004;
-const BEAR_CAKE_ITEM_ID = 20516;
-const BEAR_RUNTIME_ITEM_DEFS = new Map([
-  [BEAR_SEED_ITEM_ID, {
-    name: '萌宠元气糕种子', type: 5, interaction_type: 'plant',
-    evidence: 'S3 field 110 奖励记录 + Bag 回包；活动种子编号段',
-  }],
-  [BEAR_CAKE_ITEM_ID, {
-    name: '萌宠元气糕', type: 4,
-    evidence: 'S3 说明中的稀有作物产出物 + field 110 奖励记录 + Bag 回包',
-  }],
-]);
+const BEAR_CAKE_ITEM_ID = 1028;
 
 function getBearObservedItemIds(snapshot) {
   const root = snapshot || {};
@@ -35,24 +23,6 @@ function getBearObservedItemIds(snapshot) {
     }
   }
   return ids;
-}
-
-/**
- * 将当前 S3 只读证据中的已确认物品写入进程级配置。
- * 只有当根节点、奖励节点和这一对 ID 同时出现时才注册，避免把任意
- * 20xxx/29xxx 道具误判为种子。
- */
-function registerBearObservedItems(snapshot) {
-  const ids = getBearObservedItemIds(snapshot);
-  if (!ids.includes(BEAR_SEED_ITEM_ID) || !ids.includes(BEAR_CAKE_ITEM_ID)) return [];
-  const registered = [];
-  for (const id of [BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID]) {
-    const definition = BEAR_RUNTIME_ITEM_DEFS.get(id);
-    if (!definition) continue;
-    const item = registerRuntimeItem(id, definition);
-    if (item) registered.push(id);
-  }
-  return registered;
 }
 
 function normalizeBearReward(reward) {
@@ -149,7 +119,6 @@ function statusLabel(node, nowSeconds) {
 
 function normalizeBearActivity(snapshot, options = {}) {
   const root = snapshot || {};
-  registerBearObservedItems(root);
   const nodes = Array.isArray(root.children) ? root.children : [];
   const play = nodes.find(node => toNum(node.id) === BEAR_PLAY_ACTIVITY_ID);
   const record = nodes.find(node => toNum(node.id) === BEAR_RECORD_ACTIVITY_ID);
@@ -174,7 +143,7 @@ function normalizeBearActivity(snapshot, options = {}) {
   const resources = [
     ['currency', '幸运星', BEAR_CURRENCY_ITEM_ID, /幸运星.*兑换/, '寻宝、投喂与夺宝产出，用于游记商城'],
     ['cake', '萌宠元气糕', BEAR_CAKE_ITEM_ID, /萌宠元气糕/, '稀有作物产出，用于投喂与寻宝'],
-    ['seed', '萌宠元气糕种子', BEAR_SEED_ITEM_ID, /稀有种子礼包/, '背包和活动奖励已确认；植物 ID、占地大小待土地证据'],
+    ['seed', '泡泡棉花糖种子', BEAR_SEED_ITEM_ID, /稀有种子礼包/, '占地 2×2；收获活动作物可额外获得萌宠元气糕'],
     ['gift', '稀有种子礼包', null, /稀有种子礼包/, '每日免费赠送，未领取可累计'],
     ['treasure', '待护送宝藏', null, /待护送宝藏|宝藏护送/, '寻宝获得后自动开启护送'],
     ['basic', '初级挑战书', null, /初级挑战书/, '价值 50 幸运星；胜利 60、失败 40'],
@@ -217,7 +186,7 @@ function normalizeBearActivity(snapshot, options = {}) {
     protocol: { declaredReadOnlyFields: [102, 110], opaqueReadOnlyFields: [115], observedShape },
     missingEvidence: [
       '成长、寻宝、护送、夺宝、安慰礼、锦囊、爪印手记和排名的当前状态字段尚未确认。',
-      '挑战书、宝藏和礼包的道具 ID 尚未确认；元气糕种子/产出物 ID 已由 field 110 与 Bag 交叉确认，但植物 ID、果实 ID、专属贴图和占地仍待土地证据。',
+      '挑战书和宝藏的道具映射仍待核对；元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
       'field 115 仅保留结构诊断；field 110 奖励记录不能直接认定为爪印手记。',
       '商城状态码、次数及付费边界待官方样本；所有操作协议待确认，请在官方客户端人工操作。',
     ],
@@ -227,5 +196,5 @@ function normalizeBearActivity(snapshot, options = {}) {
 module.exports = {
   BEAR_ACTIVITY_ID, BEAR_PLAY_ACTIVITY_ID, BEAR_RECORD_ACTIVITY_ID, BEAR_SHOP_ACTIVITY_ID,
   BEAR_CURRENCY_ITEM_ID, BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID, BEAR_CLIENT_UI_UID,
-  getBearObservedItemIds, registerBearObservedItems, normalizeBearActivity,
+  getBearObservedItemIds, normalizeBearActivity,
 };

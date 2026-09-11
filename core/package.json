@@ -17,6 +17,7 @@
     "inspect:activity-har": "node scripts/inspect-activity-har.js",
     "inspect:protocol": "node scripts/inspect-protocol-capture.js",
     "extract:plant-phases": "node scripts/extract-plant-phase-images.js",
+    "audit:seed-catalog": "node scripts/inspect-seed-catalog.js",
     "fetch:official-icons": "node scripts/fetch-official-icons.js",
     "inspect:tsdk": "node scripts/inspect-tsdk-update.js",
     "capture:start": "node capture-server.js",

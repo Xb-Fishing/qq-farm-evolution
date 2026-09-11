@@ -1,0 +1,51 @@
+{
+  "reviewedAt": "2026-09-11",
+  "method": "客户端 ItemInfo/Plant 快照交叉核对 + 当前 Bag 出售条件 + 腾讯 CDN PNG 内容与 SHA-256 校验",
+  "references": [
+    {
+      "repository": "xxxscarlxrd404/qq-farm-bot",
+      "commit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "repository": "liyangpengs/qq-farm-bot",
+      "commit": "6cd1e4e9006075448efa74accb088c99a2d055de"
+    }
+  ],
+  "entries": [
+    {
+      "id": 29004,
+      "name": "泡泡棉花糖种子",
+      "file": "29004_Crop_9004_Seed.png",
+      "assetPath": "model/v4/Crop_9004_Seed/spriteFrame",
+      "sha256": "6fc5f4010024485d54dd9816d8596d4369d05b39835b881c347276460dfa12a5"
+    },
+    {
+      "id": 20516,
+      "name": "狗尾草种子",
+      "file": "20516_Crop_516_Seed.png",
+      "assetPath": "model/v4/Crop_516_Seed/spriteFrame",
+      "sha256": "b8a7bd46bd2c54f13bb12525c325302b6e17fd8453f44d526a97fa3758b088e8"
+    },
+    {
+      "id": 20522,
+      "name": "金币果种子",
+      "file": "20522_Crop_522_Seed.png",
+      "assetPath": "model/v4/Crop_522_Seed/spriteFrame",
+      "sha256": "84f961b5450889063095b0201937e0251c69a21a279989f5dea369fc1c91aee1"
+    },
+    {
+      "id": 20523,
+      "name": "经验蘑菇种子",
+      "file": "20523_Crop_523_Seed.png",
+      "assetPath": "model/v4/Crop_523_Seed/spriteFrame",
+      "sha256": "dcb6d781545306222974e495c296cacd39d9d5691e8075b25b1d9719f1776bb3"
+    },
+    {
+      "id": 25995,
+      "name": "芦苇种子",
+      "file": "25995_Crop_5995_Seed.png",
+      "assetPath": "model/v4/Crop_5995_Seed/spriteFrame",
+      "sha256": "1c8527e0fc6be7f7bcb18737d83048e8e0efeaedd9d724c49371c95190fa9a64"
+    }
+  ]
+}

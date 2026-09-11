@@ -1,5 +1,7 @@
 # 交接文档：qq-farm-bot（更新 2026-09-07，活动 Agent 负责道具、玩法与专属前端的端到端进化）
 
+> **种子识别纠错（2026-09-11，优先于下文旧记录）**：20516 是狗尾草种子；25995 是芦苇种子；29004 是泡泡棉花糖种子、占地 2×2；萌宠元气糕是 1028。此前“20516 是产出物”“29004 单格安全回退”“无名称等于没有 ItemShow”的结论均已推翻。详见文末“种子识别证据纠错与每日审计”。
+
 给下一个会话用。先读本文件，再动 `worker.js` / `friend-orchestrator.js` / `farming-orchestrator.js`。
 
 ## 部署环境
@@ -183,7 +185,7 @@ tmux send-keys -t farm:0.0 'cd "$(git rev-parse --show-toplevel)" && bash start.
 4. 收菜/种菜拆开关：`harvest` / `plant` 独立于农场巡查
 5. `friend-visit.js` 补过 `analyzeFriendLands` import（放虫放草曾崩）
 6. 前端：日志新的在上；Socket.IO token 用回调；「立即登录」；飞书 webhook 贴 Token 框；农场巡查/收菜/种菜三个开关。改 web 后要 `corepack pnpm -C web build`
-7. **背包种子优先漏活动种子（2026-08-23 修）**：三连因——① `store.js` `getConfigSnapshot` 缺 `bagSeedKnownIds`，写入了读不出，前端永远走迁移分支；② `useStrategySettings.ts` 迁移分支在优先列表非空时不把背包新种子补进列表；③ `bag_priority` 种植只认优先列表内的种子，列表外既不显示也不种。修了 ①②；③ 是设计（列表即白名单）。注意 2×2 种子（如星语铃花）1x1 种植必跳过，只有开「2x2 优先」才走四格预留路径
+7. **背包种子优先漏活动种子（2026-08-23 修）**：三连因——① `store.js` `getConfigSnapshot` 缺 `bagSeedKnownIds`，写入了读不出，前端永远走迁移分支；② `useStrategySettings.ts` 迁移分支在优先列表非空时不把背包新种子补进列表；③ `bag_priority` 种植只认优先列表内的种子，列表外既不显示也不种。修了 ①②；③ 旧设计已于 2026-09-11 废弃（现在列表只决定顺序）。注意 2×2 种子（如星语铃花）1x1 种植必跳过，只有开「2x2 优先」才走四格预留路径
 
 ## 系统架构（当前状态）
 
@@ -909,27 +911,11 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 相关回归必须覆盖：服务端用 seed ID 回包仍显示活动作物名称和阶段图；活动商城种子进入背包优先列表；未知活动作物不显示裸 ID；缺少 `ripe_time_sec` 的好友摘要不覆盖已读地块成熟点；普通好友频率和自己收获/好友到点偷菜/HOT/PREARM 不被改变。
 - 回滚使用 `git revert <本轮提交>`；不得单独回滚种子双向映射、好友时间保护或通用贴图回退而恢复裸 ID/错误时钟。应用或回滚仍只允许复用用户已有的 `farm:0.0` pane。
 
-## S3 背包种子与活动商品图标复盘（2026-09-11）
+## S3 背包种子与活动商品图标早期尝试（已纠错，2026-09-11）
 
-### 在线证据与修复
-
-- 本轮用当前账号的 `ItemService.Bag` 原始回包和 `ActivityService.GetGroup` 只读快照交叉核对。Bag 中出现 `29004 ×3`、`20516 ×56`；S3 的 type 13 / field 110 奖励记录反复成对下发 `29004 ×1/2` 与 `20516 ×32/24`，活动说明又明确“萌宠元气糕”为稀有作物产出物。结合仓库既有作物编号规则（29xxx 活动种子段、产出物与种子成对发放），将 `29004` 登记为“萌宠元气糕种子”，将 `20516` 登记为“萌宠元气糕”。这只补物品层证据；当前没有土地返回的新作物植物 ID、果实 ID、`size` 或专属 Crop 资源，因此不写 `EventPlants.json`，不伪造 `Crop_9004`。
-- `EventItems.json` 现在包含这两个脱敏名称、类型和证据说明。`gameConfig` 启动时保留活动 item metadata，`getBagSeedsFromItems()`、`/api/bag/seeds`、背包优先种植和土地名称回退共用同一索引；即使用户没有先打开活动页，`29004` 也不会再被显示为普通“物品29004”或漏出背包种子列表。未建立 Plant 映射时按单格安全回退，实际 2x2 之前必须取得土地占地证据并按 AGENTS 补 `size: 2`。
-- 活动商城的 13 项商品中，服务端当前只给 `itemId/name/extra.res`，没有可直接访问的专属 PNG。对 201010、207010、205009、202009、206009、203010、208010、2161、401005 使用仓库已导出的官方装扮类别图；1029 使用现有官方星标图；20522/20523 使用官方通用种子图；20516/29004 分别使用官方通用收获/种子图。所有路径都由本地资源提供并在 `getItemImageById()` 校验为 `/game-config/` 或 `/activity/`，没有新增外部 URL。页面因此不会再把“比熊乐园小屋 ×1 / 道具 ID 201010”渲染成空图；这些是类别回退，不代表专属活动资源已被确认。
-- S3 读取在取得奖励记录后先注册已确认物品，再把奖励 ID 加入一次背包库存读取。奖励组件、活动资源卡和商城商品都复用同一名称/图标索引；未知挑战书、宝藏、礼包仍显示待官方证据，不按数字 ID 猜类型。仓库 type 4 的活动产出物会显示为产出物分类，但不会因为没有植物映射而自动售卖。
-- 土地和好友土地遇到服务端以种子 ID 代替植物 ID 时，名称链现在还会读取已确认的活动物品名；已有服务端名称优先级和成熟时间保护不变。
-
-### 自进化每日巡检新增硬门
-
-- 活动 Agent 每天必须把 field 110 奖励、Bag 原始物品、`/api/bag/seeds`、土地 `plant.id`、`seed_id/fruit_id/size`、阶段图、活动商城图标和前端名称串成闭环；不能因为活动记录已解析就认为背包种子已接入。
-- 巡检搜索“植物<ID>”“种子<ID>”“物品<ID>”“未知种子<ID>”、`seedId=0`、空 `plantImage`、活动商城空图和背包优先漏种。`ItemShow` 只有价格等扩展时不当作类型证据；没有官方专属图时检查通用回退路径和 HANDOFF 证据边界。
-- 只有当前官方回包、土地/背包交叉证据或仓库已有官方资源才能新增映射；本轮保留 `EventPlants` 和专属资源待确认项，不猜植物 ID、果实 ID、占地或 CDN 地址。
-
-### 验证、边界与回滚
-
-- 定向 Node 20 回归：配置/背包/活动 **21/21** 通过；串行核心全量 **359/359** 通过。Node 20 前端 `vue-tsc -b && vite build` 通过；仅保留既有 UnoCSS 图标提示（`carbon-search-1`、`carbon-login-filled`）。
-- 临时 Bag/Activity 原始回包写出开关已删除，正常启动不再写 `/tmp` 调试文件。没有新增活动写操作、自动领取、兑换命令或上游探测；只读 List 根校验、缓存、收菜/偷菜/重点监控、登录保活和设备链路未改。
-- 若官方后续下发专属资源或土地证据，先补证据与资源，再替换通用图并补 `EventPlants`/`size` 回归；若证据推翻当前物品语义，回滚本节对应提交并重新按 Bag/活动记录交叉核对。回滚仍只允许复用用户已有的 `farm:0.0` pane。
+- 该次提交曾凭编号段与奖励数量把 20516 命名为元气糕、29004 命名为元气糕种子；这些推断没有配置依据，后续已证实错误，不能沿用。
+- 曾使用其他装扮和收获手势图顶替活动专属图；后续已撤销。HTTP 200 只证明图片可访问，不证明图片属于该物品。
+- 当时的测试只断言人为填写的名字和默认 size=1，因此测试通过也没有证明映射正确。今后要用独立客户端 ItemInfo/Plant 证据作对照，检查语义和占地。
 
 ## 背包种子全量识别与官方图标抓取管道（2026-09-11）
 
@@ -941,7 +927,7 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 ### 本轮修复
 
-1. **种植不再丢弃任何种子**：`planting-service.js` `plantFromBagSeeds()` 删除 `customPrioritySeeds` 过滤分支，种植集=全部可用 1x1 背包种子，`sortBagSeedsForPlanting()` 的优先列表内排前/列表外按等级→ID 兜底排序真正生效；成功日志新增 `plantedSeedIds`/`outsidePrioritySeedIds` 审计字段。2x2 路径本就传全部 plantSize===2 种子，未改。29004 无植物映射但协议 `PlantRequest` 直接接受 seed_id，种下后 PlantReply/AllLands 回包就是植物 ID+占地证据——自进化闭环自然补 `EventPlants.json`。
+1. **种植不再丢弃任何种子**：`planting-service.js` `plantFromBagSeeds()` 删除 `customPrioritySeeds` 过滤分支，种植集=全部可用 1x1 背包种子，`sortBagSeedsForPlanting()` 的优先列表内排前/列表外按等级→ID 兜底排序真正生效；成功日志新增 `plantedSeedIds`/`outsidePrioritySeedIds` 审计字段。2x2 路径本就传全部 plantSize===2 种子，未改。此处旧版曾允许无映射种子按单格试种，现已修正：未知占地返回 0，待配置或既有自然土地证据确认后才进入对应种植路径；不得拿生产种子试验大小。
 2. **未知物品不再静默**：`warehouse.js` `getBagSeedsFromItems()` 对本地索引无条目的背包物品记 `bag_unclassified_item` 日志（只记脱敏 item id/count，按 id 去重，上限 20/次）；已知果实/化肥/货币等非种子物品不记避免刷屏。每日巡检按该日志补 `EventItems.json` 映射（EventPlants 仍需土地证据，禁止猜测）。
 3. **面板全量可见**：`BagSeedPriorityPanel.vue` 分两组渲染——优先列表有序组 + “未加入优先列表的背包种子”组（含「加入优先」「全部加入优先」按钮）；`useStrategySettings.ts` 新增 `unplannedBagSeeds` computed 与 `addBagSeedToPriority/addAllBagSeedsToPriority`；`DefaultPlanSettingsTab.vue` 同步。前端“迁移自动补列表”逻辑保留（只影响顺序显示，后端种植已不依赖它）。
 4. **删除跨物品顶替图**：`gameConfig.js` `staticItemImageMap` 删除 201010/207010/205009/202009/206009/203010/208010/2161/401005/20516 的替代行（`EventItems.json` 里 20516 的 image 字段同删）；保留 29004/20522/20523 的**官方通用种子图**（`common/seed.png`，官方类别资产，语义诚实）并新增导出 `getGenericFallbackItemIds()`——这个集合非空=仍有图标缺口，是自进化闭环的可度量信号。缺图商品前端只显示名称（`v-if="item.image"` 优雅降级），不用别的道具图冒充。
@@ -961,7 +947,7 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - `planting-service.js` 顶部解构 `sendMsgAsync`：测试 mock 必须在 `require` 服务**之前**注入 require.cache（`bag-seed-recognition.test.js` 有完整示例），事后替换无效。
 - recorder 的 `stop()` 必须在置 `stopped=true` 之后仍执行最终 flush（首轮实现 `flush()` 里查 `stopped` 导致 stop 后永不落盘，已修并有回归）。
 - “未知物品”日志只对本地索引无条目的物品生效：背包里正常存在的果实/化肥/金币都是已知非种子，全记会刷屏。
-- `getGenericFallbackItemIds()` 与 `staticItemImageMap` 的通用回退行必须成对维护：补专属图后先删 map 行，集合同步更新。
+- 专属图必须优先于通用回退；getGenericFallbackItemIds() 现在按是否存在精确图动态返回，不能让静态回退遮住已下载图片。
 - 20516 的替代图有两个来源（staticItemImageMap + EventItems.json 的 image 字段），只删一处会漏。
 
 ### 验证与回滚
@@ -971,36 +957,48 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 本轮无 PNG 可提交（本机 Linux 无 gamecaches、无抓包 URL 证据，首次真实抓图由下次抓包会话触发，属预期）。
 - 回滚 `git revert <本轮提交>` 后重启：会恢复种植白名单、静默丢弃、跨物品顶替图；不得只回滚一半（删了顶替图又回滚种植识别会让缺口更大）。收菜/偷菜/盯梢/登录/设备/请求治理链路本轮未触碰。
 
-## 背包未知道具的服务端证据链（2026-09-11 第二轮）
+## 背包未知道具观察器的错误结论（已纠错，2026-09-11）
 
-### 现场证据与根因
+- a97faff/e860053 曾把未提取到名称统一记录成 no_show_field，并在交接中称为“确定性否定证据”。这是错误：现存原始 Bag 样本的 1027/5005/25995 均携带非空 field 100，101604 携带空 field 100；里面主要是出售条件或价格，没有已核实的名称字段。
+- 原手写 varint 最多读到 56 位，不能完整跳过负 expire_time 的十字节编码；还只接受 Buffer，会漏掉 Uint8Array。现在使用 protobuf Reader，区分无字段、空字段、有字段但无已核实名称和畸形回包。
+- 原“最长中文文本就是物品名称”的启发式已删除：出售条件、说明和玩家名也可以是中文。未经 schema 核实的字符串绝不能自动登记为种子。
+- 旧观察器的人造测试用 field 1/2 填中文名字，只能证明测试自己构造的数据可读，不能证明真实服务端字段语义。新回归使用现场相同的 field 100 结构和十字节有效期，覆盖 Buffer/Uint8Array、空/缺失/畸形和文本误判。
 
-- 重启后 `bag_unclassified_item` 日志立刻抓到静默丢弃实锤：背包中 `1027,5001,5005,25995,101604` 五个物品完全不在本地索引，面板显示“物品XXXX”（修复前连日志都没有）。其中 `101604` 来自邮箱领取（`email_rewards` 日志），`5001` 有硬证据：`activity.js` `WEATHER_BOTTLE_ITEM_ID=5001`，即雨落成诗 field 102 兑换商店解出的“天气采集瓶”，活动 2026-09-08 结束后留存。
-- 其余四个（1027/5005/25995/101604）在本机所有静态源（ItemInfo/EventItems/Plant/nong.me/活动报告/全部历史日志）均无名称证据，按硬门不猜。
-- 根因修复钥匙：`corepb.proto` 的 Item 消息有原作者注释 `// ItemShow show = 100; // 展示信息 (略)`——原作者抓包确认过字段号但跳过了解析。本轮实现观察器验证了这一点：字段号在 schema 里存在，但**当前 Bag 回包实际不填充**（线上实测 4 个未知物品全部 `no_show_field`）。观察器保留的价值在于：未来服务端开始下发、或其他物品携带时能自动拿到服务端权威名称，不依赖本地索引猜。
+## 种子识别证据纠错与每日审计（2026-09-11）
 
-### 本轮改动
+### 本轮纠正的实际漏种与证据
 
-1. `warehouse.js` 新增只读观察链：`getBag()` 解码后对本地索引缺失的物品，用极简 protobuf 字段遍历（`walkProtobufFields`）从原始回包字节提取 `Item.show`（field 100）的名称候选（要求含 CJK、无控制字符、≤40 字符），挂到 `item.showName`；`bag_item_show_evidence` 日志按物品 ID 去重记录提取结果（含“回包未携带 ItemShow”的否定结果）。
-2. 识别链接入 showName：`getBagSeedsFromItems` 的 seedLike 判定与名称回退、`getBagDetail` 的名称/seed 分类都接受服务端名称——服务端名称以“种子”结尾时未知物品直接进入背包种子列表并可种植。
-3. `EventItems.json` 按既有证据登记 5001（天气采集瓶）、5002（雷雨召唤瓶）——两者都来自 activity.js 常量 + HANDOFF 记录的 GetGroup 解码证据。
-4. 观察边界：只解码我们自己 Bag RPC 回包的既有字段，不构造新请求、不探测、不改 proto；名称是服务端游戏数据（与既有 item 名称日志同级别），不是用户身份。
+| 物品 ID | 正确名称 | 植物 / 果实 ID | 占地 | 旧错误 |
+|---|---|---|---|---|
+| 20516 | 狗尾草种子 | 1020516 / 40516 | 1×1 | 被错误登记为萌宠元气糕、按果实过滤，背包有 56 个也不种 |
+| 25995 | 芦苇种子 | 1025995 / 45995 | 1×1 | 索引没有条目，背包 30 个被过滤 |
+| 29004 | 泡泡棉花糖种子 | 1029004 / 49004 | 2×2 | 名称错误且默认单格，无法进入四格预留 |
+| 20522 / 20523 | 金币果 / 经验蘑菇种子 | 1020522 / 40522、1020523 / 40523 | 1×1 | 只有物品名，缺植物映射 |
+| 1028 | 萌宠元气糕 | 活动额外掉落物 | 不适用 | 被错误关联到 20516 的种子库存 |
 
-### 线上实测结论（重启后已验证）
+- 本机没有官方客户端展开包。为补证据，只读对照了公开客户端配置快照：`xxxscarlxrd404/qq-farm-bot` 的 `34505ac2ad19f259bca952d4ea369037dd087ecb` 与 `liyangpengs/qq-farm-bot` 的 `6cd1e4e9006075448efa74accb088c99a2d055de`。仅使用数据线索，没有执行外部脚本或引入其 RPC、登录和设备实现。公开副本不等于本机最新版官方包，后续取得官方包仍需做版本核对。
+- 用户现场确认漏识别的名称就是“芦苇种子”和“狗尾草种子”。两份快照的种子名称、类型、asset_name 和植物映射一致；当前真实 Bag 的三种出售价格分别为 1000/2000/12000，与 ItemInfo 行一致；从资源记录定位到腾讯 CDN 后直接下载五种种子的 PNG，核对 SHA-256 并逐张查看草穗、芦苇、棉花糖、金币果和蘑菇图。原始来源地址/配置快照只留 ignored 的 `core/data/client-config-evidence`；受跟踪的 `event-seed-sources.json` 只保存公开仓库/SHA、逻辑资源路径、文件名与图片哈希，不存私人数据或地址。
+- Plant 配置明确给出泡泡棉花糖 `size=2`，其余四种单格；`special_fruit` 明确区分常规果实与 1028 额外掉落。只增补本轮五种植物，未整表覆盖旧配置。种植等级读取 `Plant.land_level_need=1`；不得把 `ItemInfo.level=200` 的展示等级当成“200 级才能种”，否则四格种子仍会被过滤。
+- 同时按配置快照和 Bag 的出售条件补齐 1027 雷电徽章、5005 青蛙使坏瓶、101604 公益小红花结算礼包的名称。只补展示元数据，不启用活动使用/出售/领取能力。
+- 已删除 season-bear-activity 的重复写死名称表；读活动页不能再把已纠正的种子覆盖回旧名字。背包优先和奖励记录展示专属种子图。通用图只在精确资源缺失时使用，缺专属阶段图仍是未决项，不能因已有种子图就宣称全阶段贴图完成。
 
-- `5001` 登记生效：`bag_unclassified_item` 清单实时从 5 个变为 4 个（`1027,5005,25995,101604`）。
-- **Bag 回包实际不携带 ItemShow（field 100）**：观察器线上实测 4 个未知物品全部 `no_show_field`。`corepb.proto` 的注释只是 schema 声明，实际 Bag 响应不填充该字段——这已是确定性否定证据，不要在后续轮次反复试。这 4 个物品的名称只存在于官方客户端本地配置（miniapp 资源包）里，本机 Linux 无证据源，按硬门保持待证、禁止猜名称。
-- 收口路径（二选一）：①用户在官方客户端背包里人工确认这 4 个 ID 显示的名称，按 runbook“人工识图临时名”规则登记并标注来源；②下次抓包登录开着游戏进背包/活动页，MITM 记录官方资源 URL 后从官方管道拉客户端配置。**注意 25995 在 2xxxx 种子编号段**：若游戏内显示为某“XX种子”，登记后会立即进入种植链（本轮 showName 逻辑已支持无映射种子直接可种）。
-- `101604` 来自邮箱领取（`email_rewards` 日志可溯）；`1027` 邻近 1024 鹊羽/1026 鹊羽香囊（10xx 活动道具段）但无直接证据，不得按编号段外推。
+### 今后识别新种子的具体方法
 
-### 后续闭环
+1. 从同一次 Bag 取物品列表与种子列表。先查当前 ItemInfo 的 type/interaction_type，再以 Plant.seed_id 精确关联植物、fruit.id、size、land_level_need；不仅查“物品<ID>”，还要查有名字但 type/name 与 Plant 冲突的条目。编号段、数量、礼品出现顺序和活动文案只能形成线索。
+2. 有官方展开包时，按 AGENTS 选最新完整版本并复制后只读处理；读取 settings 的 assets.server 与 bundleVers，再按 bundle manifest 的 config/ItemInfo、config/Plant、UUID、import hash 定位配置。支持 JSON 表及同名 Cocos JsonAsset；TextAsset/编码格式不认识时停止并核对客户端读取实现，不能执行外部 game.js，也不能猜 config.index.json 或枚举 CDN 版本。
+3. 没有本机包时，可按需读公开客户端配置副本，记录公开仓库与提交 SHA；仍须用当前背包/活动/已有土地证据和直接获取的官方资源核对。多个副本可能来自同源，不能把“两个仓库相同”当成两份独立官方证据。映射证据不足时保持待核实，不把疑似物品试种到生产土地。
+4. 运行 `cd core && npm run audit:seed-catalog -- --ids 20516,25995,29004,20522,20523`。默认只读 ignored 的 client-config-evidence/ItemInfo.json 与 Plant.json；新快照可显式传 `--items <文件> --plants <文件>`。输出 aligned / gaps_found / evidence_missing；evidence_missing 不算通过。该脚本只出差异，不覆盖配置。全新复现没有快照时，要从上述证据链取得输入。
+5. 合并后验证冷启动背包分类、优先列表排序、活动读取后再次获取背包、四格预留和等级过滤。不能只给错误映射写一条同值断言。新增植物必须补占地回归，未知占地用 0 明示待确认，不走 1×1 或 2×2 自动种植。
 
-- `bag_item_show_evidence` 出现 `server_name` 时（未来服务端开始下发、或其他物品携带），巡检把该名称按证据写入 `EventItems.json`（EventPlants 仍需土地证据）；`no_show_field` 的物品保持待证，禁止猜名称。
-- 自进化每日巡检新增：`bag_item_show_evidence` 与 `bag_unclassified_item` 是背包识别缺口的两大权威信号，出现新 ID 必须当日复盘。
+### 自进化闭环
 
-### 踩坑与回滚
+- 既有约半小时活动扫描增加一次 Bag 读取；Worker 用同一份回包生成 seedRecognition（仅物品 ID、缺口类别、检查种类数），不保存账号、背包数量或原始正文。覆盖未分类、种子类型/名称冲突、优先列表漏种、未核实占地和缺专属种子图。
+- seedRecognition 纳入活动证据指纹及 Prompt；有未决缺口或背包读取不可用时，每日活动复盘不能因为活动 ID/指纹不变而跳过 Agent。gameConfig、EventItems、warehouse、planting-service 等改动也纳入活动域差异判断。
+- 每日 Prompt 要求运行配置审计，并明确上述三种种子、元气糕 ID、占地、展示等级与种植门槛的差别，以及 ItemShow 四种状态。缺证据可以暂缓映射，但必须保留缺口，不能把“没有新活动”写成“种子识别全部正常”。
+- 本轮五张种子 PNG 已由当前维护会话核对内容/哈希；自动进化进程的二进制推送限制仍保留，后续无人审阅的新图片不能夹带上传。
 
-- repeated protobuf 字段的测试夹具必须每个条目独立 tag+length（`wireField(1, item)` 逐条拼接），合并进同一个 length 会把多个 Item 解析成一个并互相覆盖字段。
-- 名称候选要求含 CJK：QQ 农场物品名均为中文，这能排除 hash/uuid 等无中文字节的误判；纯 ASCII 名称会被跳过（可接受，日志仍记录 field 形状结果）。
-- 验证：Node 20 串行核心全量 **380/380** 通过（bag-seed-recognition 扩展至 8 条）；改动文件 ESLint 0 error。
-- 回滚 `git revert <本轮提交>`：恢复“未知物品只有 unclassified 日志、无服务端名称”状态；5001/5002 登记会一起回滚（名称证据本身仍在 activity.js，不受影响）。
+### 验证与回滚
+
+- Node 20 定向配置/背包/活动/证据解析回归 34/34 通过；串行核心全量 385/385 通过，前端类型检查及生产构建通过。核心改动 ESLint 0 error，仅保留既有 JSDoc warning。
+- 线上在既有 farm:0.0 使用 Node 20 重启后，/api/bag/seeds 返回狗尾草 56、芦苇 30、泡泡棉花糖 3，size 分别 1/1/2；打开活动页后再读背包分类仍正确，seedRecognition 对 32 类物品报告零缺口（仅限物品/种子识别，不代表活动玩法或所有贴图完成）。
+- 回滚使用对应提交的 git revert，再在既有 farm:0.0 重启。不得重新应用本文件已标注作废的映射或用单格默认值掩盖泡泡棉花糖的四格属性。

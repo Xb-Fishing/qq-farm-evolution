@@ -13,5 +13,10 @@
   { "id": 1020129, "seed_id": 20129, "fruit_id": 40129, "asset_name": "Crop_129", "name": "勿忘我" },
   { "id": 1020375, "seed_id": 20375, "fruit_id": 40375, "asset_name": "Crop_375", "name": "木槿" },
   { "id": 1020207, "seed_id": 20207, "fruit_id": 40207, "asset_name": "Crop_207", "name": "绣球花" },
-  { "id": 1020329, "seed_id": 20329, "fruit_id": 40329, "asset_name": "Crop_329", "name": "发财红包" }
+  { "id": 1020329, "seed_id": 20329, "fruit_id": 40329, "asset_name": "Crop_329", "name": "发财红包" },
+  {"id": 1020516, "seed_id": 20516, "name": "狗尾草", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;", "exp": 1440, "special_fruit": "2026090100:1028:30", "fruit_id": 40516, "fruit_count": 48, "asset_name": "Crop_516", "size": 1},
+  {"id": 1025995, "seed_id": 25995, "name": "芦苇", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;", "exp": 1680, "special_fruit": "2026090100:1028:35", "fruit_id": 45995, "fruit_count": 48, "asset_name": "Crop_5995", "size": 1},
+  {"id": 1029004, "seed_id": 29004, "name": "泡泡棉花糖", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;", "exp": 7680, "special_fruit": "2026090100:1028:110", "all_state_spine": "spine/v2/xiyouzhongzi/paopaoyunduo/1029004", "fruit_id": 49004, "fruit_count": 192, "asset_name": "Crop_9004", "size": 2},
+  {"id": 1020522, "seed_id": 20522, "name": "金币果", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;", "exp": 336, "fruit_id": 40522, "fruit_count": 48, "asset_name": "Crop_522", "size": 1},
+  {"id": 1020523, "seed_id": 20523, "name": "经验蘑菇", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发菌:8640;出菇:8640;幼菇:8640;初熟:8640;成熟:0;", "exp": 3024, "fruit_id": 40523, "fruit_count": 48, "asset_name": "Crop_523", "size": 1}
 ]
