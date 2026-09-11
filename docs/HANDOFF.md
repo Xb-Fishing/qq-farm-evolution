@@ -970,3 +970,30 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - Node 20 前端 `vue-tsc -b && vite build` 通过；改动文件 ESLint 0 error（仅保留既有 warning）。
 - 本轮无 PNG 可提交（本机 Linux 无 gamecaches、无抓包 URL 证据，首次真实抓图由下次抓包会话触发，属预期）。
 - 回滚 `git revert <本轮提交>` 后重启：会恢复种植白名单、静默丢弃、跨物品顶替图；不得只回滚一半（删了顶替图又回滚种植识别会让缺口更大）。收菜/偷菜/盯梢/登录/设备/请求治理链路本轮未触碰。
+
+## 背包未知道具的服务端证据链（2026-09-11 第二轮）
+
+### 现场证据与根因
+
+- 重启后 `bag_unclassified_item` 日志立刻抓到静默丢弃实锤：背包中 `1027,5001,5005,25995,101604` 五个物品完全不在本地索引，面板显示“物品XXXX”（修复前连日志都没有）。其中 `101604` 来自邮箱领取（`email_rewards` 日志），`5001` 有硬证据：`activity.js` `WEATHER_BOTTLE_ITEM_ID=5001`，即雨落成诗 field 102 兑换商店解出的“天气采集瓶”，活动 2026-09-08 结束后留存。
+- 其余四个（1027/5005/25995/101604）在本机所有静态源（ItemInfo/EventItems/Plant/nong.me/活动报告/全部历史日志）均无名称证据，按硬门不猜。
+- 根因修复钥匙：`corepb.proto` 的 Item 消息有原作者注释 `// ItemShow show = 100; // 展示信息 (略)`——服务端在 Bag 回包为每个物品下发展示信息，原作者抓包确认过字段号但跳过了解析。这是服务端权威名称来源，优于任何本地猜测。
+
+### 本轮改动
+
+1. `warehouse.js` 新增只读观察链：`getBag()` 解码后对本地索引缺失的物品，用极简 protobuf 字段遍历（`walkProtobufFields`）从原始回包字节提取 `Item.show`（field 100）的名称候选（要求含 CJK、无控制字符、≤40 字符），挂到 `item.showName`；`bag_item_show_evidence` 日志按物品 ID 去重记录提取结果（含“回包未携带 ItemShow”的否定结果）。
+2. 识别链接入 showName：`getBagSeedsFromItems` 的 seedLike 判定与名称回退、`getBagDetail` 的名称/seed 分类都接受服务端名称——服务端名称以“种子”结尾时未知物品直接进入背包种子列表并可种植。
+3. `EventItems.json` 按既有证据登记 5001（天气采集瓶）、5002（雷雨召唤瓶）——两者都来自 activity.js 常量 + HANDOFF 记录的 GetGroup 解码证据。
+4. 观察边界：只解码我们自己 Bag RPC 回包的既有字段，不构造新请求、不探测、不改 proto；名称是服务端游戏数据（与既有 item 名称日志同级别），不是用户身份。
+
+### 后续闭环
+
+- 重启后第一次 Bag 读取会为 1027/5005/25995/101604 输出 `bag_item_show_evidence`：有名称则面板立即显示真实名称（种子里有“种子”后缀则可种）；无 ItemShow 则该日志明确记“回包未携带”，说明名称只在官方客户端本地配置里，需等抓包会话/macOS 缓存补官方资源。
+- 自进化每日巡检新增：`bag_item_show_evidence` 出现 `server_name` 时，把该名称按证据写入 `EventItems.json`（EventPlants 仍需土地证据）；`no_show_field` 的物品保持待证，禁止猜名称。
+
+### 踩坑与回滚
+
+- repeated protobuf 字段的测试夹具必须每个条目独立 tag+length（`wireField(1, item)` 逐条拼接），合并进同一个 length 会把多个 Item 解析成一个并互相覆盖字段。
+- 名称候选要求含 CJK：QQ 农场物品名均为中文，这能排除 hash/uuid 等无中文字节的误判；纯 ASCII 名称会被跳过（可接受，日志仍记录 field 形状结果）。
+- 验证：Node 20 串行核心全量 **380/380** 通过（bag-seed-recognition 扩展至 8 条）；改动文件 ESLint 0 error。
+- 回滚 `git revert <本轮提交>`：恢复“未知物品只有 unclassified 日志、无服务端名称”状态；5001/5002 登记会一起回滚（名称证据本身仍在 activity.js，不受影响）。

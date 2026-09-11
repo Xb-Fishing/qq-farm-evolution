@@ -60,5 +60,15 @@
   {
     "id": 20523,
     "name": "经验蘑菇种子"
+  },
+  {
+    "id": 5001,
+    "name": "天气采集瓶",
+    "evidence": "雨落成诗 2026070301 field 102 兑换商店解码（activity.js WEATHER_BOTTLE_ITEM_ID，物品5001 金豆豆200）；活动 2026-09-08 结束后留存背包"
+  },
+  {
+    "id": 5002,
+    "name": "雷雨召唤瓶",
+    "evidence": "雨落成诗 2026070303 field 105 抽奖奖池解码（activity.js WEATHER_DRAW_REWARD_ITEM_ID）"
   }
 ]
