@@ -61,7 +61,10 @@ test('S3 商城保留全部道具和原始状态码，只补证实的名称，�
   for (const item of activity.exchangeShop) assert.equal(getItemById(item.itemId).name, item.name);
   assert.equal(getItemById(1029).name, '幸运星');
   assert.equal(getPlantBySeedId(20522), undefined);
-  assert.equal(isSeedItem(20522), false);
+  assert.equal(isSeedItem(20522), true);
+  assert.equal(getItemById(20522).type, 5);
+  assert.equal(getItemById(20522).interaction_type, 'plant');
+  assert.equal(getItemById(20523).type, 5);
   assert.equal(getPlantBySeedId(29003).size, 2);
   assert.equal(getPlantBySeedId(20883).size, 1);
 });

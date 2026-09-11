@@ -65,13 +65,14 @@
 ### 把农场跑起来
 
 ```bash
-git clone <your-private-repository>
+git clone https://github.com/Xb-Fishing/qq-farm-evolution.git qq-farm-bot
 cd qq-farm-bot
 
 corepack enable
-pnpm install
+corepack prepare pnpm@10.30.2 --activate
+pnpm install --frozen-lockfile
 pnpm build:web
-pnpm dev:core
+bash start.sh
 ```
 
 看到服务启动后，打开 <http://localhost:3007>，你的农场控制室就准备好了。
@@ -95,7 +96,7 @@ pnpm dev:web
 ## 🐳 Docker 部署
 
 ```bash
-git clone <your-private-repository>
+git clone https://github.com/Xb-Fishing/qq-farm-evolution.git qq-farm-bot
 cd qq-farm-bot
 docker compose up -d --build
 ```

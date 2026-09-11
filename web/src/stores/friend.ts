@@ -85,6 +85,9 @@ export const useFriendStore = defineStore('friend', () => {
       dryNum: Number(dryNum) || 0,
       weedNum: Number(weedNum) || 0,
       insectNum: Number(insectNum) || 0,
+      ripeAt: Number(summary?.ripeAt) || 0,
+      matureInSec: Number(summary?.matureInSec) || 0,
+      timeSource: summary?.timeSource || (summary?.ripeAt ? 'lands' : 'unknown'),
     }
   }
 

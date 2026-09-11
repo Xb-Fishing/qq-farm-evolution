@@ -1,5 +1,5 @@
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
-const { getPlantName, getPlantExp, getPlantById, getPlantGrowTime, getPlantGrowPhases, getSeedImageBySeedId, getMutantDisplayPlantId, getMutantPlantImageByPhase, getMutantEffectsByIds } = require('../config/gameConfig');
+const { getPlantName, getKnownPlantName, getPlantExp, getPlantByIdOrSeedId, getPlantGrowTime, getPlantGrowPhases, getSeedImageBySeedId, isSeedItem, getMutantDisplayPlantId, getMutantPlantImageByPhase, getMutantEffectsByIds } = require('../config/gameConfig');
 const { toNum, toTimeSec, getServerTimeSec, logWarn } = require('../utils/utils');
 const { getAllLands } = require('./farm-api');
 
@@ -279,8 +279,10 @@ function analyzeLands(lands, debug = false) {
     if (phase === PlantPhase.MATURE) {
       result.harvestable.push(landId);
       if (matureAt > 0) result.matureSchedule.push({ landId, matureAtSec: matureAt });
-      const plantId = toNum(plant.id);
-      const displayName = getPlantName(plantId);
+      const rawPlantId = toNum(plant.id);
+      const plantConfig = getPlantByIdOrSeedId(rawPlantId);
+      const plantId = toNum(plantConfig?.id) || rawPlantId;
+      const displayName = getKnownPlantName(plantId) || String(plant.name || '').trim() || getPlantName(plantId);
       const plantExp = getPlantExp(plantId);
       result.harvestableInfo.push({
         landId, plantId,
@@ -511,7 +513,10 @@ async function getLandsDetail() {
         continue;
       }
 
-      const currentPhase = getCurrentPhase(plant.phases, false, '', plant.id);
+      const rawPlantId = toNum(plant.id);
+      const plantConfig = getPlantByIdOrSeedId(rawPlantId);
+      const plantId = toNum(plantConfig?.id) || rawPlantId;
+      const currentPhase = getCurrentPhase(plant.phases, false, '', plantId);
       if (!currentPhase) {
         details.push({
           id: landId, unlocked: true, status: 'empty',
@@ -525,12 +530,16 @@ async function getLandsDetail() {
       }
 
       const phase = toNum(currentPhase.phase);
-      const plantId = toNum(plant.id);
       const mutantConfigIds = plant.mutant_config_ids || [];
       const displayPlantId = getMutantDisplayPlantId(plantId, mutantConfigIds);
-      const displayName = getPlantName(displayPlantId) || getPlantName(plantId) || plant.name || '未知';
-      const plantInfo = getPlantById(plantId);
-      const seedId = toNum(plantInfo && plantInfo.seed_id);
+      const displayName = getKnownPlantName(displayPlantId)
+        || getKnownPlantName(plantId)
+        || String(plant.name || '').trim()
+        || getPlantName(plantId);
+      const plantInfo = plantConfig;
+      const seedId = toNum(plantInfo?.seed_id)
+        || toNum(plant.seed_id)
+        || (isSeedItem(rawPlantId) ? rawPlantId : 0);
       const seedImage = seedId > 0 ? getSeedImageBySeedId(seedId) : '';
       const occupiedPlantSize = occupiedLandIds.length > 1
         ? Math.round(Math.sqrt(occupiedLandIds.length))

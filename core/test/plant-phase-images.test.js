@@ -24,6 +24,15 @@ test('2x2 Spine 活动植物可返回完整的静态阶段图', () => {
     }
 });
 
+test('土地回包把活动种子 ID 当作 plant.id 时仍解析名称和官方阶段图', () => {
+    assert.equal(getPlantImageByPhase(29003, 3), '/game-config/plant_images/Crop_9003/3.png');
+    assert.equal(getMutantPlantImageByPhase(29003, [], 6), '/game-config/plant_images/Crop_9003/6.png');
+});
+
+test('未知活动作物没有专属阶段图时回退到游戏通用种子贴图', () => {
+    assert.equal(getPlantImageByPhase(1999999, 4), '/game-config/plant_images/common/seed.png');
+});
+
 test('所有作物的土地种子阶段共用客户端通用种子贴图', () => {
     const seedImage = '/game-config/plant_images/common/seed.png';
     assert.equal(getPlantImageByPhase(1020128, 1), seedImage);
