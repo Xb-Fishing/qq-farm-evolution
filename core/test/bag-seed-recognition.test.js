@@ -3,15 +3,32 @@ const assert = require('node:assert/strict');
 
 const {
   getBagSeedsFromItems,
+  extractBagItemShowNames,
 } = require('../src/services/warehouse');
 const {
   getGenericFallbackItemIds,
+  getItemById,
   getItemImageById,
   isSeedItem,
 } = require('../src/config/gameConfig');
 
 function mockModule(filename, exports) {
   return { id: filename, filename, loaded: true, exports };
+}
+
+// ---- 手工构造 protobuf 字节（只用于观察函数的单测夹具）----
+function encodeVarint(value) {
+  const bytes = [];
+  let v = Number(value);
+  while (v >= 0x80) { bytes.push((v & 0x7F) | 0x80); v = Math.floor(v / 128); }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+function wireField(field, bytes) {
+  return Buffer.concat([encodeVarint((field << 3) | 2), encodeVarint(bytes.length), bytes]);
+}
+function varintField(field, value) {
+  return Buffer.concat([encodeVarint(field << 3), encodeVarint(value)]);
 }
 
 test('plantFromBagSeeds plants seeds outside the priority list instead of dropping them', async () => {
@@ -143,4 +160,56 @@ test('generic fallback icons are tracked as an explicit gap signal', () => {
   for (const id of fallbackIds) {
     assert.equal(getItemImageById(id), '/game-config/plant_images/common/seed.png');
   }
+});
+
+test('extractBagItemShowNames 读取服务端 ItemShow(field 100) 名称', () => {
+  // BagReply{ item_bag{ items[ {id=1027, count=20, show{ "萌新挑战券" }}] } }
+  const showBytes = wireField(1, Buffer.from('萌新挑战券', 'utf8'));
+  const itemBytes = Buffer.concat([
+    varintField(1, 1027),
+    varintField(2, 20),
+    wireField(100, showBytes),
+  ]);
+  const noShowItem = Buffer.concat([varintField(1, 5005), varintField(2, 26)]);
+  // ItemBag.repeated items：每个条目独立 field-1 tag，不能合并到同一个 length 里
+  const bagBytes = Buffer.concat([wireField(1, itemBytes), wireField(1, noShowItem)]);
+  const body = wireField(1, bagBytes);
+
+  const wanted = new Set([1027, 5005, 999]);
+  const names = extractBagItemShowNames(body, wanted);
+  assert.equal(names.get(1027), '萌新挑战券');
+  assert.equal(names.has(5005), false); // 无 ItemShow 字段
+  assert.equal(names.has(999), false); // 不在回包中
+  assert.equal(extractBagItemShowNames(null, wanted).size, 0);
+  assert.equal(extractBagItemShowNames(body, null).size, 0);
+});
+
+test('extractBagItemShowNames 忽略无中文名称候选的字节', () => {
+  const showBytes = Buffer.concat([
+    wireField(1, Buffer.from('ascii-id-123', 'utf8')), // 无 CJK，不是名称候选
+    wireField(2, Buffer.from('使坏天气瓶', 'utf8')),
+  ]);
+  const itemBytes = Buffer.concat([varintField(1, 1027), varintField(2, 1), wireField(100, showBytes)]);
+  const body = wireField(1, wireField(1, itemBytes));
+  const names = extractBagItemShowNames(body, new Set([1027]));
+  assert.equal(names.get(1027), '使坏天气瓶');
+});
+
+test('服务端 showName 让未知背包物品进入种子列表', () => {
+  const seeds = getBagSeedsFromItems([
+    { id: 4299992, count: 5, showName: '神秘花种子' },
+    { id: 4299993, count: 2, showName: '普通活动券' }, // 不以"种子"结尾 → 非种子
+  ]);
+  assert.deepEqual(seeds.map(seed => [seed.seedId, seed.name, seed.count]), [
+    [4299992, '神秘花种子', 5],
+  ]);
+});
+
+test('雨落成诗留存道具 5001/5002 已按活动证据登记', () => {
+  assert.equal(getItemById(5001)?.name, '天气采集瓶');
+  assert.equal(getItemById(5002)?.name, '雷雨召唤瓶');
+  // 不是种子，不进背包种子列表
+  assert.equal(isSeedItem(5001), false);
+  const seeds = getBagSeedsFromItems([{ id: 5001, count: 3 }]);
+  assert.deepEqual(seeds, []);
 });
