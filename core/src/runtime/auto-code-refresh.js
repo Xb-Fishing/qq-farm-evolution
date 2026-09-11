@@ -431,6 +431,7 @@ function createAutoCodeRefreshService(deps) {
     const account = findAccount(accountId);
     if (!account || !account.loginBuffer) return false;
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) return false;
+    if (isCredentialBlocked(accountId)) return false;
     const recovery = getRecoveryState(accountId);
     if (recovery.attempts >= MAX_DAILY_RECOVERIES
       || recovery.failures >= MAX_CONSECUTIVE_FAILURES) {
@@ -475,6 +476,7 @@ function createAutoCodeRefreshService(deps) {
     const account = findAccount(accountId);
     if (!account || !account.loginBuffer) return false;
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) return false;
+    if (isCredentialBlocked(accountId)) return false;
     const recovery = getRecoveryState(accountId);
     if (recovery.attempts >= MAX_DAILY_RECOVERIES
       || recovery.failures >= MAX_CONSECUTIVE_FAILURES) {
@@ -502,6 +504,7 @@ function createAutoCodeRefreshService(deps) {
 
   return {
     refreshAccountCode,
+    isCredentialBlocked,
     scheduleAccount,
     rescheduleAll,
     stopAccount,
