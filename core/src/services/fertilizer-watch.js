@@ -484,11 +484,18 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
     }
 
     if (sameCrop(prev, snapshot, landJumpSlackSec)) {
-      if (prev.matureAt > 0 && snapshot.matureAt > 0 &&
+      if (prev.growing && snapshot.growing && prev.matureAt * 1000 > now && snapshot.matureAt * 1000 > now
+          && prev.matureAt > 0 && snapshot.matureAt > 0 &&
           snapshot.matureAt < prev.matureAt - landJumpSlackSec) {
         strongReasons.add('land_ripe_advanced');
       }
-      if (prev.fertLeft != null && snapshot.fertLeft != null && snapshot.fertLeft < prev.fertLeft) {
+      // 成熟/收获切换时服务端可能把剩余施肥次数重置或省略；那是
+      // PREARM/抢收生命周期变化，不是好友施肥。只有同一茬仍在生长、
+      // 且两次都有未来成熟墙钟时，次数下降才是可靠施肥证据。
+      if (prev.growing && snapshot.growing
+        && prev.matureAt > server && snapshot.matureAt > server
+        && prev.fertLeft != null && snapshot.fertLeft != null
+        && snapshot.fertLeft < prev.fertLeft) {
         strongReasons.add('fertilizer_count_decreased');
       }
       if (snapshot.nudged && !prev.nudged) strongReasons.add('nudged_rising');

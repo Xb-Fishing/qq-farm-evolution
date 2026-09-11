@@ -113,7 +113,7 @@ test('S3 专属种子 PNG 优先于通用回退，装扮不使用跨物品顶替
   assert.deepEqual(getGenericFallbackItemIds(), []);
   for (const id of [20516, 25995, 29004, 20522, 20523]) assertImageExists(id, 'official seed image');
   for (const id of [201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005]) {
-    assert.equal(getItemImageById(id), '');
+    assert.match(getItemImageById(id), /^\/game-config\/seed_images_named\/\S+\.png$/);
   }
 });
 

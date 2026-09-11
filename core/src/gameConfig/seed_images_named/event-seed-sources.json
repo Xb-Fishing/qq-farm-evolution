@@ -47,5 +47,247 @@
       "assetPath": "model/v4/Crop_5995_Seed/spriteFrame",
       "sha256": "1c8527e0fc6be7f7bcb18737d83048e8e0efeaedd9d724c49371c95190fa9a64"
     }
+  ],
+  "phaseEntries": [
+    {
+      "id": 20516,
+      "assetPath": "model/v4/Crop_516_2",
+      "file": "plant_images/Crop_516/2.png",
+      "sha256": "68e1392aed6b24b5389eeea10f41648c0e69d9077a4391694f92e065b40a6dfd",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20516,
+      "assetPath": "model/v4/Crop_516_3",
+      "file": "plant_images/Crop_516/3.png",
+      "sha256": "a8286a05a6f7a42c2b83e647e436df29901af120777d0b5e5fc3501de84bdd12",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20516,
+      "assetPath": "model/v4/Crop_516_4",
+      "file": "plant_images/Crop_516/4.png",
+      "sha256": "3a052d31ad5a945739e6eeda90c7f601ee1b01c2b7415afa65c093c4113ff6a8",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20516,
+      "assetPath": "model/v4/Crop_516_5",
+      "file": "plant_images/Crop_516/5.png",
+      "sha256": "30ee4ab82a2eaaf19f075f26647c7948228ecffd67fe23d418156007e0179d26",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20516,
+      "assetPath": "model/v4/Crop_516_6",
+      "file": "plant_images/Crop_516/6.png",
+      "sha256": "9249378448b0b28795fbc9e8d1494d792cd69ad95c1cc6b3b188f72f69fc3dea",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 25995,
+      "assetPath": "model/v4/Crop_5995_2",
+      "file": "plant_images/Crop_5995/2.png",
+      "sha256": "0febae1150d4d1cb22bb848f12bacc240d7d5a7098b06572efef1428d4a15b6a",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 25995,
+      "assetPath": "model/v4/Crop_5995_3",
+      "file": "plant_images/Crop_5995/3.png",
+      "sha256": "7485482dd2f46855aaa3605ef72d8ffc1c01f9884b92cd21e78ee789c2d39ece",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 25995,
+      "assetPath": "model/v4/Crop_5995_4",
+      "file": "plant_images/Crop_5995/4.png",
+      "sha256": "e375e877de46ff2980c68e9c8b8ac6b69fa68dedf7d948d1f54e576120b1d47f",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 25995,
+      "assetPath": "model/v4/Crop_5995_5",
+      "file": "plant_images/Crop_5995/5.png",
+      "sha256": "a0af4a016c82aac5a75051f4a480c3742388ce963fb41ffdcc1364de48d45ef4",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 25995,
+      "assetPath": "model/v4/Crop_5995_6",
+      "file": "plant_images/Crop_5995/6.png",
+      "sha256": "a40310b36eb3e5060139d32361c3eaf03c62b445d28759adbaf1d821b93f455e",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 29004,
+      "assetPath": "model/v4/Crop_9004_2",
+      "file": "plant_images/Crop_9004/2.png",
+      "sha256": "8b7f4034ff2302287b948a5b2a734e978a7340ff3fb3a61a7c5e468118fcfc8c",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 29004,
+      "assetPath": "model/v4/Crop_9004_3",
+      "file": "plant_images/Crop_9004/3.png",
+      "sha256": "774a03766291304ddd3f36b9e33ee39f47066e3a906691d1cb7b3f9fa6c08c69",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 29004,
+      "assetPath": "model/v4/Crop_9004_4",
+      "file": "plant_images/Crop_9004/4.png",
+      "sha256": "f608b5029eaaf8ce077b8ec585f4e01ebd28b27f2f725ffd991f74d02b6e7fc0",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 29004,
+      "assetPath": "model/v4/Crop_9004_5",
+      "file": "plant_images/Crop_9004/5.png",
+      "sha256": "aeb81b64f29aa6fd27e1a66bdae72cae219c30a4608844281814d14e9cd610b0",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 29004,
+      "assetPath": "model/v4/Crop_9004_6",
+      "file": "plant_images/Crop_9004/6.png",
+      "sha256": "6fc5f4010024485d54dd9816d8596d4369d05b39835b881c347276460dfa12a5",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20522,
+      "assetPath": "model/v4/Crop_522_2",
+      "file": "plant_images/Crop_522/2.png",
+      "sha256": "866de52ca8bc08c7e03a9f10878a0d64e04683f7d0c58f3294fe4e45b70f0723",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20522,
+      "assetPath": "model/v4/Crop_522_3",
+      "file": "plant_images/Crop_522/3.png",
+      "sha256": "1d6b3653e3d4040eca548cc19ab2776a58f8c16eb1263a7b1a12fe7cf327db9c",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20522,
+      "assetPath": "model/v4/Crop_522_4",
+      "file": "plant_images/Crop_522/4.png",
+      "sha256": "bfb48bff257f0eb0b613cba84f01a1a319b0ac84db0c418bc2d5f39db5b9194e",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20522,
+      "assetPath": "model/v4/Crop_522_5",
+      "file": "plant_images/Crop_522/5.png",
+      "sha256": "31bd5f30b6f596120d81faa489a3089a263f919598acbf4c42b07917ffde823c",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20522,
+      "assetPath": "model/v4/Crop_522_6",
+      "file": "plant_images/Crop_522/6.png",
+      "sha256": "62c1e93047ae7477166f7aa36490c1942d5b1e2a9dfe2c8b99454f4804ea8c27",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20523,
+      "assetPath": "model/v4/Crop_523_2",
+      "file": "plant_images/Crop_523/2.png",
+      "sha256": "93497f3448ea2d507c0fb6f5ff338b4f9f7e2b512c5cd300572f4796781e58ee",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20523,
+      "assetPath": "model/v4/Crop_523_3",
+      "file": "plant_images/Crop_523/3.png",
+      "sha256": "59aec5e3540c17710cb0d0d63d0415b89611dd80bedcfb84230d9d954cf6ed19",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20523,
+      "assetPath": "model/v4/Crop_523_4",
+      "file": "plant_images/Crop_523/4.png",
+      "sha256": "ad4098c68a2c6d0a5df254390ab5506e13e6b66d97f11ff81f98d0517073a27d",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20523,
+      "assetPath": "model/v4/Crop_523_5",
+      "file": "plant_images/Crop_523/5.png",
+      "sha256": "9cc305a18450c2a7d7705b8ca66c8fc9daa62593e13189780edeaf663e799b69",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    },
+    {
+      "id": 20523,
+      "assetPath": "model/v4/Crop_523_6",
+      "file": "plant_images/Crop_523/6.png",
+      "sha256": "ceb092813214b675b388bae99edcef033f727fb4022522393c1d1eb7f863b819",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+    }
+  ],
+  "activityEntries": [
+    {
+      "id": 2161,
+      "file": "core/src/gameConfig/seed_images_named/2161_img_avatar_S3_1.png",
+      "sha256": "84f5cae33c4b2ebe203e467190064b723a19c8ec4b30c64cf3974529fb5e2eab",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/2161_img_avatar_S3_1"
+    },
+    {
+      "id": 201010,
+      "file": "core/src/gameConfig/seed_images_named/201010_S3_img_exchange_item1.png",
+      "sha256": "307af30cdba459395e98516549c2525339083044d5e7a72659947bcd77811f96",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item1"
+    },
+    {
+      "id": 202009,
+      "file": "core/src/gameConfig/seed_images_named/202009_S3_img_exchange_item4.png",
+      "sha256": "ca14a3ef5222fb91233a4edf264e45fe96f16dd8ed6c52c8d732f8f98474bb09",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item4"
+    },
+    {
+      "id": 203010,
+      "file": "core/src/gameConfig/seed_images_named/203010_S3_img_exchange_item5.png",
+      "sha256": "8ef0f066796d4b2a67640848adcb399539202efc70f3d2350d35237308d6ca7e",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item5"
+    },
+    {
+      "id": 205009,
+      "file": "core/src/gameConfig/seed_images_named/205009_S3_img_exchange_item3.png",
+      "sha256": "55bf9a1075df1b0616b449c249b1fb021c243f94fcf9056aff4f2dd14b72a8eb",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item3"
+    },
+    {
+      "id": 206009,
+      "file": "core/src/gameConfig/seed_images_named/206009_S3_img_exchange_item7.png",
+      "sha256": "b8c27aaa013b55bb53a1ad033da3f75d9a31e47f388e9b20cf39c21995c3a426",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item7"
+    },
+    {
+      "id": 207010,
+      "file": "core/src/gameConfig/seed_images_named/207010_S3_img_exchange_item2.png",
+      "sha256": "83625f58e0865715abb98c35dd9eda0ac1ba9a5df0b38c4a94d69bd6cbb6e2fd",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item2"
+    },
+    {
+      "id": 208010,
+      "file": "core/src/gameConfig/seed_images_named/208010_S3_img_exchange_item6.png",
+      "sha256": "4effb6242607b582bac9725404ceb8a189f1343775aff9f0de706e6cf90381f2",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/img_exchange_item6"
+    },
+    {
+      "id": 401005,
+      "file": "core/src/gameConfig/seed_images_named/401005_icon_nameplate_bichon_1.png",
+      "sha256": "9e36a28a4f3d9589f0727f104f6394e201fbab6a502ebaf9185a5c0d69e754b1",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gui/texture/activity/yuanqigao/401005_icon_nameplate_bichon_1"
+    }
   ]
 }

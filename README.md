@@ -180,7 +180,6 @@ qq-farm-bot/
 │   ├── src/              # 配置、接口、模型和业务服务
 │   └── test/             # 后端测试
 ├── web/                  # Vue 管理面板
-├── docs/images/          # README 图片资源
 ├── docker-compose.yml
 └── package.json
 ```
