@@ -288,6 +288,13 @@
       "sha256": "9e36a28a4f3d9589f0727f104f6394e201fbab6a502ebaf9185a5c0d69e754b1",
       "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
       "assetPath": "gui/texture/activity/yuanqigao/401005_icon_nameplate_bichon_1"
+    },
+    {
+      "id": 1045995,
+      "file": "core/src/gameConfig/seed_images_named/1045995.png",
+      "sha256": "180c64aa50a44e01816135ed1c0c62e6f6cbc4010a41d18018cbae9bb4482089",
+      "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "assetPath": "gold/Crop_5995"
     }
   ]
 }

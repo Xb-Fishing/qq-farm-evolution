@@ -108,6 +108,12 @@ test('S3 种子区分狗尾草、芦苇与四格泡泡棉花糖，元气糕不�
   assert.equal(isSeedItem(1028), false);
 });
 
+test('黄金芦苇变异物品按 type 17 显示且不进入种子列表', () => {
+  assert.equal(getItemById(1045995)?.name, '黄金·芦苇');
+  assert.equal(isSeedItem(1045995), false);
+  assert.match(getItemImageById(1045995), /1045995\.png$/);
+});
+
 test('S3 专属种子 PNG 优先于通用回退，装扮不使用跨物品顶替图', () => {
   const { getGenericFallbackItemIds } = require('../src/config/gameConfig');
   assert.deepEqual(getGenericFallbackItemIds(), []);
