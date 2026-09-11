@@ -26,8 +26,8 @@ test('S3 说明覆盖全部玩法、结束提示和来源冲突，状态缺失�
   assert.equal(activity.resources.find(item => item.key === 'seed').itemId, 29004);
   assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 1028);
   assert.match(activity.resources.find(item => item.key === 'seed').image, /29004_Crop_9004_Seed/);
-  // 元气糕 1028 无专属图时保持空，不能拿任何种子图顶替。
-  assert.equal(activity.resources.find(item => item.key === 'cake').image, '');
+  // 元气糕 1028 使用专属图标，不能拿任何种子图顶替。
+  assert.match(activity.resources.find(item => item.key === 'cake').image, /1028_%E8%90%8C%E5%AE%A0%E5%85%83%E6%B0%94%E7%B3%95/);
   assert.match(activity.statusLabel, /节点未启用/);
   assert.equal(activity.recordStateAvailable, false);
   assert.deepEqual(activity.protocol.opaqueReadOnlyFields, [115]);
