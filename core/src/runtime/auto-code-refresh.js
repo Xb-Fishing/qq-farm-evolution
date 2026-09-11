@@ -113,6 +113,10 @@ function createAutoCodeRefreshService(deps) {
     const blockedToken = definitiveCredentialFailures.get(String(accountId || ''));
     if (!blockedToken) return false;
     const account = findAccount(accountId);
+    // 刷新接口可能在返回 40188/invalid scope 前已经滚动 refresh token。
+    // 这时不能用旧 token 判断“凭据已换新”，否则会把明确失效误当成
+    // 重新授权，继续排程接管并重复请求。只有一次成功的 Code 刷新（或
+    // 进程重新扫码后成功写入凭据）才会在 refreshAccountCode 成功路径清除阻断。
     if (!account || String(account.refreshtoken || '') === blockedToken) return true;
     definitiveCredentialFailures.delete(String(accountId || ''));
     return false;
@@ -228,7 +232,13 @@ function createAutoCodeRefreshService(deps) {
     } catch (err) {
       if (recovery) recovery.failures += 1;
       if (isDefinitiveCredentialFailure(err)) {
-        definitiveCredentialFailures.set(String(accountId), String(account.refreshtoken || ''));
+        // issueFarmCode 的自动续期可能已经持久化了滚动后的 token；以失败
+        // 返回时账号中的最新 token 作为阻断指纹，避免 token 轮换导致接管
+        // 状态机立刻重新排程。无 token 时使用账号级哨兵，仍需成功路径
+        // 或人工重新扫码解除。
+        const latest = findAccount(accountId);
+        const blockedToken = String((latest && latest.refreshtoken) || account.refreshtoken || '__credential_blocked__');
+        definitiveCredentialFailures.set(String(accountId), blockedToken);
         addAccountLog('auto_relogin_blocked', '微信授权已明确失效，请重新扫码后再继续自动登录',
           account.id, account.name, { reason });
       }

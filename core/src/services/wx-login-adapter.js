@@ -42,6 +42,10 @@ function isDefinitiveWxCredentialError(raw) {
     const message = String(raw || '').toLowerCase();
     if (message.includes('40188') && message.includes('invalid scope'))
         return true;
+    // 上游会把 40188 翻译成“微信授权范围已失效”，此时文本中不一定
+    // 保留 token/refresh 关键词，仍应按不可恢复的 OAuth 授权失效处理。
+    if (message.includes('授权范围') && (message.includes('失效') || message.includes('无效') || message.includes('重新扫码')))
+        return true;
     if (message.includes('40030') || message.includes('42007'))
         return true;
     if (message.includes('refreshtoken') && (message.includes('-109') || message.includes('empty token')))
@@ -53,6 +57,7 @@ function shouldRefreshWxCredentialForCodeError(raw) {
     const message = String(raw || '').toLowerCase();
     return message.includes('manualauth rejected')
         || message.includes('invalid scope')
+        || message.includes('授权范围')
         || message.includes('40188')
         || message.includes('40030')
         || message.includes('42007')

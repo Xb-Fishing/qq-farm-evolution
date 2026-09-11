@@ -8,6 +8,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-farm-kickout-relogin-'
 process.env.FARM_DATA_DIR = dataDir;
 
 const store = require('../src/models/store');
+const wxLoginAdapter = require('../src/services/wx-login-adapter');
 const { createAutoCodeRefreshService } = require('../src/runtime/auto-code-refresh');
 const { getSchedulerRegistrySnapshot } = require('../src/services/scheduler');
 
@@ -156,6 +157,46 @@ test('保活临时失败使用受控短重试，不等下一个常规到期窗�
         assert.equal(reasons[0], 'normal');
         assert.equal(reasons[1], 'retry');
     } finally {
+        svc.stopAccount(account.id);
+    }
+});
+
+test('明确授权失效且 refresh token 已滚动时不重复排程接管', async () => {
+    const account = {
+        id: 'definitive-kickout-test',
+        name: 'Definitive credential fixture',
+        wxid: 'wx-definitive-test',
+        loginBuffer: 'login-buffer-fixture',
+        refreshtoken: 'r-old-fixture',
+    };
+    const events = [];
+    const originalGetFarmCode = wxLoginAdapter.getFarmCode;
+    wxLoginAdapter.getFarmCode = async () => {
+        // 模拟刷新端在返回 invalid scope 前已滚动 token 并持久化。
+        account.refreshtoken = 'r-new-fixture';
+        return { Success: false, Message: '获取 Code 失败: 微信授权范围已失效' };
+    };
+    const svc = createAutoCodeRefreshService({
+        store: {
+            getKickoutRelogin: () => ({ delayMinutes: 0.0005, validUntil: '' }),
+            isAccountAutoLogin: () => true,
+        },
+        getAccounts: () => ({ accounts: [account] }),
+        addOrUpdateAccount: () => {},
+        resolveWorkerControls: () => ({}),
+        keepWxCredentialAlive: async () => ({ Success: true }),
+        getCredentialKeepaliveDelayMs: () => 100000,
+        log: () => {},
+        addAccountLog: (type) => events.push(type),
+    });
+
+    try {
+        assert.equal(svc.scheduleKickoutRelogin(account.id, 'kickout:test'), true);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        assert.equal(events.filter(type => type === 'auto_relogin_blocked').length, 1);
+        assert.equal(events.filter(type => type === 'kickout_relogin_scheduled').length, 1);
+    } finally {
+        wxLoginAdapter.getFarmCode = originalGetFarmCode;
         svc.stopAccount(account.id);
     }
 });
