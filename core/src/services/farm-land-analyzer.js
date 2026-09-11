@@ -1,5 +1,5 @@
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
-const { getPlantName, getKnownPlantName, getPlantExp, getPlantByIdOrSeedId, getPlantGrowTime, getPlantGrowPhases, getSeedImageBySeedId, isSeedItem, getMutantDisplayPlantId, getMutantPlantImageByPhase, getMutantEffectsByIds } = require('../config/gameConfig');
+const { getPlantName, getKnownPlantName, getItemById, getPlantExp, getPlantByIdOrSeedId, getPlantGrowTime, getPlantGrowPhases, getSeedImageBySeedId, isSeedItem, getMutantDisplayPlantId, getMutantPlantImageByPhase, getMutantEffectsByIds } = require('../config/gameConfig');
 const { toNum, toTimeSec, getServerTimeSec, logWarn } = require('../utils/utils');
 const { getAllLands } = require('./farm-api');
 
@@ -532,9 +532,13 @@ async function getLandsDetail() {
       const phase = toNum(currentPhase.phase);
       const mutantConfigIds = plant.mutant_config_ids || [];
       const displayPlantId = getMutantDisplayPlantId(plantId, mutantConfigIds);
+      const runtimeItemName = String(getItemById(rawPlantId)?.name || '')
+        .replace(/种子$/, '')
+        .trim();
       const displayName = getKnownPlantName(displayPlantId)
         || getKnownPlantName(plantId)
         || String(plant.name || '').trim()
+        || runtimeItemName
         || getPlantName(plantId);
       const plantInfo = plantConfig;
       const seedId = toNum(plantInfo?.seed_id)

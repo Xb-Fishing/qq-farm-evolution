@@ -628,7 +628,7 @@ function readAgentFailureReason(logFile) {
   try {
     const text = fs.readFileSync(logFile, 'utf8');
     const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const candidate = [...lines].reverse().find(line => /^(?:error:|error\b|fatal:|failed\b)|(?:error|failed|exception|capacity|expired)/i.test(line));
+    const candidate = [...lines].reverse().find(line => /^(?:error:|error\b|fatal:|failed\b)|error|failed|exception|capacity|expired/i.test(line));
     return candidate ? redactExternalText(candidate).slice(0, 300) : '';
   } catch {
     return '';
@@ -717,7 +717,7 @@ function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) 
 7. 腾讯上游游戏协议与本项目下游管理 API 必须分层：下游页面可以频繁读取本地状态，但必须用缓存/并发合并阻止每次刷新穿透到腾讯。接口存在、字段可见、List 下发、返回成功甚至 bot 试调成功，都不能单独证明接口安全；禁止枚举未下发 ID、试探未知 cmd/字段或用线上账号做协议发现。新写操作至少同时具备“当前官方客户端可达调用路径”和“官方客户端自然操作产生的成功请求样本”，否则只能只读展示。
 8. 没有可靠问题证据、没有明确安全收益，或现有逻辑已经符合要求时，允许完全不改代码、不改 HANDOFF、不生成提交；禁止为了“完成进化”制造改动或只刷巡检记录。
 9. 只要实际修改代码，必须同步更新 docs/HANDOFF.md，记录改了什么、踩坑注意点、验证结果、风险边界和回滚方法；全量测试通过后只创建本地提交，由父进程对提交范围、新增行、提交标题和文件名做隐私扫描，通过后才能推送 GitHub。
-10. 每日巡检必须专门检查活动种子闭环：活动说明/商城道具、背包种子列表、土地 plant.id、配置中的 seed_id/fruit_id/size、土地阶段图和前端名称是否一致。plant.id 可能是植物 ID，也可能是服务端回包使用的种子 ID，必须先做双向映射再展示或计算，不能出现“植物<ID>”、裸 seedId、背包优先策略漏掉活动种子或空贴图；名称/贴图缺证据时要明确标记未知，不能猜资产。
+10. 每日巡检必须专门检查活动种子闭环：活动说明/商城道具/field 110 奖励、Bag 原始物品、/api/bag/seeds、土地 plant.id、配置中的 seed_id/fruit_id/size、土地阶段图和前端名称是否一致。活动奖励新 ID 不能只停留在“活动记录已解析”：必须确认背包优先列表能看到种子、种子名称不再是“物品<ID>”/“未知种子<ID>”、活动商城和奖励组件都有本地可加载图标；ItemShow 只提供价格等展示扩展时，不能把它误当成类型证据。plant.id 可能是植物 ID，也可能是服务端回包使用的种子 ID，必须先做双向映射再展示或计算，不能出现“植物<ID>”、裸 seedId、背包优先策略漏掉活动种子或空贴图；植物 ID/果实 ID/专属资产缺土地或官方资源证据时，明确保留待确认并使用已存在的官方通用回退图，不能猜资产。
 11. 每日巡检必须检查好友偷菜时间的语义：摘要没有 ripe_time_sec 时不能把 0 当成“没有成熟”或用自己农场时钟冒充好友时钟；已从地块 phases 读到的精确墙钟不能被后续摘要覆盖。面板要区分“下一次检查”“已知最早成熟”和“成熟时间未读取”；不能为了补齐普通好友显示恢复全好友高频 Enter。
 `;
 

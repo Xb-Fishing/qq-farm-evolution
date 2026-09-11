@@ -9,6 +9,8 @@
   { "id": 208010, "name": "比熊乐园围栏" },
   { "id": 2161, "name": "比熊乐园头像框" },
   { "id": 401005, "name": "比熊乐园铭牌" },
+  { "id": 29004, "name": "萌宠元气糕种子", "type": 5, "interaction_type": "plant", "image": "/game-config/plant_images/common/seed.png", "evidence": "S3 萌宠 field 110 奖励记录与背包回包；29xxx 为活动种子编号段" },
+  { "id": 20516, "name": "萌宠元气糕", "type": 4, "image": "/game-config/seed_images_named/10001_%E6%94%B6%E8%8E%B7_icon_harvest.png", "evidence": "S3 萌宠说明将其定义为稀有作物产出物，field 110 奖励数量与种子成对出现" },
   { "id": 20522, "name": "金币果种子" },
   { "id": 20523, "name": "经验蘑菇种子" }
 ]

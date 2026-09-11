@@ -417,6 +417,9 @@ async function getBagDetail() {
     else if (getPlantByFruitId(id)) {
       if (!name) name = `${getFruitName(id)  }果实`;
       category = 'fruit';
+    } else if (Number(info && info.type) === 4) {
+      // 活动产出物可能尚未进入 Plant.json，但活动回包已确认它是果实/产出物。
+      category = 'fruit';
     } else if (seedPlant || isActivitySeedInfo(info)) {
       if (!name) name = `${seedPlant?.name || '未知'}种子`;
       category = 'seed';
@@ -642,9 +645,7 @@ async function sellAllFruits() {
 /**
  * 获取背包中的种子列表
  */
-async function getBagSeeds() {
-  const bag = await getBag();
-  const items = getBagItems(bag);
+function getBagSeedsFromItems(items) {
   const seedMap = new Map();
   const fallbackSeedIds = [];
 
@@ -678,18 +679,29 @@ async function getBagSeeds() {
         || getSeedImageByName(name)
         || getPlantImageByPhase(0, 1),
       plantSize,
+      mappingStatus: plant ? 'mapped' : info && info.evidence ? 'item_only' : 'unknown',
     };
     existing.count += count;
     seedMap.set(id, existing);
   }
 
   if (fallbackSeedIds.length > 0) {
+    const activityOnly = fallbackSeedIds.filter(id => Boolean(getItemById(id)?.evidence));
     log('warehouse', `bag seed fallback detection: ${fallbackSeedIds.join(',')}`, {
-      module: 'warehouse', event: 'bag_seed_detect', result: 'fallback', count: fallbackSeedIds.length,
+      module: 'warehouse',
+      event: 'bag_seed_detect',
+      result: activityOnly.length === fallbackSeedIds.length ? 'activity_seed_without_plant_mapping' : 'fallback',
+      count: fallbackSeedIds.length,
+      pendingPlantMappingIds: activityOnly,
     });
   }
 
   return Array.from(seedMap.values());
+}
+
+async function getBagSeeds() {
+  const bag = await getBag();
+  return getBagSeedsFromItems(getBagItems(bag));
 }
 
 // ---- ?? ----
@@ -710,4 +722,5 @@ module.exports = {
   getCurrentTotalsFromBag,
   getBagSeeds,
   getContainerHoursFromBagItems,
+  getBagSeedsFromItems,
 };
