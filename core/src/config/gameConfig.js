@@ -29,24 +29,19 @@ const staticItemImageMap = new Map([
     [1029, '/activity/star-festival/star-token.png'],
     [1024, '/activity/qixi/qixi-feather.png'],
     [301103, '/activity/qixi/qixi-dew.png'],
-    // S3 萌宠当前回包只给出道具 ID（装扮图片在 extra.res 中），
-    // 使用仓库内已经导出的官方类别图，避免活动页出现空白图标。
-    [201010, '/game-config/seed_images_named/skinDetail/img_skin_house.png'],
-    [207010, '/game-config/seed_images_named/skinDetail/img_skin_road.png'],
-    [205009, '/game-config/seed_images_named/skinDetail/img_skin_house.png'],
-    [202009, '/game-config/seed_images_named/skinDetail/img_skin_board.png'],
-    [206009, '/game-config/seed_images_named/skinDetail/img_skin_warehouse.png'],
-    [203010, '/game-config/seed_images_named/skinDetail/img_skin_barrier.png'],
-    [208010, '/game-config/seed_images_named/skinDetail/img_skin_barrier.png'],
-    [2161, '/game-config/seed_images_named/skinDetail/2150_img_nangua_head_bg.png'],
-    [401005, '/game-config/seed_images_named/skinDetail/img_skin_board.png'],
-    // 活动新作物尚未随当前仓库导出专属 Crop 贴图；这是官方通用种子/收获图，
-    // 明确作为可见回退，不伪造不存在的 Crop_9004 资源。
+    // 活动新作物尚未随当前仓库导出专属 Crop 贴图；以下使用官方通用种子图作为
+    // 明确标记的回退（见 getGenericFallbackItemIds），不伪造不存在的专属资源。
+    // 2026-09-11 删除了 S3 装饰商品的跨物品类别顶替图：那是别的道具的图，
+    // 不是官方专属图标；缺图商品改为前端仅显示名称，等抓取管道补真实图。
     [29004, '/game-config/plant_images/common/seed.png'],
-    [20516, '/game-config/seed_images_named/10001_%E6%94%B6%E8%8E%B7_icon_harvest.png'],
     [20522, '/game-config/plant_images/common/seed.png'],
     [20523, '/game-config/plant_images/common/seed.png'],
 ]);
+
+// 上面这几项的图标是官方"通用种子图"，不是道具的官方专属图。
+// 抓取到专属 PNG 并人工提交后，应删除对应回退行——这个集合就是自进化闭环的
+// 可度量信号（非空 = 仍有图标缺口）。
+const genericFallbackItemIds = new Set([29004, 20522, 20523]);
 
 // 变异效果配置
 let mutantEffectConfig = null;
@@ -705,6 +700,11 @@ function isSeedItem(itemId) {
     return seedItemMap.has(Number(itemId) || 0);
 }
 
+/** 图标仍是官方通用回退（非专属官方图）的物品 ID 列表；非空=有图标缺口。 */
+function getGenericFallbackItemIds() {
+    return Array.from(genericFallbackItemIds);
+}
+
 /** 获取种子价格 */
 function getSeedPrice(seedId) {
     const item = seedItemMap.get(Number(seedId) || 0);
@@ -807,6 +807,7 @@ module.exports = {
     getItemById,
     registerRuntimeItem,
     getItemImageById,
+    getGenericFallbackItemIds,
     isSeedItem,
     getSeedPrice,
     getFruitPrice,

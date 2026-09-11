@@ -648,6 +648,7 @@ async function sellAllFruits() {
 function getBagSeedsFromItems(items) {
   const seedMap = new Map();
   const fallbackSeedIds = [];
+  const unclassifiedIds = [];
 
   for (const item of items || []) {
     const id = toNum(item && item.id);
@@ -658,7 +659,12 @@ function getBagSeedsFromItems(items) {
     const info = getItemById(id) || null;
     const interactionType = String(info && info.interaction_type || '').toLowerCase();
     const seedLike = !!plant || isSeedItem(id) || interactionType === 'plant' || isActivitySeedInfo(info);
-    if (!seedLike) continue;
+    if (!seedLike) {
+      // 只记录本地索引完全没有条目的未知物品（可能是新活动种子/道具）；
+      // 已知果实、化肥、货币等非种子物品不算识别缺口，不记录避免刷屏。
+      if (!info && unclassifiedIds.length < 20) unclassifiedIds.push(id);
+      continue;
+    }
 
     if (!plant && fallbackSeedIds.length < 20) fallbackSeedIds.push(id);
 
@@ -683,6 +689,16 @@ function getBagSeedsFromItems(items) {
     };
     existing.count += count;
     seedMap.set(id, existing);
+  }
+
+  if (unclassifiedIds.length > 0) {
+    log('warehouse', `bag contains items missing from local item index: ${unclassifiedIds.join(',')}`, {
+      module: 'warehouse',
+      event: 'bag_unclassified_item',
+      result: 'unknown_item_ids',
+      count: unclassifiedIds.length,
+      unclassifiedItemIds: unclassifiedIds,
+    });
   }
 
   if (fallbackSeedIds.length > 0) {

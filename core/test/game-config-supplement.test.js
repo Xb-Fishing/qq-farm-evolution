@@ -106,18 +106,35 @@ test('S3 萌宠活动种子在未建立 Plant 映射时仍进入背包优先索�
   ]);
   assert.match(seeds[0].image, /plant_images\/common\/seed\.png$/);
   assert.equal(getItemById(20516)?.name, '萌宠元气糕');
-  assert.match(getItemImageById(20516), /10001_.+harvest/);
+  // 20516 的图标是上一轮用通用收获图标顶替的，已删除；专属官方图待抓取
+  assert.equal(getItemImageById(20516), '');
 });
 
-test('S3 商城已知商品均有仓库内可加载的图标回退', () => {
-  for (const itemId of [1029, 201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005, 20522, 20523]) {
+test('S3 商城种子类商品使用官方通用种子回退图，装饰类不再用其他道具的图顶替', () => {
+  const {
+    getGenericFallbackItemIds,
+  } = require('../src/config/gameConfig');
+  const genericFallback = new Set(getGenericFallbackItemIds());
+
+  // 种子类：官方通用种子图回退，明确标记为 generic fallback
+  for (const itemId of [20522, 20523]) {
     const image = getItemImageById(itemId);
-    assert.match(image, /^\/(?:game-config|activity)\//, `item ${itemId} image URL`);
-    const relative = decodeURIComponent(image.replace('/game-config/', ''));
-    const file = image.startsWith('/game-config/')
-      ? path.join(__dirname, '..', 'src', 'gameConfig', relative)
-      : path.join(__dirname, '..', '..', 'web', 'public', image.replace('/activity/', 'activity/'));
-    assert.equal(fs.existsSync(file), true, `item ${itemId} image file`);
+    assert.equal(image, '/game-config/plant_images/common/seed.png', `item ${itemId} generic seed image`);
+    assert.equal(genericFallback.has(itemId), true, `item ${itemId} in generic fallback set`);
+    assert.equal(
+      fs.existsSync(path.join(__dirname, '..', 'src', 'gameConfig', 'plant_images', 'common', 'seed.png')),
+      true,
+      'common seed image file',
+    );
+  }
+  assert.equal(genericFallback.has(29004), true);
+
+  // 装饰类：上一轮的跨物品类别顶替图已删除（那是别的道具的官方图，不是这些道具的图）。
+  // 缺专属官方图时返回空字符串，由前端仅显示名称；等 fetch-official-icons 抓到真实图后
+  // 人工提交并在下一轮删除对应回退。
+  for (const itemId of [201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005, 20516]) {
+    assert.equal(getItemImageById(itemId), '', `item ${itemId} must not use another item's image`);
+    assert.equal(genericFallback.has(itemId), false, `item ${itemId} not in generic fallback set`);
   }
 });
 
