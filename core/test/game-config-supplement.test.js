@@ -12,6 +12,7 @@ const {
   isSeedItem,
   getPlantGrowPhases,
 } = require('../src/config/gameConfig');
+const { getBagSeedsFromItems } = require('../src/services/warehouse');
 
 const activityPlants = [
   { asset: 'Crop_9003', seedId: 29003, fruitId: 49003, plantId: 1029003, mutantId: 1049003, name: '星语铃花' },
@@ -92,6 +93,32 @@ test('活动商城明确标为种子的道具进入背包优先种子索引', ()
   assert.equal(getItemById(20522)?.name, '金币果种子');
   assert.equal(getItemById(20523)?.name, '经验蘑菇种子');
   assert.equal(getPlantNameBySeedId(20522), '金币果');
+});
+
+test('S3 萌宠活动种子在未建立 Plant 映射时仍进入背包优先索引', () => {
+  const seeds = getBagSeedsFromItems([
+    { id: 29004, count: 3 },
+    { id: 20516, count: 56 },
+    { id: 80001, count: 2 },
+  ]);
+  assert.deepEqual(seeds.map(item => [item.seedId, item.name, item.count, item.plantSize]), [
+    [29004, '萌宠元气糕种子', 3, 1],
+  ]);
+  assert.match(seeds[0].image, /plant_images\/common\/seed\.png$/);
+  assert.equal(getItemById(20516)?.name, '萌宠元气糕');
+  assert.match(getItemImageById(20516), /10001_.+harvest/);
+});
+
+test('S3 商城已知商品均有仓库内可加载的图标回退', () => {
+  for (const itemId of [1029, 201010, 207010, 205009, 202009, 206009, 203010, 208010, 2161, 401005, 20522, 20523]) {
+    const image = getItemImageById(itemId);
+    assert.match(image, /^\/(?:game-config|activity)\//, `item ${itemId} image URL`);
+    const relative = decodeURIComponent(image.replace('/game-config/', ''));
+    const file = image.startsWith('/game-config/')
+      ? path.join(__dirname, '..', 'src', 'gameConfig', relative)
+      : path.join(__dirname, '..', '..', 'web', 'public', image.replace('/activity/', 'activity/'));
+    assert.equal(fs.existsSync(file), true, `item ${itemId} image file`);
+  }
 });
 
 test('土地回包使用 seed id 时通过同一映射得到活动植物配置', () => {

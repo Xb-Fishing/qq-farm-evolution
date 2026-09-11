@@ -879,8 +879,15 @@ async function getBearActivity(options = {}) {
   if (toNum(snapshot?.id) !== bearActivity.BEAR_ACTIVITY_ID) {
     throw new Error('S3 萌宠活动组不匹配，停止读取');
   }
+  // 奖励记录是当前活动对新道具的只读权威证据；先注册，再读取背包，
+  // 这样活动种子不会等到用户手动打开活动页后才进入背包优先索引。
+  bearActivity.registerBearObservedItems(snapshot);
   const shop = snapshot.children?.find(node => toNum(node.id) === bearActivity.BEAR_SHOP_ACTIVITY_ID);
-  const ids = [bearActivity.BEAR_CURRENCY_ITEM_ID, ...(shop?.details?.exchangeShop?.items || []).map(item => item.itemId)];
+  const ids = [
+    bearActivity.BEAR_CURRENCY_ITEM_ID,
+    ...bearActivity.getBearObservedItemIds(snapshot),
+    ...(shop?.details?.exchangeShop?.items || []).map(item => item.itemId),
+  ];
   let inventory = { counts: new Map(), available: false };
   try {
     inventory = await inventoryReader([...new Set(ids)]);
