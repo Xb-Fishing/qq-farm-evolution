@@ -143,5 +143,13 @@
     "rarity_color": "D1A21E",
     "desc": "公益小红花活动结算礼包，打开后，可获得化肥礼包*20、金豆豆*200、点券*300",
     "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 1045995,
+    "name": "黄金·芦苇",
+    "type": 17,
+    "asset_name": "gold/Crop_5995",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot"
   }
 ]
