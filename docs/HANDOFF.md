@@ -1115,3 +1115,28 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - Node 20 串行全量 **390/390** 通过（bag-seed-recognition 8 条，新增黄金登记断言 + 日志去重行为断言：同签名不打、新增 ID 打一条带 addedItemIds、清空后复位可再报）；ESLint 0 error。并行运行的长凭据 60ms 定时断言偶发失败为 HANDOFF 既有已知项，串行通过。
 - 重启后预期：面板 `bag_unclassified_item` 只在 80102 首次出现时打一条，之后静默；1040516/1049004 从未识别清单消失（已登记）。
 - 回滚 `git revert <本轮提交>`：恢复刷屏与两个黄金变体的未识别状态；1045995 登记不受影响。
+
+## 挑战书登记与巡检延期收口（2026-09-13 第二轮）
+
+### 安全巡检延期的原因与处理
+
+- 用户面板报"安全巡检已延期：检测到未提交文件（含未跟踪文件）"。根因：`docs/CLAUDE_FROM_CODEX.md`（Codex 交接文档）自 9/11 起一直是 untracked 状态，`worktreeChanges()` 的 `git status --porcelain --untracked-files=normal` 把它当成人工未提交文件，每次自动巡检启动都按设计保护延期。**不是故障**。已隐私扫描（`~/.codex/` 为通用主目录引用，无用户名/凭据/内网地址）后提交（`60a4834`），工作区恢复干净；`deferred` 是可恢复状态，下次调度触发会自动补跑当天 safety（`lastSafetyEvolveDate` 未写入 + deferred 不在 BLOCKING_STATUSES）。
+
+### 80102 = 中级挑战书（用户指出可找，证据已闭环）
+
+- 用户要求自己找证据。**client-config-evidence 的 ItemInfo 快照直接命中**：`80101 初级挑战书 / 80102 中级挑战书 / 80103 高级挑战书`（type 19，`icon_res gui/texture/icon/icon_s3_book0/1/2`，desc 与活动说明一致）。
+- 双源交叉：参考仓库的 pet-diary `ActivityPetTreasureHuntChalleng` 表同 ID 同名称（价值 50/150/300），与 S3 活动说明"中级挑战书(150幸运星)"三方一致。按证据登记三个挑战书到 `EventItems.json`。
+- 80102 之前误判为"化肥段新号"：80xxx 段被化肥占用（80001-80014）不等于整段都是化肥——**编号段规律不能当身份证据**（这也是 guardrails 既有硬门，本轮教训再次验证：先查配置快照再下结论）。
+
+### 官方 CDN 直连验证成功（重要基础设施结论）
+
+- `cdn-resource.nqf.qq.com` 从本机**直连可达**（DNS 只黑洞了 `appservice.qq.com`/裸 `nqf.qq.com`，CDN 域名正常解析）。用 sources.json 已验证哈希的 URL 测试下载芦苇种子 PNG，**sha256 完全匹配**——官方 CDN 下载链路全通。
+- 参考仓库（xxxscarlxrd404/qq-farm-bot，按 HANDOFF 只读对照）的 `pet-diary-assets.json` 有 132 条已解 URL 资产。本轮拉取 yuanqigao 商城 7 张兑换商品图，全部 sha256 验证通过——**与 Codex 上一轮已提交的 `{itemId}_S3_img_exchange_itemN.png` 内容完全相同**（重复下载已删），证明该批图标本就是官方 CDN 原图。
+- **解任意新图标的钥匙**：参考仓库 `cdn-resource-finder.js` 的方法——官方 miniapp 源码 `src/settings.json` 的 `assets.server + bundleVers` 给出每个 bundle 的 `config.{version}.json` 精确 URL → config.paths 里逻辑路径→uuid→native URL。本机无 miniapp 源码，settings 无法取得；**下次抓包会话或用户提供 settings.json 后可解全部图标**（含挑战书 icon_s3_book0/1/2、幸运星 1029 专属图）。
+- 挑战书/幸运星图标本轮保持待证空图（名称已闭环，不影响识别）；1029 仍用星标官方图（属于跨活动同图标语义，非顶替错误）。
+
+### 验证与回滚
+
+- Node 20 串行全量 **390/390** 通过（bag-seed-recognition 挑战书断言更新：三本挑战书名称 + 非种子）；ESLint 0 error。
+- 重启后预期：`bag_unclassified_item` 清单完全清空（80102 已登记），仅在未来新未知物品首现时打一条。
+- 回滚 `git revert <本轮提交>`：挑战书回到未识别清单；巡检延期根因（untracked 文档）已独立提交，不受影响。

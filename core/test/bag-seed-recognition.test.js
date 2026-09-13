@@ -162,14 +162,17 @@ test('雨落成诗留存道具 5001/5002 已按活动证据登记', () => {
   assert.deepEqual(seeds, []);
 });
 
-test('黄金变异物品按 104 段规律登记,80102 化肥段保持待证', () => {
+test('黄金变异物品按 104 段规律登记,挑战书按双源证据登记', () => {
   // 当前仓库在收狗尾草/泡泡棉花糖，其黄金变体与已登记的黄金·芦苇(1045995)同族同证据
   assert.equal(getItemById(1040516)?.name, '黄金·狗尾草');
   assert.equal(getItemById(1049004)?.name, '黄金·泡泡棉花糖');
   assert.equal(isSeedItem(1040516), false);
   assert.equal(isSeedItem(1049004), false);
-  // 80102 无名称证据，不猜
-  assert.equal(getItemById(80102) == null, true);
+  // 挑战书：client-config-evidence ItemInfo 快照 + pet-diary 挑战书配置表双源交叉
+  assert.equal(getItemById(80101)?.name, '初级挑战书');
+  assert.equal(getItemById(80102)?.name, '中级挑战书');
+  assert.equal(getItemById(80103)?.name, '高级挑战书');
+  assert.equal(isSeedItem(80102), false);
 });
 
 test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 刷屏', () => {
