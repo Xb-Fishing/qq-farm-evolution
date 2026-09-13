@@ -139,3 +139,34 @@ test('受跟踪内容不含机器用户路径、真实 Webhook 或隐藏管理�
   }
   assert.deepEqual(violations, []);
 });
+
+test('机器尾注域不触发 personal-email,真实邮箱仍拦截', () => {
+  const { scanTextForPrivacy } = require('../src/services/privacy-guard');
+
+  // Claude Code Co-Authored-By 尾注与 GitHub 匿名邮箱是机器域,不是个人信息
+  for (const text of [
+    'Co-Authored-By: Claude <noreply@anthropic.com>',
+    'Author: Xb-Fishing <Xb-Fishing@users.noreply.github.com>',
+  ]) {
+    const findings = scanTextForPrivacy(text, {});
+    assert.equal(
+      findings.some(f => f.rule === 'personal-email'),
+      false,
+      `机器尾注不应命中 personal-email: ${text}`,
+    );
+  }
+
+  // 真实个人/公司邮箱必须继续拦截
+  for (const text of [
+    '联系人 someone@qq.com',
+    'admin@example-corp.com.cn',
+    'privacy-fixture@example.invalid',
+  ]) {
+    const findings = scanTextForPrivacy(text, {});
+    assert.equal(
+      findings.some(f => f.rule === 'personal-email'),
+      true,
+      `真实邮箱应命中 personal-email: ${text}`,
+    );
+  }
+});
