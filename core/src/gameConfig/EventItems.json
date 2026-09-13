@@ -151,5 +151,21 @@
     "asset_name": "gold/Crop_5995",
     "sells": "1005:6",
     "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot"
+  },
+  {
+    "id": 1040516,
+    "name": "黄金·狗尾草",
+    "type": 17,
+    "asset_name": "gold/Crop_516",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律（1045995 黄金·芦苇 同族）+ 当前仓库正在收获狗尾草"
+  },
+  {
+    "id": 1049004,
+    "name": "黄金·泡泡棉花糖",
+    "type": 17,
+    "asset_name": "gold/Crop_9004",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律 + 当前仓库正在收获泡泡棉花糖"
   }
 ]

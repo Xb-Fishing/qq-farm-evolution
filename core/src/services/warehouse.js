@@ -670,6 +670,9 @@ async function sellAllFruits() {
 /**
  * 获取背包中的种子列表
  */
+let lastUnclassifiedSignature = '';
+const lastUnclassifiedReportedIds = new Set();
+
 function getBagSeedsFromItems(items) {
   const seedMap = new Map();
   const fallbackSeedIds = [];
@@ -719,14 +722,26 @@ function getBagSeedsFromItems(items) {
     seedMap.set(id, existing);
   }
 
-  if (unclassifiedIds.length > 0) {
+  // 面板刷屏修复：未识别清单没有变化时不重复打日志（Bag 每个农场 tick 都读一次，
+  // 原实现同一批未知物品会每轮刷一条）。签名变化（新增/消失）时才报。
+  const unclassifiedSignature = unclassifiedIds.join(',');
+  if (unclassifiedIds.length > 0 && unclassifiedSignature !== lastUnclassifiedSignature) {
+    lastUnclassifiedSignature = unclassifiedSignature;
+    const added = unclassifiedIds.filter(id => !lastUnclassifiedReportedIds.has(id));
+    for (const id of unclassifiedIds) lastUnclassifiedReportedIds.add(id);
     log('warehouse', `bag contains items missing from local item index: ${unclassifiedIds.join(',')}`, {
       module: 'warehouse',
       event: 'bag_unclassified_item',
       result: 'unknown_item_ids',
       count: unclassifiedIds.length,
       unclassifiedItemIds: unclassifiedIds,
+      addedItemIds: added,
     });
+  }
+  if (unclassifiedIds.length === 0 && lastUnclassifiedSignature) {
+    // 全部补齐后复位，未来再出现新未识别物品可重新报告
+    lastUnclassifiedSignature = '';
+    lastUnclassifiedReportedIds.clear();
   }
 
   if (fallbackSeedIds.length > 0) {

@@ -1096,3 +1096,22 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 安全 Agent 首先读取最近 24 小时 bot.log、combined-*.log、error-*.log，按 event/module/result 聚合请求失败、治理拦截、收获/种植/偷菜失败、施肥触发、空图、裸 ID、seedId=0 和重试风暴，再按阈值和代码路径复盘。成熟抢收与施肥趋势必须分开；不确定只记风险，不收紧收益链。
 - 外部 RAG 只在证据变化或 HANDOFF 未决时按需使用，记录公开仓库/提交 SHA 作为线索，不执行外部代码/依赖/二进制，不复制 RPC、登录、设备、反检测实现；所有数据和资源结论必须回到当前官方 List/Bag/Lands、逻辑路径和 SHA 校验。
 - 这些规则已经写入 `buildEvolutionGuardrails()`、活动 Prompt 和安全 Prompt，并由 session-lifecycle 回归锁定；以后不能只因为活动 ID/指纹未变就跳过图标、种子或日志缺口。
+
+## 背包未识别清单刷屏与黄金变体补登记（2026-09-13）
+
+### 现场证据与根因
+
+- 用户面板被 `bag_unclassified_item: 80102,1040516` 刷屏。两个 ID 的身份查明：`1040516 = 黄金·狗尾草`（104 段黄金变异规律，与已登记的 `1045995 黄金·芦苇` 同族同证据——Bag field 100 结构 + 客户端配置快照；当时只补了芦苇一个，狗尾草/泡泡棉花糖两个同族漏了，因为 9/12 起仓库开始收获这两种作物才出现）；`80102` 是 80xxx 化肥段新号（show 字段只有 7 字节数字，无名称文本），**名称无证据，保持待证不猜**。
+- 刷屏根因：`bag_unclassified_item` 日志**没有按 ID 去重**——Bag 每个农场 tick 读一次，同一批未知物品每 20 分钟左右刷一条；`bag_item_show_evidence` 有去重（`BAG_SHOW_LOGGED_IDS`）而 unclassified 没有，是 9/11 实现时的疏漏。
+
+### 本轮改动
+
+1. `warehouse.js` `getBagSeedsFromItems()` 的 unclassified 日志改为**清单签名去重**：签名（ID 列表拼接）不变不打；变化时打一条并附 `addedItemIds`（本次新增的 ID）；清单清空后复位签名与已报集合，未来新未知物品可重新报告。
+2. `EventItems.json` 按 104 段黄金规律补登记 `1040516 黄金·狗尾草`、`1049004 黄金·泡泡棉花糖`（type 17、asset `gold/Crop_516`、`gold/Crop_9004`、sells 1005:6，与 1045995 完全同模式）。两者无专属官方 PNG（`1045995.png` 是 Codex 从客户端配置快照人工提交的），保持空图由前端显示名称，**不伪造**、不进 genericFallback（那是种子类回退）。
+3. `80102` 不登记：化肥段 80001-80014 是 1h/4h/8h/12h 化肥，80102 具体时长/名称无任何本地证据，`bag_item_show_evidence` 线上实测 `empty_show`（无 ItemShow 名称），按硬门待证。
+
+### 验证与回滚
+
+- Node 20 串行全量 **390/390** 通过（bag-seed-recognition 8 条，新增黄金登记断言 + 日志去重行为断言：同签名不打、新增 ID 打一条带 addedItemIds、清空后复位可再报）；ESLint 0 error。并行运行的长凭据 60ms 定时断言偶发失败为 HANDOFF 既有已知项，串行通过。
+- 重启后预期：面板 `bag_unclassified_item` 只在 80102 首次出现时打一条，之后静默；1040516/1049004 从未识别清单消失（已登记）。
+- 回滚 `git revert <本轮提交>`：恢复刷屏与两个黄金变体的未识别状态；1045995 登记不受影响。
