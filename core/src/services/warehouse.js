@@ -107,6 +107,59 @@ async function getBag() {
   return reply;
 }
 
+// ---- 面板背包读取缓存（下游刷新不穿透腾讯上游） ----
+// 面板 Dashboard(10s)/Settings(15s)/BagPanel(60s) 固定轮询 /api/bag 与
+// /api/bag/seeds；无缓存时每次直发 ItemService.Bag（日志实测为亚毫秒稳定
+// 固定间隔，属机器指纹）。语义与 interact.js 相同：60s 成功缓存 + 在途合并
+// + 60s 失败冷却；Sell/Use/BatchUse 成功后失效。只供面板读路径使用，
+// 种植（getBagSeeds）与农场决策仍走无缓存的 getBag()。
+const BAG_PANEL_CACHE_MS = 60 * 1000;
+let panelBagCache = null;
+let panelBagCacheAt = 0;
+let panelBagInFlight = null;
+let panelBagRetryAfter = 0;
+
+async function getBagForPanel() {
+  const now = Date.now();
+  if (panelBagCache && now - panelBagCacheAt < BAG_PANEL_CACHE_MS) {
+    return panelBagCache;
+  }
+  if (panelBagInFlight) return panelBagInFlight;
+  if (now < panelBagRetryAfter) {
+    throw new Error('背包读取冷却中，请稍后再试');
+  }
+  const pending = (async () => {
+    try {
+      const bag = await getBag();
+      if (panelBagInFlight === pending) {
+        panelBagCache = bag;
+        panelBagCacheAt = Date.now();
+        panelBagRetryAfter = 0;
+      }
+      return bag;
+    } catch (err) {
+      if (panelBagInFlight === pending) {
+        panelBagRetryAfter = Date.now() + BAG_PANEL_CACHE_MS;
+      }
+      throw err;
+    }
+  })();
+  panelBagInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (panelBagInFlight === pending) panelBagInFlight = null;
+  }
+}
+
+function invalidatePanelBagCache() {
+  panelBagCache = null;
+  panelBagCacheAt = 0;
+  panelBagRetryAfter = 0;
+  // 在途读取也解除引用：其完成体检查 inFlight === pending 失败，不会写回旧数据
+  panelBagInFlight = null;
+}
+
 function toSellItem(raw) {
   const id = toNum(raw && raw.id);
   const count = toNum(raw && raw.count);
@@ -121,6 +174,7 @@ async function sellItems(items) {
     types.SellRequest.create({ items: items.map(toSellItem) })
   ).finish();
   const { body } = await sendMsgAsync('gamepb.itempb.ItemService', 'Sell', request);
+  invalidatePanelBagCache();
   return types.SellReply.decode(body);
 }
 
@@ -147,6 +201,7 @@ async function useItem(itemId, count = 1, uid = 0) {
     })
   ).finish();
   const { body } = await sendMsgAsync('gamepb.itempb.ItemService', 'Use', request);
+  invalidatePanelBagCache();
   return types.UseReply.decode(body);
 }
 
@@ -162,6 +217,7 @@ async function batchUseItems(entries) {
   ).finish();
 
   const { body } = await sendMsgAsync('gamepb.itempb.ItemService', 'BatchUse', request);
+  invalidatePanelBagCache();
   return types.BatchUseReply.decode(body);
 }
 
@@ -410,7 +466,7 @@ async function getCurrentTotalsFromBag() {
 // ---- 背包详情 ----
 
 async function getBagDetail() {
-  const bag = await getBag();
+  const bag = await getBagForPanel();
   const items = getBagItems(bag);
 
   // 原始物品列表
@@ -763,6 +819,13 @@ async function getBagSeeds() {
   return getBagSeedsFromItems(getBagItems(bag));
 }
 
+// 面板专用（worker RPC 'getBagSeeds'）：走 60s 缓存，下游固定轮询不穿透上游。
+// 种植路径继续用无缓存的 getBagSeeds()，保证种下的是新鲜背包数量。
+async function getBagSeedsForPanel() {
+  const bag = await getBagForPanel();
+  return getBagSeedsFromItems(getBagItems(bag));
+}
+
 // ---- ?? ----
 module.exports = {
   getBag,
@@ -780,6 +843,10 @@ module.exports = {
   getBagItems,
   getCurrentTotalsFromBag,
   getBagSeeds,
+  getBagSeedsForPanel,
+  getBagForPanel,
+  invalidatePanelBagCache,
+  BAG_PANEL_CACHE_MS,
   getContainerHoursFromBagItems,
   getBagSeedsFromItems,
   inspectBagItemShows,
