@@ -1396,7 +1396,7 @@ async function handleApiCall(msg) {
     try {
         switch (method) {
             case 'getLands':
-                result = await getLandsDetail();
+                result = await require('../services/farm-land-analyzer').getLandsDetailForPanel();
                 break;
             case 'getFriends':
                 result = await getFriendsList(args[0] === true);
@@ -1440,7 +1440,7 @@ async function handleApiCall(msg) {
                 result = await require('../services/warehouse').getBagDetail();
                 break;
             case 'getBagSeeds':
-                result = await require('../services/warehouse').getBagSeeds();
+                result = await require('../services/warehouse').getBagSeedsForPanel();
                 break;
             case 'getDailyEvents':
                 result = require('../services/daily-events').getTodayEvents(
@@ -1464,11 +1464,12 @@ async function handleApiCall(msg) {
             }
             case 'getDogSkillGiftStatus': {
                 const dogGifts = require('../services/dog-skill-gifts');
-                result = { pendingCount: dogGifts.getPendingGiftCount(await dogGifts.getDogInfo()) };
+                result = { pendingCount: dogGifts.getPendingGiftCount(await dogGifts.getDogInfoForPanel()) };
                 break;
             }
             case 'claimDogSkillGifts':
                 result = await require('../services/dog-skill-gifts').checkAndClaimDogSkillGifts();
+                require('../services/dog-skill-gifts').invalidatePanelDogInfoCache();
                 break;
             case 'useItem': {
                 const { useItem } = require('../services/warehouse');
@@ -1497,16 +1498,21 @@ async function handleApiCall(msg) {
             }
             case 'doFarmOp':
                 result = await runFarmOperation(args[0]);
+                // 面板触发的农场操作（收获/浇水/除草等）同时变更土地与背包
+                require('../services/farm-land-analyzer').invalidatePanelLandsCache();
+                require('../services/warehouse').invalidatePanelBagCache();
                 break;
             case 'buyFertilizer': {
                 const fertType = args[0] || 'organic';
                 const count = Number(args[1]) || 1;
                 result = await autoBuyFertilizer(true, fertType, count);
+                require('../services/warehouse').invalidatePanelBagCache();
                 break;
             }
             case 'checkAndBuyFertilizer': {
                 const opts = args[0] || {};
                 result = await checkAndBuyFertilizerBoth(opts);
+                require('../services/warehouse').invalidatePanelBagCache();
                 break;
             }
             case 'getAnalytics': {
@@ -1605,6 +1611,9 @@ async function handleApiCall(msg) {
                         });
                         result = { success: false, count: 0 };
                     }
+                    // 面板催熟同时变更土地与背包化肥数量
+                    require('../services/farm-land-analyzer').invalidatePanelLandsCache();
+                    require('../services/warehouse').invalidatePanelBagCache();
                 }
                 break;
             }
@@ -1614,6 +1623,7 @@ async function handleApiCall(msg) {
                     error = '无效的土地ID';
                 } else {
                     result = await removePlant([landId]);
+                    require('../services/farm-land-analyzer').invalidatePanelLandsCache();
                 }
                 break;
             }
@@ -1633,6 +1643,7 @@ async function handleApiCall(msg) {
                     });
                     result = { removed: occupiedLands.length };
                 }
+                require('../services/farm-land-analyzer').invalidatePanelLandsCache();
                 break;
             }
             default:
