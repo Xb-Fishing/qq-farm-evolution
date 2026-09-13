@@ -161,3 +161,52 @@ test('雨落成诗留存道具 5001/5002 已按活动证据登记', () => {
   const seeds = getBagSeedsFromItems([{ id: 5001, count: 3 }]);
   assert.deepEqual(seeds, []);
 });
+
+test('黄金变异物品按 104 段规律登记,80102 化肥段保持待证', () => {
+  // 当前仓库在收狗尾草/泡泡棉花糖，其黄金变体与已登记的黄金·芦苇(1045995)同族同证据
+  assert.equal(getItemById(1040516)?.name, '黄金·狗尾草');
+  assert.equal(getItemById(1049004)?.name, '黄金·泡泡棉花糖');
+  assert.equal(isSeedItem(1040516), false);
+  assert.equal(isSeedItem(1049004), false);
+  // 80102 无名称证据，不猜
+  assert.equal(getItemById(80102) == null, true);
+});
+
+test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 刷屏', () => {
+  // warehouse 在 require 时解构 utils.log,重载 utils 模块后再重载 warehouse 捕获日志
+  const utilsPath = require.resolve('../src/utils/utils');
+  const warehousePath = require.resolve('../src/services/warehouse');
+  const previousUtils = require.cache[utilsPath];
+  const previousWarehouse = require.cache[warehousePath];
+  const logs = [];
+  const utilsMod = require('../src/utils/utils');
+  require.cache[utilsPath] = mockModule(utilsPath, {
+    ...utilsMod,
+    log: (tag, message, meta) => logs.push({ message, meta }),
+    logWarn: () => {},
+  });
+  delete require.cache[warehousePath];
+  try {
+    const { getBagSeedsFromItems: getSeeds } = require('../src/services/warehouse');
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 1);
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 1,
+      'same signature must not log again');
+    // 新增 ID 时重新报告
+    getSeeds([{ id: 4299981, count: 1 }, { id: 4299982, count: 1 }]);
+    const logged = logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item');
+    assert.equal(logged.length, 2);
+    assert.deepEqual(logged[1].meta.addedItemIds, [4299982]);
+    // 清单清空后复位,再出现可重新报告
+    getSeeds([{ id: 29004, count: 3 }]);
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 3,
+      'after reset, new unknown should log again');
+  } finally {
+    delete require.cache[warehousePath];
+    if (previousUtils === undefined) delete require.cache[utilsPath];
+    else require.cache[utilsPath] = previousUtils;
+    if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
+  }
+});
