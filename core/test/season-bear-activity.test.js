@@ -25,6 +25,8 @@ test('S3 说明覆盖全部玩法、结束提示和来源冲突，状态缺失�
   assert.ok(activity.resources.every(item => item.count === null));
   assert.equal(activity.resources.find(item => item.key === 'seed').itemId, 29004);
   assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 1028);
+  // 三档挑战书 ID 来自 ItemInfo 证据闭环，资源区不得回退成“道具 ID 待官方证据”。
+  assert.deepEqual(['basic', 'middle', 'advanced'].map(key => activity.resources.find(item => item.key === key).itemId), [80101, 80102, 80103]);
   assert.match(activity.resources.find(item => item.key === 'seed').image, /29004_Crop_9004_Seed/);
   // 元气糕 1028 使用专属图标，不能拿任何种子图顶替。
   assert.match(activity.resources.find(item => item.key === 'cake').image, /1028_%E8%90%8C%E5%AE%A0%E5%85%83%E6%B0%94%E7%B3%95/);
@@ -52,12 +54,17 @@ test('S3 没有说明时不按 ID、UID、type 或字段形状编造玩法、资
 
 test('S3 商城保留全部道具和原始状态码，只补证实的名称，不增加种植映射或操作能力', () => {
   const activity = normalizeBearActivity(snapshot(), {
-    inventoryAvailable: true, counts: new Map([[1029, 7], [80001, 2]]),
+    inventoryAvailable: true, counts: new Map([[1029, 7], [80001, 2], [80102, 3]]),
   });
   assert.equal(activity.exchangeShop.length, 13);
   assert.equal(activity.resources.find(item => item.key === 'currency').count, 7);
   assert.equal(activity.resources.find(item => item.key === 'seed').count, 0);
   assert.equal(activity.resources.find(item => item.key === 'cake').count, 0);
+  // 挑战书库存随背包读取透出；缺档显示 0（读取成功时），不新增任何操作能力。
+  assert.equal(activity.resources.find(item => item.key === 'middle').count, 3);
+  assert.equal(activity.resources.find(item => item.key === 'basic').count, 0);
+  assert.equal(activity.resources.find(item => item.key === 'advanced').count, 0);
+  assert.ok(activity.resources.filter(item => /挑战书/.test(item.name)).every(item => item.image === '' && item.operationSupported === undefined));
   assert.equal(activity.exchangeShop.find(item => item.itemId === 80001).inventoryCount, 2);
   assert.equal(activity.exchangeShop.find(item => item.itemId === 20522).status, 50);
   assert.match(activity.exchangeShop.find(item => item.itemId === 80011).statusLabel, /130.*待确认/);
@@ -139,7 +146,9 @@ test('S3 只读取正常根详情和一次已知道具库存；失败不探测�
   const activity = await getBearActivity(options);
   assert.deepEqual(calls[0], [2026090100, '']);
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].length, 16);
+  // 3 个基础道具 + 3 档挑战书 + 13 个商城道具 = 19。
+  assert.equal(calls[1].length, 19);
+  assert.ok([80101, 80102, 80103].every(id => calls[1].includes(id)));
   assert.equal(activity.inventoryAvailable, false);
   assert.equal(activity.resources[0].count, null);
   assert.equal(activity.gameplayGuides.length, 11);

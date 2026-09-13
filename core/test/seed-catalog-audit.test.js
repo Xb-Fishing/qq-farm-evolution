@@ -57,6 +57,18 @@ test('客户端成对配置比对会发现种子名称、果实和四格占地�
   assert.deepEqual(compareClientSeedCatalog(source, plants, drift)[0].differences, ['fruit_id', 'size', 'land_level_need']);
 });
 
+test('源表未声明 size/null 时不伪造占地差异；源表声明数字而本地缺失仍报缺口', () => {
+  // 快照 Plant 对普通作物普遍 size=null（无占地证据），本地也省略 size——两边都是“未声明”，不是漂移。
+  const plainSource = [{ id: 20002, name: '白萝卜种子', type: 5 }];
+  const plainPlants = [{ id: 1020002, seed_id: 20002, fruit: { id: 40002 }, size: null, land_level_need: 1 }];
+  assert.deepEqual(compareClientSeedCatalog(plainSource, plainPlants), []);
+  // 源表声明四格而本地植物缺失/未声明 size 时必须报——否则会漏进 1x1 种植路径。
+  const quadSource = [{ id: 20046, name: '爱心果种子', type: 5 }];
+  const quadPlants = [{ id: 1020046, seed_id: 20046, fruit: { id: 40046 }, size: 2, land_level_need: 1 }];
+  const noSizeLocal = { ...config, getPlantBySeedId: () => ({ id: 1020046, fruit: { id: 40046 }, land_level_need: 1 }) };
+  assert.ok(compareClientSeedCatalog(quadSource, quadPlants, noSizeLocal)[0].differences.includes('size'));
+});
+
 test('种子识别未决缺口即使活动指纹不变也进入每日 Agent 复盘', () => {
   const report = { online: { available: true, checkedActivityIds: [2026090100], seedRecognition: { available: true, issues: [{ itemId: 999, kind: 'unclassified_item' }] } } };
   const state = { evolutionMemory: { activity: { reviewedHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), evidenceFingerprint: activityEvidenceFingerprint(report) } } };
