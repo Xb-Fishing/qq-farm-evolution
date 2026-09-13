@@ -1189,3 +1189,23 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 挑战书 ID 传导只改只读展示与一次背包读取的 ID 集合，不新增 Operate/cmd/写按钮/自动开关；`resources` 仍全部 `operationSupported` 不变。
 - 验证：Node 20 串行全量 **391/391** 通过（新增 1 条“源表无 size 不伪造差异、源表声明数字本地缺失仍报缺口”回归；season-bear 断言更新挑战书 ID/库存/读取列表 19 项）；web `npm run build` 通过；改动文件 ESLint 0 error。系统默认 node 是 18.20.8，必须切到本机 nvm 的 Node 20（v20.20.2）跑测试与构建，不得把 Node 18 的工具链失败当源码回归，也不得把 nvm 绝对路径写进仓库。
 - 回滚 `git revert <本轮提交>`：恢复审计 175 条假信号与挑战书“道具 ID 待官方证据”显示；不影响收菜/偷菜/重点 HOT/PREARM/请求治理/登录/设备链路（本轮未触碰这些文件）。应用或回滚只能在既有 `farm:0.0` 窗格完成；本轮 Agent 不重启 Bot、不推送远端。
+
+## privacy_blocked 误杀修复：机器尾注域放行（2026-09-13 第四轮人工收口）
+
+### 现场与根因
+
+- 面板报"活动进化（Claude）被隐私闸门拦截，未向 GitHub 推送；本轮自动提交已安全丢弃，personal-email @ (commit-message):8"。根因：`privacy-guard.js` 的 `personal-email` 规则只放行 `@users.noreply.github.com`，**没放行 Claude Code `Co-Authored-By: Claude <noreply@anthropic.com>` 尾注**——该尾注是机器域（anthropic.com），不是个人信息。被误杀的活动提交本身完全干净。人工提交不走此闸门（同样尾注的 c5bb7b8 等早已推送），所以只有自动进化触发。
+- 注意正则细节：尾注匹配的是 local part `noreply` + 域 `anthropic.com`——白名单必须排除**域**（`anthropic.com\b`），写成 `noreply.anthropic.com` 会被 local part 拆开而继续误杀（第一版修复就踩了这个）。
+
+### 修复与恢复
+
+1. `privacy-guard.js` personal-email 负前瞻加入 `anthropic.com`（与 `users.noreply.github.com` 同级机器域），附注释说明来历。
+2. `privacy-guard.test.js` 新增回归：机器尾注（GitHub 匿名/Claude 尾注）不命中；真实邮箱（qq.com/163.com/公司域）仍命中。
+3. 被丢弃的两个自动提交从 `git fsck` dangling 恢复：activity 提交（审计假信号清除+挑战书库存接入 S3 活动卡）已 cherry-pick 为 `54fd2e0`；safety 提交内容与 activity 提交是同一 agent 的连续近似实现（冲突解全部保留 activity 版更严谨的 null-不比较逻辑），不再重复引入。
+4. `activity-evolve-state.json` 的 `privacy_blocked` 复核后复位 `idle`，下一轮自动进化正常调度。
+5. **"后续自进化要学会自己找问题"（用户指示）**：guardrails 已含此模式——agent 遇到 privacy_blocked/失败收口时必须先复核规则误杀可能（用 scanTextForPrivacy 单测可疑行），不能只接受"被丢弃"。本次是人工复核完成；下轮 agent 的 10g/10e 硬门同样适用：失败原因要回查到代码与规则层，禁止盲目重试或直接放弃。
+
+### 验证与回滚
+
+- Node 20 串行全量 **392/392** 通过（含恢复提交的 12 条 + privacy 回归 2 条）；恢复的提交用修复后规则重扫：提交信息零命中。ESLint 0 error。
+- 回滚 `git revert <本轮提交>`：恢复误杀状态（不推荐）；只回滚规则修复会重新拦截正常 Co-Authored-By 尾注。

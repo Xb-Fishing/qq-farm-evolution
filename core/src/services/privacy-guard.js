@@ -24,7 +24,10 @@ const PRIVACY_RULES = [
   ['hardcoded-secret', /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|credential|license[_-]?secret|password|passwd|private[_-]?key|secret|token|webhook)\b\s*[:=]\s*['"][^'"]{6,}['"]/i],
   ['machine-user-path', /(?:\/data\/[^\s'"]*\/users\/[^/\s'"]+|\/home\/[^/\s'"]+|\/Users\/[^/\s'"]+|\/root\/\.nvm\/versions\/node\/[^/\s'"]+)/i],
   ['private-network', /\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.(?:\d{1,3}\.)\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3})\b/],
-  ['personal-email', /\b[A-Z0-9._%+-]+@(?!users\.noreply\.github\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}\b/i],
+  // personal-email: 排除机器尾注域——users.noreply.github.com 是 GitHub 官方匿名邮箱,
+  // anthropic.com 是 Claude Code Co-Authored-By 尾注的标准域,均非个人信息。
+  // 2026-09-13: 自动 agent 提交曾因 Co-Authored-By 尾注被此规则误杀(privacy_blocked)。
+  ['personal-email', /\b[A-Z0-9._%+-]+@(?!users\.noreply\.github\.com\b|anthropic\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}\b/i],
 ];
 
 function redactSensitiveText(raw, options = {}) {
