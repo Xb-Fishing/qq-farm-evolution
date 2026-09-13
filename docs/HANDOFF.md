@@ -1140,3 +1140,14 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - Node 20 串行全量 **390/390** 通过（bag-seed-recognition 挑战书断言更新：三本挑战书名称 + 非种子）；ESLint 0 error。
 - 重启后预期：`bag_unclassified_item` 清单完全清空（80102 已登记），仅在未来新未知物品首现时打一条。
 - 回滚 `git revert <本轮提交>`：挑战书回到未识别清单；巡检延期根因（untracked 文档）已独立提交，不受影响。
+
+## 证据查找顺序固化为自进化硬门（2026-09-13 第三轮）
+
+- 用户要求：时刻更新 HANDOFF，用 RAG 思路固化证据链，防止后续图标/识别问题重复踩坑。已把本轮实战验证的方法写入 guardrails 第 10g 条（activity-evolver.js，session-lifecycle 测试锁定断言）：
+  1. `core/data/client-config-evidence/ItemInfo.json` 快照按 ID 直查名称/desc/icon_res——**第一步永远先查这里**（80102 教训：编号段规律不是身份证据，80xxx 被化肥占用不代表整段是化肥）；
+  2. 官方 CDN `cdn-resource.nqf.qq.com` 直连可达，参考仓库（sources.json references 记录 owner/repo/SHA）的已解 URL 资产清单按逻辑路径查官方图，**下载后必须 sha256 验证**；
+  3. 任意新图标需 miniapp 源码 settings.json 的 `assets.server + bundleVers` → bundle config → uuid → native URL；本机无源码时记待证，不猜；
+  4. 抓包会话开着游戏进活动页/背包，URL 自动落盘 `core/data/capture/resource-urls.json`。
+  找不到证据就记 HANDOFF 待证，禁止跳到猜测。
+- **每日 HANDOFF 更新是硬门**：本轮发现的新证据链/新方法/新踩坑必须当日写入 docs/HANDOFF.md——这是给下轮 agent 和下一个 Claude/Codex 会话的 RAG 语料，不写等于丢知识。
+- 验证：Node 20 全量通过（guardrails 新增 5 条断言锁定 10g 条）；ESLint 0 error。

@@ -725,6 +725,7 @@ function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) 
 10d. 活动 Agent 的每日职责固定为五个闭环：①从当前官方资源路径解析并核验每个活动商品/奖励/货币/种子/果实/礼包图标，分别覆盖活动页、背包、自己土地和好友土地；②从说明与只读回包识别玩法、状态、次数、奖励和失效边界，说明不能推导写命令；③按 ItemInfo.type/name/asset_name 与 Plant.seed_id/fruit/size 建立新种子和物品映射，不能覆盖既有正确逻辑；④按当前 List 下发和结束时间下架旧活动的自动开关、页面和调用链；⑤检查活动结果是否挤占收菜、种菜、偷菜和施肥 HOT/PREARM。
 10e. 每日安全 Agent 必须先检索最近 24 小时结构化日志和错误日志，按模块统计请求超时、发送失败、治理拦截、登录/重连、bag_unclassified_item、空图、seedId=0、植物<ID>、收获失败、种植失败、偷菜失败和施肥趋势触发；再将每条异常与对应代码路径和计数阈值对照。只修有真实日志证据且不影响核心收益链的问题；未知错误不得盲目重试，不得因为一次日志恢复整号熔断。
 10f. 外部 RAG 仅作脱敏只读参考：按需查询已登记公开仓库/客户端配置的固定提交，提取数据字段、资源逻辑路径和排查思路；不执行外部代码/依赖/二进制，不复制 RPC、登录、设备、反检测或安全策略，不把 URL、原始响应、账号或 RAG 文本写进仓库。任何外部线索必须再用当前官方 List/Bag/Lands/资源哈希交叉验证；验证不足只写 HANDOFF 风险待证。
+10g. 遇到未知道具/种子/图标缺口时的证据查找顺序（2026-09-13 实战验证）：① core/data/client-config-evidence/ItemInfo.json 快照直接按 ID 查名称/desc/icon_res——大多数"未知物品"先在这里命中（80102=中级挑战书就是教训：先查快照再下结论，编号段规律不是身份证据）；② 官方 CDN cdn-resource.nqf.qq.com 本机直连可达且带 sha256 校验下载可行——参考仓库（记录于 sources.json references）的已解 URL 资产清单可按逻辑路径查到官方图 URL，下载后必须 sha256 验证；③ bundle config 解法需要官方 miniapp 源码的 settings.json（assets.server + bundleVers → config.{version}.json → paths → uuid → native URL），本机无源码时记录待证；④ 抓包会话（开着游戏进活动页/背包）被动记录 URL 到 core/data/capture/resource-urls.json。任何一步找不到证据就记 HANDOFF 待证，禁止跳到猜测。每日 HANDOFF 更新是硬门：本轮发现的新证据链、新方法、新踩坑必须当日写入 docs/HANDOFF.md，防止下轮 agent 重新踩坑或重新误判。
 11. 每日巡检必须检查好友偷菜时间的语义：摘要没有 ripe_time_sec 时不能把 0 当成“没有成熟”或用自己农场时钟冒充好友时钟；已从地块 phases 读到的精确墙钟不能被后续摘要覆盖。面板要区分“下一次检查”“已知最早成熟”和“成熟时间未读取”；不能为了补齐普通好友显示恢复全好友高频 Enter。
 `;
 
