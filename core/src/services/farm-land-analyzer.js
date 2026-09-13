@@ -462,7 +462,6 @@ async function getLandsDetail() {
     const landsReply = await getAllLands();
     const result = { lands: [], summary: {} };
     if (!landsReply.lands) return result;
-
     const serverTime = getServerTimeSec();
     const details = [];
     const landMap = buildLandMap(landsReply.lands);
@@ -614,6 +613,46 @@ async function getLandsDetail() {
   }
 }
 
+// ---- 面板土地读取缓存（下游刷新不穿透腾讯上游） ----
+// FarmPanel 60s 固定轮询 /api/lands；无缓存时每次直发 AllLands（固定间隔
+// 机器指纹）。只供面板 RPC 'getLands' 使用；农场 tick、成熟收获链
+// （runFarmOperation/harvestOwnAtMaturity）与 removeAllPlants 继续走
+// 无缓存的 getAllLands()/getLandsDetail() 新鲜读取。getLandsDetail 吞掉
+// 上游错误返回空结构，这里按普通值缓存（失败也缓存 60s，不放大重试）。
+const LANDS_PANEL_CACHE_MS = 60 * 1000;
+let panelLandsCache = null;
+let panelLandsCacheAt = 0;
+let panelLandsInFlight = null;
+
+async function getLandsDetailForPanel() {
+  const now = Date.now();
+  if (panelLandsCache && now - panelLandsCacheAt < LANDS_PANEL_CACHE_MS) {
+    return panelLandsCache;
+  }
+  if (panelLandsInFlight) return panelLandsInFlight;
+  const pending = (async () => {
+    try {
+      const detail = await getLandsDetail();
+      if (panelLandsInFlight === pending) {
+        panelLandsCache = detail;
+        panelLandsCacheAt = Date.now();
+      }
+      return detail;
+    } finally {
+      if (panelLandsInFlight === pending) panelLandsInFlight = null;
+    }
+  })();
+  panelLandsInFlight = pending;
+  return pending;
+}
+
+function invalidatePanelLandsCache() {
+  panelLandsCache = null;
+  panelLandsCacheAt = 0;
+  // 在途读取解除引用：其完成体检查 inFlight === pending 失败，不写回旧状态
+  panelLandsInFlight = null;
+}
+
 module.exports = {
   getCurrentPhase,
   convertServerPhaseToClient,
@@ -623,5 +662,7 @@ module.exports = {
   analyzeLands,
   resolveRemovableHarvestedLands,
   getQixiDewStatus,
-  getLandsDetail
+  getLandsDetail,
+  getLandsDetailForPanel,
+  invalidatePanelLandsCache
 };

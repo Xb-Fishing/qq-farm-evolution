@@ -1209,3 +1209,34 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 - Node 20 串行全量 **392/392** 通过（含恢复提交的 12 条 + privacy 回归 2 条）；恢复的提交用修复后规则重扫：提交信息零命中。ESLint 0 error。
 - 回滚 `git revert <本轮提交>`：恢复误杀状态（不推荐）；只回滚规则修复会重新拦截正常 Co-Authored-By 尾注。
+
+## 安全巡检记录（2026-09-13 第五轮，面板读路径穿透上游收口）
+
+### 最近 24h 日志审计（10e/1a 硬门）
+
+- 2171 条结构化日志、JSON 解析失败 0；「请求超时」「发送失败」「治理器拦截」「收获/种植/偷菜失败」「施肥趋势触发」「seedId=0」「植物<ID>」「空图」全部 **0**。
+- `bag_unclassified_item` 178 条全部发生在 09-13 17:06 重启前（旧进程无去重）：10s 精确链（09:00:36→09:01:36，.43x 结尾亚毫秒稳定）、15s 精确链（07:51:09→52:09）、60s 精确链（09:02:17→09:25:17，每分钟 :17.4）。17:06 新进程零条——昨日登记与去重已生效，无需再修。
+- 被踢 2 + 长凭据保活失败 2 集中在 09-12 19:03 与 09-13 07:49，均为已知微信授权范围失效路径（账号 A 需人工重新扫码，代码行为与 `0a7293a`/`9b10fef` 设计一致，不收紧）。未知推送 7 类（红点/商城类）按设计仅记录不响应；当天 worker 重启 5 次（用户应用进化），接管计数重置为既有已知风险项。wasm SHA-256 与基线一致、clientVersion 无漂移、seed 目录审计 21 条与昨日基线完全一致、`getGenericFallbackItemIds()` 为空。
+
+### 本轮根因发现与修复（三处同类，均有代码+日志证据）
+
+- **面板前端三个固定定时器此前每次都穿透到腾讯上游**，违反硬门 7「下游刷新必须用缓存/并发合并」：
+  1. Dashboard `useIntervalFn(refresh, 10000)` 无条件调 `refreshBag()` → `/api/bag` → worker RPC `getBag` → `warehouse.getBagDetail()` → 直发 `ItemService.Bag`（10 秒精确间隔 = 机器指纹）；
+  2. Settings `bag_priority` 时 15s `setInterval` → `/api/bag/seeds` → `getBagSeeds()` → 同样直发（15 秒精确间隔）；
+  3. Personal 页 BagPanel 60s / FarmPanel 60s（后台标签页时 Dashboard 10s 轮询被浏览器节流成 60s）→ `/api/bag`、`/api/lands`、`/api/dog/skill-gifts` → `AllLands`、`DogService.GetDogInfo` 直发。
+- 修复全部落在 worker 侧服务层（与 interact.js 2026-09-07 收口同一模式）：`warehouse.getBagForPanel()`（60s 成功缓存 + 在途合并 + 60s 失败冷却）供 `getBagDetail`/新增 `getBagSeedsForPanel` 使用；`farm-land-analyzer.getLandsDetailForPanel()`（getLandsDetail 吞错误返回空结构，按普通值缓存，失败也缓存不放大重试）；`dog-skill-gifts.getDogInfoForPanel()`（含失败冷却）。worker RPC `getBag/getBagSeeds/getLands/getDogSkillGiftStatus` 全部改走缓存变体。
+- **失效钩子只接面板触发的变更**（worker 管理 RPC switch 内）：`useItem/sellItems/batchUseItems` 成功后失效背包缓存；`doFarmOp/buyFertilizer/checkAndBuyFertilizer/fertilizeLand/removePlant/removeAllPlants` 后失效土地（收获/催熟/购买同时失效背包）；`claimDogSkillGifts` 后失效狗信息缓存。**内部收益链一律保持新鲜读取**：种植 `getBagSeeds()`、农场 tick `getAllLands()`、`runFarmOperation`、`harvestOwnAtMaturity`、`removeAllPlants` 决策读取、`checkAndClaimDogSkillGifts` 内部 `getDogInfo`、`useItem` 的 uid 查找——全部不走缓存。
+
+### 踩坑、注意点与风险边界
+
+- **不能缓存 `getBagSeeds()` 本身**：planting-service `plantFromBagSeeds` 用它决定种什么种多少，缓存会让种植吃到 60 秒前的背包数量；必须拆 `getBagSeedsForPanel` 只接面板 RPC。
+- **不能把失效钩子放进 runFarmOperation 服务内部**：农场 tick 每 8–12s 调它，每次失效会让面板缓存形同虚设；失效只挂在 worker 管理 RPC 的面板入口 case 上。
+- 面板显示最多滞后 60 秒（后台 tick 自动收获/自动出售后面板数字延迟刷新）；用户在面板点操作后立即失效、下一次读取即新鲜。土地快照在途竞态与活动读缓存同语义：invalidate 解除在途引用，旧 pending 完成体不再写缓存。
+- useItem 在 uid=0 时先用无缓存 `getBag()` 查 UID，再发 Use——这是变更前的必要新鲜读取，测试断言链路时要把这次读取算进去。
+- 好友地块 `/api/friend/:gid/lands` 只在用户展开卡片时触发（用户动作非定时器），且与施肥 HOT 证据采集共用 Enter——本轮明确不碰好友路径。Sidebar 60s 只读本地活动报告、Friends 30s 只读本地好友快照，均不穿透，不要误改。
+
+### 验证与回滚
+
+- Node 20 串行全量 **399/399** 通过（新增 bag-panel-cache 4 条、lands-panel-cache 2 条、dog-skill-gifts 面板缓存 1 条，覆盖并发合并/缓存命中/操作失效/失败冷却/种植与内部路径不缓存）；改动文件 ESLint 0 error。未改前端，无需 web build。
+- 预期效果：面板开着时上游 Bag/AllLands/GetDogInfo 读取从每 10–15 秒一次收敛到每 60 秒最多一次，且消除亚毫秒稳定的固定间隔指纹；面板关闭时零请求（此前后台标签页仍 60s 打一次）。
+- 本轮未触碰自己成熟 10 秒预留与 30–80ms Harvest、好友到点偷菜、重点 HOT/PREARM、请求治理预算、登录保活、设备串、TSDK/ACE、好友/盯梢调度。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复面板轮询直穿上游与固定间隔指纹，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。
