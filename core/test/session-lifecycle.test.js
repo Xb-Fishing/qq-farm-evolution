@@ -536,6 +536,12 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.match(guardrails, /活动 Agent 的每日职责固定为五个闭环/);
   assert.match(guardrails, /每日安全 Agent 必须先检索最近 24 小时/);
   assert.match(guardrails, /外部 RAG 仅作脱敏只读参考/);
+  // 证据查找顺序与 HANDOFF 每日更新硬门（2026-09-13）
+  assert.match(guardrails, /client-config-evidence\/ItemInfo\.json 快照直接按 ID 查/);
+  assert.match(guardrails, /sha256 校验下载可行/);
+  assert.match(guardrails, /assets\.server \+ bundleVers/);
+  assert.match(guardrails, /编号段规律不是身份证据/);
+  assert.match(guardrails, /每日 HANDOFF 更新是硬门/);
 
   const publicReference = buildPublicReferenceGuidance();
   assert.match(publicReference, /LuckyTiger12138\/QQ_Farm/);
