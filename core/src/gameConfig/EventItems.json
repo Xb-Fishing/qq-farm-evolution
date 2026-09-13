@@ -167,5 +167,23 @@
     "asset_name": "gold/Crop_9004",
     "sells": "1005:6",
     "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律 + 当前仓库正在收获泡泡棉花糖"
+  },
+  {
+    "id": 80101,
+    "name": "初级挑战书",
+    "type": 19,
+    "evidence": "client-config-evidence ItemInfo 快照 + pet-diary ActivityPetTreasureHuntChalleng 表（价值 50）交叉核对"
+  },
+  {
+    "id": 80102,
+    "name": "中级挑战书",
+    "type": 19,
+    "evidence": "client-config-evidence ItemInfo 快照 + pet-diary ActivityPetTreasureHuntChalleng 表（价值 150，活动说明同述）交叉核对"
+  },
+  {
+    "id": 80103,
+    "name": "高级挑战书",
+    "type": 19,
+    "evidence": "client-config-evidence ItemInfo 快照 + pet-diary ActivityPetTreasureHuntChalleng 表（价值 300）交叉核对"
   }
 ]
