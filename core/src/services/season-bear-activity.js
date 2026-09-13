@@ -10,6 +10,11 @@ const BEAR_CLIENT_UI_UID = 'SEASON_BEAR_CAMPAIGN';
 // 物品语义来自核对后的 ItemInfo/Plant；奖励数量和编号段不能证明名称或类型。
 const BEAR_SEED_ITEM_ID = 29004;
 const BEAR_CAKE_ITEM_ID = 1028;
+// 三档挑战书 ID 来自 client-config-evidence ItemInfo 快照（type 19）与参考仓库 pet-diary
+// 配置表、活动说明三方一致的证据闭环（2026-09-13）；仅只读展示，不推导写命令。
+const BEAR_BASIC_CHALLENGE_ITEM_ID = 80101;
+const BEAR_MIDDLE_CHALLENGE_ITEM_ID = 80102;
+const BEAR_ADVANCED_CHALLENGE_ITEM_ID = 80103;
 
 function getBearObservedItemIds(snapshot) {
   const root = snapshot || {};
@@ -146,9 +151,9 @@ function normalizeBearActivity(snapshot, options = {}) {
     ['seed', '泡泡棉花糖种子', BEAR_SEED_ITEM_ID, /稀有种子礼包/, '占地 2×2；收获活动作物可额外获得萌宠元气糕'],
     ['gift', '稀有种子礼包', null, /稀有种子礼包/, '每日免费赠送，未领取可累计'],
     ['treasure', '待护送宝藏', null, /待护送宝藏|宝藏护送/, '寻宝获得后自动开启护送'],
-    ['basic', '初级挑战书', null, /初级挑战书/, '价值 50 幸运星；胜利 60、失败 40'],
-    ['middle', '中级挑战书', null, /中级挑战书/, '价值 150 幸运星；胜利 225、失败 75'],
-    ['advanced', '高级挑战书', null, /高级挑战书/, '价值 300 幸运星；胜利 510、失败 90'],
+    ['basic', '初级挑战书', BEAR_BASIC_CHALLENGE_ITEM_ID, /初级挑战书/, '价值 50 幸运星；胜利 60、失败 40'],
+    ['middle', '中级挑战书', BEAR_MIDDLE_CHALLENGE_ITEM_ID, /中级挑战书/, '价值 150 幸运星；胜利 225、失败 75'],
+    ['advanced', '高级挑战书', BEAR_ADVANCED_CHALLENGE_ITEM_ID, /高级挑战书/, '价值 300 幸运星；胜利 510、失败 90'],
   ].filter(([, , , pattern]) => pattern.test(evidenceText)).map(([key, name, itemId, , purpose]) => ({
     key, name, itemId, purpose, count: countFor(itemId), image: itemId ? getItemImageById(itemId) : '',
   }));
@@ -186,7 +191,7 @@ function normalizeBearActivity(snapshot, options = {}) {
     protocol: { declaredReadOnlyFields: [102, 110], opaqueReadOnlyFields: [115], observedShape },
     missingEvidence: [
       '成长、寻宝、护送、夺宝、安慰礼、锦囊、爪印手记和排名的当前状态字段尚未确认。',
-      '挑战书和宝藏的道具映射仍待核对；元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
+      '待护送宝藏的道具映射仍待核对；挑战书三档已按 ItemInfo 证据登记但专属图片仍待官方资源。元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
       'field 115 仅保留结构诊断；field 110 奖励记录不能直接认定为爪印手记。',
       '商城状态码、次数及付费边界待官方样本；所有操作协议待确认，请在官方客户端人工操作。',
     ],
@@ -195,6 +200,8 @@ function normalizeBearActivity(snapshot, options = {}) {
 
 module.exports = {
   BEAR_ACTIVITY_ID, BEAR_PLAY_ACTIVITY_ID, BEAR_RECORD_ACTIVITY_ID, BEAR_SHOP_ACTIVITY_ID,
-  BEAR_CURRENCY_ITEM_ID, BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID, BEAR_CLIENT_UI_UID,
+  BEAR_CURRENCY_ITEM_ID, BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID,
+  BEAR_BASIC_CHALLENGE_ITEM_ID, BEAR_MIDDLE_CHALLENGE_ITEM_ID, BEAR_ADVANCED_CHALLENGE_ITEM_ID,
+  BEAR_CLIENT_UI_UID,
   getBearObservedItemIds, normalizeBearActivity,
 };
