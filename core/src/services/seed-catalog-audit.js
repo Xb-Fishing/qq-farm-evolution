@@ -37,8 +37,12 @@ function compareClientSeedCatalog(items, plants, lookup = config) {
     if (sourcePlant) {
       if (currentPlant?.id !== sourcePlant.id) differences.push('plant_id');
       if (currentPlant?.fruit?.id !== sourcePlant.fruit?.id) differences.push('fruit_id');
-      if (Number(currentPlant?.size || 0) !== Number(sourcePlant.size || 1)) differences.push('size');
-      if (Number(currentPlant?.land_level_need || 0) !== Number(sourcePlant.land_level_need || 0)) differences.push('land_level_need');
+      // 源表未声明 size（null/缺省）= 官方无占地证据，不参与比较（否则 175 条假信号淹没真差异）；
+      // 源表声明数字时必须严格一致——四格作物的 size 漂移会漏进 1x1 种植路径。
+      if (sourcePlant.size !== null && sourcePlant.size !== undefined
+        && Number(currentPlant?.size ?? Number.NaN) !== Number(sourcePlant.size)) differences.push('size');
+      if (sourcePlant.land_level_need !== null && sourcePlant.land_level_need !== undefined
+        && Number(currentPlant?.land_level_need ?? 0) !== Number(sourcePlant.land_level_need)) differences.push('land_level_need');
     } else differences.push('source_plant_missing');
     return differences.length ? [{ itemId: id, differences }] : [];
   });
