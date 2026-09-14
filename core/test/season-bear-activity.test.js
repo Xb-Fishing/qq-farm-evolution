@@ -27,6 +27,8 @@ test('S3 说明覆盖全部玩法、结束提示和来源冲突，状态缺失�
   assert.equal(activity.resources.find(item => item.key === 'cake').itemId, 1028);
   // 三档挑战书 ID 来自 ItemInfo 证据闭环，资源区不得回退成“道具 ID 待官方证据”。
   assert.deepEqual(['basic', 'middle', 'advanced'].map(key => activity.resources.find(item => item.key === key).itemId), [80101, 80102, 80103]);
+  // 待护送宝藏 1030 已按 Bag + ItemInfo 快照证据闭环，资源区不得回退成 null。
+  assert.equal(activity.resources.find(item => item.key === 'treasure').itemId, 1030);
   assert.match(activity.resources.find(item => item.key === 'seed').image, /29004_Crop_9004_Seed/);
   // 元气糕 1028 使用专属图标，不能拿任何种子图顶替。
   assert.match(activity.resources.find(item => item.key === 'cake').image, /1028_%E8%90%8C%E5%AE%A0%E5%85%83%E6%B0%94%E7%B3%95/);
@@ -146,9 +148,9 @@ test('S3 只读取正常根详情和一次已知道具库存；失败不探测�
   const activity = await getBearActivity(options);
   assert.deepEqual(calls[0], [2026090100, '']);
   assert.equal(calls.length, 2);
-  // 3 个基础道具 + 3 档挑战书 + 13 个商城道具 = 19。
-  assert.equal(calls[1].length, 19);
-  assert.ok([80101, 80102, 80103].every(id => calls[1].includes(id)));
+  // 3 个基础道具 + 3 档挑战书 + 待护送宝藏 + 13 个商城道具 = 20。
+  assert.equal(calls[1].length, 20);
+  assert.ok([80101, 80102, 80103, 1030].every(id => calls[1].includes(id)));
   assert.equal(activity.inventoryAvailable, false);
   assert.equal(activity.resources[0].count, null);
   assert.equal(activity.gameplayGuides.length, 11);
