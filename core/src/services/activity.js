@@ -887,6 +887,7 @@ async function getBearActivity(options = {}) {
     bearActivity.BEAR_BASIC_CHALLENGE_ITEM_ID,
     bearActivity.BEAR_MIDDLE_CHALLENGE_ITEM_ID,
     bearActivity.BEAR_ADVANCED_CHALLENGE_ITEM_ID,
+    bearActivity.BEAR_TREASURE_ITEM_ID,
     ...bearActivity.getBearObservedItemIds(snapshot),
     ...(shop?.details?.exchangeShop?.items || []).map(item => item.itemId),
   ];

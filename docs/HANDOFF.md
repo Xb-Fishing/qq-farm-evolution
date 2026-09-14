@@ -1240,3 +1240,24 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - Node 20 串行全量 **399/399** 通过（新增 bag-panel-cache 4 条、lands-panel-cache 2 条、dog-skill-gifts 面板缓存 1 条，覆盖并发合并/缓存命中/操作失效/失败冷却/种植与内部路径不缓存）；改动文件 ESLint 0 error。未改前端，无需 web build。
 - 预期效果：面板开着时上游 Bag/AllLands/GetDogInfo 读取从每 10–15 秒一次收敛到每 60 秒最多一次，且消除亚毫秒稳定的固定间隔指纹；面板关闭时零请求（此前后台标签页仍 60s 打一次）。
 - 本轮未触碰自己成熟 10 秒预留与 30–80ms Harvest、好友到点偷菜、重点 HOT/PREARM、请求治理预算、登录保活、设备串、TSDK/ACE、好友/盯梢调度。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复面板轮询直穿上游与固定间隔指纹，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。
+
+## 安全巡检记录（2026-09-14，1030 待护送宝藏登记与 24h 零异常收口）
+
+### 最近 24h 日志审计（10e/1a 硬门）
+
+- 审计窗口 2026-09-13 20:00 ~ 2026-09-14 20:05，2144 条结构化日志、JSON 解析失败 0；「请求超时」「发送失败」「治理器拦截」「收获/种植/偷菜失败」「熔断/cooldown」全部 **0**。
+- 核心收益链全部成功：到点保护收获 **42/42 ok**、哨兵抢收 **16/16 ok**（成熟到点后 99–234ms 出手，均在 80–300ms 窗口内）、偷好友菜 **6/6 ok**。
+- 化肥趋势触发 2 次（23:57、01:55）：触发时刻**先于**偷菜 4–5 秒、两次快照墙钟均在观察时间之后、12 秒无新证据即冷却——满足 2026-09-11 地块级证据门（误判签名是触发跟随偷菜之后）；盯梢目标为自家另一账号，HOT→抢收→冷却全链按设计运行，未误触发。
+- 被踢 2 次（04:52/05:19，账号 A）：服务端原因均为「已在其他终端登录」真人顶号，退避 5min→30min 正确递增，断线等待保活先挂载；不据此改登录接管策略。微信授权链 08:17 保活失败 → 19:51 冷启动 Code 失败被启动闸门正确阻断（「微信授权已失效，等待重新扫码」）→ 19:53 凭据恢复后成功启动，**无重试风暴**，与收件箱三类线索一一对应，均属已知路径，不改代码。
+- 环境基线无漂移：`tsdk-v3.9.0.wasm` SHA-256 与 `tsdk-ace-runtime.md` 完全一致；clientVersion 零条自动更新；未知推送 23 条全部为红点/商城/公告类已知家族，仅记录不响应；旧活动（雨落成诗/公益小红花）路由 grep 确认断开；活动报告 up-to-date、unknown/ended 均空；种子目录审计 **21 条与昨日基线完全一致**；`getGenericFallbackItemIds()` 为空；`npm run fetch:official-icons` 运行确认无抓包 URL 证据（7 项商城装饰待抓取，零网络请求）。
+- 主进程 19:51 冷启动（用户操作），当前运行代码已含 846e21d 面板缓存收口；冷启动后日志无固定间隔 Bag/AllLands/GetDogInfo 读取。
+
+### 本轮改动（一项，均有确定证据）
+
+1. **`bag_unclassified_item: 1030` 当日复盘登记（硬门 10/10g）**：Bag 两次出现未知物品 1030（05:33、19:53，均为 worker 重启后首次读取，去重生效仅 2 条）。按 10g 顺序第①步查 `client-config-evidence/ItemInfo.json` 快照直接命中：**1030 = 待护送宝藏**（type 19、activity 2026090101、icon_res `gui/texture/icon/icon_s3_map/spriteFrame`、desc 与 S3 寻宝护送玩法说明一致）——这正是 HANDOFF 2026-09-10 记录的「待护送宝藏 ID 仍未知」缺口，现在 Bag 实际出现完成闭环。照抄 54fd2e0 挑战书模式传导：`EventItems.json` 登记（名称+类型+desc 快照逐字）、`season-bear-activity.js` treasure 资源行接 `BEAR_TREASURE_ITEM_ID = 1030` 并导出、`activity.js` 一次性背包读取列表 19→20 个 ID。专属图片仍待证空图（前端降级显示名称），不伪造、不顶替。
+
+### 踩坑、验证与回滚
+
+- **EventItems 的 desc 必须快照逐字**：第一版曾把 sell_cond 字段的「活动结束后可出售」推断混写进 desc（快照 desc 原文没有这句）——出售条件是独立字段证据，不能当文案拼接；已修正为逐字。登记字段多写一句推断与漏登记同罪，都是证据语义污染。
+- 验证：Node 20 串行全量 **399/399** 通过（season-bear 资源区/read list 20 项/treasure itemId 断言、bag-seed-recognition 1030 名称+非种子断言）；改动文件 ESLint **0 error**；`getItemById(1030)` 返回「待护送宝藏」且 `isSeedItem(1030)=false`，重启后 `bag_unclassified_item` 将不再报 1030。
+- 本轮未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复 1030 未识别日志与 S3 资源区「道具 ID 待官方证据」显示，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。

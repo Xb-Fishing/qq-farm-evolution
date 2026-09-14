@@ -185,5 +185,15 @@
     "name": "高级挑战书",
     "type": 19,
     "evidence": "client-config-evidence ItemInfo 快照 + pet-diary ActivityPetTreasureHuntChalleng 表（价值 300）交叉核对"
+  },
+  {
+    "id": 1030,
+    "name": "待护送宝藏",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s3_map/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "寻宝时获得，比熊犬将其护送回家后可获得宝藏奖励。",
+    "evidence": "Bag 出现 1030 与 client-config-evidence ItemInfo 快照（type 19、activity 2026090101）交叉核对；见 docs/HANDOFF.md 2026-09-14 巡检"
   }
 ]
