@@ -173,6 +173,9 @@ test('黄金变异物品按 104 段规律登记,挑战书按双源证据登记',
   assert.equal(getItemById(80102)?.name, '中级挑战书');
   assert.equal(getItemById(80103)?.name, '高级挑战书');
   assert.equal(isSeedItem(80102), false);
+  // 待护送宝藏（2026-09-14 Bag 出现 + ItemInfo 快照闭环）：非种子，只读展示。
+  assert.equal(getItemById(1030)?.name, '待护送宝藏');
+  assert.equal(isSeedItem(1030), false);
 });
 
 test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 刷屏', () => {

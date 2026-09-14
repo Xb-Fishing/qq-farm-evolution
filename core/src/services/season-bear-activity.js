@@ -15,6 +15,9 @@ const BEAR_CAKE_ITEM_ID = 1028;
 const BEAR_BASIC_CHALLENGE_ITEM_ID = 80101;
 const BEAR_MIDDLE_CHALLENGE_ITEM_ID = 80102;
 const BEAR_ADVANCED_CHALLENGE_ITEM_ID = 80103;
+// 待护送宝藏 1030：Bag 实际出现 + ItemInfo 快照（type 19、activity 2026090101）闭环
+// （2026-09-14）；寻宝产出、护送后结算，仅只读展示。
+const BEAR_TREASURE_ITEM_ID = 1030;
 
 function getBearObservedItemIds(snapshot) {
   const root = snapshot || {};
@@ -150,7 +153,7 @@ function normalizeBearActivity(snapshot, options = {}) {
     ['cake', '萌宠元气糕', BEAR_CAKE_ITEM_ID, /萌宠元气糕/, '稀有作物产出，用于投喂与寻宝'],
     ['seed', '泡泡棉花糖种子', BEAR_SEED_ITEM_ID, /稀有种子礼包/, '占地 2×2；收获活动作物可额外获得萌宠元气糕'],
     ['gift', '稀有种子礼包', null, /稀有种子礼包/, '每日免费赠送，未领取可累计'],
-    ['treasure', '待护送宝藏', null, /待护送宝藏|宝藏护送/, '寻宝获得后自动开启护送'],
+    ['treasure', '待护送宝藏', BEAR_TREASURE_ITEM_ID, /待护送宝藏|宝藏护送/, '寻宝获得后自动开启护送'],
     ['basic', '初级挑战书', BEAR_BASIC_CHALLENGE_ITEM_ID, /初级挑战书/, '价值 50 幸运星；胜利 60、失败 40'],
     ['middle', '中级挑战书', BEAR_MIDDLE_CHALLENGE_ITEM_ID, /中级挑战书/, '价值 150 幸运星；胜利 225、失败 75'],
     ['advanced', '高级挑战书', BEAR_ADVANCED_CHALLENGE_ITEM_ID, /高级挑战书/, '价值 300 幸运星；胜利 510、失败 90'],
@@ -191,7 +194,7 @@ function normalizeBearActivity(snapshot, options = {}) {
     protocol: { declaredReadOnlyFields: [102, 110], opaqueReadOnlyFields: [115], observedShape },
     missingEvidence: [
       '成长、寻宝、护送、夺宝、安慰礼、锦囊、爪印手记和排名的当前状态字段尚未确认。',
-      '待护送宝藏的道具映射仍待核对；挑战书三档已按 ItemInfo 证据登记但专属图片仍待官方资源。元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
+      '待护送宝藏（1030）与挑战书三档已按 ItemInfo 证据登记但专属图片仍待官方资源。元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
       'field 115 仅保留结构诊断；field 110 奖励记录不能直接认定为爪印手记。',
       '商城状态码、次数及付费边界待官方样本；所有操作协议待确认，请在官方客户端人工操作。',
     ],
@@ -202,6 +205,7 @@ module.exports = {
   BEAR_ACTIVITY_ID, BEAR_PLAY_ACTIVITY_ID, BEAR_RECORD_ACTIVITY_ID, BEAR_SHOP_ACTIVITY_ID,
   BEAR_CURRENCY_ITEM_ID, BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID,
   BEAR_BASIC_CHALLENGE_ITEM_ID, BEAR_MIDDLE_CHALLENGE_ITEM_ID, BEAR_ADVANCED_CHALLENGE_ITEM_ID,
+  BEAR_TREASURE_ITEM_ID,
   BEAR_CLIENT_UI_UID,
   getBearObservedItemIds, normalizeBearActivity,
 };
