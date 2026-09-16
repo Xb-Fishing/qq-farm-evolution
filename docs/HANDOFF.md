@@ -1261,3 +1261,41 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - **EventItems 的 desc 必须快照逐字**：第一版曾把 sell_cond 字段的「活动结束后可出售」推断混写进 desc（快照 desc 原文没有这句）——出售条件是独立字段证据，不能当文案拼接；已修正为逐字。登记字段多写一句推断与漏登记同罪，都是证据语义污染。
 - 验证：Node 20 串行全量 **399/399** 通过（season-bear 资源区/read list 20 项/treasure itemId 断言、bag-seed-recognition 1030 名称+非种子断言）；改动文件 ESLint **0 error**；`getItemById(1030)` 返回「待护送宝藏」且 `isSeedItem(1030)=false`，重启后 `bag_unclassified_item` 将不再报 1030。
 - 本轮未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复 1030 未识别日志与 S3 资源区「道具 ID 待官方证据」显示，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。
+
+## 活动进化巡检（2026-09-16，S3 作物变异显示闭环与指纹变化核对）
+
+### 最近 24h 日志审计（10e/1a 硬门）
+
+- 审计窗口 2026-09-15 18:00 ~ 2026-09-16 18:00 UTC，1670 条结构化日志、JSON 解析失败 0；「请求超时」「发送失败」「治理器拦截」「收获/种植/偷菜失败」「seedId=0」「bag_unclassified_item」「空图」「cooldown/熔断」「裸植物/物品/种子 ID」全部 **0**。
+- 核心收益链正常：到点保护收获 32/32 ok；巡查（浇水/除草/除虫）全部成功。施肥趋势触发 2 次（14:27、15:50，同一目标）：触发时刻先于偷菜、12–13 秒无新证据即冷却，满足 2026-09-11 地块级证据门。
+- 被踢 1 次（15:26，真人顶号「已在其他终端登录」）：离线保活先挂载、3 秒后一次已知授权失效报错、2.5 分钟后凭据恢复并成功重登——无重试风暴，与 0a7293a 设计一致，不改登录接管。
+- 未知推送 7 类（红点/商城/成就）按设计仅记录不响应；ACE 上报约 48 秒节拍全部成功。
+- 活动报告 up-to-date（17:40 扫描），unknown/ended 均空；seedRecognition 36 类零缺口；种子目录审计 21 条与 09-14 基线完全一致；`getGenericFallbackItemIds()` 为空；`npm run fetch:official-icons` 确认仍无抓包 URL 证据（7 项商城装饰待抓取，零网络请求）。
+
+### 指纹变化原因（0f834b59 vs 上次已审 dee74caf）
+
+- 在线快照 starRecord 记录 1-7 已领取、8 已解锁未领取（09-13 时为 1-4 已领取、5 已解锁）。`season-bear-activity.js` 无任何 `Operate`/`sendMsgAsync`/claim 写路径（grep 验证，`operationSupported: true` 为 0），记录 5-7 的领取只能是用户在官方客户端的人工操作，与 09-13 结论同模式：进度变化属人工事项，不触发适配、不代领。活动配置本身（tips/13 件商城/31 条记录/5 处说明差异）与已登记实现完全一致。
+
+### 本轮改动（S3 萌宠作物变异显示闭环，四文件数据补丁）
+
+**根因**：本地 `MutantEffect.json` 只有 10 种变异，`EventPlants.json` 的 S3 作物（狗尾草/芦苇/泡泡棉花糖）缺 `mutant_effect_plant` 映射。S3 活动说明明确比熊变异（售价×4）与泡泡棉花糖专属变异玩法，但土地回包 `mutant_config_ids=[15/16/5]` 时显示链解析不到变体植物——变异作物只显示基名、无变异标签（黄金变异线上实际发生过：bag 已出现 1040516/1045995/1049004，但土地一直显示基名）。
+
+1. **`MutantEffect.json` +2 条**：15 比熊（`icon: bichon`，"比熊犬处于看护状态时概率触发"）、16 乐园（`icon: leyuan`，"种植泡泡棉花糖有概率出现"，fruit_name 比熊棉花糖）。证据：参考仓库 xxxscarlxrd404/qq-farm-bot @ 343d9463 的客户端配置快照，与 S3 活动说明文案逐字交叉核对。效果 12 闪电（雨落成诗已结束）、14 晶辉（紫晶土地、无线上触发证据）本轮不登记，维持待证；本地 `mutant/crystal.png` 已存在但效果 14 无 S3 关联。
+2. **`EventPlants.json`**：狗尾草/芦苇/泡泡棉花糖补 `mutant_effect_plant`（快照逐字：`5:1120516:1`、`5:1125995:1`、`5:1129004:1;16:1028004:1`）；新增 5 个变体植物 1120516 黄金·狗尾草、1125995 黄金·芦苇、1129004 黄金·泡泡棉花糖、1028004 比熊棉花糖、1128004 黄金·比熊棉花糖（含组合映射 `5_16:1128004:1`）。
+3. **`gameConfig.js` EventPlants 合并**（两处最小修复）：① 合并字段补 `mutant_effect_plant` 拷贝；② `seedToPlant/fruitToPlant` 改真值守卫（对齐 Plant.json loader——变体植物 seed_id 为空，否则全部落在 0 键互相覆盖）；③ 物品合成块跳过无 seed_id 条目，否则 `Number(null)=0` 会合成 id=0 假种子污染 itemInfoMap。
+4. **`EventItems.json` +2 条**：204008 比熊棉花糖、204009 黄金·比熊棉花糖（type 18，快照逐字：sells/desc/rarity/icon_res）。乐园变异收获的果实进背包时不再触发 `bag_unclassified_item`。
+
+### 踩坑与注意点
+
+- **变体植物的 seed_id 为空是"变异展示植物"的判定信号**：它们只进 plantMap（名称/映射解析用），不进种子/果实索引、不合成种子物品。`getPlantBySeedId(0)`/`getItemById(0)` 必须保持 undefined——回归已锁定。
+- **`mutant_effect_plant` 在 EventPlants 合并中原本根本不被拷贝**：即使 JSON 写了字段也会被丢弃（合并构造的白名单对象没有它）。以后给 EventPlants 加新字段必须同步检查合并字段清单。
+- **比熊变异（15）没有植物映射**：快照 Plant 表无任何条目引用 `:15:`——它是纯售价变异（actions "3:4" = 售价×4），展示靠 mutantEffects 标签承载，返回原植物 ID 是正确行为，不是缺陷。
+- **变异图标 bichon.png/leyuan.png 待证**：`seed_images_named/mutant/` 有 17 个既有图标（crystal/dark/desert/frozen/golden/haha/ice/lotus/love/lucky/luxury/mian/moist/moon/shinning/snow/tata）但无比熊/乐园；参考仓库 pet-diary-assets 129 条无此 URL 证据。前端 LandCard 对缺失图标按 alt 降级显示名称；下次抓包会话进有变异作物的农场页可自动记录 URL 后补抓。
+- **变异阶段图回退是既有设计**：变体植物无 asset_name/manifest 条目时 `getPlantImageByPhase` 走通用阶段回退（`getMutantPlantImageByPhase` 的 `||` 短路），与全部既有黄金变异行为一致；名称+效果标签才是本轮闭环目标。
+- 快照 mutant_effect_plant 解析（`getMutantDisplayPlantId`）本就支持多段组合映射（两段 `5_16:1128004:1`）与 visited 防环，代码无需改动——本轮是纯数据补丁。
+
+### 验证与回滚
+
+- 新增 `core/test/mutant-plant-display.test.js` 11 条：乐园/黄金/组合变异植物 ID 与名称解析、狗尾草/芦苇黄金变体、比熊无植物映射边界、效果 15/16 标签、索引无 0 键污染、204008/204009 非种子登记、基础种子映射不回归（29004 size=2）、土地/种子双回包解析链。
+- Node 20（v20.20.2）串行全量 **410/410** 通过；`cd web && npm run build` 通过（类型检查+生产构建）；改动文件 ESLint **0 error**（gameConfig.js 保留既有 2 条 JSDoc warning）；种子目录审计 21 条基线与 `getGenericFallbackItemIds()` 未受扰动。
+- 本轮未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；变异映射只影响显示层（farm/friend-land-analyzer 的名称与效果标签），不进入成熟墙钟、偷菜目标排序或收获计算。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复变异作物显示基名、无变异标签，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。

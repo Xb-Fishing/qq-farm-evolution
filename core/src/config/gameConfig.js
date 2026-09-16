@@ -109,10 +109,12 @@ function loadConfigs() {
                     seasons: Number(entry.seasons) || Number(existing && existing.seasons) || 1,
                     grow_phases: entry.grow_phases || existing && existing.grow_phases || '',
                     exp: Number(entry.exp) || Number(existing && existing.exp) || 0,
+                    mutant_effect_plant: entry.mutant_effect_plant || existing?.mutant_effect_plant || '',
                 };
                 plantMap.set(plant.id, plant);
-                seedToPlant.set(plant.seed_id, plant);
-                fruitToPlant.set(plant.fruit.id, plant);
+                // 与 Plant.json loader 对齐：变异展示植物（seed_id 为空）不进种子/果实索引
+                if (plant.seed_id) seedToPlant.set(plant.seed_id, plant);
+                if (plant.fruit && plant.fruit.id) fruitToPlant.set(plant.fruit.id, plant);
             }
             plantConfig = [...plantMap.values()];
             console.warn(`[配置] 已合并活动植物配置 (${  eventPlants.length  } 种)`);
@@ -145,6 +147,9 @@ function loadConfigs() {
             const eventPlants = JSON.parse(fs.readFileSync(eventPlantPath, 'utf8'));
             for (const entry of eventPlants) {
                 if (isInvalidPlant(entry)) continue;
+                // 变异展示植物（seed_id 为空）只进植物索引，不合成种子/果实物品，
+                // 否则会用 Number(null)=0 生成 id=0 的假种子并污染 itemInfoMap。
+                if (!Number(entry.seed_id)) continue;
                 const seedId = Number(entry.seed_id);
                 const fruitId = Number(entry.fruit_id);
                 const baseItem = {
