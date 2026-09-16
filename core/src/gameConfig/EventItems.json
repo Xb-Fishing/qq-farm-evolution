@@ -195,5 +195,29 @@
     "rarity_color": "B09DED",
     "desc": "寻宝时获得，比熊犬将其护送回家后可获得宝藏奖励。",
     "evidence": "Bag 出现 1030 与 client-config-evidence ItemInfo 快照（type 19、activity 2026090101）交叉核对；见 docs/HANDOFF.md 2026-09-14 巡检"
+  },
+  {
+    "id": 204008,
+    "name": "比熊棉花糖",
+    "type": 18,
+    "asset_name": "Crop_8004",
+    "sells": "1001:1000000",
+    "icon_res": "gui/texture/skinIcon/icon_skin_tower_4/spriteFrame",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "活动期间收获，可以获得萌宠元气糕；出售可以获得金币。",
+    "evidence": "client-config-evidence ItemInfo/Plant 快照：泡泡棉花糖 mutant_effect_plant 16:1028004 → 植物比熊棉花糖 fruit 204008，与 MutantEffect 16 乐园 fruit_name 同名三方交叉核对"
+  },
+  {
+    "id": 204009,
+    "name": "黄金·比熊棉花糖",
+    "type": 18,
+    "asset_name": "gold/Crop_8004",
+    "sells": "1005:1200",
+    "icon_res": "gui/texture/skinIcon/icon_skin_tower_4_1/spriteFrame",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "活动期间收获，可以获得萌宠元气糕；出售可以获得金豆豆。",
+    "evidence": "client-config-evidence ItemInfo/Plant 快照：植物 1128004 黄金·比熊棉花糖 fruit 204009；与 104 段黄金规律同族交叉核对"
   }
 ]
