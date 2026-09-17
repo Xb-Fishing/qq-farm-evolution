@@ -1299,3 +1299,36 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 新增 `core/test/mutant-plant-display.test.js` 11 条：乐园/黄金/组合变异植物 ID 与名称解析、狗尾草/芦苇黄金变体、比熊无植物映射边界、效果 15/16 标签、索引无 0 键污染、204008/204009 非种子登记、基础种子映射不回归（29004 size=2）、土地/种子双回包解析链。
 - Node 20（v20.20.2）串行全量 **410/410** 通过；`cd web && npm run build` 通过（类型检查+生产构建）；改动文件 ESLint **0 error**（gameConfig.js 保留既有 2 条 JSDoc warning）；种子目录审计 21 条基线与 `getGenericFallbackItemIds()` 未受扰动。
 - 本轮未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；变异映射只影响显示层（farm/friend-land-analyzer 的名称与效果标签），不进入成熟墙钟、偷菜目标排序或收获计算。回滚 `git revert <本轮提交>` 后仅在既有 `farm:0.0` 应用；回滚会恢复变异作物显示基名、无变异标签，不得借回滚改动核心收益链。本轮 Agent 不重启 Bot、不推送远端。
+
+## 活动进化巡检（2026-09-18，S3 指纹核对与 daily_share 解码异常登记，零代码改动）
+
+### 最近 24h 日志审计（10e/1a 硬门）
+
+- 审计窗口约 2026-09-16 16:35 ~ 2026-09-17 16:35 UTC，1712 条结构化日志、JSON 解析失败 0；「请求超时」「发送失败」「治理器拦截」「收获/种植/偷菜失败」「seedId=0」「bag_unclassified_item」「空图」「cooldown/熔断」「裸植物/物品/种子 ID」全部 **0**。
+- 核心收益链正常：到点保护收获 **54/54 ok**、哨兵抢收 **11/11 ok**（80–300ms 窗口内）；种植 13 ok（含泡泡棉花糖 2x2 两次，预留→铲除→种植链全成功）、铲除 12 ok、催熟 9 ok；好友巡查 56 ok、帮助 52 ok。化肥趋势触发 1 次（land_ripe_advanced）：触发先于抢收、12 秒无新证据冷却，满足 2026-09-11 地块级证据门。error 级仅 1 条微信凭证保活失败（「授权范围已失效」= 已知 40188 路径，账号需人工重扫，WS 不重启、无重试风暴）；今日 safety 轮已先于本轮零改动收口（定向回归 92/92）。
+
+### 指纹变化原因（0f834b59 → 589cd528）
+
+- 在线快照 starRecord 记录 9 新解锁：现为 1-7 已领取、8/9 解锁未领取（09-16 为 1-7 已领取、仅 8 解锁）。活动配置本身（tips 45/19/37 行、13 件商城、31 条记录、状态码序列与 owned 均不变）与已登记实现完全一致——同 09-13/09-16 模式：用户在官方客户端的人工进度，不触发适配、不代领。
+
+### 本轮新发现：daily_share 成功回包解码失败（登记证据，不改代码）
+
+- 现象：连续 3 个可观测日（09-15/16/17）每天 00:00 档 daily_share 出现一条 info 级 result=error「领取失败: index out of range: 32 + 10 > 32」（protobufjs Reader 在 32 字节回包末尾跳过声明长度 10 的 wire-2 字段越界），每日仅 1 次、无重试风暴。
+- 影响已闭环核实：同日稍后的重试（07:13/15:28/03:25）均走到 ClaimShareReward 并得到「今日分享奖励已领取」（code=1009001 已领取语义）——服务端在 00:00 已实际受理领取，**奖励没有丢失**；仅成功回包（含奖励内容的 32 字节 body）无法被现有 sharepb.proto 完整解码，被外层 catch 误记为「领取失败」。重试有界（当日 1 次）、当日自动收口。
+- 不修理由：根因修复需要真实成功回包样本或官方 sharepb 语义（本机无抓包会话、无 miniapp 源码）；按硬门 7，凭 Reader 越界错误猜测 proto 字段属于禁止行为。当前「解码失败→不标完成→重启后重试→已领取→当日收口」是安全兜底，不得改成「解码失败即视为成功」。
+- 后续取证路径：下次抓包会话顺带记录 ShareService 三方法回包样本后，才允许按证据修 proto/解码；在此之前该错误属已知项，不再深查。
+
+### 踩坑与注意点（下轮必读）
+
+- **info 级 result=error 会逃出 safety 白名单扫描**：daily_share 解码失败连续 3 天未进 safety 轮视野（今日 safety 仍报「error 仅 1 条」），因为它不在「收获/种植/偷菜失败」等白名单类别且 level=info。后续安全/活动巡检必须先全量聚合一次 `result:"error"`（不分 level、不限白名单），再对照本文件已知项归类，未匹配的才深查。
+- **web 构建只显式调用 v20 的 npm 不够**：直接执行 v20.20.2 的 `npm run build` 仍会让 vite shim 从 PATH 解析到系统 Node 18 并报 `crypto.hash is not a function`；必须先 `export PATH=<node20>/bin:$PATH` 再构建。该失败是环境问题不是源码回归（既有硬门再验证 + 新增 PATH 细节）。
+- 单条「领取失败」decode error 不能单独判定奖励丢失或被谁领取，必须看同日后续「今日分享奖励已领取」闭环。
+
+### 五闭环复核与验证
+
+- 图标：`getGenericFallbackItemIds()` 为空；`npm run fetch:official-icons` 已运行（无抓包 URL 证据，7 项商城装饰、bichon/leyuan 变异图标维持待证，零网络请求）；seed_images_named/mutant 仍 17 图、无新增未跟踪 PNG。
+- 种子/物品：种子目录审计 **21 条与 09-14/09-16 基线完全一致**（同 ID 同类别）；seedRecognition 41 类零 issue（36→41 为 8837bd5 变异登记后新类别，无新缺口）。
+- 旧活动：雨落成诗/公益小红花/千星在 worker.js/data-provider/controllers/前端 grep 均无可达调用；List 仅下发 S3 四节点。
+- 玩法/UI：S3 十一类玩法、商城、starRecord 展示与已登记实现一致，无新说明、无字段形状变化。
+- 本轮**零代码改动**（五闭环通过、指纹变化为纯人工进度、唯一新异常无安全修法），按硬门 8 代码保持不变，按硬门 10g 将上述新证据链当日写入本文件。未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、网络或 TSDK/ACE。
+- 验证：Node 20（v20.20.2）`node --test --test-concurrency=1 test/*.test.js` 串行全量 **410/410** 通过；web Node 20（PATH 前置）类型检查+生产构建通过。回滚：本提交仅文档，`git revert <本轮提交>` 无任何行为影响。本轮 Agent 不重启 Bot、不推送远端。
