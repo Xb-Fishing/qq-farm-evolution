@@ -67,6 +67,15 @@ function items(value) { return list(value).filter(Boolean).map(itemDto); }
 
 /** 读活动组（GetGroup 请求类型与通用活动一致；响应用 PetDiaryGetGroupReply 解码）。 */
 async function readPetDiaryGroup() {
+  const listRequest = types.ActivityListRequest.encode(types.ActivityListRequest.create({})).finish();
+  const listed = await sendMsgAsync('gamepb.activitypb.ActivityService', 'List', listRequest);
+  const entry = list(types.ActivityListReply.decode(listed.body)?.groups)
+    .find(node => toNum(node?.activity?.id) === PET_DIARY_GROUP_ID && !toNum(node.activity.parent_id));
+  const now = Math.floor(Date.now() / 1000);
+  if (!entry || (toNum(entry.activity.start_time) && now < toNum(entry.activity.start_time))
+    || (toNum(entry.activity.end_time) && now > toNum(entry.activity.end_time))) {
+    fail('PET_DIARY_UNAVAILABLE', '萌宠活动未由当前列表下发或已结束，停止操作');
+  }
   const request = types.ActivityGetGroupRequest.encode(
     types.ActivityGetGroupRequest.create({ id: toLong(PET_DIARY_GROUP_ID) }),
   ).finish();
@@ -161,6 +170,7 @@ function treasureCostsFromState(state) {
  * 每次操作前重读状态校验，成功后返回奖励与提示（不自动重试）。
  */
 async function runManualPetDiaryAction(action, input, deps = {}) {
+  if (!Object.hasOwn(OPERATIONS, action)) fail('PET_DIARY_UNKNOWN_ACTION', '该萌宠操作未开放');
   const getBag = deps.getBag;
   const getBagItems = deps.getBagItems;
   const { pet, seeds, shop } = await readPetDiaryGroup();

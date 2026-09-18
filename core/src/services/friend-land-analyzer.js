@@ -265,6 +265,12 @@ async function batchGetFriendDogInfo(friends) {
 
 // ===== Friends list =====
 let friendsListCache = null;
+// 面板好友列表的在途合并：并发读取共享同一次上游读取（2026-09-18 收口，
+// 登录后同一短窗口 3 次并发读取各自成功 → 只保留一次真实请求）。
+// 代次（generation）用于隔离外部清缓存：setFriendsListCache 清除/替换缓存后，
+// 旧代在途结果不再回填缓存，也不会释放在途引用挡住新请求。
+let friendsListInFlight = null;
+let friendsListGeneration = 0;
 
 function mergeRipeSnapshotIntoFriend(friend) {
   const gid = toNum(friend?.gid);
@@ -288,6 +294,9 @@ function mergeRipeSnapshotsIntoFriends(friends) {
 /**
  * Get a processed friends list with dog info from cache if available.
  * Filters out fake NPCs (name "小小农夫" with level 1).
+ *
+ * 并发（含强制刷新）共享同代在途读取；读取失败释放在途引用并返回空数组，
+ * 不缓存失败结果、不自动重试——下一次显式请求可再次发起。
  */
 async function getFriendsList(forceRefresh = false) {
   try {
@@ -296,79 +305,27 @@ async function getFriendsList(forceRefresh = false) {
       return friendsListCache;
     }
 
+    const inflight = friendsListInFlight;
+    if (inflight && inflight.generation === friendsListGeneration) {
+      return await inflight.promise;
+    }
+
     log('好友', '开始获取好友列表', {
       module: 'friend',
       event: '获取好友列表',
     });
 
-    const { getAllFriends } = require('./friend-api');
-    const allFriendsReply = await getAllFriends(forceRefresh);
-    const rawFriends = allFriendsReply.game_friends || [];
-    const userState = getUserState();
-    const accountId = process.env.FARM_ACCOUNT_ID || '';
-    const dogInfoCache = accountId ? readFriendDogInfoCache(accountId) : null;
-
-    const friends = rawFriends
-      .filter(friend => {
-        // Exclude self
-        if (toNum(friend.gid) === userState.gid) return false;
-        // Exclude fake NPC
-        if (
-          (friend.name === '小小农夫' || friend.remark === '小小农夫') &&
-          toNum(friend.level) === 1
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .map(friend => {
-        const gid = toNum(friend.gid);
-        const cachedDog = dogInfoCache && dogInfoCache[gid] ? dogInfoCache[gid] : null;
-        return {
-          gid,
-          name: friend.remark || friend.name || `GID:${gid}`,
-          avatarUrl: String(friend.avatar_url || '').trim(),
-          level: toNum(friend.level),
-          gold: toNum(friend.gold),
-          dogId: cachedDog ? cachedDog.dogId : 0,
-          dogName: cachedDog ? cachedDog.dogName : '',
-          plant: (() => {
-            const ripe = getFriendRipeSnapshot(gid);
-            if (!friend.plant && !ripe) return null;
-            return {
-              stealNum: toNum(friend.plant?.steal_plant_num),
-              dryNum: toNum(friend.plant?.dry_num),
-              weedNum: toNum(friend.plant?.weed_num),
-              insectNum: toNum(friend.plant?.insect_num),
-              ripeAt: Number(ripe?.dueAt) || 0,
-              matureInSec: ripe?.dueAt ? Math.max(0, Math.ceil((ripe.dueAt - Date.now()) / 1000)) : 0,
-              timeSource: ripe?.source || (ripe?.dueAt ? 'summary' : 'unknown'),
-            };
-          })(),
-        };
-      })
-      .sort((a, b) => {
-        const cmp = (a.name || '').localeCompare(b.name || '', 'zh-CN');
-        if (cmp !== 0) return cmp;
-        return (a.gid || 0) - (b.gid || 0);
-      });
-
-    friendsListCache = mergeRipeSnapshotsIntoFriends(friends);
-
-    const cachedDogCount = dogInfoCache ? Object.keys(dogInfoCache).length : 0;
-    log('好友',
-      `获取好友列表成功，共 ${friends.length} 位好友${ 
-        cachedDogCount > 0 ? `，已从缓存加载 ${cachedDogCount} 个狗信息` : ''}`,
-      {
-        module: 'friend',
-        event: '获取好友列表',
-        result: 'ok',
-        count: friends.length,
-        cachedDogInfoCount: cachedDogCount,
+    const generation = friendsListGeneration;
+    const promise = fetchFriendsListOnce(forceRefresh);
+    friendsListInFlight = { generation, promise };
+    try {
+      return await promise;
+    } finally {
+      // 只有仍是当前在途代时才释放：旧代完成不得清除新请求的在途引用
+      if (friendsListInFlight && friendsListInFlight.promise === promise) {
+        friendsListInFlight = null;
       }
-    );
-
-    return friendsListCache;
+    }
   } catch (err) {
     log('好友', `获取好友列表失败: ${err.message}`, {
       module: 'friend',
@@ -378,6 +335,83 @@ async function getFriendsList(forceRefresh = false) {
     });
     return [];
   }
+}
+
+/** 实际读取好友列表；只有代次未变时才回填缓存（失败不缓存，无自动重试）。 */
+async function fetchFriendsListOnce(forceRefresh) {
+  const generation = friendsListGeneration;
+  const { getAllFriends } = require('./friend-api');
+  const allFriendsReply = await getAllFriends(forceRefresh);
+  const rawFriends = allFriendsReply.game_friends || [];
+  const userState = getUserState();
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  const dogInfoCache = accountId ? readFriendDogInfoCache(accountId) : null;
+
+  const friends = rawFriends
+    .filter(friend => {
+      // Exclude self
+      if (toNum(friend.gid) === userState.gid) return false;
+      // Exclude fake NPC
+      if (
+        (friend.name === '小小农夫' || friend.remark === '小小农夫') &&
+        toNum(friend.level) === 1
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map(friend => {
+      const gid = toNum(friend.gid);
+      const cachedDog = dogInfoCache && dogInfoCache[gid] ? dogInfoCache[gid] : null;
+      return {
+        gid,
+        name: friend.remark || friend.name || `GID:${gid}`,
+        avatarUrl: String(friend.avatar_url || '').trim(),
+        level: toNum(friend.level),
+        gold: toNum(friend.gold),
+        dogId: cachedDog ? cachedDog.dogId : 0,
+        dogName: cachedDog ? cachedDog.dogName : '',
+        plant: (() => {
+          const ripe = getFriendRipeSnapshot(gid);
+          if (!friend.plant && !ripe) return null;
+          return {
+            stealNum: toNum(friend.plant?.steal_plant_num),
+            dryNum: toNum(friend.plant?.dry_num),
+            weedNum: toNum(friend.plant?.weed_num),
+            insectNum: toNum(friend.plant?.insect_num),
+            ripeAt: Number(ripe?.dueAt) || 0,
+            matureInSec: ripe?.dueAt ? Math.max(0, Math.ceil((ripe.dueAt - Date.now()) / 1000)) : 0,
+            timeSource: ripe?.source || (ripe?.dueAt ? 'summary' : 'unknown'),
+          };
+        })(),
+      };
+    })
+    .sort((a, b) => {
+      const cmp = (a.name || '').localeCompare(b.name || '', 'zh-CN');
+      if (cmp !== 0) return cmp;
+      return (a.gid || 0) - (b.gid || 0);
+    });
+
+  const merged = mergeRipeSnapshotsIntoFriends(friends);
+  // 缓存被外部清除/替换（代次变化）后，旧代结果不回填缓存
+  if (generation === friendsListGeneration) {
+    friendsListCache = merged;
+  }
+
+  const cachedDogCount = dogInfoCache ? Object.keys(dogInfoCache).length : 0;
+  log('好友',
+    `获取好友列表成功，共 ${friends.length} 位好友${
+      cachedDogCount > 0 ? `，已从缓存加载 ${cachedDogCount} 个狗信息` : ''}`,
+    {
+      module: 'friend',
+      event: '获取好友列表',
+      result: 'ok',
+      count: friends.length,
+      cachedDogInfoCount: cachedDogCount,
+    }
+  );
+
+  return merged;
 }
 
 /**
@@ -419,7 +453,10 @@ async function fetchFriendsDogInfo() {
     }
   }
 
-  friendsListCache = friends;
+  // 走统一替换入口而不是直接赋值：狗信息合并写缓存也按外部替换处理
+  // （代次 +1），否则并发在途的面板列表读取完成后会用无狗信息的结果
+  // 覆盖这份已合并狗信息的缓存
+  setFriendsListCache(friends);
 
   // Persist guard dog info to disk cache
   if (accountId && Object.keys(guardDogFriends).length > 0) {
@@ -649,6 +686,8 @@ function getFriendsListCache() {
 
 function setFriendsListCache(cache) {
   friendsListCache = cache;
+  // 外部清除/替换缓存时隔离旧代在途读取：旧结果不回填缓存、不释放在途引用
+  friendsListGeneration += 1;
 }
 
 // ===== Exports =====

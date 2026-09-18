@@ -17,12 +17,12 @@ function registerAdminPetDiaryOperateRoutes({
   provider,
   getAccountIdFromRequest,
   canAccessAccount,
+  activityReader = createActivityReadCache({ ttlMs: ACTIVITY_UPSTREAM_CACHE_MS }),
 }) {
   const routeContext = {
     getAccountIdFromRequest,
     canAccessAccount,
   };
-  const activityReader = createActivityReadCache({ ttlMs: ACTIVITY_UPSTREAM_CACHE_MS });
 
   function getAuthorizedAccountId(req, res) {
     const accountId = routeContext.getAccountIdFromRequest(req);

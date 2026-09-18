@@ -16,8 +16,35 @@ fi
 # 必须在停旧进程前先验证 pane；不存在就原样保持运行。
 tmux display-message -p -t "$TMUX_TARGET" '#{pane_id}' >/dev/null
 
-sleep 2
 cd "$REPO_ROOT"
+APPLY_EXPECTED_HEAD="${FARM_EVOLUTION_COMMIT:-$(git rev-parse HEAD)}"
+if [[ "$(git rev-parse HEAD)" != "$APPLY_EXPECTED_HEAD" || -n "$(git status --porcelain)" ]]; then
+  echo "[ERROR] 待应用版本或工作区发生变化，取消部署" >&2
+  exit 1
+fi
+
+# 巡检的构建只用于验证。确认应用后，再隔离构建当前已审提交；失败时不停止旧服务。
+umask 077
+mkdir -p "$REPO_ROOT/tmp" "${FARM_DATA_DIR:-$REPO_ROOT/core/data}/logs"
+EVOLUTION_BUILD_ROOT="$(mktemp -d "$REPO_ROOT/tmp/evolution-apply.XXXXXX")"
+cleanup_build() { rm -rf -- "$EVOLUTION_BUILD_ROOT"; }
+trap cleanup_build EXIT
+APPLY_BUILD_LOG="${FARM_DATA_DIR:-$REPO_ROOT/core/data}/logs/evolve-apply.log"
+(
+  cd "$REPO_ROOT/web"
+  PATH="$NODE_BIN_DIR:$PATH" npm run build -- --outDir "$EVOLUTION_BUILD_ROOT/dist" --emptyOutDir
+) >"$APPLY_BUILD_LOG" 2>&1
+test -f "$EVOLUTION_BUILD_ROOT/dist/index.html"
+test "$(git rev-parse HEAD)" = "$APPLY_EXPECTED_HEAD"
+test -z "$(git status --porcelain)"
+tmux display-message -p -t "$TMUX_TARGET" '#{pane_id}' >/dev/null
+if [[ -e "$REPO_ROOT/web/dist" ]]; then mv "$REPO_ROOT/web/dist" "$EVOLUTION_BUILD_ROOT/previous-dist"; fi
+if ! mv "$EVOLUTION_BUILD_ROOT/dist" "$REPO_ROOT/web/dist"; then
+  if [[ -e "$EVOLUTION_BUILD_ROOT/previous-dist" ]]; then mv "$EVOLUTION_BUILD_ROOT/previous-dist" "$REPO_ROOT/web/dist"; fi
+  exit 1
+fi
+
+sleep 2
 bash stop.sh >/dev/null 2>&1
 
 printf -v repo_quoted '%q' "$REPO_ROOT"
