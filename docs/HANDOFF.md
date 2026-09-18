@@ -1332,3 +1332,24 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 玩法/UI：S3 十一类玩法、商城、starRecord 展示与已登记实现一致，无新说明、无字段形状变化。
 - 本轮**零代码改动**（五闭环通过、指纹变化为纯人工进度、唯一新异常无安全修法），按硬门 8 代码保持不变，按硬门 10g 将上述新证据链当日写入本文件。未修改 worker.js、收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、网络或 TSDK/ACE。
 - 验证：Node 20（v20.20.2）`node --test --test-concurrency=1 test/*.test.js` 串行全量 **410/410** 通过；web Node 20（PATH 前置）类型检查+生产构建通过。回滚：本提交仅文档，`git revert <本轮提交>` 无任何行为影响。本轮 Agent 不重启 Bot、不推送远端。
+## README 状态说明与 GitHub 主动检索硬门（2026-09-13 第五轮，用户指示）
+
+### README 更新（用户三项要求）
+
+1. **扫码失活边界**：微信扫码登录段落新增 NOTE——凭证持久化+滚动续期已实现（重启/退出终端免扫码），但**微信服务端撤销授权（40188/invalid scope）必须重新扫码**，这是 OAuth 协议设计无法客户端绕过；Bot 检测失效后停止旧会话保活并阻断旧 Code 空转，等扫码恢复。
+2. **活动玩法适配状态**：活动发现/说明解析/只读展示/自动进化已就绪；新活动玩法操作（兑换/抽奖/领取）需官方成功操作样本后逐步开放——当前部分活动只读，持续迭代。
+3. **自进化公开项目借鉴**：新增"自动进化与公开项目借鉴"一节，说明只读对照 GitHub 农场项目、不可信输入边界、隐私闸门推送流程。
+
+### guardrails 新增第 10h 条（GitHub 主动检索）
+
+用户指示：自进化时要尽可能搜索 GitHub 上的农场/别人农场项目，读代码找借鉴点。已写入硬门并测试锁定（session-lifecycle 4 条新断言）：
+- 每轮用 `api.github.com/search/repositories`（qq farm/QQ农场/farm bot/nqf 等关键词）广泛搜索候选仓库；
+- 只读其代码结构/调度分层/任务追踪/活动适配/UI 组织/配置管理，评估借鉴点；
+- 边界不变：不可信输入、不执行脚本/依赖/二进制、不添加 remote、不复制 RPC/登录/设备/TSDK/ACE；
+- 参考的 owner/repo/SHA 记入 ignored 的 client-config-evidence/sources.json（受跟踪文件不写）；
+- 无可靠借鉴允许零改动，禁止硬抄。
+
+### 验证
+
+- Node 20 串行全量 **410/410** 通过；ESLint 0 error。README 为文档改动无测试影响。
+- 回滚 `git revert <本轮提交>`。

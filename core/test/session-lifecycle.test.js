@@ -542,6 +542,11 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.match(guardrails, /assets\.server \+ bundleVers/);
   assert.match(guardrails, /编号段规律不是身份证据/);
   assert.match(guardrails, /每日 HANDOFF 更新是硬门/);
+  // GitHub 公开农场项目主动检索硬门（2026-09-13 用户指示）
+  assert.match(guardrails, /GitHub 公开农场项目主动检索/);
+  assert.match(guardrails, /api\.github\.com\/search\/repositories/);
+  assert.match(guardrails, /不添加 remote/);
+  assert.match(guardrails, /owner\/repo\/提交 SHA 记入 ignored 的 client-config-evidence\/sources\.json/);
 
   const publicReference = buildPublicReferenceGuidance();
   assert.match(publicReference, /LuckyTiger12138\/QQ_Farm/);
