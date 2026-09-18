@@ -5,9 +5,13 @@ import api from '@/api'
 export type EvolutionAgentKind = 'claude' | 'codex'
 
 export interface EvolutionCollaboration {
-  phase: 'research' | 'plan' | 'implement' | 'verify' | 'review' | 'commit' | 'complete' | 'failed'
+  phase: 'research' | 'plan' | 'implement' | 'verify' | 'review' | 'diagnose' | 'repair' | 'repair_review' | 'commit' | 'complete' | 'failed'
   status: 'running' | 'completed' | 'failed'
   activeAgent: EvolutionAgentKind | ''
+  recoveryAttempt?: number
+  recoveryLimit?: number
+  repairOnly?: boolean
+  failure?: { code: string, label: string, phase: string, agent: EvolutionAgentKind | '' } | null
 }
 
 export interface EvolutionState {
