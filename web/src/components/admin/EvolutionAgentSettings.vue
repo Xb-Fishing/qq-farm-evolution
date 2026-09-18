@@ -15,6 +15,9 @@ const COLLABORATION_PHASE_LABELS: Record<string, string> = {
   implement: '实施改动',
   verify: '运行验证',
   review: '复核审查',
+  diagnose: '主 Agent 分析失败原因',
+  repair: '子 Agent 修复',
+  repair_review: '主 Agent 验收修复',
   commit: '提交收口',
   complete: '协作完成',
   failed: '协作失败',
@@ -32,10 +35,14 @@ function agentDisplayName(agent: string) {
 const phaseText = computed(() => {
   const collab = evolutionStore.collaboration
   if (collab) {
-    const phase = COLLABORATION_PHASE_LABELS[collab.phase] || collab.phase
+    const phase = collab.repairOnly && collab.status === 'completed'
+      ? '编排修复已验收，原巡检待继续'
+      : COLLABORATION_PHASE_LABELS[collab.phase] || collab.phase
     const status = COLLABORATION_STATUS_LABELS[collab.status] || collab.status
     const agent = collab.activeAgent ? ` · ${agentDisplayName(collab.activeAgent)} 执行` : ''
-    return `双 Agent：${phase}（${status}${agent}）`
+    const recovery = collab.recoveryAttempt ? ` · 修复 ${collab.recoveryAttempt}/${collab.recoveryLimit || 2}` : ''
+    const failure = collab.status === 'failed' && collab.failure ? ` · ${collab.failure.label}` : ''
+    return `双 Agent：${phase}（${status}${agent}）${recovery}${failure}`
   }
   if (evolutionStore.running)
     return `进化任务执行中 · ${agentDisplayName(evolutionStore.activeMainAgent)}`
@@ -135,6 +142,7 @@ async function saveAgentSettings() {
     </div>
     <p :class="hintClass">
       推荐组合：主 Codex（确认方案与复核）+ 子 Claude（检索 GitHub、巡查与实施）；关闭双 Agent 时仅由主 Agent 单独执行。
+      双 Agent 失败后由主 Agent 诊断、子 Agent 修复、主 Agent 验收，每轮最多修复两次。
     </p>
     <p v-if="evolutionStore.error" :class="errorClass">
       {{ evolutionStore.error }}

@@ -176,6 +176,12 @@ function parseAddedDiff(diff) {
 }
 
 function auditGitRange(repoRoot, base, head, options = {}) {
+  // 仅父进程持有已完成双 Agent 验收凭据时传入；隐私文件不在这个例外集合中。
+  const orchestrationFiles = new Set([
+    'core/scripts/run-evolution-team.js', 'core/src/services/evolution-team.js',
+  ]);
+  const reviewedOrchestrationFiles = new Set((Array.isArray(options.reviewedOrchestrationFiles)
+    ? options.reviewedOrchestrationFiles : []).filter(file => orchestrationFiles.has(file)));
   const protectedFiles = new Set([
     '.gitignore',
     'core/src/services/privacy-guard.js',
@@ -212,7 +218,7 @@ function auditGitRange(repoRoot, base, head, options = {}) {
       const names = git([...args, '--name-only', '-z', commit]).split('\0').filter(Boolean);
       for (const file of names) {
         scan(file, file, commit, 0);
-        if (protectedFiles.has(file)) add({ rule: 'privacy-control-changed', file, line: 0 }, commit);
+        if (protectedFiles.has(file) && !reviewedOrchestrationFiles.has(file)) add({ rule: 'privacy-control-changed', file, line: 0 }, commit);
       }
       const numstat = git([...args, '--numstat', commit]);
       for (const line of numstat.trim().split('\n').filter(Boolean)) {

@@ -42,11 +42,11 @@ test('旧单执行器配置保留，主子 Agent 可独立选择并同步旧字�
 
 test('交接只接受阶段决策和脱敏摘要，不把任意退出文本当批准', () => {
   assert.throws(() => parseStageResult('looks good', 'plan', new Set()), /JSON/);
-  assert.throws(() => parseStageResult('{"decision":"approve","summary":""}', 'plan', new Set()), /缺失/);
+  assert.throws(() => parseStageResult('{"decision":"approve","summary":""}', 'plan', new Set()), { code: 'invalid_decision' });
   assert.throws(() => parseStageResult('{"decision":"approve","summary":"ok"}', 'research', new Set()), /决策/);
   const result = parseStageResult(JSON.stringify({ decision: 'approve', summary: 'private-person code path' }), 'plan', new Set(['private-person']));
   assert.equal(result.summary, '[PRIVATE] code path');
-  assert.throws(() => parseStageResult(JSON.stringify({ decision: 'approve', summary: ['person', '@', 'example.org'].join('') }), 'plan', new Set()), /未脱敏/);
+  assert.throws(() => parseStageResult(JSON.stringify({ decision: 'approve', summary: ['person', '@', 'example.org'].join('') }), 'plan', new Set()), { code: 'private_handoff' });
 });
 
 function workflowFixture(overrides = {}) {
@@ -126,7 +126,7 @@ test('只读阶段越权改文件或 Agent 提前创建提交均会停止', asyn
       f.setTree(fields);
       return { decision: 'researched', summary: 'claimed success' };
     };
-    await assert.rejects(runTeamWorkflow(f.deps), /越权|只读/);
+    await assert.rejects(runTeamWorkflow(f.deps), error => ['readonly_changed', 'head_changed'].includes(error.code));
     assert.equal(f.calls.length, 1);
   }
 });
@@ -134,7 +134,7 @@ test('只读阶段越权改文件或 Agent 提前创建提交均会停止', asyn
 test('测试或复核期间工作区被改动，原批准不可复用', async () => {
   const f = workflowFixture();
   f.deps.verify = async () => f.setTree({ fingerprint: 'changed-during-tests' });
-  await assert.rejects(runTeamWorkflow(f.deps), /验证期间/);
+  await assert.rejects(runTeamWorkflow(f.deps), { code: 'worktree_changed' });
   assert.ok(!f.calls.some(([phase]) => phase === 'git-commit'));
 });
 
@@ -146,12 +146,16 @@ test('重启恢复只信本轮、同基线、同角色、同 HEAD 的完成凭�
   const data = {
     runId: active.runId, baseCommit: active.baseCommit, mainAgent: 'codex', subAgent: 'claude',
     phase: 'complete', status: 'completed', activeAgent: '', head: 'b'.repeat(40), decision: 'approve',
+    recoveryAttempt: 1,
+    reviewedOrchestrationFiles: ['core/scripts/run-evolution-team.js', 'core/src/services/privacy-guard.js'],
   };
   try {
     assert.equal(readTeamJournal(dir, active), null);
     const file = teamJournalPath(dir, active.runId);
     fs.writeFileSync(file, JSON.stringify(data));
     assert.equal(isTeamResultApproved(readTeamJournal(dir, active), data.head), true);
+    assert.deepEqual(readTeamJournal(dir, active).reviewedOrchestrationFiles, ['core/scripts/run-evolution-team.js']);
+    assert.equal(readTeamJournal(dir, active).recoveryAttempt, 1);
     assert.equal(isTeamResultApproved(readTeamJournal(dir, active), 'c'.repeat(40)), false);
     for (const patch of [{ runId: 'old-run' }, { baseCommit: 'c'.repeat(40) }, { mainAgent: 'claude' }, { subAgent: 'codex' }, { phase: 'review', status: 'running' }, { status: 'failed' }, { decision: 'no_change' }]) {
       fs.writeFileSync(file, JSON.stringify({ ...data, ...patch }));
@@ -221,10 +225,20 @@ process.stdin.on('end', () => {
     fs.appendFileSync('docs/HANDOFF.md', 'Verified implementation\\n');
   }
   const reject = fs.existsSync('core/data/reject-review');
-  const decision = { research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve' }[phase];
-  const result = JSON.stringify({decision, summary: 'Verified fixture change'});
-  if (agent === 'claude') process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result}));
-  else fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], result);
+  const decision = { research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve', diagnose: reject ? 'stop' : 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
+  const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {})};
+  if (agent === 'claude') {
+    const schemaIndex = process.argv.indexOf('--json-schema');
+    if (schemaIndex < 0 || !JSON.parse(process.argv[schemaIndex + 1]).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
+    if (phase === 'research' && fs.existsSync('core/data/invalid-research-once')) {
+      fs.unlinkSync('core/data/invalid-research-once');
+      process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result:'unstructured report'}));
+    } else process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result:'completed', structured_output:result}));
+  } else {
+    const schemaIndex = process.argv.indexOf('--output-schema');
+    if (schemaIndex < 0 || !JSON.parse(fs.readFileSync(process.argv[schemaIndex + 1])).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
+    fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
+  }
 });
 `;
     write('core/data/fake-agent', fakeCli);
@@ -265,5 +279,18 @@ process.stdin.on('end', () => {
     assert.equal(git(['rev-parse', 'HEAD']), baseCommit);
     assert.notEqual(git(['status', '--porcelain']), '');
     assert.equal(isTeamResultApproved(readTeamJournal(path.join(dir, 'core/data/logs'), { ...active, runId: 'reject' }), baseCommit), false);
+    git(['reset', '--hard', baseCommit]);
+    fs.unlinkSync(path.join(dir, 'core/data/reject-review'));
+    write('core/data/calls.log', '');
+    write('core/data/invalid-research-once', '1');
+    const recovered = run('recovered');
+    assert.equal(recovered.status, 0, recovered.stderr);
+    const recoveredHead = git(['rev-parse', 'HEAD']);
+    const journal = readTeamJournal(path.join(dir, 'core/data/logs'), { ...active, runId: 'recovered' });
+    assert.equal(journal.recoveryAttempt, 1);
+    assert.equal(journal.lastFailure.code, 'invalid_output');
+    assert.equal(isTeamResultApproved(journal, recoveredHead), true);
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\ndiagnose:codex\nrepair:claude\nrepair_review:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
+    assert.ok(fs.readdirSync(path.join(dir, 'core/data/logs')).every(file => !file.endsWith('-schema.json')));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
