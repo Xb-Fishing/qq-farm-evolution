@@ -1,78 +1,30 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
 import { onMounted, ref, watch } from 'vue'
-import api from '@/api'
 import BearActivityPanel from '@/components/activity/BearActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
+import EvolutionAgentSettings from '@/components/admin/EvolutionAgentSettings.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useActivityStore } from '@/stores/activity'
+import { useEvolutionStore } from '@/stores/evolution'
 import { useToastStore } from '@/stores/toast'
 import { useUserStore } from '@/stores/user'
 
 const accountStore = useAccountStore()
 const activityStore = useActivityStore()
+const evolutionStore = useEvolutionStore()
 const toast = useToastStore()
 const userStore = useUserStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { bearActivity, bearLoading, bearError, bearOperating } = storeToRefs(activityStore)
+const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
-type EvolutionAgent = 'claude' | 'codex'
-const evolutionDefaultAgent = ref<EvolutionAgent>('claude')
-const evolutionAgentLoading = ref(false)
-const evolutionRunning = ref(false)
-const evolutionNextRunAt = ref(0)
-const evolutionIssueCount = ref(0)
 
 async function refreshAll() {
   if (currentAccountId.value) {
     await activityStore.fetchBearActivity(String(currentAccountId.value))
-  }
-}
-
-function syncEvolutionAgent(evolve: {
-  defaultAgent?: EvolutionAgent
-  agent?: EvolutionAgent
-  status?: string
-  nextAutoRunAt?: number
-  pendingRuntimeIssueCount?: number
-} | null | undefined) {
-  evolutionDefaultAgent.value = (evolve?.defaultAgent || evolve?.agent) === 'codex' ? 'codex' : 'claude'
-  evolutionRunning.value = evolve?.status === 'running'
-  evolutionNextRunAt.value = Number(evolve?.nextAutoRunAt) || 0
-  evolutionIssueCount.value = Number(evolve?.pendingRuntimeIssueCount) || 0
-}
-
-async function loadEvolutionAgent() {
-  evolutionAgentLoading.value = true
-  try {
-    const { data } = await api.get('/api/activity/update/status')
-    if (data.ok)
-      syncEvolutionAgent(data.evolve)
-  }
-  catch { /* 活动分析面板会展示具体接口错误 */ }
-  finally {
-    evolutionAgentLoading.value = false
-  }
-}
-
-async function saveEvolutionAgent(event: Event) {
-  const agent = (event.target as HTMLSelectElement).value as EvolutionAgent
-  evolutionAgentLoading.value = true
-  try {
-    const { data } = await api.post('/api/activity/update/agent', { agent })
-    if (!data.ok)
-      throw new Error(data.error || '保存默认执行器失败')
-    syncEvolutionAgent(data.evolve)
-    toast.success(`自动进化默认执行器已设为 ${agent === 'codex' ? 'Codex' : 'Claude'}`)
-  }
-  catch (error: any) {
-    toast.error(error?.response?.data?.error || error.message || '保存默认执行器失败')
-    await loadEvolutionAgent()
-  }
-  finally {
-    evolutionAgentLoading.value = false
   }
 }
 
@@ -101,9 +53,15 @@ watch(currentAccountId, () => {
   activityStore.clearActivityData()
   refreshAll()
 })
-watch(() => userStore.isAdmin, (isAdmin) => {
-  if (isAdmin)
-    void loadEvolutionAgent()
+watch(() => userStore.isAdmin, (isAdmin, _previous, onCleanup) => {
+  if (isAdmin) {
+    void evolutionStore.loadStatus().catch(() => {})
+    evolutionStore.startPolling()
+    onCleanup(() => evolutionStore.stopPolling())
+  }
+  else {
+    showActivityAnalysis.value = false
+  }
 }, { immediate: true })
 onMounted(refreshAll)
 </script>
@@ -128,26 +86,12 @@ onMounted(refreshAll)
           <BaseButton variant="primary" :loading="bearLoading" :disabled="!currentAccountId" @click="refreshAll">
             刷新
           </BaseButton>
-          <label
-            v-if="userStore.isAdmin"
-            class="inline-flex items-center gap-2 rounded-lg border border-sky-200/25 bg-[#071b43]/75 px-3 py-1.5 text-xs text-sky-50 backdrop-blur-sm"
-          >
-            <span class="whitespace-nowrap">自动进化默认执行器</span>
-            <select
-              :value="evolutionDefaultAgent"
-              class="rounded border border-sky-200/30 bg-[#102b56] px-2 py-1 text-xs text-white"
-              :disabled="evolutionAgentLoading || evolutionRunning"
-              @change="saveEvolutionAgent"
-            >
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
+          <EvolutionAgentSettings v-if="userStore.isAdmin" dark />
           <span
             v-if="userStore.isAdmin"
             class="inline-flex items-center border border-sky-200/25 rounded-lg bg-[#071b43]/75 px-3 py-1.5 text-xs text-sky-50 backdrop-blur-sm"
           >
-            下次自动：{{ evolutionNextRunAt ? new Date(evolutionNextRunAt).toLocaleString() : '待调度' }} · 待复盘 {{ evolutionIssueCount }} 类
+            下次自动：{{ evolve?.nextAutoRunAt ? new Date(evolve.nextAutoRunAt).toLocaleString() : '待调度' }} · 待复盘 {{ evolve?.pendingRuntimeIssueCount || 0 }} 类
           </span>
           <BaseButton v-if="userStore.isAdmin" variant="secondary" @click="showActivityAnalysis = true">
             <span class="i-carbon-analytics mr-1.5" />
@@ -182,19 +126,8 @@ onMounted(refreshAll)
               <h2 class="font-semibold text-gray-900 dark:text-white">活动分析</h2>
               <p class="mt-0.5 text-xs text-gray-500">在线发现未适配活动并读取只读活动树</p>
             </div>
-            <div class="flex items-center gap-3">
-              <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-                <span class="whitespace-nowrap font-medium">自动进化默认执行器</span>
-                <select
-                  :value="evolutionDefaultAgent"
-                  class="rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-                  :disabled="evolutionAgentLoading || evolutionRunning"
-                  @change="saveEvolutionAgent"
-                >
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
-                </select>
-              </label>
+            <div class="min-w-0 flex items-center gap-3">
+              <EvolutionAgentSettings />
               <button
                 class="grid h-9 w-9 place-items-center rounded-lg text-gray-500 transition hover:bg-gray-100 dark:hover:bg-gray-700"
                 aria-label="关闭活动分析"

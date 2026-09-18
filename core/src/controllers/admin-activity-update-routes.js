@@ -81,6 +81,13 @@ function buildEvolutionStartResponse(result, evolve) {
   };
 }
 
+function requireEvolutionConfigAdmin(req, res, next) {
+  if (!['admin', 'super_admin'].includes(req.currentUser?.role)) {
+    return res.status(403).json({ ok: false, error: '只有管理员可以修改进化 Agent 配置' });
+  }
+  return next();
+}
+
 function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken }) {
   const knownActivityIds = Object.entries(activity)
     .filter(([key, value]) => key.endsWith('_ACTIVITY_ID') && Number.isFinite(Number(value)))
@@ -204,8 +211,14 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     res.status(response.statusCode).json(response.body);
   });
 
-  app.post('/api/activity/update/agent', requireAdminToken, (req, res) => {
+  app.post('/api/activity/update/agent', requireAdminToken, requireEvolutionConfigAdmin, (req, res) => {
     const result = activityEvolver.setEvolutionAgent(req.body?.agent);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true, evolve: activityEvolver.getEvolveState() });
+  });
+
+  app.post('/api/activity/update/agents', requireAdminToken, requireEvolutionConfigAdmin, (req, res) => {
+    const result = activityEvolver.setEvolutionAgents(req.body);
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
     res.json({ ok: true, evolve: activityEvolver.getEvolveState() });
   });
@@ -241,6 +254,7 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
 
 module.exports = {
   buildEvolutionStartResponse,
+  requireEvolutionConfigAdmin,
   registerAdminActivityUpdateRoutes,
   selectKnownActivityReviewRoots,
   selectActivitySnapshotRoots,
