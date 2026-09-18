@@ -12,12 +12,12 @@ function registerAdminBearActivityRoutes({
   getAccountIdFromRequest,
   canAccessAccount,
   sendProviderError,
+  activityReader = createActivityReadCache({ ttlMs: ACTIVITY_UPSTREAM_CACHE_MS }),
 }) {
   const routeContext = {
     getAccountIdFromRequest,
     canAccessAccount,
   };
-  const activityReader = createActivityReadCache({ ttlMs: ACTIVITY_UPSTREAM_CACHE_MS });
 
   app.get('/api/activity/bear', async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);

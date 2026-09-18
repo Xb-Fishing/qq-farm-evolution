@@ -148,10 +148,11 @@ const EVOLVE_STATUS_LABELS: Record<string, string> = {
   deferred: '有人工改动，已延期',
   privacy_blocked: '隐私检查未通过',
   privacy_blocked_local: '本地改动待检查，已阻止推送',
+  review_blocked: '验收未通过，改动待返工',
   no_change: '无需改动',
 }
 const evolveStatusLabel = computed(() => EVOLVE_STATUS_LABELS[evolve.value?.status || ''] || '空闲')
-const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local'].includes(evolve.value?.status || ''))
+const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local', 'review_blocked'].includes(evolve.value?.status || ''))
 
 // 所有任务/扫描响应里的 evolve 都同步进共享 store，保证活动中心顶部与弹窗状态一致；
 // 修改要求草稿只在用户动作的响应里重置，10 秒轮询不会覆盖正在编辑的内容

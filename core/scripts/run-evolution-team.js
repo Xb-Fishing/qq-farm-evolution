@@ -7,7 +7,7 @@ const { buildEvolutionAgentCommand, buildEvolutionAgentEnv } = require('../src/s
 const { collectRuntimePrivacyTerms } = require('../src/services/privacy-guard');
 const {
   parseStageResult, runTeamWorkflow, teamJournalPath, buildStageSchema,
-  createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles,
+  createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
 } = require('../src/services/evolution-team');
 
 const repoRoot = path.resolve(__dirname, '../..');
@@ -140,7 +140,7 @@ function readTeamStageOutput(outputFile) {
 
 async function main(input) {
   process.umask(0o077);
-  const { runId, baseCommit, settings, logDir, bins, prompt, task, dataDir, initialFailure } = input;
+  const { runId, baseCommit, settings, logDir, bins, prompt, task, dataDir, initialFailure, initialReviewFeedback } = input;
   const journalFile = teamJournalPath(logDir, runId);
   const journal = { runId, baseCommit, mainAgent: settings.mainAgent, subAgent: settings.subAgent };
   const persist = (fields) => {
@@ -158,6 +158,11 @@ async function main(input) {
     if (details && typeof details === 'object') {
       if (Number.isInteger(details.recoveryAttempt)) fields.recoveryAttempt = details.recoveryAttempt;
       if (Number.isInteger(details.recoveryLimit)) fields.recoveryLimit = details.recoveryLimit;
+      for (const key of ['runtimeRecoveryAttempt', 'reviewRecoveryAttempt', 'planRevision']) {
+        if (Number.isInteger(details[key])) fields[key] = details[key];
+      }
+      if (['runtime', 'review'].includes(details.recoveryKind)) fields.recoveryKind = details.recoveryKind;
+      fields.reviewFeedback = safeReviewFeedback(details.reviewFeedback, runtimeTerms);
       if (details.lastFailure && typeof details.lastFailure === 'object') fields.lastFailure = details.lastFailure;
     }
     persist(fields);
@@ -166,7 +171,7 @@ async function main(input) {
   try {
     if (inspectWorktree().head !== baseCommit) throw createTeamError('head_changed');
     const result = await runTeamWorkflow({
-      settings, prompt, inspect: inspectWorktree, onProgress, initialFailure,
+      settings, prompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback,
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
         const command = buildEvolutionAgentCommand(agent, stagePrompt);
@@ -208,7 +213,13 @@ async function main(input) {
           await execute(process.execPath, ['--test', '--test-concurrency=1', ...tests.map(file => `test/${file}`)], {
             cwd: path.join(repoRoot, 'core'), env,
           });
-          if (webTouched) await execute('npm', ['run', 'build'], { cwd: path.join(repoRoot, 'web'), env });
+          if (webTouched) {
+            // 验证产物留在私有临时目录，不能在验收前覆盖正在提供服务的 web/dist。
+            const buildDir = fs.mkdtempSync(path.join(logDir, 'evolve-web-check-'));
+            try {
+              await execute('npm', ['run', 'build', '--', '--outDir', buildDir, '--emptyOutDir'], { cwd: path.join(repoRoot, 'web'), env });
+            } finally { fs.rmSync(buildDir, { recursive: true, force: true }); }
+          }
         } catch (error) {
           // 真实测试/构建失败归为验证未通过并保留退出码；执行器无法启动等问题保留原类别。
           if (error?.code === 'cli_exit') {
@@ -230,7 +241,14 @@ async function main(input) {
   } catch (error) {
     // journal 只落固定白名单失败与恢复次数；CLI 原文、JSON.parse 异常和本机路径不进入状态或 stderr。
     const failure = normalizeTeamFailure(error, journal.phase, journal.activeAgent);
-    persist({ phase: 'failed', status: 'failed', activeAgent: '', failure, completedAt: Date.now() });
+    const info = error.recoveryInfo || {};
+    const counters = {};
+    for (const key of ['recoveryAttempt', 'runtimeRecoveryAttempt', 'reviewRecoveryAttempt', 'planRevision']) {
+      if (Number.isInteger(info[key])) counters[key] = Math.min(2, Math.max(0, info[key]));
+    }
+    persist({ ...counters, phase: 'failed', status: 'failed', activeAgent: '', failure,
+      ...(info.recoveryKind ? { recoveryKind: info.recoveryKind } : {}),
+      reviewFeedback: safeReviewFeedback(info.reviewFeedback || journal.reviewFeedback, runtimeTerms), completedAt: Date.now() });
     process.stderr.write(`Team evolution failed: ${failure.code}\n`);
     process.exitCode = 1;
   }
