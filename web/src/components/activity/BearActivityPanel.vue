@@ -3,10 +3,45 @@ import type { BearActivityData } from '@/stores/activity'
 import BaseButton from '@/components/ui/BaseButton.vue'
 
 defineProps<{ activity: BearActivityData | null, loading: boolean }>()
-defineEmits<{ (e: 'refresh'): void }>()
+const emit = defineEmits<{
+  (e: 'refresh'): void
+  (e: 'operate', action: string, input?: Record<string, unknown>): void
+}>()
+
+const operating = defineModel<string>('operating', { default: '' })
 
 function time(value: number) {
   return value ? new Date(value * 1000).toLocaleString() : '未下发'
+}
+
+// 手动操作区（写操作仅由按钮触发；命令字来自官方小程序 1.14.0.1 编码器）
+interface ManualAction {
+  key: string
+  label: string
+  hint: string
+  primary?: boolean
+}
+const MANUAL_ACTIONS: ManualAction[] = [
+  { key: 'initialize', label: '领养比熊（过开场）', hint: '首次进入活动需要完成领养流程' },
+  { key: 'feed', label: '投喂元气糕', hint: '消耗元气糕培育幼崽（未成年时）', primary: true },
+  { key: 'draw', label: '寻宝', hint: '成年后消耗元气糕寻宝，产出幸运星/宝藏/挑战书', primary: true },
+  { key: 'claimDog', label: '领取永久比熊', hint: '成年后领取，永久保留宠物' },
+  { key: 'seeds', label: '领取种子礼包', hint: '每日免费稀有种子礼包，未领可累计', primary: true },
+  { key: 'compensation', label: '领取夺宝补偿', hint: '被夺宝后的安慰奖励（如有）' },
+  { key: 'story', label: '领取手记奖励', hint: '解锁的爪印手记奖励（需已解锁未领取）' },
+]
+
+function runAction(action: ManualAction) {
+  if (operating.value)
+    return
+  if (action.key === 'story') {
+    const order = window.prompt('请输入手记编号（order）：', '1')
+    if (!order)
+      return
+    emit('operate', 'story', { order: Number(order) })
+    return
+  }
+  emit('operate', action.key)
 }
 </script>
 
@@ -26,8 +61,31 @@ function time(value: number) {
       </BaseButton>
     </header>
     <p class="text-xs text-gray-500">
-      1 分钟内重复刷新复用本地结果；操作协议待确认，当前请在官方客户端人工操作。
+      1 分钟内重复刷新复用本地结果；操作协议来自官方小程序 1.14.0.1 编码器（手动触发模式）。
     </p>
+
+    <section v-if="activity" class="border border-emerald-200 rounded-lg bg-emerald-50/70 p-3 dark:border-emerald-800/50 dark:bg-emerald-900/20">
+      <h3 class="text-sm font-semibold text-emerald-900 dark:text-emerald-200">
+        玩法手动操作
+      </h3>
+      <p class="mt-1 text-xs text-emerald-700/90 dark:text-emerald-300/90">
+        由你点击触发，每次操作前 Bot 会重新校验余额/次数/状态；不会自动执行、不消耗钻石。夺宝等好友交互暂未开放。
+      </p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <BaseButton
+          v-for="action in MANUAL_ACTIONS"
+          :key="action.key"
+          :variant="action.primary ? 'primary' : 'secondary'"
+          size="sm"
+          :loading="operating === action.key"
+          :disabled="!!operating"
+          :title="action.hint"
+          @click="runAction(action)"
+        >
+          {{ action.label }}
+        </BaseButton>
+      </div>
+    </section>
 
     <p v-if="!activity" class="py-8 text-center text-sm text-gray-500">
       {{ loading ? '正在读取 S3 萌宠…' : '当前没有可用活动快照，请查看读取提示。' }}

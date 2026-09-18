@@ -44,6 +44,7 @@ async function loadProto() {
         getResourcePath('proto', 'interactpb.proto'),
         getResourcePath('proto', 'dogpb.proto'),
         getResourcePath('proto', 'activitypb.proto'),
+        getResourcePath('proto', 'pet-diary.proto'),
         getResourcePath('proto', 'mysteryshoppb.proto'),
         getResourcePath('proto', 'acepb.proto'),
         getResourcePath('proto', 'careerpb.proto'),
@@ -158,6 +159,10 @@ async function loadProto() {
     types.ActivityGetGroupReply = root.lookupType('gamepb.activitypb.GetGroupReply');
     types.ActivityOperateRequest = root.lookupType('gamepb.activitypb.OperateRequest');
     types.ActivityOperateReply = root.lookupType('gamepb.activitypb.OperateReply');
+    // 萌宠成长日记（S3）操作协议，来自官方小程序 1.14.0.1 编码器（参考仓库只读对照移植）
+    for (const name of ['PetDiaryOperateRequest', 'PetDiaryOperateReply', 'PetDiaryGetGroupReply']) {
+        types[name] = root.lookupType(`gamepb.activitypb.${name}`);
+    }
     types.ActivityRandomShopInfo = root.lookupType('gamepb.activitypb.RandomShopInfo');
     types.ActivityExchangeShopInfo = root.lookupType('gamepb.activitypb.ExchangeShopInfo');
     types.ActivityExchangeShopOperateParams = root.lookupType('gamepb.activitypb.ExchangeShopOperateParams');

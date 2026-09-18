@@ -571,5 +571,28 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
-  return { bearActivity, bearLoading, bearError, clearActivityData, fetchBearActivity }
+  // 萌宠手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
+  const bearOperating = ref('')
+  async function operateBearPet(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    if (!accountId || bearOperating.value)
+      return { ok: false, error: '操作进行中' }
+    bearOperating.value = action
+    try {
+      const { data } = await api.post('/api/activity/pet-diary/operate', {
+        action,
+        input,
+      }, {
+        headers: { 'x-account-id': accountId },
+      })
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败' }
+    }
+    finally {
+      bearOperating.value = ''
+    }
+  }
+
+  return { bearActivity, bearLoading, bearError, bearOperating, clearActivityData, fetchBearActivity, operateBearPet }
 })
