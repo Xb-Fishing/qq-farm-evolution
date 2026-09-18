@@ -1570,6 +1570,13 @@ async function handleApiCall(msg) {
                 result = await getBearActivity();
                 break;
             }
+            case 'operatePetDiary': {
+                const { runManualPetDiaryAction } = require('../services/pet-diary-operate');
+                const { getBag } = require('../services/warehouse');
+                const { getBagItems } = require('../services/warehouse');
+                result = await runManualPetDiaryAction(args[0], args[1], { getBag, getBagItems });
+                break;
+            }
             case 'getIllustratedList': {
                 const { getIllustratedListV2 } = require('../services/illustrated');
                 result = await getIllustratedListV2(args[0], args[1]);
