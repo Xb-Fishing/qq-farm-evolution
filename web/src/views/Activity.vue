@@ -15,7 +15,7 @@ const activityStore = useActivityStore()
 const toast = useToastStore()
 const userStore = useUserStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
-const { bearActivity, bearLoading, bearError } = storeToRefs(activityStore)
+const { bearActivity, bearLoading, bearError, bearOperating } = storeToRefs(activityStore)
 
 const showActivityAnalysis = ref(false)
 type EvolutionAgent = 'claude' | 'codex'
@@ -81,6 +81,20 @@ async function refreshBear() {
     return
   const result = await activityStore.fetchBearActivity(String(currentAccountId.value))
   result?.ok ? toast.success('S3 萌宠只读状态已刷新') : toast.error(result?.error || 'S3 萌宠刷新失败')
+}
+
+async function operateBear(action: string, input: Record<string, unknown> = {}) {
+  if (!currentAccountId.value || bearOperating.value)
+    return
+  const result = await activityStore.operateBearPet(String(currentAccountId.value), action, input)
+  if (result?.ok) {
+    const rewardCount = result.rewards?.length || 0
+    toast.success(`操作成功${rewardCount ? `，获得 ${rewardCount} 项奖励` : ''}`)
+    await refreshBear()
+  }
+  else {
+    toast.error(result?.error || '操作失败')
+  }
 }
 
 watch(currentAccountId, () => {
@@ -150,7 +164,7 @@ onMounted(refreshAll)
       <div v-if="bearError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ bearError }}
       </div>
-      <BearActivityPanel :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" />
+      <BearActivityPanel v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
     </template>
 
     <Teleport to="body">

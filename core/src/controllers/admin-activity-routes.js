@@ -1,4 +1,5 @@
 const { registerAdminBearActivityRoutes } = require('./admin-bear-activity-routes');
+const { registerAdminPetDiaryOperateRoutes } = require('./admin-pet-diary-operate-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 
 function registerAdminActivityRoutes({
@@ -19,6 +20,7 @@ function registerAdminActivityRoutes({
   };
 
   registerAdminBearActivityRoutes(routeContext);
+  registerAdminPetDiaryOperateRoutes(routeContext);
   registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken });
 }
 

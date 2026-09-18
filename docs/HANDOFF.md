@@ -1353,3 +1353,41 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 - Node 20 串行全量 **410/410** 通过；ESLint 0 error。README 为文档改动无测试影响。
 - 回滚 `git revert <本轮提交>`。
+
+## 断线重连免扫码：安全决策与本地/GitHub 分流（2026-09-14 用户指示）
+
+### 用户裁定（必须遵守）
+
+- **断线重连免扫码不做，这是安全决策不是缺陷**：授权失效后的自动重连免扫码需要绕过微信授权生命周期（保存/复用被撤销凭据、伪造授权状态、模拟扫码），会显著抬高账号风控画像，与防封号原则冲突。Bot 对断线的处理固定为：检测失效 → 阻断旧凭据空转 → 等待人工重新扫码。
+- **本地后续若有断线重连方向的更新，不推送到 GitHub**：这类改动只留本地，公开 main 不承载。本地开发不受此约束影响（本地照常更新运行）。
+- 已写入 README（扫码登录 NOTE + 数据与安全 IMPORTANT）与本硬门。自动进化 agent 每轮提交前必须确认改动不涉及断线重连免扫码方向；涉及则按"本地改动不上传"处理（不提交、不推送，保留在工作区或本地分支）。
+
+### 对自动进化的具体约束
+
+- activity/safety agent 的隐私扫描之外，新增方向过滤：任何"绕过授权失效、免扫码重连、凭据复用撤销后重建"的实现不得进入 Git 提交。guardrails 已有"不做 Cookie 窃取/伪造设备/拦截授权/第三方永久 Token"条款，本条是其具体化。
+- 判断标准：改动涉及 `auto-code-refresh.js`/`qrlogin.js`/`wx` 凭据链且目的是"授权失效后不扫码恢复"，即命中；正常的长凭据滚动续期（授权有效期内）不受影响。
+
+### S3 萌宠玩法操作接入（同轮启动）
+
+- 用户批准移植参考仓库的 S3 写操作链（官方小程序 1.14.0.1 编码器证据的命令字/选择器/请求结构），按"手动确认优先"两步走：第一步面板手动操作积累自有成功样本，第二步才评估自动化。
+
+## S3 萌宠玩法手动操作接入（2026-09-18，官方编码器证据链）
+
+### 证据与接入模式
+
+- 用户批准移植 S3 写操作链。证据来源：参考仓库 xxxscarlxrd404/qq-farm-bot @34505ac 的 `activity-pet-diary.js`/`pet-diary.proto`——文件头声明"命令字与选择器来自官方小程序 1.14.0.1 编码器，不按响应长度或 UI 文案推断"，属官方编码器还原级证据（其 evidence-levels 中仅次于真机验证）。按 HANDOFF 外部借鉴边界只读移植，不执行其代码。
+- **手动触发模式（两步走第一步）**：操作只由面板按钮触发，不接每日自动任务；每次操作前重读 GetGroup 做服务端前置校验（余额/次数/状态，与官方客户端一致），防本地状态过期重复扣费；钻石(1004)与零消耗一律拒绝；失败不自动重试。积累自有线上成功样本后再评估自动化（第二步）。
+
+### 本轮改动
+
+1. `core/src/proto/pet-diary.proto`：同源移植（GetGroup/Operate 请求响应、PetTreasureHunt 状态族、商城/种子礼包结构），注册进 `utils/proto.js`（三个类型）。
+2. `core/src/services/pet-diary-operate.js`：命令字表（feed 29/draw 30/seeds 21/exchange 1/claimDog 48/initialize 27/story 32/compensation 46 等）+ `runManualPetDiaryAction` 前置校验链。**夺宝(43)/好友信息(47)/付费刷新(41)暂不开放**——涉及选择好友目标与点券扣费，等第一轮样本。
+3. Worker `operatePetDiary` switch + data-provider 转发 + `admin-pet-diary-operate-routes.js`（POST /api/activity/pet-diary/operate，操作成功清只读缓存）。
+4. 前端：BearActivityPanel 新增"玩法手动操作"区（7 个按钮+busy 状态），store 加 `operateBearPet`，成功后自动刷新只读状态。
+5. 测试 `pet-diary-operate.test.js`：proto 往返、前置校验（成年才可寻宝/余额不足拒/未开放操作拒）、命令字白名单锁定、只走 GetGroup+Operate 不引入新接口。
+
+### 验证与回滚
+
+- Node 20 串行全量 **412/412** 通过；前端 vue-tsc + vite build 通过；ESLint 0 error。
+- 线上首验路径：面板点"领取种子礼包"（无消耗操作最安全）→ 观察 `pet_diary_operate` 日志与服务端回包 → 再试投喂/寻宝。若 Operate 被服务端拒绝，错误会原样显示在面板，不会重试。
+- 回滚 `git revert <本轮提交>`：恢复"只读+操作待确认"状态；proto 与命令字表保留无副作用。
