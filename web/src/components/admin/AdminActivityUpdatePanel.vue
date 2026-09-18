@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import type { EvolutionState } from '@/stores/evolution'
+import { storeToRefs } from 'pinia'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
+import { useEvolutionStore } from '@/stores/evolution'
 import { useToastStore } from '@/stores/toast'
 
 interface ActivityUpdateReport {
@@ -112,28 +115,15 @@ interface ActivityItemDetail {
   price?: number
 }
 
-interface EvolveState {
-  status?: string
-  summary?: string
-  commit?: string
-  lastRunAt?: number
-  lastTask?: string
-  lastSafetyEvolveDate?: string
-  lastEvolveDate?: string
-  userInstruction?: string
-  nextAutoRunAt?: number
-  pendingRuntimeIssueCount?: number
-  pendingRuntimeIssueOccurrences?: number
-}
-
 const toast = useToastStore()
+const evolutionStore = useEvolutionStore()
 const loading = ref(false)
 const report = ref<ActivityUpdateReport | null>(null)
 const error = ref('')
 const intervalMs = ref(0)
 const nextScanAt = ref(0)
 const upstreamCacheMs = ref(2 * 60 * 1000)
-const evolve = ref<EvolveState | null>(null)
+const { evolve } = storeToRefs(evolutionStore)
 const evolving = ref(false)
 const forceEvolving = ref(false)
 const safetyRunning = ref(false)
@@ -156,13 +146,17 @@ const EVOLVE_STATUS_LABELS: Record<string, string> = {
   rejected: '已拒绝，等待重做',
   revision_failed: '拒绝/重做失败',
   deferred: '有人工改动，已延期',
+  privacy_blocked: '隐私检查未通过',
+  privacy_blocked_local: '本地改动待检查，已阻止推送',
   no_change: '无需改动',
 }
 const evolveStatusLabel = computed(() => EVOLVE_STATUS_LABELS[evolve.value?.status || ''] || '空闲')
-const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed'].includes(evolve.value?.status || ''))
+const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local'].includes(evolve.value?.status || ''))
 
-function syncEvolveState(value: EvolveState | null | undefined) {
-  evolve.value = value || null
+// 所有任务/扫描响应里的 evolve 都同步进共享 store，保证活动中心顶部与弹窗状态一致；
+// 修改要求草稿只在用户动作的响应里重置，10 秒轮询不会覆盖正在编辑的内容
+function syncEvolveState(value: EvolutionState | null | undefined) {
+  evolutionStore.syncEvolve(value)
   instructionDraft.value = value?.userInstruction || ''
 }
 
@@ -535,14 +529,15 @@ async function loadUpdateStatus() {
   loading.value = true
   error.value = ''
   try {
-    const { data } = await api.get('/api/activity/update/status')
+    // 复用共享状态请求（在途合并），避免与 10 秒轮询重复打同一接口
+    const data = await evolutionStore.loadStatus()
     if (!data.ok)
       throw new Error(data.error || '读取活动更新状态失败')
     report.value = data.report || null
     intervalMs.value = Number(data.intervalMs) || 0
     nextScanAt.value = Number(data.nextScanAt) || 0
     upstreamCacheMs.value = Number(data.upstreamCacheMs) || upstreamCacheMs.value
-    syncEvolveState(data.evolve)
+    instructionDraft.value = data.evolve?.userInstruction || ''
   }
   catch (err: any) {
     error.value = err?.response?.data?.error || err.message || '读取活动更新状态失败'
@@ -552,7 +547,11 @@ async function loadUpdateStatus() {
   }
 }
 
-onMounted(loadUpdateStatus)
+onMounted(() => {
+  void loadUpdateStatus()
+  evolutionStore.startPolling()
+})
+onUnmounted(() => evolutionStore.stopPolling())
 </script>
 
 <template>
@@ -615,7 +614,7 @@ onMounted(loadUpdateStatus)
             自动进化（活动 + 防封安全巡检）
           </h4>
           <p class="mt-1 text-xs text-purple-700/90 dark:text-purple-300/90">
-            每天北京时间 00:00-01:00 自动跑一版：安全巡检会同时复盘近 72 小时的脱敏运行问题，活动任务核对活动上下线。agent 改代码 → 全量测试 → git 提交（不重启），飞书通知后由你点「应用进化」生效。
+            每天北京时间 00:00-01:00 自动执行安全巡检和活动核对。双 Agent 模式：子 Agent 检索与巡查 → 主 Agent 确认方案 → 子 Agent 实施 → 全量测试 → 主 Agent 复核 → 提交。完成后由你点「应用进化」生效。
           </p>
         </div>
         <button
