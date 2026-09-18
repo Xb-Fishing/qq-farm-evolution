@@ -24,3 +24,16 @@ temp/
 .env.*
 *.log
 /.pnpm-store/
+
+# Local agent credentials, session exports and private configuration
+.codex/
+.claude/
+.claude.json
+auth.json
+credentials.json
+.credentials.json
+private-config.json
+*.pem
+*.key
+*.p12
+*.pfx

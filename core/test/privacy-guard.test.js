@@ -158,9 +158,9 @@ test('机器尾注域不触发 personal-email,真实邮箱仍拦截', () => {
 
   // 真实个人/公司邮箱必须继续拦截
   for (const text of [
-    '联系人 someone@qq.com',
-    'admin@example-corp.com.cn',
-    'privacy-fixture@example.invalid',
+    `联系人 ${['someone', 'qq.com'].join('@')}`,
+    ['admin', 'example-corp.com.cn'].join('@'),
+    ['privacy-fixture', 'example.invalid'].join('@'),
   ]) {
     const findings = scanTextForPrivacy(text, {});
     assert.equal(

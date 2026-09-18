@@ -3,6 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { getDataDir } = require('../config/runtime-paths');
 const { readPrivateConfig } = require('./private-config');
+const { collectLocalPrivacyTerms } = require('./local-privacy-terms');
 
 /* Security signatures intentionally spell out alphabets and network ranges. */
 /* eslint-disable regexp/prefer-w, regexp/no-dupe-characters-character-class, regexp/no-useless-assertions, regexp/no-useless-non-capturing-group */
@@ -19,15 +20,16 @@ const PRIVACY_RULES = [
   ['provider-token', /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/i],
   ['webhook-secret', /https:\/\/open\.feishu\.cn\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9_-]{12,}/i],
   ['authorization-secret', /\bBearer\s+[A-Za-z0-9._~-]{12,}/i],
+  ['provider-config-secret', /\b(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|GITHUB_TOKEN|FEISHU_WEBHOOK)["']?\s*[:=]\s*["']?[A-Za-z0-9_.:-]{16,}/i],
+  ['jwt-token', /\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}\b/],
+  ['agent-session-data', /(?:rollout-\d{4}-\d{2}-\d{2}|[~\\/]\.(?:codex|claude)[\\/](?:sessions|projects)[\\/][^\s`"']+|[~\\/]\.codex[\\/]history\.jsonl)/i],
   ['url-credentials', /https?:\/\/[^\s/@:]+:[^\s/@]+@/i],
   ['url-secret-query', /[?&](?:api[_-]?key|access[_-]?token|auth|code|credential|password|secret|ticket|token)=[^&\s'"<>]+/i],
   ['hardcoded-secret', /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|credential|license[_-]?secret|password|passwd|private[_-]?key|secret|token|webhook)\b\s*[:=]\s*['"][^'"]{6,}['"]/i],
-  ['machine-user-path', /(?:\/data\/[^\s'"]*\/users\/[^/\s'"]+|\/home\/[^/\s'"]+|\/Users\/[^/\s'"]+|\/root\/\.nvm\/versions\/node\/[^/\s'"]+)/i],
+  ['machine-user-path', /(?:\/data\/[^\s'"]*\/users\/[^/\s'"]+|\/home\/[^/\s'"]+|\/Users\/[^/\s'"]+|\/root\/\.nvm\/versions\/node\/[^/\s'"]+)/],
   ['private-network', /\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.(?:\d{1,3}\.)\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3})\b/],
-  // personal-email: 排除机器尾注域——users.noreply.github.com 是 GitHub 官方匿名邮箱,
-  // anthropic.com 是 Claude Code Co-Authored-By 尾注的标准域,均非个人信息。
-  // 2026-09-13: 自动 agent 提交曾因 Co-Authored-By 尾注被此规则误杀(privacy_blocked)。
-  ['personal-email', /\b[A-Z0-9._%+-]+@(?!users\.noreply\.github\.com\b|anthropic\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}\b/i],
+  // 只放行 GitHub 匿名邮箱和 Claude 的固定机器尾注，不放行整家公司的个人邮箱。
+  ['personal-email', /\b(?!noreply@anthropic\.com\b)[A-Z0-9._%+-]+@(?!users\.noreply\.github\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}\b/i],
 ];
 
 function redactSensitiveText(raw, options = {}) {
@@ -122,6 +124,7 @@ function collectRuntimePrivacyTerms(options = {}) {
   for (const item of Array.isArray(privateConfig.privacyDenylist) ? privateConfig.privacyDenylist : []) {
     addPrivacyTerm(terms, item);
   }
+  for (const term of collectLocalPrivacyTerms({ ...options, dataDir, privateConfig })) terms.add(term);
   return terms;
 }
 
@@ -176,57 +179,59 @@ function auditGitRange(repoRoot, base, head, options = {}) {
   const protectedFiles = new Set([
     '.gitignore',
     'core/src/services/privacy-guard.js',
+    'core/src/services/local-privacy-terms.js',
     'core/src/services/private-config.js',
     'core/src/services/feishu-notify.js',
+    'core/src/services/activity-evolver.js',
+    'core/src/services/evolution-team.js',
+    'core/scripts/run-evolution-team.js',
     'scripts/evolution-hooks/pre-push',
   ]);
+  const privatePath = /(?:^|\/)(?:core\/data|logs?|tmp|temp|\.tmp|\.codex|\.claude)(?:\/|$)|(?:^|\/)(?:\.env(?:\.|$)|\.claude\.json$|auth\.json$|\.?credentials\.json$|private-config\.json$)|\.(?:log|pem|key|p12|pfx)$/i;
+  const git = args => execFileSync('git', args, {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   try {
-    const diff = execFileSync('git', ['diff', '--no-ext-diff', '--unified=0', '--no-color', `${base}..${head}`], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    const names = execFileSync('git', ['diff', '--name-only', '-z', `${base}..${head}`], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    }).split('\0').filter(Boolean);
-    const numstat = execFileSync('git', ['diff', '--numstat', `${base}..${head}`], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    });
-    const findings = [];
-    for (const line of numstat.trim().split('\n').filter(Boolean)) {
-      const [added, deleted, ...fileParts] = line.split('\t');
-      if (added === '-' || deleted === '-') {
-        findings.push({ rule: 'binary-change', file: fileParts.join('\t') || '(binary)', line: 0 });
-      }
-    }
-    for (const file of names) {
-      if (protectedFiles.has(file)) findings.push({ rule: 'privacy-control-changed', file, line: 0 });
-      const treeRow = execFileSync('git', ['ls-tree', head, '--', file], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      });
-      if (/^120000\s/.test(treeRow)) findings.push({ rule: 'symlink-change', file, line: 0 });
-      const pathFindings = scanTextForPrivacy(file, { blockUrls: true });
-      for (const finding of pathFindings) findings.push({ ...finding, file, line: 0 });
-    }
+    git(['merge-base', '--is-ancestor', base, head]);
+    const commits = git(['rev-list', '--reverse', `${base}..${head}`]).trim().split('\n').filter(Boolean);
     const runtimeTerms = options.runtimeTerms || collectRuntimePrivacyTerms(options);
-    for (const row of parseAddedDiff(diff)) {
-      const rowFindings = scanTextForPrivacy(row.text, { blockUrls: true, runtimeTerms });
-      for (const finding of rowFindings) findings.push({ ...finding, file: row.file, line: row.line });
-    }
-    const subject = execFileSync('git', ['show', '-s', '--format=%ae%n%ce%n%s%n%b', head], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    });
-    for (const finding of scanTextForPrivacy(subject, { blockUrls: true, runtimeTerms })) {
-      findings.push({ ...finding, file: '(commit-message)' });
+    const findings = [];
+    const safeFile = file => scanTextForPrivacy(file, { blockUrls: true, runtimeTerms }).length ? '(sensitive-file)' : file;
+    const add = (finding, commit) => findings.push({ ...finding, file: safeFile(finding.file), commit });
+    const scan = (text, file, commit, line) => {
+      for (const finding of scanTextForPrivacy(text, { blockUrls: true, runtimeTerms })) {
+        add({ ...finding, file, ...(line !== undefined ? { line } : {}) }, commit);
+      }
+    };
+    // 审完整新增历史：先写入秘密再删除、前一笔提交的作者/标题，均不能被净 diff 掩盖。
+    for (const commit of commits) {
+      const args = ['show', '--format=', '-m', '--root', '--no-renames'];
+      const diff = git([...args, '--no-ext-diff', '--unified=0', '--no-color', commit]);
+      for (const row of parseAddedDiff(diff)) scan(row.text, row.file, commit, row.line);
+      const names = git([...args, '--name-only', '-z', commit]).split('\0').filter(Boolean);
+      for (const file of names) {
+        scan(file, file, commit, 0);
+        if (protectedFiles.has(file)) add({ rule: 'privacy-control-changed', file, line: 0 }, commit);
+      }
+      const numstat = git([...args, '--numstat', commit]);
+      for (const line of numstat.trim().split('\n').filter(Boolean)) {
+        const [added, deleted, ...fileParts] = line.split('\t');
+        if (added === '-' || deleted === '-') add({ rule: 'binary-change', file: fileParts.join('\t'), line: 0 }, commit);
+      }
+      for (const row of git(['ls-tree', '-r', '-z', commit]).split('\0').filter(Boolean)) {
+        const tab = row.indexOf('\t');
+        const file = row.slice(tab + 1);
+        // 即使被强制 add，私有运行文件也不能进入任一待上传提交的树。
+        if (privatePath.test(file)) add({ rule: 'private-file-tracked', file, line: 0 }, commit);
+        if (row.startsWith('120000 ') && names.includes(file)) add({ rule: 'symlink-change', file, line: 0 }, commit);
+      }
+      scan(git(['show', '-s', '--format=%an%n%ae%n%cn%n%ce%n%s%n%b', commit]), '(commit-message)', commit);
     }
     const unique = [];
     const seen = new Set();
     for (const finding of findings) {
-      const key = `${finding.rule}:${finding.file}:${finding.line}`;
+      const key = `${finding.commit}:${finding.rule}:${finding.file}:${finding.line}`;
       if (!seen.has(key)) {
         seen.add(key);
         unique.push(finding);
@@ -241,7 +246,7 @@ function auditGitRange(repoRoot, base, head, options = {}) {
 function formatPrivacyFindings(findings, limit = 12) {
   return (findings || []).slice(0, limit).map(item => {
     const location = item.file ? `${item.file}${item.line ? `:${item.line}` : ''}` : '未知位置';
-    return `${item.rule} @ ${location}`;
+    return `${item.rule} @ ${location}${item.commit ? ` (commit ${item.commit.slice(0, 8)})` : ''}`;
   });
 }
 
