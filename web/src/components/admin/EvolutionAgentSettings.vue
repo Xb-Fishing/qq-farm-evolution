@@ -12,6 +12,7 @@ const disabled = computed(() => evolutionStore.agentsLocked || evolutionStore.sa
 const COLLABORATION_PHASE_LABELS: Record<string, string> = {
   research: '资料检索',
   plan: '方案确认',
+  revise_plan: '子 Agent 修订方案（只读）',
   implement: '实施改动',
   verify: '运行验证',
   review: '复核审查',
@@ -40,7 +41,9 @@ const phaseText = computed(() => {
       : COLLABORATION_PHASE_LABELS[collab.phase] || collab.phase
     const status = COLLABORATION_STATUS_LABELS[collab.status] || collab.status
     const agent = collab.activeAgent ? ` · ${agentDisplayName(collab.activeAgent)} 执行` : ''
-    const recovery = collab.recoveryAttempt ? ` · 修复 ${collab.recoveryAttempt}/${collab.recoveryLimit || 2}` : ''
+    const recovery = collab.recoveryKind || collab.planRevision
+      ? ` · 执行恢复 ${collab.runtimeRecoveryAttempt || 0}/2 · 方案修订 ${collab.planRevision || 0}/2 · 验收返工 ${collab.reviewRecoveryAttempt || 0}/2`
+      : collab.recoveryAttempt ? ` · 修复 ${collab.recoveryAttempt}/${collab.recoveryLimit || 2}` : ''
     const failure = collab.status === 'failed' && collab.failure ? ` · ${collab.failure.label}` : ''
     return `双 Agent：${phase}（${status}${agent}）${recovery}${failure}`
   }
@@ -142,7 +145,7 @@ async function saveAgentSettings() {
     </div>
     <p :class="hintClass">
       推荐组合：主 Codex（确认方案与复核）+ 子 Claude（检索 GitHub、巡查与实施）；关闭双 Agent 时仅由主 Agent 单独执行。
-      双 Agent 失败后由主 Agent 诊断、子 Agent 修复、主 Agent 验收，每轮最多修复两次。
+      执行恢复、只读方案修订和验收返工分别限两次；方案通过后才允许实施。
     </p>
     <p v-if="evolutionStore.error" :class="errorClass">
       {{ evolutionStore.error }}

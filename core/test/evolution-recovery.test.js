@@ -7,7 +7,8 @@ const { test } = require('node:test');
 const {
   runTeamWorkflow, createTeamError, normalizeTeamFailure, parseStageResult, buildStageSchema,
 } = require('../src/services/evolution-team');
-const { describeTeamFailure, previousTeamFailure, markEvolutionAppliedAfterRestart } = require('../src/services/activity-evolver');
+const { describeTeamFailure, previousTeamFailure, markEvolutionAppliedAfterRestart,
+  evolutionNotificationTitle, normalizePersistedState } = require('../src/services/activity-evolver');
 
 function setup() {
   const files = {};
@@ -27,10 +28,13 @@ function setup() {
       counts[phase] = (counts[phase] || 0) + 1;
       prompts.push(prompt);
       const override = onStage(phase, counts[phase]);
-      if (override) return override;
-      return { decision: { research: 'researched', plan: 'no_change', implement: 'implemented', review: 'approve',
+      if (override) return phase === 'plan'
+        ? { allowedFiles: override.decision === 'approve' ? ['core/src/example.js', 'docs/HANDOFF.md'] : [],
+            acceptanceChecks: override.decision === 'approve' ? ['fixture behavior is correct'] : [], ...override } : override;
+      return { decision: { research: 'researched', revise_plan: 'researched', plan: 'no_change', implement: 'implemented', review: 'approve',
         diagnose: 'repair', repair: 'no_change', repair_review: 'approve' }[phase],
-      summary: 'verified fixture', ...(phase === 'diagnose' ? { allowedFiles: [] } : {}) };
+      summary: 'verified fixture', ...(phase === 'diagnose' ? { allowedFiles: [] } : {}),
+        ...(phase === 'plan' ? { allowedFiles: [], acceptanceChecks: [] } : {}) };
     },
     verify: async (options) => { verified += 1; await onVerify(verified, options); },
     commit: async () => { committed += 1; return 'b'.repeat(40); },
@@ -241,4 +245,71 @@ test('终止或人工配置问题解决后不会被上一轮失败永久锁死',
   } });
   assert.equal(resumed.code, 'cli_exit');
   assert.equal(resumed.phase, 'research');
+});
+
+test('旧格式恢复、方案返修不会耗尽真正的验收返工额度', async () => {
+  const f = setup();
+  f.stages((phase, count) => {
+    if (phase === 'research' && count === 1) throw createTeamError('invalid_output');
+    if (phase === 'plan') return { decision: count === 1 ? 'reject' : 'approve', summary: 'include real behavior checks' };
+    if (phase === 'implement') f.files['core/src/example.js'] = 'incomplete';
+    if (phase === 'review' && count === 1) return { decision: 'reject', summary: 'exercise the actual pending request' };
+    if (phase === 'repair' && f.counts.implement) {
+      f.files['core/src/example.js'] = 'fixed';
+      return { decision: 'implemented', summary: 'behavior verified' };
+    }
+  });
+  const result = await runTeamWorkflow(f.deps);
+  assert.equal(result.runtimeRecoveryAttempt, 1);
+  assert.equal(result.reviewRecoveryAttempt, 1);
+  assert.equal(result.planRevision, 1);
+  assert.equal(f.counts.revise_plan, 1);
+  assert.equal(f.counts.diagnose, 1); // 验收意见由主 Agent 已给出，直接在批准范围内返工。
+  assert.equal(f.committed(), 1);
+  assert.ok(f.prompts.some(prompt => prompt.includes('exercise the actual pending request')));
+});
+
+test('反复拒绝的方案只读修订两次，始终不能提前实施', async () => {
+  const f = setup();
+  f.stages(phase => phase === 'plan' ? { decision: 'reject', summary: 'proposal lacks evidence' } : null);
+  await assert.rejects(runTeamWorkflow(f.deps), (error) => {
+    assert.equal(error.code, 'plan_exhausted');
+    assert.equal(error.recoveryInfo.planRevision, 2);
+    assert.equal(error.recoveryInfo.reviewFeedback, 'proposal lacks evidence');
+    return true;
+  });
+  assert.equal(f.counts.plan, 3);
+  assert.equal(f.counts.revise_plan, 2);
+  assert.equal(f.counts.implement, undefined);
+  assert.equal(f.counts.repair, undefined);
+  assert.equal(f.committed(), 0);
+});
+
+test('已批准方案的文件边界约束普通实施，不能等最终验收才发现越权', async () => {
+  const f = setup();
+  f.stages((phase) => {
+    if (phase === 'plan') return { decision: 'approve', summary: 'only fix the approved example' };
+    if (phase === 'implement') f.files['core/src/outside.js'] = 'unapproved';
+  });
+  await assert.rejects(runTeamWorkflow(f.deps), { code: 'repair_scope' });
+  assert.equal(f.committed(), 0);
+});
+
+test('真正验收拒绝携带具体反馈，不能冒充隐私扫描命中', () => {
+  const state = normalizePersistedState({ status: 'privacy_blocked_local', commit: '', privacyFindings: [],
+    collaboration: { failure: { code: 'review_rejected' } } });
+  assert.equal(state.status, 'review_blocked');
+  assert.match(evolutionNotificationTitle('safety', state.status), /验收未通过/);
+  assert.doesNotMatch(evolutionNotificationTitle('safety', state.status), /隐私/);
+  assert.match(evolutionNotificationTitle('safety', 'privacy_blocked'), /隐私/);
+  assert.equal(normalizePersistedState({ status: 'privacy_blocked_local', privacyFindings: ['secret finding'],
+    collaboration: { failure: { code: 'review_rejected' } } }).status, 'privacy_blocked_local');
+});
+
+test('方案输出必须包含明确文件范围和行为验收合同', () => {
+  const plan = { decision: 'approve', summary: 'fix the local race', allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'],
+    acceptanceChecks: ['unready requests return without any upstream call'] };
+  assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), plan);
+  assert.throws(() => parseStageResult(JSON.stringify({ ...plan, acceptanceChecks: [] }), 'plan', new Set()), { code: 'invalid_decision' });
+  assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']);
 });

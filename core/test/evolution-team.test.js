@@ -44,14 +44,14 @@ test('交接只接受阶段决策和脱敏摘要，不把任意退出文本当�
   assert.throws(() => parseStageResult('looks good', 'plan', new Set()), /JSON/);
   assert.throws(() => parseStageResult('{"decision":"approve","summary":""}', 'plan', new Set()), { code: 'invalid_decision' });
   assert.throws(() => parseStageResult('{"decision":"approve","summary":"ok"}', 'research', new Set()), /决策/);
-  const result = parseStageResult(JSON.stringify({ decision: 'approve', summary: 'private-person code path' }), 'plan', new Set(['private-person']));
+  const result = parseStageResult(JSON.stringify({ decision: 'approve', summary: 'private-person code path' }), 'review', new Set(['private-person']));
   assert.equal(result.summary, '[PRIVATE] code path');
-  assert.throws(() => parseStageResult(JSON.stringify({ decision: 'approve', summary: ['person', '@', 'example.org'].join('') }), 'plan', new Set()), { code: 'private_handoff' });
+  assert.throws(() => parseStageResult(JSON.stringify({ decision: 'approve', summary: ['person', '@', 'example.org'].join('') }), 'review', new Set()), { code: 'private_handoff' });
 });
 
 function workflowFixture(overrides = {}) {
   const calls = [];
-  let tree = { head: 'a'.repeat(40), fingerprint: 'clean', dirty: false };
+  let tree = { head: 'a'.repeat(40), fingerprint: 'clean', dirty: false, files: [], fileFingerprints: {} };
   const settings = { mainAgent: 'codex', subAgent: 'claude', dualAgentEnabled: true };
   const deps = {
     settings, prompt: '任务与回归约束',
@@ -65,9 +65,12 @@ function workflowFixture(overrides = {}) {
       }
       if (phase === 'implement') {
         assert.match(prompt, /approved scope/);
-        tree = { ...tree, dirty: true, fingerprint: 'implementation' };
+        tree = { ...tree, dirty: true, fingerprint: 'implementation',
+          files: ['core/src/example.js', 'docs/HANDOFF.md'],
+          fileFingerprints: { 'core/src/example.js': 'changed', 'docs/HANDOFF.md': 'recorded' } };
       }
-      return { decision: { research: 'researched', plan: 'approve', implement: 'implemented', review: 'approve' }[phase], summary: 'approved scope' };
+      return { decision: { research: 'researched', revise_plan: 'researched', plan: 'approve', implement: 'implemented', review: 'approve' }[phase], summary: 'approved scope',
+        ...(phase === 'plan' ? { allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'], acceptanceChecks: ['example behavior verified'] } : {}) };
     },
     verify: async () => calls.push(['tests']),
     commit: async () => { calls.push(['git-commit']); return 'b'.repeat(40); },
@@ -98,7 +101,7 @@ test('主 Agent 确认零改动时不启动实施、不制造提交', async () =
   const f = workflowFixture();
   const runStage = f.deps.runStage;
   f.deps.runStage = async (...args) => args[0] === 'plan'
-    ? { decision: 'no_change', summary: '当前实现已经满足要求' } : runStage(...args);
+    ? { decision: 'no_change', summary: '当前实现已经满足要求', allowedFiles: [], acceptanceChecks: [] } : runStage(...args);
   assert.equal((await runTeamWorkflow(f.deps)).decision, 'no_change');
   assert.deepEqual(f.calls, [['research', 'claude'], ['plan', 'codex']]);
 });
@@ -208,10 +211,21 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
     for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
-    write('.gitignore', 'core/data/\n');
+    write('.gitignore', 'core/data/\nweb/dist/\n');
     write('docs/HANDOFF.md', 'Fixture constraints\n');
     write('core/src/example.js', 'module.exports = 1;\n');
     write('core/test/example.test.js', 'require("node:assert/strict").equal(require("../src/example"), 2);\n');
+    write('web/src/example.js', 'export default 1;\n');
+    write('web/package.json', JSON.stringify({ scripts: { build: 'node build.cjs' } }));
+    write('web/build.cjs', `
+      const fs = require('node:fs');
+      const output = process.argv[process.argv.indexOf('--outDir') + 1];
+      if (!output || output === process.argv[0]) throw new Error('Expected isolated output');
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(require('node:path').join(output, 'index.html'), 'candidate UI');
+      fs.writeFileSync('../core/data/build-location.json', JSON.stringify({ output }));
+    `);
+    write('web/dist/index.html', 'approved UI');
     const fakeCli = `#!/usr/bin/env node
 const fs = require('node:fs');
 let prompt = '';
@@ -223,10 +237,11 @@ process.stdin.on('end', () => {
   if (phase === 'implement') {
     fs.writeFileSync('core/src/example.js', 'module.exports = 2;\\n');
     fs.appendFileSync('docs/HANDOFF.md', 'Verified implementation\\n');
+    if (fs.existsSync('core/data/touch-web')) fs.writeFileSync('web/src/example.js', 'export default 2;\\n');
   }
   const reject = fs.existsSync('core/data/reject-review');
   const decision = { research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve', diagnose: reject ? 'stop' : 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
-  const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {})};
+  const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {}), ...(phase === 'plan' ? {allowedFiles:['core/src/example.js','docs/HANDOFF.md','web/src/example.js'], acceptanceChecks:['example returns expected value']} : {})};
   if (agent === 'claude') {
     const schemaIndex = process.argv.indexOf('--json-schema');
     if (schemaIndex < 0 || !JSON.parse(process.argv[schemaIndex + 1]).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
@@ -292,5 +307,13 @@ process.stdin.on('end', () => {
     assert.equal(isTeamResultApproved(journal, recoveredHead), true);
     assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\ndiagnose:codex\nrepair:claude\nrepair_review:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
     assert.ok(fs.readdirSync(path.join(dir, 'core/data/logs')).every(file => !file.endsWith('-schema.json')));
+    git(['reset', '--hard', baseCommit]);
+    write('core/data/touch-web', '1');
+    const webVerified = run('web-build');
+    assert.equal(webVerified.status, 0, webVerified.stderr);
+    assert.equal(fs.readFileSync(path.join(dir, 'web/dist/index.html'), 'utf8'), 'approved UI');
+    const built = JSON.parse(fs.readFileSync(path.join(dir, 'core/data/build-location.json')));
+    assert.notEqual(built.output, path.join(dir, 'web/dist'));
+    assert.equal(fs.existsSync(built.output), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

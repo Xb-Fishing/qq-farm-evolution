@@ -19,7 +19,7 @@ const { createScheduler, getSchedulerRegistrySnapshot } = require('./scheduler')
 const { sendFeishuText } = require('./feishu-notify');
 const {
   normalizeAgentSettings, validateAgentSettings, readTeamJournal, isTeamResultApproved,
-  normalizeTeamFailure, normalizeOrchestrationFiles,
+  normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
 } = require('./evolution-team');
 const {
   ISSUE_DEFINITIONS,
@@ -55,7 +55,7 @@ const FAILED_RUN_RETRY_MIN_MS = 10 * 60 * 1000;
 const FAILED_RUN_RETRY_JITTER_MS = 5 * 60 * 1000;
 const MAX_DAILY_FAILURE_RETRIES = 1;
 const PUSH_RETRY_DELAY_MS = 10 * 60 * 1000;
-const BLOCKING_STATUSES = new Set(['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local']);
+const BLOCKING_STATUSES = new Set(['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local', 'review_blocked']);
 const COMPLETED_STATUSES = new Set(['pending_apply', 'no_change']);
 const EVOLUTION_AGENTS = new Set(['claude', 'codex']);
 const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
@@ -227,6 +227,10 @@ function normalizePersistedState(value, now = Date.now()) {
   state.runtimeIssueBatch = normalizeRuntimeIssueBatch(state.runtimeIssueBatch);
   state.activeRun = normalizeActiveRun(state.activeRun);
   state.evolutionMemory = normalizeEvolutionMemory(state.evolutionMemory);
+  if (state.status === 'privacy_blocked_local' && !state.commit && !state.privacyFindings.length
+      && ['review_rejected', 'plan_rejected'].includes(state.collaboration?.failure?.code)) {
+    state.status = 'review_blocked';
+  }
   const summary = String(state.summary || '');
   const legacyInterrupted = state.status === 'failed'
     && /退出码\s*(?:130|143)|SIG(?:TERM|INT)/i.test(summary);
@@ -685,11 +689,22 @@ function previousTeamFailure(state) {
 
 function describeTeamFailure(collaboration) {
   const names = { research: '资料检索', plan: '方案确认', implement: '实施', verify: '验证', review: '最终复核',
-    diagnose: '主 Agent 诊断', repair: '子 Agent 修复', repair_review: '主 Agent 验收', commit: '提交' };
+    diagnose: '主 Agent 诊断', repair: '子 Agent 修复', repair_review: '主 Agent 验收', revise_plan: '方案修订', commit: '提交' };
   const failure = collaboration?.failure ? normalizeTeamFailure(collaboration.failure) : null;
   const phase = failure ? names[failure.phase] || '协作' : '协作';
   const attempts = Math.max(0, Number(collaboration?.recoveryAttempt) || 0);
-  return `${failure?.agent ? `${AGENT_LABELS[failure.agent]} ` : ''}${phase}阶段：${failure?.label || '未取得完整审批及验证结果'}；诊断修复 ${attempts}/2 次`;
+  const budget = collaboration?.recoveryKind || collaboration?.planRevision
+    ? `执行恢复 ${collaboration.runtimeRecoveryAttempt || 0}/2，验收返工 ${collaboration.reviewRecoveryAttempt || 0}/2，方案修订 ${collaboration.planRevision || 0}/2`
+    : `诊断修复 ${attempts}/2 次`;
+  return `${failure?.agent ? `${AGENT_LABELS[failure.agent]} ` : ''}${phase}阶段：${failure?.label || '未取得完整审批及验证结果'}；${budget}`;
+}
+
+function evolutionNotificationTitle(task, outcome) {
+  const tag = task === 'safety' ? '安全巡检' : '活动进化';
+  const suffix = { pending_apply: '待确认', review_blocked: '验收未通过',
+    privacy_blocked: '被隐私闸门拦截', privacy_blocked_local: '被隐私闸门拦截',
+    push_failed: '推送失败', interrupted: '已中止' }[outcome] || '结果';
+  return `农场 bot ${tag}${suffix}`;
 }
 
 function isModelUnavailableFailure(logFile) {
@@ -799,7 +814,8 @@ function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) 
     privacyGuardrail,
     buildPublicReferenceGuidance(),
     buildRevisionContinuity(revisionContext),
-    instruction ? `【用户保存的修改要求（必须执行；与上述硬门冲突时以硬门为准）】\n${redactExternalText(instruction)}` : '',
+    '【范围与授权】用户已经明确批准并上线的功能属于基线；不能仅因本轮未重新找到历史材料就删除、禁用或改成只读。自动巡检应在保留能力的前提下修复有证据的局部问题，不得擅自反转用户授权。发布隐私检查、凭据保护与不试探未知协议的边界仍必须执行。',
+    instruction ? `【用户保存的修改要求（在用户授权范围内执行）】\n${redactExternalText(instruction)}` : '',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -1000,6 +1016,7 @@ function launchEvolution(task, payload = {}) {
   // 每次自动/手动任务都读取持久化默认值；不是仅对某一次手动任务生效。
   const settings = normalizeAgentSettings(current);
   const initialFailure = previousTeamFailure(current);
+  const initialReviewFeedback = safeReviewFeedback(current.collaboration?.reviewFeedback);
   const agent = settings.mainAgent;
   const agentLabel = settings.dualAgentEnabled
     ? `${AGENT_LABELS[agent]} 主 Agent / ${AGENT_LABELS[settings.subAgent]} 子 Agent`
@@ -1081,6 +1098,7 @@ function launchEvolution(task, payload = {}) {
         bin: process.execPath,
         args: [path.join(REPO_ROOT, 'core/scripts/run-evolution-team.js')],
         stdin: JSON.stringify({ runId, baseCommit: headBefore, settings, bins, prompt, task, initialFailure,
+          initialReviewFeedback,
           logDir: EVOLVE_LOG_DIR, dataDir: path.dirname(STATE_FILE) }),
       }
     : buildEvolutionAgentCommand(agent, prompt);
@@ -1152,7 +1170,7 @@ function launchEvolution(task, payload = {}) {
       ? 'interrupted'
       : classifyEvolutionExit(settings.dualAgentEnabled && !teamBlocked ? 0 : code,
         settings.dualAgentEnabled && !teamBlocked ? '' : signal, evolved, pushResult.ok, privacyBlocked);
-    if (teamBlocked) outcome = evolved || worktreeChanges() ? 'privacy_blocked_local' : signal ? 'interrupted' : 'failed';
+    if (teamBlocked) outcome = evolved || worktreeChanges() ? 'review_blocked' : signal ? 'interrupted' : 'failed';
     if (outcome === 'privacy_blocked' && !privacyRollback) outcome = 'privacy_blocked_local';
     running = false;
     const interrupted = outcome === 'interrupted';
@@ -1180,7 +1198,7 @@ function launchEvolution(task, payload = {}) {
           : interrupted
             ? `${tag}（${agentLabel}）已中止（${signal || `退出码 ${code}`}），未标记为审计失败、未应用代码；可在工作区空闲时重新执行`
             : `${tag}（${agentLabel}）执行失败（${launchError || `退出码 ${code}`}），详见 ${path.basename(logFile)}`;
-    if (teamBlocked) next.summary = `${tag}未完成：${describeTeamFailure(next.collaboration)}。未推送；${outcome === 'privacy_blocked_local' ? '未审阅改动保留本地，请检查工作区' : '已保留失败类别，下次启动先由主 Agent 诊断'}`;
+    if (teamBlocked) next.summary = `${tag}未完成：${describeTeamFailure(next.collaboration)}。未推送；${outcome === 'review_blocked' ? '改动保留本地，待按验收意见返工' : '已保留失败类别，下次启动先由主 Agent 诊断'}${next.collaboration?.reviewFeedback ? `\n主 Agent 意见：${next.collaboration.reviewFeedback}` : ''}`;
     if (!COMPLETED_STATUSES.has(outcome) || teamJournal?.repairOnly) {
       if (task === 'safety') next.lastSafetyEvolveDate = '';
       else next.lastEvolveDate = '';
@@ -1208,36 +1226,16 @@ function launchEvolution(task, payload = {}) {
     }
     writeState(next);
     const notificationContent = [next.summary, next.changeSummary, ...next.privacyFindings].filter(Boolean).join('\n');
-    if (task === 'safety') {
-      await notify(
-        outcome === 'pending_apply'
-          ? '农场 bot 安全巡检待确认'
-          : outcome === 'privacy_blocked' || outcome === 'privacy_blocked_local'
-            ? '农场 bot 安全巡检被隐私闸门拦截'
-          : outcome === 'push_failed'
-            ? '农场 bot 安全巡检推送失败'
-            : interrupted
-              ? '农场 bot 安全巡检已中止'
-              : '农场 bot 安全巡检结果',
-        notificationContent,
-      );
-    } else {
-      await notify(
-        outcome === 'pending_apply'
-          ? '农场 bot 活动进化待确认'
-          : outcome === 'privacy_blocked' || outcome === 'privacy_blocked_local'
-            ? '农场 bot 活动进化被隐私闸门拦截'
-          : outcome === 'push_failed'
-            ? '农场 bot 活动进化推送失败'
-            : '农场 bot 活动进化结果',
-        `${notificationContent}\n新活动: ${payload.newUnknown.join(',') || '无'}；结束: ${payload.newEnded.join(',') || '无'}；复核: ${payload.reviewIds.join(',') || '无'}`,
-      );
-    }
+    await notify(
+      evolutionNotificationTitle(task, outcome),
+      task === 'safety' ? notificationContent
+        : `${notificationContent}\n新活动: ${payload.newUnknown.join(',') || '无'}；结束: ${payload.newEnded.join(',') || '无'}；复核: ${payload.reviewIds.join(',') || '无'}`,
+    );
     if (outcome === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
     const dailyDate = payload.dailyDate || getLocalDateKey();
     const dailyRetryCount = Number(payload.dailyRetryCount || 0);
     if (payload.dailyFollowup && (outcome === 'failed' || outcome === 'interrupted')
-        && !(settings.dualAgentEnabled && teamJournal?.recoveryAttempt > 0)
+        && !(settings.dualAgentEnabled && (teamJournal?.recoveryAttempt > 0 || teamJournal?.planRevision > 0))
         && dailyRetryCount < MAX_DAILY_FAILURE_RETRIES) {
       const retryDelay = FAILED_RUN_RETRY_MIN_MS
         + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS);
@@ -1403,6 +1401,9 @@ function applyEvolution() {
   if (state.status !== 'pending_apply') {
     return { ok: false, error: `当前没有待应用的进化（状态：${state.status}）` };
   }
+  if (!state.commit || gitHead() !== state.commit || worktreeChanges()) {
+    return { ok: false, error: '待应用提交或工作区已变化，请先核对，当前未部署任何改动' };
+  }
   if (!fs.existsSync(APPLY_SCRIPT)) {
     return { ok: false, error: `缺少重启脚本 ${APPLY_SCRIPT}` };
   }
@@ -1425,15 +1426,23 @@ function applyEvolution() {
     cwd: REPO_ROOT,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FARM_TMUX_TARGET: tmuxTarget },
+    env: { ...process.env, FARM_TMUX_TARGET: tmuxTarget, FARM_NODE_BIN_DIR: path.dirname(process.execPath), FARM_EVOLUTION_COMMIT: state.commit },
   });
   child.once('error', error => {
     const failed = readState();
     if (failed.status !== 'applying') return;
-    failed.status = 'failed';
+    failed.status = 'pending_apply';
     failed.summary = `应用进化启动失败：${error.message}`;
     writeState(failed);
     void notify('农场 bot 应用进化失败', failed.summary);
+  });
+  child.once('exit', (code) => {
+    if (code === 0) return;
+    const failed = readState();
+    if (failed.status !== 'applying' || failed.commit !== state.commit) return;
+    failed.status = 'pending_apply';
+    failed.summary = '应用准备失败，待应用提交已保留；请检查本机应用构建日志后重试';
+    writeState(failed);
   });
   child.unref();
   return { ok: true, commit: state.commit };
@@ -1578,7 +1587,7 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
   lastTask = task;
 
   if (worktreeChanges() || (active.dualAgentEnabled && !teamApproved)) {
-    current.status = evolved || worktreeChanges() ? 'privacy_blocked_local' : 'interrupted';
+    current.status = evolved || worktreeChanges() ? 'review_blocked' : 'interrupted';
     current.commit = evolved ? headAfter : '';
     current.activeRun = null;
     current.collaboration = active.dualAgentEnabled ? { ...teamJournal, phase: 'failed', status: 'failed', activeAgent: '' } : null;
@@ -1962,4 +1971,5 @@ module.exports = {
   readAgentFailureReason,
   previousTeamFailure,
   describeTeamFailure,
+  evolutionNotificationTitle,
 };

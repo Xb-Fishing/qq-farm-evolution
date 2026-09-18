@@ -39,9 +39,21 @@ test('runManualPetDiaryAction 前置校验与操作白名单', async () => {
   const servicePath = require.resolve('../src/services/pet-diary-operate');
   const networkPath = require.resolve('../src/utils/network');
   const utilsPath = require.resolve('../src/utils/utils');
-  const previous = new Map([networkPath, utilsPath].map(p => [p, require.cache[p]]));
+  const protoPath = require.resolve('../src/utils/proto');
+  const previous = new Map([networkPath, utilsPath, protoPath].map(p => [p, require.cache[p]]));
 
   const calls = [];
+  const encodes = [];
+  const guardedTypes = { ...types };
+  for (const name of ['ActivityListRequest', 'ActivityGetGroupRequest', 'PetDiaryOperateRequest']) {
+    guardedTypes[name] = {
+      create: value => types[name].create(value),
+      encode: value => { encodes.push(name); return types[name].encode(value); },
+    };
+  }
+  require.cache[protoPath] = mockModule(protoPath, { types: guardedTypes });
+  let listed = true;
+  let listedEnd = 0;
   // GetGroup 回包：构造活跃活动组 + 成年比熊状态
   const buildGroupReply = (nurtureOverrides = {}) => {
     const group = types.PetDiaryGetGroupReply.create({
@@ -74,6 +86,9 @@ test('runManualPetDiaryAction 前置校验与操作白名单', async () => {
   require.cache[networkPath] = mockModule(networkPath, {
     sendMsgAsync: async (_service, method, payload) => {
       calls.push(method);
+      if (method === 'List') return { body: types.ActivityListReply.encode(types.ActivityListReply.create({
+        groups: listed ? [{ activity: { id: 2026090100, end_time: listedEnd } }] : [],
+      })).finish() };
       if (method === 'GetGroup') return { body: buildGroupReply() };
       // Operate 回包：匹配请求的 activity_id/operate_type
       const req = types.PetDiaryOperateRequest.decode(payload);
@@ -128,7 +143,22 @@ test('runManualPetDiaryAction 前置校验与操作白名单', async () => {
     assert.deepEqual(OPERATIONS.exchange, [1, 'shop_buy']);
 
     // 6. Operate 走 ActivityService（不引入新接口）
-    assert.ok(calls.every(method => ['GetGroup', 'Operate'].includes(method)));
+    assert.ok(calls.every(method => ['List', 'GetGroup', 'Operate'].includes(method)));
+    assert.deepEqual(calls.slice(0, 3), ['List', 'GetGroup', 'Operate']);
+    calls.length = 0;
+    encodes.length = 0;
+    await assert.rejects(runManualPetDiaryAction('battle', {}, deps), /未开放/);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(encodes, []);
+    listed = false;
+    await assert.rejects(runManualPetDiaryAction('draw', {}, { getBag: () => { throw new Error('must not read bag'); } }), /未由当前列表下发/);
+    assert.deepEqual(calls, ['List']);
+    assert.deepEqual(encodes, ['ActivityListRequest']);
+    calls.length = 0;
+    listed = true;
+    listedEnd = Math.floor(Date.now() / 1000) - 1;
+    await assert.rejects(runManualPetDiaryAction('draw', {}, deps), /已结束/);
+    assert.deepEqual(calls, ['List']);
   } finally {
     delete require.cache[servicePath];
     for (const [path, entry] of previous) {

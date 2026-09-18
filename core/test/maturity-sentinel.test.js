@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { serverMatureSecToLocalMs } = require('../src/services/farming-orchestrator');
 const { nextWatchlistPollDelayMs } = require('../src/services/friend-orchestrator');
+const { mergeDueAt } = require('../src/services/steal-schedule');
 
 // worker.js 不可直接 require（会连游戏服务），这里锁住独立成熟保护器的接线与优先级。
 const src = fs.readFileSync(
@@ -248,4 +250,293 @@ test('ordinary slowdown still cannot block priority HOT or PREARM entry', () => 
   const checkBody = friendSrc.slice(start, end);
   assert.doesNotMatch(checkBody, /getBreakerState\(/);
   assert.doesNotMatch(checkBody, /cooldown/);
+});
+
+test('panel readiness gate and friends-list in-flight merging cannot touch the revenue ticks', () => {
+  // 2026-09-18 启动竞态收口：面板好友入口的就绪闸门与在途合并只存在于
+  // handleApiCall / friend-land-analyzer 面板路径，收益链 tick 不引用它们。
+  const apiStart = src.indexOf('async function handleApiCall');
+  const apiEnd = src.indexOf('// ==================== 每日礼包总览', apiStart);
+  const apiBody = src.slice(apiStart, apiEnd);
+
+  // 闸门先于同步暂停：未就绪的面板调用既不设置暂停也不等待，就地本地返回
+  const gate = apiBody.indexOf('FRIEND_PANEL_ENTRY_METHODS.has(method)');
+  const earlyReturn = apiBody.indexOf('账号未就绪');
+  const pause = apiBody.indexOf('friendSyncPaused = true');
+  assert.ok(gate >= 0, 'panel readiness gate exists');
+  assert.ok(earlyReturn > gate && pause > earlyReturn,
+    'gate returns a local error before the sync pause is set');
+
+  // 面板在途合并只落在 friend-land-analyzer；偷菜链 checkFriends 直接读
+  // getAllFriends（核心巡查/到点偷菜/HOT/PREARM 不进入面板缓存）
+  assert.match(friendLandAnalyzerSrc, /friendsListInFlight/);
+  assert.match(friendLandAnalyzerSrc, /generation === friendsListGeneration/);
+  const checkStart = friendSrc.indexOf('async function checkFriends');
+  const checkEnd = friendSrc.indexOf('// ===== Friend check loop', checkStart);
+  const checkBody = friendSrc.slice(checkStart, checkEnd);
+  assert.doesNotMatch(checkBody, /getFriendsList/);
+  assert.doesNotMatch(checkBody, /friendsListInFlight/);
+
+  // 收益链 tick 不咨询面板就绪闸门，也不等待面板读取
+  for (const [marker, endMarker] of [
+    ['async function runOwnHarvestStrike', '// ==================== 好友成熟哨兵'],
+    ['async function runStealTick', '// ==================== 统一调度器'],
+    ['async function runUnifiedTick', 'function scheduleUnifiedNextTick'],
+  ]) {
+    const start = src.indexOf(marker);
+    assert.ok(start >= 0, `${marker} exists`);
+    const body = src.slice(start, src.indexOf(endMarker, start));
+    assert.doesNotMatch(body, /FRIEND_PANEL_ENTRY_METHODS/);
+    assert.doesNotMatch(body, /getFriendsList/);
+  }
+});
+
+// ==================== 面板读取在途 × 收益链真实执行（隔离 VM） ====================
+
+// 在隔离 VM 中执行真实 worker 收益函数：普通面板 getFriends 读取在途时，
+// 自己成熟收获、好友到点偷菜（统一调度器分发）、重点 HOT/PREARM 哨兵都
+// 继续出手，不因普通面板读取设置好友同步暂停。严禁启动真实 Worker 或网络：
+// 面板链路的真实 friend-land-analyzer 以永不自动兑现的 deferred 作为上游边界，
+// 收益链的协议出口（harvestOwnAtMaturity / checkFriends）注入记录器。
+
+function mockModule(filename, exports) {
+  return { id: filename, filename, loaded: true, exports, paths: [] };
+}
+
+/** 上游 deferred 的真实 analyzer 链（面板普通 getFriends 走真实代码路径）。 */
+function loadAnalyzerChainForSentinel() {
+  const upstream = { calls: 0, pending: [] };
+  const getAllFriends = () => {
+    upstream.calls += 1;
+    return new Promise((resolve, reject) => {
+      upstream.pending.push({ resolve, reject });
+    });
+  };
+  const servicePath = require.resolve('../src/services/friend-land-analyzer');
+  const friendApiPath = require.resolve('../src/services/friend-api');
+  const networkPath = require.resolve('../src/utils/network');
+  const storePath = require.resolve('../src/models/store');
+  const fertilizerPath = require.resolve('../src/services/fertilizer-watch');
+  const farmLandAnalyzerPath = require.resolve('../src/services/farm-land-analyzer');
+  const paths = [servicePath, friendApiPath, networkPath, storePath,
+    fertilizerPath, farmLandAnalyzerPath];
+  const previous = new Map(paths.map(file => [file, require.cache[file]]));
+
+  require.cache[friendApiPath] = mockModule(friendApiPath, {
+    getAllFriends,
+    enterFriendFarm: async () => ({ lands: [] }),
+    leaveFriendFarm: async () => {},
+    getDogName: () => '',
+    handleFriendEnterError: () => ({ handled: false }),
+  });
+  require.cache[networkPath] = mockModule(networkPath, {
+    getUserState: () => ({ gid: 4321 }),
+    networkEvents: { on: () => {}, off: () => {} },
+    sendMsgAsync: async () => { throw new Error('unexpected upstream call'); },
+  });
+  require.cache[storePath] = mockModule(storePath, {
+    getPlantBlacklist: () => [],
+    getFriendBlacklist: () => [],
+    readFriendDogInfoCache: () => null,
+    writeFriendDogInfoCache: () => {},
+  });
+  require.cache[fertilizerPath] = mockModule(fertilizerPath, {
+    inspectFriendLands: () => {},
+    getFriendRipeSnapshot: () => null,
+  });
+  require.cache[farmLandAnalyzerPath] = mockModule(farmLandAnalyzerPath, {
+    getCurrentPhase: () => null,
+    buildLandMap: () => new Map(),
+    getDisplayLandContext: () => ({
+      sourceLand: null, occupiedByMaster: false, masterLandId: 0, occupiedLandIds: [],
+    }),
+    isOccupiedSlaveLand: () => false,
+    getQixiDewStatus: () => null,
+  });
+  delete require.cache[servicePath];
+  const previousAccountId = process.env.FARM_ACCOUNT_ID;
+  process.env.FARM_ACCOUNT_ID = 'maturity-sentinel-test';
+  return {
+    analyzer: require(servicePath),
+    upstream,
+    restore() {
+      if (previousAccountId === undefined) delete process.env.FARM_ACCOUNT_ID;
+      else process.env.FARM_ACCOUNT_ID = previousAccountId;
+      delete require.cache[servicePath];
+      for (const file of paths) {
+        if (previous.get(file)) require.cache[file] = previous.get(file);
+        else delete require.cache[file];
+      }
+    },
+  };
+}
+
+/** 从 worker.js 提取真实收益入口：面板入口 + 自己收获 + 偷菜 tick + 统一 tick + 哨兵。 */
+function extractRevenueEntrySource() {
+  const slices = [];
+  const take = (startMarker, endMarker, label) => {
+    const start = src.indexOf(startMarker);
+    assert.ok(start >= 0, `${label} exists in worker.js`);
+    const end = src.indexOf(endMarker, start);
+    assert.ok(end > start, `${label} end marker exists`);
+    slices.push(src.slice(start, end));
+  };
+  const setStart = src.indexOf('const FRIEND_PANEL_ENTRY_METHODS = new Set([');
+  assert.ok(setStart >= 0, 'entry set declaration exists');
+  slices.push(src.slice(setStart, src.indexOf(']);', setStart) + ']);'.length));
+  take('async function handleApiCall', '// ==================== 每日礼包总览', 'handleApiCall');
+  take('async function runOwnHarvestStrike', '// ==================== 好友成熟哨兵', 'runOwnHarvestStrike');
+  take('function clearSentinel()', '// 偷菜 due 连续', 'sentinel block');
+  take('async function runStealTick', '// ==================== 统一调度器', 'runStealTick');
+  take('async function runUnifiedTick', 'function scheduleUnifiedNextTick', 'runUnifiedTick');
+  return `${slices.join('\n')}\n;({ handleApiCall, runOwnHarvestStrike, runStealTick, runUnifiedTick, runSentinelStrike, armMaturitySentinel, clearSentinel })`;
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('普通面板 getFriends 在途：自己成熟收获、好友到点偷菜、重点 HOT/PREARM 哨兵全部继续出手', async () => {
+  const chain = loadAnalyzerChainForSentinel();
+  try {
+    // 收益链协议出口记录器：自己收获 / 到点偷菜（含哨兵抢收共用入口）
+    const calls = { harvest: 0, checkFriends: 0, checkFriendsOpts: [] };
+    // 自己成熟墙钟持有者：0=无自己成熟（统一 tick 正常分发偷菜）；
+    // 设为当前时刻后 runOwnHarvestStrike 直发毫秒级收获
+    let ownDueHolder = 0;
+    const responses = [];
+
+    const sandbox = {
+      // —— 面板入口（真实 handleApiCall + 真实 analyzer 链）——
+      isRunning: true,
+      loginReady: true,
+      getWs: () => ({ readyState: 1 }),
+      sendToMaster: message => responses.push(message),
+      log: () => {},
+      friendSyncPaused: false,
+      getFriendsList: chain.analyzer.getFriendsList,
+      fetchFriendsDogInfo: async () => { throw new Error('not part of this test'); },
+      syncFriendsFromGids: async () => { throw new Error('not part of this test'); },
+      require: () => { throw new Error('unexpected require in test'); },
+      // —— runOwnHarvestStrike ——
+      ownHarvestStrikeRunning: false,
+      ownHarvestDueAt: () => ownDueHolder,
+      ownHarvestRetryAttempt: 0,
+      lastOwnHarvestFailureLogAt: 0,
+      getAutomation: () => ({ farm: true, harvest: true, friend_steal: true }),
+      pauseRemainMsNow: () => 0,
+      setOwnHarvestGuardTimer: () => {},
+      scheduleOwnHarvestRetry: () => {},
+      armOwnHarvestGuard: () => {},
+      randInt: (min, _max) => min,
+      harvestOwnAtMaturity: async () => {
+        calls.harvest += 1;
+        return { harvestedCount: 3 };
+      },
+      armStealWake: () => {},
+      // —— runStealTick / runUnifiedTick ——
+      stealTaskRunning: false,
+      ownHarvestIsDue: () => ownDueHolder > 0 && ownDueHolder <= Date.now(),
+      ownHarvestIsImminent: (reserveMs = 10_000, now = Date.now()) =>
+        ownDueHolder > 0 && ownDueHolder - now <= reserveMs,
+      checkFriends: async opts => {
+        calls.checkFriends += 1;
+        calls.checkFriendsOpts.push(opts);
+        return true;
+      },
+      isTransientNetworkError: () => false,
+      nextStealRunAt: 0,
+      markStealDueAt: () => {},
+      unifiedSchedulerRunning: true,
+      markIdleQuietUntil: () => {},
+      pauseAceReports: () => {},
+      resumeAceReports: () => {},
+      formatIdleRemain: ms => `${Math.round(ms / 60000)}分钟`,
+      lastPauseAnnounceAt: 0,
+      nextFarmRunAt: Date.now() + 60_000,
+      nextHelpRunAt: Date.now() + 60_000,
+      STEAL_IDLE_MS: 24 * 60 * 60_000,
+      nextScheduledStealAt: () => Date.now() - 1000,
+      stealIsDue: () => true,
+      stealIsImminent: () => false,
+      runFarmTick: async () => { throw new Error('farm tick must not run in this test'); },
+      runHelpTick: async () => { throw new Error('help tick must not run in this test'); },
+      // —— 哨兵（重点 HOT/PREARM 到点路径）——
+      // 生产常量按原值注入（既有测试已锁定这些值不得漂移）
+      SENTINEL_ARM_WATCHLIST_MS: 5_000,
+      SENTINEL_ARM_NORMAL_MS: 2_000,
+      SENTINEL_ACT_DELAY_MS: [30, 80],
+      OWN_HARVEST_RESERVE_MS: 10_000,
+      sentinelTimer: null,
+      sentinelArmedFor: null,
+      getNextStealDueAtMs: () => 0,
+      getNextWatchDueAt: () => Date.now() + 20,
+      getNextWatchlistStealDueAtMs: () => 0,
+      mergeDueAt,
+      setTimeout,
+      clearTimeout,
+    };
+    const script = new vm.Script(extractRevenueEntrySource(),
+      { filename: 'worker.js#revenue-entries' });
+    const fns = script.runInContext(vm.createContext(sandbox));
+
+    // 1) 真实 handleApiCall 发起普通面板读取（非强制）：上游 deferred，保持在途
+    const panelRead = fns.handleApiCall({ id: 'panel-normal', method: 'getFriends', args: [false] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(chain.upstream.calls, 1, 'panel read reaches its (deferred) upstream once');
+    assert.equal(sandbox.friendSyncPaused, false,
+      '普通面板读取不设置好友同步暂停（只有强制/狗信息/GID 同步才暂停）');
+
+    // 2) 面板读取在途：统一调度器正常分发到点偷菜（真实 runStealTick → checkFriends）
+    const checkBefore = calls.checkFriends;
+    await fns.runUnifiedTick();
+    assert.equal(calls.checkFriends, checkBefore + 1,
+      '统一 tick 在面板读取在途时照常分发到点偷菜');
+    // 注：opts 对象在 vm realm 内构造，用属性断言避免跨 realm 原型比较
+    const stealOpts = calls.checkFriendsOpts[calls.checkFriendsOpts.length - 1];
+    assert.equal(stealOpts.onlySteal, true, '到点偷菜走 onlySteal 快路径');
+    assert.equal(sandbox.friendSyncPaused, false, '偷菜分发后仍未被面板读取暂停');
+
+    // 3) 面板读取仍在途：自己作物到点 → 真实 runOwnHarvestStrike 直发毫秒级收获
+    ownDueHolder = Date.now();
+    await fns.runOwnHarvestStrike();
+    assert.equal(calls.harvest, 1, '自己成熟收获在面板读取在途时照常出手');
+    assert.equal(sandbox.friendSyncPaused, false);
+    ownDueHolder = 0;
+
+    // 4) 面板读取仍在途：重点 HOT/PREARM 目标 20ms 后到期 → 哨兵武装并在到点出手
+    const sentinelBefore = calls.checkFriends;
+    fns.armMaturitySentinel(Date.now());
+    assert.ok(sandbox.sentinelArmedFor, '重点目标进入武装区间即布控哨兵');
+    assert.ok(sandbox.sentinelTimer, '哨兵定时器已挂载');
+    await sleep(200);
+    assert.equal(calls.checkFriends, sentinelBefore + 1,
+      '哨兵到点出手（HOT/PREARM 抢收）不受面板读取影响');
+    assert.equal(sandbox.friendSyncPaused, false, '哨兵出手前后都未被面板读取暂停');
+
+    // 5) 面板读取完成：正常返回列表，全程零暂停
+    assert.equal(responses.length, 0, '面板响应等待真实上游完成');
+    chain.upstream.pending[0].resolve({ game_friends: [{ gid: 777, name: 'F777', level: 4 }] });
+    await panelRead;
+    assert.equal(responses.length, 1);
+    assert.strictEqual(responses[0].error, null);
+    assert.equal(responses[0].result.length, 1);
+    assert.equal(sandbox.friendSyncPaused, false,
+      '普通面板读取完成后也没有设置过同步暂停');
+
+    // 6) 反向对照（非空洞证明）：暂停变量被真实 tick 消费——手动置位后
+    //    偷菜/收获/哨兵全部短路，说明上面的「继续出手」结论依赖真实的暂停语义
+    sandbox.friendSyncPaused = true;
+    const controlBefore = { harvest: calls.harvest, check: calls.checkFriends };
+    await fns.runStealTick({ farm: true, harvest: true, friend_steal: true });
+    ownDueHolder = Date.now();
+    await fns.runOwnHarvestStrike();
+    sandbox.sentinelArmedFor = { kind: 'friend', dueAt: Date.now() };
+    await fns.runSentinelStrike();
+    assert.equal(calls.checkFriends, controlBefore.check,
+      '暂停期间偷菜 tick 短路（证明 tick 确实消费 friendSyncPaused）');
+    assert.equal(calls.harvest, controlBefore.harvest,
+      '暂停期间自己收获走受控重试而不是直发（证明收获确实消费 friendSyncPaused）');
+    sandbox.friendSyncPaused = false;
+  } finally {
+    chain.restore();
+  }
 });

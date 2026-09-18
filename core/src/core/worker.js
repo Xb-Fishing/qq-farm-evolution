@@ -1376,10 +1376,35 @@ function onFriendLandsChanged(info) {
 
 // ==================== API 调用处理 ====================
 
+// 好友面板入口的就绪闸门（2026-09-18 启动竞态收口）：协议加载/登录完成/
+// 连接打开任一不满足时，直接按既有响应结构返回本地错误——零上游请求、
+// 不等待登录、不轮询、不设置好友同步暂停。协议就绪不等于登录就绪；
+// 主进程侧的外层超时也不会取消 Worker 内部任务，所以未就绪必须就地收口。
+// 该集合与下方 isFriendSync 三入口保持一致，不得扩散到其他面板方法，
+// 更不得接入自己收获/偷菜/HOT/PREARM 等收益链路径。
+const FRIEND_PANEL_ENTRY_METHODS = new Set([
+    'getFriends',
+    'fetchFriendsDogInfo',
+    'syncFriendsFromGids',
+]);
+
 async function handleApiCall(msg) {
     const { id, method, args } = msg;
     let result = null;
     let error = null;
+
+    if (FRIEND_PANEL_ENTRY_METHODS.has(method)) {
+        const ws = getWs();
+        if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
+            sendToMaster({
+                type: 'api_response',
+                id,
+                result: null,
+                error: '账号未就绪（未登录或连接未打开），请稍后重试',
+            });
+            return;
+        }
+    }
 
     // 好友同步操作期间暂停自动化
     const isFriendSync = method === 'getFriends' && args[0] === true

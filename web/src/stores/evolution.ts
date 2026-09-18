@@ -5,11 +5,16 @@ import api from '@/api'
 export type EvolutionAgentKind = 'claude' | 'codex'
 
 export interface EvolutionCollaboration {
-  phase: 'research' | 'plan' | 'implement' | 'verify' | 'review' | 'diagnose' | 'repair' | 'repair_review' | 'commit' | 'complete' | 'failed'
+  phase: 'research' | 'revise_plan' | 'plan' | 'implement' | 'verify' | 'review' | 'diagnose' | 'repair' | 'repair_review' | 'commit' | 'complete' | 'failed'
   status: 'running' | 'completed' | 'failed'
   activeAgent: EvolutionAgentKind | ''
   recoveryAttempt?: number
   recoveryLimit?: number
+  recoveryKind?: 'runtime' | 'review' | ''
+  runtimeRecoveryAttempt?: number
+  reviewRecoveryAttempt?: number
+  planRevision?: number
+  reviewFeedback?: string
   repairOnly?: boolean
   failure?: { code: string, label: string, phase: string, agent: EvolutionAgentKind | '' } | null
 }

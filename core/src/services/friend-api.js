@@ -627,6 +627,11 @@ async function getAllFriends(forceRefresh = false) {
   }
 
   // WeChat platform: direct GetAll
+  // 类型守卫对齐 QQ 路径：协议加载未完成时在编码前明确失败，
+  // 不留 TypeError、不发上游请求（2026-09-18 启动竞态根因之一）。
+  if (!types.GetAllFriendsRequest || !types.GetAllFriendsReply) {
+    throw new Error('GetAll 接口类型未加载');
+  }
   const payload = types.GetAllFriendsRequest.encode(
     types.GetAllFriendsRequest.create({})
   ).finish();
