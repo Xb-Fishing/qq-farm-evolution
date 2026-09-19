@@ -27,9 +27,38 @@ const MANUAL_ACTIONS: ManualAction[] = [
   { key: 'draw', label: '寻宝', hint: '成年后消耗元气糕寻宝，产出幸运星/宝藏/挑战书', primary: true },
   { key: 'claimDog', label: '领取永久比熊', hint: '成年后领取，永久保留宠物' },
   { key: 'seeds', label: '领取种子礼包', hint: '每日免费稀有种子礼包，未领可累计', primary: true },
-  { key: 'compensation', label: '领取夺宝补偿', hint: '被夺宝后的安慰奖励（如有）' },
+  { key: 'compensation', label: '领取夺宝补偿', hint: '连续夺宝失败 3 次后触发的安慰礼（如有可领取）' },
   { key: 'story', label: '领取手记奖励', hint: '解锁的爪印手记奖励（需已解锁未领取）' },
 ]
+
+// 玩法卡手动入口提示只映射顶部已批准按钮；未知动作键不展示，也不新增卡片触发入口。
+const MANUAL_ACTION_LABELS: Record<string, string> = Object.fromEntries(
+  MANUAL_ACTIONS.map(action => [action.key, action.label]),
+)
+
+function manualLabelsFor(guide: BearActivityData['gameplayGuides'][number]) {
+  // 只接受标签表自身已有的键：直接索引会命中 Object.prototype 继承属性
+  // （如 toString / constructor），join 后会把原生函数文本当“已开放”提示展示。
+  return (guide.manualActions || [])
+    .filter(key => Object.prototype.hasOwnProperty.call(MANUAL_ACTION_LABELS, key))
+    .map(key => MANUAL_ACTION_LABELS[key])
+}
+
+// 状态行按玩法区分三类，不再统一宣称「待官方字段证据」：
+// - 已开放手动操作的玩法（manualActions 非空）：实时状态（成年阶段/次数/领取态/补偿
+//   数量）已由操作服务解析用于前置校验，当前快照未展示——缺的是展示，不是字段确认；
+// - 夺宝：次数与目标状态确实待官方字段证据，但挑战书库存可从背包读取（道具库存区）；
+// - 其余未开放玩法：实时状态当前快照未提供，待官方字段证据。
+// 未按 0 处理、不新增状态请求；商城卡沿用面板无兑换入口的专属说明。
+function stateNoteFor(guide: BearActivityData['gameplayGuides'][number]) {
+  if (guide.key === 'shop')
+    return '当前面板仅展示商品，暂无兑换入口；状态码语义待官方样本'
+  if (guide.key === 'raid')
+    return '实时状态当前快照未提供，待官方字段证据；挑战书库存见上方「活动道具与库存」'
+  if (manualLabelsFor(guide).length)
+    return '实时状态当前快照未展示，点击手动操作时会重新校验，未知不按 0 处理'
+  return '实时状态当前快照未提供，待官方字段证据，未知不按 0 处理'
+}
 
 function runAction(action: ManualAction) {
   if (operating.value)
@@ -161,10 +190,13 @@ function runAction(action: ManualAction) {
               </li>
             </ul>
             <p class="mt-3 rounded bg-gray-50 p-2 text-xs text-gray-500 dark:bg-gray-900/40">
-              {{ guide.missingState }}：{{ guide.key === 'shop' ? '下方展示已解析商品；操作仍待确认' : '当前状态待官方字段证据，未按 0 处理' }}
+              {{ guide.missingState }}：{{ stateNoteFor(guide) }}
             </p>
-            <BaseButton class="mt-3" variant="secondary" size="sm" disabled>
-              {{ guide.actionLabel }} · 操作协议待确认
+            <p v-if="manualLabelsFor(guide).length" class="mt-3 rounded bg-emerald-50 p-2 text-xs text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300">
+              手动操作已开放：{{ manualLabelsFor(guide).join('、') }}（上方「玩法手动操作」区）
+            </p>
+            <BaseButton v-else class="mt-3" variant="secondary" size="sm" disabled>
+              {{ guide.actionLabel }} · {{ guide.key === 'raid' ? '好友交互暂未开放' : guide.key === 'shop' ? '面板暂无兑换入口' : '操作协议待确认' }}
             </BaseButton>
           </article>
         </div>
@@ -175,7 +207,7 @@ function runAction(action: ManualAction) {
           幸运星游记商城
         </h3>
         <p class="mb-3 text-xs text-gray-500">
-          价格和拥有标记来自本次回包；状态码的次数与可兑换含义尚未确认，不开放兑换。
+          价格和拥有标记来自本次回包；状态码的次数与可兑换含义尚未确认，当前面板未提供兑换入口。
         </p>
         <div v-if="activity.exchangeShop.length" class="overflow-x-auto">
           <table class="w-full whitespace-nowrap text-left text-sm">
