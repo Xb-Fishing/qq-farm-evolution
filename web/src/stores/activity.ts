@@ -493,6 +493,8 @@ export interface BearActivityData {
     steps: string[]
     missingState: string
     actionLabel: string
+    /** 展示层提示：已在顶部「玩法手动操作」区开放的按钮键名，不代表写操作授权 */
+    manualActions: string[]
     sourceId: number
     operationSupported: false
     statusAvailable: false
