@@ -18,6 +18,17 @@ const BEAR_ADVANCED_CHALLENGE_ITEM_ID = 80103;
 // 待护送宝藏 1030：Bag 实际出现 + ItemInfo 快照（type 19、activity 2026090101）闭环
 // （2026-09-14）；寻宝产出、护送后结算，仅只读展示。
 const BEAR_TREASURE_ITEM_ID = 1030;
+// 玩法指南「已在面板开放的手动操作」展示映射：仅镜像活动卡顶部「玩法手动操作」区
+// 七个已批准按钮（pet-diary-operate OPERATIONS 白名单的子集），属于展示层提示，
+// 不代表写操作授权；care/escort/raid/tactics/shop/rank 无条目（未开放或无对应入口）。
+// 新增键前必须先在面板与 OPERATIONS 同时存在，且不得包含 exchange/battle 等未开放动作。
+const BEAR_GUIDE_MANUAL_ACTIONS = {
+  grow: ['initialize', 'feed', 'claimDog'],
+  treasure: ['draw'],
+  pity: ['compensation'],
+  album: ['story'],
+  gift: ['seeds'],
+};
 
 function getBearObservedItemIds(snapshot) {
   const root = snapshot || {};
@@ -82,10 +93,12 @@ function buildBearRuleModel(play, shop) {
     ['care', '看护与比熊变异', lines.filter(line => /看护状态/.test(line)), '看护状态', '设置看护'],
     ['treasure', '成年寻宝', fromHeading(/寻宝玩法/), '今日剩余次数、单次消耗、掉落', '派遣寻宝'],
     ['escort', '宝藏护送', fromHeading(/宝藏护送/), '护送倒计时、保底资金、博弈资金、被夺次数', '领取护送奖励'],
+    // 挑战书库存不列入 missingState：它由背包读取在资源区展示（读取失败保持未知），
+    // 不是待官方字段证据的活动状态；这里只保留真正缺字段证据的次数与目标状态。
     ['raid', '好友夺宝', [
       ...fromHeading(/夺宝博弈/),
       ...sections.filter(section => section.key === 'tips1' && /夺宝条件/.test(section.title)).flatMap(section => section.lines),
-    ], '今日剩余次数、挑战书库存、目标护送状态', '发起夺宝'],
+    ], '今日剩余次数、目标护送状态', '发起夺宝'],
     ['pity', '骰子胜负与安慰礼', fromHeading(/胜负与保底/), '连续失败次数、安慰礼领取状态', '领取安慰礼'],
     ['album', '爪印手记', fromHeading(/爪印手记/), '相册解锁进度、故事奖励领取状态', '领取故事奖励'],
     ['tactics', '锦囊选择与刷新', fromHeading(/锦囊系统/), '当前锦囊、免费与付费刷新剩余次数', '选择或刷新锦囊'],
@@ -95,6 +108,8 @@ function buildBearRuleModel(play, shop) {
   ];
   const gameplayGuides = definitions.filter(([, , steps]) => steps.length).map(([key, title, steps, missingState, actionLabel]) => ({
     key, title, steps: [...new Set(steps)], missingState, actionLabel,
+    // 仅展示层提示（镜像顶部已批准手动按钮），不是授权标记；只读边界见下方各标记。
+    manualActions: [...(BEAR_GUIDE_MANUAL_ACTIONS[key] || [])],
     sourceId: BEAR_PLAY_ACTIVITY_ID, operationSupported: false, statusAvailable: false,
   }));
   const shopText = ruleSections(shop?.payload, BEAR_SHOP_ACTIVITY_ID).flatMap(section => section.lines).join('\n');
@@ -193,10 +208,17 @@ function normalizeBearActivity(snapshot, options = {}) {
     })),
     protocol: { declaredReadOnlyFields: [102, 110], opaqueReadOnlyFields: [115], observedShape },
     missingEvidence: [
-      '成长、寻宝、护送、夺宝、安慰礼、锦囊、爪印手记和排名的当前状态字段尚未确认。',
+      // 状态字段分两类：操作服务已解析并用于操作前校验的字段（成年阶段、投喂/寻宝次数与
+      // 消耗、手记与礼包领取态、夺宝补偿数量）只是当前快照未展示，不能统称尚未确认；
+      // 看护/护送/夺宝次数/锦囊/排名状态见下方条目的待官方字段证据边界。
+      '成长阶段、投喂与寻宝次数及消耗、手记与种子礼包领取态、夺宝补偿数量已由操作服务解析并用于操作前校验，当前只读快照未展示这些实时状态。元气糕与三档挑战书库存随背包读取展示，读取失败保持未知、不补零。',
       '待护送宝藏（1030）与挑战书三档已按 ItemInfo 证据登记但专属图片仍待官方资源。元气糕为额外掉落物 1028，不能把奖励中的狗尾草种子 20516 当成元气糕。',
       'field 115 仅保留结构诊断；field 110 奖励记录不能直接认定为爪印手记。',
-      '商城状态码、次数及付费边界待官方样本；所有操作协议待确认，请在官方客户端人工操作。',
+      // 已开放手动能力 / 快照未展示的实时状态 / 策略性未开放操作 三类边界分开表达，
+      // 不得再笼统宣称「所有操作协议待确认」（顶部七个手动按钮 2026-09-18 已上线）。
+      '投喂、寻宝、种子礼包、手记奖励、夺宝安慰礼、领养与领取永久比熊已开放面板手动操作（活动卡顶部「玩法手动操作」区）；其余玩法操作请在官方客户端人工进行。',
+      '夺宝与好友信息、付费刷新等好友交互暂不开放；看护、护送、夺宝今日次数、锦囊、排名的实时状态仍待官方字段证据，未知不按 0 处理。',
+      '商城状态码、次数与付费边界待官方样本；兑换能力已具备，但当前面板未提供商品兑换入口。',
     ],
   };
 }
@@ -206,6 +228,7 @@ module.exports = {
   BEAR_CURRENCY_ITEM_ID, BEAR_SEED_ITEM_ID, BEAR_CAKE_ITEM_ID,
   BEAR_BASIC_CHALLENGE_ITEM_ID, BEAR_MIDDLE_CHALLENGE_ITEM_ID, BEAR_ADVANCED_CHALLENGE_ITEM_ID,
   BEAR_TREASURE_ITEM_ID,
+  BEAR_GUIDE_MANUAL_ACTIONS,
   BEAR_CLIENT_UI_UID,
   getBearObservedItemIds, normalizeBearActivity,
 };

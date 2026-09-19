@@ -1473,3 +1473,53 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 验证：Node 20 串行全量后端 485/485，通过新增的构建隔离集成回归；ESLint 无新增错误（friend-api 的六处既有未使用变量报错与 HEAD 对照一致），前端类型检查和隔离生产构建通过。发布前复核完整新增提交范围及本机隐私匹配，私有备份和运行数据保持 ignored。维护修复发布不等于原自动巡检完成，运行问题批次保留，后续按新流程继续。
 - 踩坑：不能把复核失败当成隐私泄漏，也不能通过放宽审批来解决测试不足；不得重新删除用户已批准功能。共享工作区禁止 stash/reset/checkout/restore/clean 来临时撤下他人改动，历史比较应使用只读 git show 或隔离副本。验收构建不能使用默认线上输出目录。
 - 回滚应只回退本轮需要撤销的逻辑并在既有 pane 部署；不得恢复已清理的个人信息、旧 Git 历史或候选中的功能删除。活动和安全自动任务仍互斥，双 Agent 配置保留，未审修改不得直接推送或应用。
+
+## S3 操作能力提示与安慰礼文案修正（2026-09-19）
+
+### 确定缺陷与证据
+
+- 主 Agent 复核发现（research 轮曾被误判零改动）：活动卡顶部 2026-09-18 已上线七个已批准手动操作按钮（领养/投喂/寻宝/领狗/种子礼包/夺宝补偿/手记），但下方 11 类玩法卡仍统一渲染禁用按钮「{action} · 操作协议待确认」，`season-bear-activity.js` 的 missingEvidence 也整段宣称「所有操作协议待确认，请在官方客户端人工操作」——与既有手动能力直接矛盾。补偿按钮提示把安慰礼写成「被夺宝后的安慰奖励（如有）」，而当前官方两处说明均为「连续 3 次夺宝失败后触发夺宝安慰礼，获胜一次重置计数」（攻击方连败语义）；`pet-diary-operate.js` 用 `plunder_compensation_count` 做前置校验的行为本身正确，本轮不改。管理检查项 bear-grow/bear-raid/bear-shop 存在同类过时描述（如把已具备的元气糕/挑战书库存读取笼统写成协议待确认）。
+- 证据边界：顶部按钮命令字来自官方小程序编码器证据链（2026-09-18 已登记）；最近 24h 日志有一次种子礼包手动操作成功（两次寻宝成功与另一次种子礼包成功均在该窗口之外的历史日志），证明既有手动链实际执行过，但**不构成新增写操作证据**——本轮零新增命令、零新增按钮、零自动化、零每日例行。
+
+### 本次改动（展示层 + 数据契约，7 个文件）
+
+1. `season-bear-activity.js`：新增 `BEAR_GUIDE_MANUAL_ACTIONS` 展示映射（grow→initialize/feed/claimDog、treasure→draw、pity→compensation、album→story、gift→seeds；其余六类为空），`gameplayGuides` 每项新增 `manualActions: string[]`；`operationSupported/statusAvailable/writeOperationsSupported` 与商城条目标记全部保持 false。missingEvidence 第 4 条拆为三条准确边界：已开放面板手动能力（列出七项）、好友交互/实时状态待证、兑换能力已具备但面板无商品入口。
+2. `activity.ts`：`BearActivityData.gameplayGuides` 内联类型补 `manualActions`（getBearActivity 原样透传，controller/store 链无需改动）。
+3. `BearActivityPanel.vue`：五类玩法卡用提示行「手动操作已开放：{顶部按钮标签}（上方「玩法手动操作」区）」替换原禁用按钮——卡片不新增触发入口；raid 禁用后缀改「好友交互暂未开放」、shop 改「面板暂无兑换入口」且状态行说明「当前面板仅展示商品，暂无兑换入口；状态码语义待官方样本」；商城正文「不开放兑换」改为「当前面板未提供兑换入口」；补偿提示改「连续夺宝失败 3 次后触发的安慰礼（如有可领取）」；care/escort/tactics/rank 维持禁用「操作协议待确认」。顶部七按钮、operate 事件参数、手记 prompt 流程、busy 守卫零改动。
+4. `AdminActivityUpdatePanel.vue`：bear-grow/treasure/raid/pity/album/shop/gift 检查项描述修正为准确边界（已开放手动操作、库存读取已具备、好友交互暂未开放、兑换能力已具备但面板无入口）；键名与既有断言关键词（bear-album.*爪印手记、bear-tactics.*锦囊）不变。
+5. `core/test/season-bear-activity.test.js`：新增 manualActions 数据契约测试——五类精确映射、其余六类为空、并集恰为七个顶部动作且全部 ∈ 现有 OPERATIONS、显式排除 exchange/battle/markStories/skipBattle、只读标记不变、missingEvidence 不再含「所有操作协议待确认」；面板源码断言按新接线更新（/disabled.*操作协议待确认/s 仍通过，raid/shop/四类卡禁用后缀保留为模板内联三元）。
+6. 新增 `core/test/bear-activity-panel.test.js`：真实 Vue 渲染回归——用 web 工作区**既有**依赖（vue、vue/compiler-sfc、typescript、vue-router）在内存中编译 BearActivityPanel.vue 与 BaseButton.vue 真实 SFC（compileScript inlineTemplate → ts.transpileModule 转 CJS → vm.compileFunction 求值 → createRenderer 自定义 nodeOps 渲染），断言实际渲染树与真实点击事件链；无新增任何依赖。
+
+### 行为验收（对应主 Agent 批准的验收清单）
+
+- 五类卡显示对应顶部按钮标签提示、不再标协议待确认、卡内零按钮零点击处理器（提示标签逐一验证存在于顶部按钮区）；六类卡保持禁用按钮——raid「发起夺宝 · 好友交互暂未开放」、shop「兑换商品 · 面板暂无兑换入口」+ 专属状态行、care/escort/tactics/rank 原禁用文案；禁用按钮点击零 operate 事件；按钮总数 14（1 刷新 + 7 顶部 + 6 卡）锁定无新增执行入口。
+- 七个顶部按钮逐个点击各自且仅产生原有 operate 事件；手记输入传 order、取消输入不触发；operating 非空时全部禁用且零事件；activity 为 null 时不渲染手动操作区（仅剩刷新按钮）。
+- 补偿提示逐字断言「连续夺宝失败 3 次」语义且不含「被夺宝」；官方说明差异提示、11 类玩法流程、赛季结束提示、奖励记录区全部保留。
+- 背包不可用 → 8 项资源全部「数量待确认」+「本次背包读取不可用」提示；背包读取成功 → 资源区显示真实库存、夺宝卡不再把挑战书库存列为缺字段证据；记录 claimed=null →「领取状态未知」不显示已领取；11 类卡状态行按玩法区分——五类已开放手动操作的卡说明「实时状态当前快照未展示，点击手动操作时会重新校验」（成长进度明确未展示），看护/护送/锦囊/排名说明「当前快照未提供，待官方字段证据」，夺宝说明次数与目标状态待字段证据且挑战书库存见道具库存区，商城卡说明面板暂无兑换入口——均不按 0 处理、不因顶部入口开放伪造实时状态。
+- 旧数据（无 manualActions 字段）11 卡全部回退禁用按钮（raid/shop 后缀按玩法键固定，不依赖 manualActions）、渲染无 undefined/NaN；未知动作值被过滤——不显示裸动作键、不新增可执行按钮、顶部 7 入口不变。
+- 变异对照：把补偿提示改回旧文案时渲染测试立即 1 条失败、恢复后 5/5 通过——断言检查真实渲染输出，不是源码字符串匹配。
+
+### 复核返工修正（2026-09-19，主 Agent review 三项缺陷，repair 阶段）
+
+- **缺陷 1（状态与库存提示不准确）**：玩法卡状态行统一写「当前状态待官方字段证据」，missingEvidence 也把成长/寻宝/安慰礼等状态统称尚未确认——但这些字段（成年阶段、投喂/寻宝次数与消耗、手记与礼包领取态、夺宝补偿数量）已由 pet-diary-operate 解析用于操作前校验，缺的只是只读快照展示；夺宝卡还把挑战书库存列入待字段证据清单，与资源区背包读取的库存直接矛盾；管理检查项 bear-grow 更错误宣称「成长进度状态随背包读取展示」（归一化模型不返回成长进度，背包也不提供）。修复：`season-bear-activity.js` 的 raid missingState 移除挑战书库存（库存由资源区背包读取展示、失败保持未知不补零），missingEvidence 第 1 条改写为「已由操作服务解析并用于操作前校验，当前只读快照未展示 + 元气糕与三档挑战书库存随背包读取、失败不补零」的准确边界；`BearActivityPanel.vue` 新增 `stateNoteFor()` 按玩法区分三类状态行（已开放手动操作 → 快照未展示、点击操作时重新校验；夺宝 → 次数与目标状态待字段证据、挑战书库存见道具库存区；其余未开放 → 待字段证据），shop 卡沿用面板无兑换入口专属说明；管理检查项 bear-grow/treasure/pity/album 同步改为「由操作前校验读取、当前快照未展示」。零新增状态请求、零新增按钮/命令/自动化，七个顶部操作按钮行为不变。
+- **缺陷 2（未知动作键原型属性漏过）**：`manualLabelsFor` 原实现直接索引 `MANUAL_ACTION_LABELS[key]` 再 `filter(Boolean)`，manualActions 含 `toString`/`constructor` 等原型属性键时会读出继承函数，join 后把「function toString() { [native code] }」当「手动操作已开放」提示展示。修复：过滤改为 `Object.prototype.hasOwnProperty.call(MANUAL_ACTION_LABELS, key)` 只接受标签表自有键（web tsconfig lib 为 ES2020，`Object.hasOwn` 不可用）；渲染测试加入 `['bogus_action','toString','feed','constructor']` 混合输入与纯原型键输入，断言不出现 native code 文本、不出现裸键与虚假开放提示、回退禁用按钮、顶部七入口不变。变异对照：旧实现经 node 复现确认会输出原生函数文本，新断言可捕获。
+- **缺陷 3（HANDOFF 证据误述）**：本条目曾把窗口外的寻宝成功写成「最近 24h 内」，且「11 类卡状态行均说明当前快照未提供」与实际模板输出不符。已按明确时间窗口重新汇总修正（窗口内一次种子礼包手动成功；两次寻宝成功与另一次种子礼包成功在窗口外的历史日志），展示验收结论同步改为与返工后的真实组件输出一致。
+- 返工行为验收（真实渲染）：库存成功与失败两种输入均覆盖——成功时资源区显示真实数量、夺宝卡不再把挑战书库存列为缺字段证据；失败时 8 项资源全部「数量待确认」+「背包读取不可用」提示；成长进度卡明确「当前快照未展示」不伪造；全部 11 类卡状态行不再出现旧文案「当前状态待官方字段证据」。
+
+### 踩坑与注意点
+
+- **展示层不得在协议已具备时宣称协议未知，也不得反向把文案当协议授权**：manualActions 只是镜像顶部已批准按钮的提示字段，不得据此新增命令或自动化；以后给它加新键必须同时存在于面板 MANUAL_ACTIONS 与 pet-diary-operate OPERATIONS 白名单，且不得含 exchange/battle 等未开放动作。
+- **状态描述必须三态区分，不能统一写「待官方字段证据」**（2026-09-19 返工教训）：「操作服务已解析用于前置校验的字段（成年阶段、投喂/寻宝次数与消耗、手记/礼包领取态、补偿数量）」≠「协议未知」≠「快照已展示」。缺的是只读快照展示时，正确表述是「当前快照未展示、操作前会重新校验」；背包可读的库存（元气糕/挑战书）不得再列入玩法卡缺字段证据清单（库存归资源区，失败保持未知）；管理检查项也不得宣称归一化模型没有返回的状态「随背包读取展示」。
+- **标签表查外部输入必须用自有属性判断**（同日返工）：`Object.fromEntries` 生成的对象仍继承 `Object.prototype`，直接索引 + `filter(Boolean)` 会让 `toString`/`constructor` 等原型键泄漏原生函数文本并误报「已开放」。用 `Object.prototype.hasOwnProperty.call`（web lib 为 ES2020，`Object.hasOwn` 类型不可用）；测试必须覆盖原型键与正常键混合输入。
+- **卡片入口与顶部入口不重复接线**：玩法卡内不新增任何可点击执行入口，操作唯一入口仍是顶部「玩法手动操作」区（每次操作前重读状态做前置校验的语义不变）。
+- **真实 Vue 渲染测试的实现要点**：① mountText 不调用 setText，初始文本经 `createText(text)` 传入——自定义 nodeOps 的 createText 必须接收参数，否则按钮文本恒为空；② ESM 编译产物用 typescript.transpileModule 转 CJS（模块对象需 `__esModule` + `default`；'vue'/'vue-router'/'@/…vue' 由测试加载器解析到 web 工作区真实包，vue 与 vue-router 经 .pnpm realpath 共享同一模块实例）；③ 动态求值用 `vm.compileFunction` 而非 `new Function`（antfu eslint 禁 no-new-func）；④ `vue-tsc -b` 只写 node_modules/.tmp（ignored），不会覆盖 web/dist 线上产物——验收生产构建必须写私有临时目录。
+- **渲染测试 guideCard 必须按标题前缀匹配**：成年寻宝卡的步骤文本含「宝藏护送」字样，includes 会命中错误卡片。
+- **如实记录操作测试覆盖率**：现有 pet-diary-operate 测试覆盖 draw 成功路径、battle 拒绝（零编码零请求）、feed 成年段拒绝、draw 余额不足、命令字白名单值与仅 List/GetGroup/Operate；initialize/claimDog/seeds/story/compensation/exchange 的完整前置校验路径未被现有测试覆盖。本轮不改操作服务，交接不得夸大覆盖率。
+- 该渲染测试依赖 web/node_modules 的存在（本机为 pnpm 工作区）；CI/全新克隆需先安装依赖才能跑全量 core 测试。
+
+### 验证与回滚
+
+- Node 20（v20.20.2）`node --test --test-concurrency=1 test/*.test.js` 串行全量 **491/491** 通过（485 基线 + 1 后端契约 + 5 渲染；2026-09-19 返工扩展既有用例断言、未新增用例数）；S3/pet-diary/session 相关定向 **54/54**；web `vue-tsc -b` 类型检查通过（未运行 vite build——生产构建按批准由协调进程写入私有临时目录，线上 web/dist 未动）；改动文件 ESLint **0 error**（BearActivityPanel 仅剩既有 1 条 UnoCSS 顺序 warning，AdminActivityUpdatePanel 保留该历史组件既有格式 warning；core 改动文件零输出）。
+- 本轮未修改 pet-diary-operate.js、pet-diary.proto、worker.js、请求治理、调度、成熟墙钟、登录、编排、隐私控制、EventItems/EventPlants/图标；未新增按钮、命令、自动任务或每日例行。工作区差异仅上述 7 个批准文件。
+- 回滚 `git revert <本轮提交>`：恢复玩法卡统一「操作协议待确认」、missingEvidence 笼统宣称、补偿提示旧语义与管理检查项旧描述；不得借此删除顶部七个已批准手动按钮或 pet-diary 操作链（属 2026-09-18 的独立提交，须单独评估）。应用或回滚只能在既有 `farm:0.0` 窗格完成；本轮 Agent 不提交、不推送、不重启（本地提交由协调进程在主 Agent 复核后统一执行）。
+- 遗留待证项不变：挑战书三档/幸运星/bichon/leyuan 专属图待抓包会话取证；种子目录 21 条历史待证基线维持；daily_share 成功回包解码待 ShareService 回包样本；商城状态码语义待官方样本。

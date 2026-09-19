@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const activityService = require('../src/services/activity');
-const { normalizeBearActivity, getBearActivity, normalizeDiscoveryActivity } = activityService;
+const { normalizeBearActivity, getBearActivity, normalizeDiscoveryActivity, BEAR_GUIDE_MANUAL_ACTIONS } = activityService;
+const { OPERATIONS } = require('../src/services/pet-diary-operate');
 const { registerAdminBearActivityRoutes } = require('../src/controllers/admin-bear-activity-routes');
 const { getItemById, getPlantBySeedId, isSeedItem } = require('../src/config/gameConfig');
 
@@ -52,6 +53,57 @@ test('S3 没有说明时不按 ID、UID、type 或字段形状编造玩法、资
   assert.deepEqual(activity.conflicts, []);
   assert.equal(activity.exchangeShop.length, 13);
   assert.equal(activity.writeOperationsSupported, false);
+});
+
+test('S3 玩法指南 manualActions 仅镜像已批准的七个面板手动动作，保持只读边界', () => {
+  const activity = normalizeBearActivity(snapshot(), { nowSeconds: 1789010000 });
+  const guides = new Map(activity.gameplayGuides.map(guide => [guide.key, guide]));
+  // 五类已开放手动操作的玩法：映射值必须与批准映射逐项一致。
+  assert.deepEqual(guides.get('grow').manualActions, ['initialize', 'feed', 'claimDog']);
+  assert.deepEqual(guides.get('treasure').manualActions, ['draw']);
+  assert.deepEqual(guides.get('pity').manualActions, ['compensation']);
+  assert.deepEqual(guides.get('album').manualActions, ['story']);
+  assert.deepEqual(guides.get('gift').manualActions, ['seeds']);
+  // 其余六类（未开放或无对应入口）必须为空。
+  for (const key of ['care', 'escort', 'raid', 'tactics', 'shop', 'rank']) {
+    assert.deepEqual(guides.get(key).manualActions, []);
+  }
+  // 并集恰为活动卡顶部七个已批准手动按钮；全部属于 pet-diary-operate 现有白名单。
+  const union = new Set(Object.values(BEAR_GUIDE_MANUAL_ACTIONS).flat());
+  const panelActions = ['initialize', 'feed', 'draw', 'claimDog', 'seeds', 'compensation', 'story'];
+  assert.deepEqual([...union].sort(), [...panelActions].sort());
+  for (const action of union) {
+    assert.ok(Object.prototype.hasOwnProperty.call(OPERATIONS, action), `动作 ${action} 不在现有 OPERATIONS 白名单`);
+  }
+  // 明确排除未开放/辅助动作，防止展示映射被误当成协议授权扩展点。
+  for (const forbidden of ['exchange', 'battle', 'markStories', 'skipBattle']) {
+    assert.ok(!union.has(forbidden));
+    assert.ok(!Object.prototype.hasOwnProperty.call(BEAR_GUIDE_MANUAL_ACTIONS, forbidden));
+  }
+  // manualActions 只是展示元数据：只读能力标记保持原值，不能翻成授权判断。
+  assert.ok(activity.gameplayGuides.every(guide => guide.operationSupported === false
+    && guide.statusAvailable === false && Array.isArray(guide.manualActions)));
+  assert.equal(activity.writeOperationsSupported, false);
+  assert.ok(activity.exchangeShop.every(item => item.operationSupported === false));
+  // 没有说明时 guides 为空，manualActions 不凭空出现。
+  const stripped = snapshot();
+  stripped.children.forEach(node => { node.payload = { uid: 'SEASON_BEAR_CAMPAIGN' }; });
+  assert.deepEqual(normalizeBearActivity(stripped).gameplayGuides, []);
+  // 缺失证据改为三类准确边界，不得再笼统宣称所有操作协议待确认。
+  assert.ok(activity.missingEvidence.every(item => !/所有操作协议待确认/.test(item)));
+  const evidence = activity.missingEvidence.join(' ');
+  assert.match(evidence, /已开放面板手动操作/);
+  assert.match(evidence, /好友交互暂不开放/);
+  assert.match(evidence, /未提供商品兑换入口/);
+  // 状态字段区分「操作前校验已解析、快照未展示」与「待官方字段证据」，不再统称尚未确认；
+  // 挑战书库存由背包读取在资源区展示，不得列入夺宝玩法卡的缺字段证据清单。
+  assert.match(evidence, /已由操作服务解析并用于操作前校验，当前只读快照未展示这些实时状态/);
+  assert.match(evidence, /元气糕与三档挑战书库存随背包读取展示，读取失败保持未知、不补零/);
+  assert.doesNotMatch(evidence, /的当前状态字段尚未确认/);
+  assert.equal(guides.get('raid').missingState, '今日剩余次数、目标护送状态');
+  for (const guide of activity.gameplayGuides) {
+    assert.ok(!/挑战书库存/.test(guide.missingState), '挑战书库存不属于玩法卡缺字段证据');
+  }
 });
 
 test('S3 商城保留全部道具和原始状态码，只补证实的名称，不增加种植映射或操作能力', () => {
@@ -224,8 +276,23 @@ test('S3 端到端只读接线与旧天气/公益入口退役，不恢复自动�
   assert.doesNotMatch(worker, /runBear|bear_activity_(claim|feed)|startBear/);
   assert.match(panel, /disabled.*操作协议待确认/s);
   assert.match(panel, /官方说明存在差异/);
+  // 手动入口提示接线（辅助断言，行为由 bear-activity-panel.test.js 的真实渲染锁定）。
+  assert.match(panel, /手动操作已开放/);
+  assert.match(panel, /好友交互暂未开放/);
+  assert.match(panel, /面板暂无兑换入口/);
+  assert.match(panel, /连续夺宝失败 3 次/);
+  assert.doesNotMatch(panel, /被夺宝后的安慰奖励/);
+  assert.doesNotMatch(panel, /操作仍待确认/);
   assert.match(scan, /bear-album.*爪印手记/);
   assert.match(scan, /bear-tactics.*锦囊/);
+  // 管理检查项不再把已开放手动能力或已具备兑换能力写成协议未知。
+  assert.doesNotMatch(scan, /投喂协议待确认/);
+  assert.doesNotMatch(scan, /兑换协议/);
+  // 返工修正：管理检查项不得宣称成长进度随背包读取展示（归一化模型不返回成长进度）；
+  // 面板状态行不再统一「当前状态待官方字段证据」，未知动作键过滤须用自有属性判断。
+  assert.doesNotMatch(scan, /成长进度状态与元气糕库存随背包读取展示/);
+  assert.doesNotMatch(panel, /当前状态待官方字段证据/);
+  assert.match(panel, /hasOwnProperty\.call\(MANUAL_ACTION_LABELS/);
   assert.match(store, /\+\+bearRequestId/);
   for (const name of ['getWeatherActivity', 'getCharityActivity']) assert.equal(activityService[name], undefined);
   for (const id of [2026090100, 2026090101, 2026090102, 2026090103]) {
