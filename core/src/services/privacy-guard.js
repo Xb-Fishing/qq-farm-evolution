@@ -124,6 +124,20 @@ function collectRuntimePrivacyTerms(options = {}) {
   for (const item of Array.isArray(privateConfig.privacyDenylist) ? privateConfig.privacyDenylist : []) {
     addPrivacyTerm(terms, item);
   }
+  // Public reference identities belong in private evidence, never in published notes.
+  const references = [
+    ...(Array.isArray(privateConfig.evolutionReferenceRepositories) ? privateConfig.evolutionReferenceRepositories : []),
+    ...Object.values(privateConfig.evolutionReferenceAliases || {}),
+  ];
+  try {
+    const cache = JSON.parse(fs.readFileSync(path.join(dataDir, 'evolution-references.json'), 'utf8'));
+    for (const item of [...(Array.isArray(cache.candidates) ? cache.candidates : []), ...(Array.isArray(cache.seenCandidates) ? cache.seenCandidates : [])].slice(0, 100)) {
+      if (typeof item?.ownerRepo === 'string' && /(?:farm|nqf|农场)/i.test(item.ownerRepo.split('/')[1] || '')) references.push(item.ownerRepo);
+    }
+  } catch {}
+  for (const reference of references) {
+    if (typeof reference === 'string' && /^[a-z\d][a-z\d-]{0,38}\/[\w.-]{1,100}$/i.test(reference)) addPrivacyTerm(terms, reference);
+  }
   for (const term of collectLocalPrivacyTerms({ ...options, dataDir, privateConfig })) terms.add(term);
   return terms;
 }

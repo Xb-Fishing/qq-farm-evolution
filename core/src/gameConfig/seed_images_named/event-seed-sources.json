@@ -3,12 +3,12 @@
   "method": "客户端 ItemInfo/Plant 快照交叉核对 + 当前 Bag 出售条件 + 腾讯 CDN PNG 内容与 SHA-256 校验",
   "references": [
     {
-      "repository": "xxxscarlxrd404/qq-farm-bot",
-      "commit": "34505ac2ad19f259bca952d4ea369037dd087ecb"
+      "commit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
+      "repositoryAlias": "public-reference-1"
     },
     {
-      "repository": "liyangpengs/qq-farm-bot",
-      "commit": "6cd1e4e9006075448efa74accb088c99a2d055de"
+      "commit": "6cd1e4e9006075448efa74accb088c99a2d055de",
+      "repositoryAlias": "public-reference-2"
     }
   ],
   "entries": [
