@@ -189,7 +189,7 @@ function auditGitRange(repoRoot, base, head, options = {}) {
     'core/src/services/private-config.js',
     'core/src/services/feishu-notify.js',
     'core/src/services/activity-evolver.js',
-    'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
+    'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
     'core/src/services/evolution-team.js',
