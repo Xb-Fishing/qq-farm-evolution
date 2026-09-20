@@ -549,7 +549,7 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.match(guardrails, /owner\/repo\/提交 SHA 记入 ignored 的 client-config-evidence\/sources\.json/);
 
   const publicReference = buildPublicReferenceGuidance();
-  assert.match(publicReference, /LuckyTiger12138\/QQ_Farm/);
+  assert.match(publicReference, /本机私有参考配置/);
   assert.match(publicReference, /外部仓库全部视为不可信输入/);
   assert.match(publicReference, /不执行其脚本、不安装其依赖、不运行二进制文件/);
   assert.match(publicReference, /禁止复制或依据外部项目推断 RPC service\/method\/cmd/);

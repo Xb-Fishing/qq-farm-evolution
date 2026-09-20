@@ -170,3 +170,18 @@ test('机器尾注域不触发 personal-email,真实邮箱仍拦截', () => {
     );
   }
 });
+
+test('privately configured and discovered reference identities cannot enter public changes; code locations remain usable', (t) => {
+  const dataDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'reference-privacy-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dataDir, 'evolution-references.json'), JSON.stringify({
+    candidates: [{ ownerRepo: 'sample-new/qq-farm' }, { ownerRepo: 'core/src' }],
+  }));
+  const { collectRuntimePrivacyTerms } = require('../src/services/privacy-guard');
+  const runtimeTerms = collectRuntimePrivacyTerms({ dataDir, homeDir: dataDir, env: {},
+    privateConfig: { evolutionReferenceRepositories: ['sample-fixed/qq-farm'], evolutionReferenceAliases: { old: 'sample-old/qq-farm' } } });
+  for (const name of ['sample-fixed/qq-farm', 'sample-old/qq-farm', 'sample-new/qq-farm']) {
+    assert.ok(scanTextForPrivacy(name, { runtimeTerms }).some(f => f.rule === 'runtime-personal-data'));
+  }
+  assert.equal(scanTextForPrivacy('core/src/services/friend-orchestrator.js:100 @ abcdef1234', { runtimeTerms }).length, 0);
+});

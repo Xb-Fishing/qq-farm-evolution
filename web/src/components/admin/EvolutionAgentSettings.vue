@@ -166,7 +166,7 @@ async function saveAgentSettings() {
       已通过的同一逻辑版本复用结果；每日新增反馈仍会检查。
     </p>
     <p v-if="evolutionStore.evolve?.references" :class="hintClass">
-      每日检索：{{ evolutionStore.evolve.references.queriesSucceeded || 0 }}/6 组查询，
+      每日检索（最新更新与近期活跃度）：{{ evolutionStore.evolve.references.queriesSucceeded || 0 }}/6 组查询，
       {{ evolutionStore.evolve.references.candidateCount || 0 }} 个候选，其中 {{ evolutionStore.evolve.references.newCandidates?.length || 0 }} 个新发现；
       {{ evolutionStore.evolve.references.discoveryComplete ? '本轮发现查询已完成' : '等待检索或部分检索未完成' }}。
     </p>

@@ -4,10 +4,12 @@ const path = require('node:path');
 const https = require('node:https');
 const crypto = require('node:crypto');
 
-const SEEDS = ['xxxscarlxrd404/qq-farm-bot', 'liyangpengs/qq-farm-bot'];
-const QUERIES = ['qq-farm-bot', 'QQ农场', 'qq farm', '农场助手', 'farm bot qq', 'nqf'];
+const { readPrivateConfig } = require('./private-config');
+const VERSION = 2;
+const HISTORY_SIZE = 20;
+const QUERIES = ['qq-farm', 'qq-farm-bot', 'QQ农场', 'qq farm', '农场助手', 'nqf'];
 const FILE = 'evolution-references.json';
-const MAX_REQUESTS = 16;
+const MAX_REQUESTS = 24;
 const MAX_BYTES = 512 * 1024;
 const REASONS = new Set(['none', 'rate_limited', 'timeout', 'network', 'invalid_response', 'budget_exhausted', 'storage_failed']);
 const SEED_STATES = new Set(['available', 'unavailable', 'not_checked']);
@@ -26,10 +28,30 @@ function iso(value) {
     const time = Date.parse(value);
     return Number.isFinite(time) ? new Date(time).toISOString() : '';
 }
+function referenceSeeds(dataDir) {
+    const config = readPrivateConfig({ file: process.env.FARM_PRIVATE_CONFIG_FILE || path.join(dataDir, 'private-config.json') });
+    return [...new Set((Array.isArray(config.evolutionReferenceRepositories) ? config.evolutionReferenceRepositories : []).map(slug).filter(Boolean))].slice(0, 4);
+}
+function policyFingerprint(seeds) {
+    return crypto.createHash('sha256').update(JSON.stringify([VERSION, seeds, QUERIES, HISTORY_SIZE])).digest('hex');
+}
+function activitySample(commits, now) {
+    if (!Array.isArray(commits)) return {};
+    const sample = commits.slice(0, HISTORY_SIZE);
+    const dates = sample.map(item => iso(item?.commit?.committer?.date)).filter(Boolean);
+    if (dates.length !== sample.length || !dates.length) return {};
+    const recent = dates.filter(date => Date.parse(date) >= now - 7 * 86400000 && Date.parse(date) <= now);
+    return { sampledCommits: sample.length, recentCommits: recent.length, activeDays: new Set(recent.map(date => date.slice(0, 10))).size,
+        activityLimited: sample.length === HISTORY_SIZE };
+}
 function candidate(value) {
     const ownerRepo = owns(value, 'ownerRepo') && slug(value.ownerRepo);
     if (!ownerRepo) return null;
-    return { ownerRepo, sha: sha(value.sha), updatedAt: iso(value.updatedAt),
+    const activity = Number.isInteger(value.sampledCommits) && value.sampledCommits > 0 && value.sampledCommits <= HISTORY_SIZE
+        && Number.isInteger(value.recentCommits) && value.recentCommits >= 0 && value.recentCommits <= value.sampledCommits
+        && Number.isInteger(value.activeDays) && value.activeDays >= 0 && value.activeDays <= Math.min(8, value.recentCommits)
+        ? { sampledCommits: value.sampledCommits, recentCommits: value.recentCommits, activeDays: value.activeDays, activityLimited: value.activityLimited === true } : {};
+    return { ownerRepo, sha: sha(value.sha), updatedAt: iso(value.updatedAt), ...activity,
         stars: Number.isSafeInteger(value.stars) ? Math.max(0, Math.min(100000000, value.stars)) : 0 };
 }
 function candidates(values) {
@@ -41,17 +63,18 @@ function candidates(values) {
     }
     return [...found.values()];
 }
-function emptyRecord() {
-    return { version: 1, state: 'unavailable', searchedAt: '', failureReason: 'none',
+function emptyRecord(seeds) {
+    return { version: VERSION, policyFingerprint: policyFingerprint(seeds), state: 'unavailable', searchedAt: '', failureReason: 'none',
         queries: QUERIES.map((_, index) => ({ queryId: `q${index + 1}`, state: 'not_checked' })),
-        seedStatus: SEEDS.map(ownerRepo => ({ ownerRepo, state: 'not_checked', sha: '' })),
+        seedStatus: seeds.map(ownerRepo => ({ ownerRepo, state: 'not_checked', sha: '' })),
         candidates: [], seenCandidates: [], newCandidates: [], changedCandidates: [] };
 }
-function readRecord(dataDir) {
+function readRecord(dataDir, seeds = referenceSeeds(dataDir)) {
     try {
         const raw = JSON.parse(fs.readFileSync(path.join(dataDir, FILE), 'utf8'));
-        if (!raw || raw.version !== 1 || !['complete', 'partial', 'unavailable'].includes(raw.state) || !iso(raw.searchedAt)) return null;
-        const clean = emptyRecord();
+        if (!raw || ![1, VERSION].includes(raw.version) || !['complete', 'partial', 'unavailable'].includes(raw.state) || !iso(raw.searchedAt)) return null;
+        const clean = emptyRecord(seeds);
+        clean.policyFingerprint = raw.version === VERSION && raw.policyFingerprint === policyFingerprint(seeds) ? raw.policyFingerprint : '';
         clean.searchedAt = iso(raw.searchedAt);
         clean.failureReason = REASONS.has(raw.failureReason) ? raw.failureReason : 'invalid_response';
         clean.candidates = candidates(raw.candidates);
@@ -73,7 +96,7 @@ function readRecord(dataDir) {
     } catch { return null; }
 }
 function discoveryComplete(record) {
-    return record.failureReason === 'none' && record.queries.every(item => item.state === 'succeeded')
+    return !!record.policyFingerprint && record.failureReason === 'none' && record.queries.every(item => item.state === 'succeeded')
         && record.seedStatus.every(item => item.state === 'available' && item.sha);
 }
 function summary(record, cached = false) {
@@ -81,10 +104,11 @@ function summary(record, cached = false) {
         queriesSucceeded: record.queries.filter(item => item.state === 'succeeded').length,
         candidateCount: record.candidates.length, seedStatus: record.seedStatus,
         newCandidates: record.newCandidates, changedCandidates: record.changedCandidates,
-        candidates: record.candidates.slice(0, 12), discoveryComplete: discoveryComplete(record), cached };
+        candidates: record.candidates, activityWindowDays: 7, historySampleSize: HISTORY_SIZE, discoveryComplete: discoveryComplete(record), cached };
 }
 function getPublicReferenceSummary(dataDir) {
-    return summary(readRecord(dataDir) || emptyRecord());
+    const seeds = referenceSeeds(dataDir);
+    return summary(readRecord(dataDir, seeds) || emptyRecord(seeds));
 }
 function writeRecord(dataDir, record) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -131,13 +155,14 @@ function relevant(value) {
 
 /** request(path, {signal}) returns {statusCode, body}; injected requests must not retain private data. */
 async function collectPublicReferences({ dataDir, now = Date.now(), request = publicRequest }) {
-    const previous = readRecord(dataDir);
+    const seeds = referenceSeeds(dataDir);
+    const previous = readRecord(dataDir, seeds);
     const searchedAt = new Date(now).toISOString();
-    if (previous && previous.searchedAt.slice(0, 10) === searchedAt.slice(0, 10)) {
+    if (previous && previous.policyFingerprint === policyFingerprint(seeds) && previous.searchedAt.slice(0, 10) === searchedAt.slice(0, 10)) {
         try { writeRecord(dataDir, previous); } catch {}
         return summary(previous, true);
     }
-    const record = emptyRecord();
+    const record = emptyRecord(seeds);
     record.searchedAt = searchedAt;
     const seen = new Map((previous?.seenCandidates || previous?.candidates || []).map(item => [item.ownerRepo, item]));
     const found = new Map();
@@ -176,15 +201,15 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
     for (const seed of record.seedStatus) {
         if (stopped) break;
         const metadata = fromMetadata(await get(`/repos/${seed.ownerRepo}`));
-        const commits = await get(`/repos/${seed.ownerRepo}/commits?per_page=1`);
+        const commits = await get(`/repos/${seed.ownerRepo}/commits?per_page=${HISTORY_SIZE}`);
         seed.sha = Array.isArray(commits) ? sha(commits[0]?.sha) : '';
         seed.state = metadata?.ownerRepo === seed.ownerRepo && seed.sha ? 'available' : 'unavailable';
-        if (metadata?.ownerRepo === seed.ownerRepo) found.set(seed.ownerRepo, { ...metadata, sha: seed.sha });
+        if (metadata?.ownerRepo === seed.ownerRepo) found.set(seed.ownerRepo, { ...metadata, sha: seed.sha, ...activitySample(commits, now) });
         if (!stopped && seed.state !== 'available' && record.failureReason === 'none') record.failureReason = 'invalid_response';
     }
     for (const [index, query] of QUERIES.entries()) {
         if (stopped) break;
-        const body = await get(`/search/repositories?q=${encodeURIComponent(query)}&sort=${index % 2 ? 'stars' : 'updated'}&order=desc&per_page=10`);
+        const body = await get(`/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=10`);
         const valid = Array.isArray(body?.items) && body.incomplete_results !== true;
         record.queries[index].state = valid ? 'succeeded' : 'failed';
         if (!valid && !stopped && record.failureReason === 'none') record.failureReason = 'invalid_response';
@@ -193,22 +218,25 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
             if (clean && !found.has(clean.ownerRepo)) {
                 found.set(clean.ownerRepo, clean);
                 if (found.size > 40) {
-                    const oldest = [...found.values()].filter(item => !SEEDS.includes(item.ownerRepo))
+                    const oldest = [...found.values()].filter(item => !seeds.includes(item.ownerRepo))
                         .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.stars - b.stars)[0];
                     found.delete(oldest.ownerRepo);
                 }
             }
         }
     }
-    const extra = [...found.values()].filter(item => !SEEDS.includes(item.ownerRepo))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.stars - a.stars);
-    for (const item of extra.slice(0, 3)) {
+    const extra = [...found.values()].filter(item => !seeds.includes(item.ownerRepo))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || (b.recentCommits || 0) - (a.recentCommits || 0) || b.stars - a.stars);
+    for (const item of extra.slice(0, Math.max(0, MAX_REQUESTS - calls))) {
         if (stopped) break;
-        const commits = await get(`/repos/${item.ownerRepo}/commits?per_page=1`);
+        const commits = await get(`/repos/${item.ownerRepo}/commits?per_page=${HISTORY_SIZE}`);
         item.sha = Array.isArray(commits) ? sha(commits[0]?.sha) : '';
+        Object.assign(item, activitySample(commits, now));
         if (!item.sha && !stopped && record.failureReason === 'none') record.failureReason = 'invalid_response';
     }
-    record.candidates = [...SEEDS.map(name => found.get(name)).filter(Boolean), ...extra];
+    extra.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || (b.recentCommits || 0) - (a.recentCommits || 0) || b.stars - a.stars);
+    record.candidates = [...seeds.map(name => found.get(name)).filter(Boolean), ...extra];
+    record.candidates = record.candidates.map(candidate).filter(Boolean);
     record.newCandidates = extra.filter(item => !seen.has(item.ownerRepo)).map(item => item.ownerRepo);
     record.changedCandidates = record.candidates.filter(item => item.sha && seen.get(item.ownerRepo)?.sha
         && item.sha !== seen.get(item.ownerRepo).sha).map(item => item.ownerRepo);
