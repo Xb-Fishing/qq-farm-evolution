@@ -196,7 +196,7 @@ test('失败元信息不透传原错误、凭据、地址或任意未知字段',
 
 test('修复范围不能包含隐私控制、认证文件或路径穿越', () => {
   for (const file of ['.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
-    'core/src/services/evolution-validation.js', 'core/src/services/daily-feedback.js',
+    'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/daily-feedback.js',
     'core/src/services/evolution-references.js', 'core/src/controllers/admin-feedback-routes.js', 'web/src/utils/daily-feedback.ts',
     'docs/../outside', 'docs/.codex/auth.json', 'docs/private-config.json']) {
     assert.throws(() => parseStageResult(JSON.stringify({ decision: 'repair', summary: 'bad scope', allowedFiles: [file] }), 'diagnose', new Set()), { code: 'repair_scope' });
@@ -311,9 +311,9 @@ test('真正验收拒绝携带具体反馈，不能冒充隐私扫描命中', ()
 test('方案输出必须包含明确文件范围和行为验收合同', () => {
   const plan = { decision: 'approve', summary: 'fix the local race', allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'],
     acceptanceChecks: ['unready requests return without any upstream call'] };
-  assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), plan);
+  assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), { ...plan, feedbackReviewed: false, lessons: [] });
   assert.throws(() => parseStageResult(JSON.stringify({ ...plan, acceptanceChecks: [] }), 'plan', new Set()), { code: 'invalid_decision' });
-  assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']);
+  assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks', 'feedbackReviewed', 'lessons']);
 });
 
 test('干净工作区每日巡检先验证当前逻辑，零改动也不能跳过验证', async () => {

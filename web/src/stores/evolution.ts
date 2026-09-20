@@ -5,7 +5,7 @@ import api from '@/api'
 export type EvolutionAgentKind = 'claude' | 'codex'
 
 export interface EvolutionCollaboration {
-  phase: 'research' | 'revise_plan' | 'plan' | 'implement' | 'verify' | 'review' | 'diagnose' | 'repair' | 'repair_review' | 'commit' | 'complete' | 'failed'
+  phase: 'triage' | 'research' | 'revise_plan' | 'plan' | 'implement' | 'verify' | 'review' | 'diagnose' | 'repair' | 'repair_review' | 'commit' | 'complete' | 'failed'
   status: 'running' | 'completed' | 'failed'
   activeAgent: EvolutionAgentKind | ''
   recoveryAttempt?: number
@@ -37,6 +37,8 @@ export interface EvolutionState {
   subAgent?: EvolutionAgentKind
   dualAgentEnabled?: boolean
   collaboration?: EvolutionCollaboration | null
+  learning?: { count: number, updatedAt: number }
+  feedbackCleanupPending?: boolean
   dailyFeedback?: { day: string, counts: { clicks: number, requests: number, failures: number }, dropped: number, unreadableFiles: number }
   validation?: { state: 'unknown' | 'running' | 'passed' | 'failed', checkedAt: number, fingerprint: string, checks: string[] }
   references?: { state: string, searchedAt?: string, candidateCount?: number, queriesSucceeded?: number, newCandidates?: string[], discoveryComplete?: boolean }

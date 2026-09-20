@@ -17,6 +17,7 @@ const { getDataFile } = require('../config/runtime-paths');
 const { getDailyFeedback } = require('./daily-feedback');
 const { getValidationSummary } = require('./evolution-validation');
 const { getPublicReferenceSummary } = require('./evolution-references');
+const { recordApprovedLessons, readLearningSummary, buildLearningContext } = require('./evolution-learning');
 const { createModuleLogger } = require('./logger');
 const { createScheduler, getSchedulerRegistrySnapshot } = require('./scheduler');
 const { sendFeishuText } = require('./feishu-notify');
@@ -154,6 +155,9 @@ function defaultState() {
     commit: '',
     logFile: '',
     runtimeIssueBatch: [],
+    feedbackBatch: null,
+    feedbackCleanupPending: false,
+    learningReceipt: '',
     handledUnknownIds: [],
     handledEndedIds: [],
     upstreamHead: '', // 可选上游参考仓库的 HEAD sha（巡检 agent 维护）
@@ -228,6 +232,10 @@ function normalizePersistedState(value, now = Date.now()) {
     ? state.privacyFindings.map(item => String(item || '').slice(0, 300)).slice(0, 20)
     : [];
   state.runtimeIssueBatch = normalizeRuntimeIssueBatch(state.runtimeIssueBatch);
+  state.feedbackBatch = Number.isSafeInteger(state.feedbackBatch?.throughAt) && state.feedbackBatch.throughAt > 0
+    && state.feedbackBatch.throughAt <= now ? { throughAt: state.feedbackBatch.throughAt } : null;
+  state.feedbackCleanupPending = state.feedbackCleanupPending === true;
+  state.learningReceipt = /^[a-f0-9]{64}$/.test(state.learningReceipt || '') ? state.learningReceipt : '';
   state.activeRun = normalizeActiveRun(state.activeRun);
   state.evolutionMemory = normalizeEvolutionMemory(state.evolutionMemory);
   if (state.status === 'privacy_blocked_local' && !state.commit && !state.privacyFindings.length
@@ -400,6 +408,10 @@ function buildIncrementalReviewContext(state, task, report = null) {
     lines.push(`- 当前活动证据指纹：${fingerprint}`);
     lines.push(`- 上次已审活动指纹：${previous.evidenceFingerprint || '无'}`);
   }
+  lines.push(buildLearningContext(path.dirname(STATE_FILE)));
+  lines.push(state?.feedbackBatch?.throughAt
+    ? `- 本轮反馈采样截止：${new Date(state.feedbackBatch.throughAt).toISOString()}；只验收并清理此时间之前的已处理反馈，之后的新事件留下一轮。`
+    : '- 本轮未取得完整反馈采样水位；不得将采集缺失解释为没有问题或允许清空反馈。');
   lines.push('【每日交互反馈（最近24小时，临时本机日志；无原始输入/身份）】');
   lines.push(JSON.stringify(getDailyFeedback().snapshot()));
   lines.push('【按逻辑指纹复用的完整回归记录】');
@@ -697,7 +709,7 @@ function previousTeamFailure(state) {
 }
 
 function describeTeamFailure(collaboration) {
-  const names = { research: '资料检索', plan: '方案确认', implement: '实施', verify: '验证', review: '最终复核',
+  const names = { triage: '主 Agent 每日复盘', research: '资料检索', plan: '方案确认', implement: '实施', verify: '验证', review: '最终复核',
     diagnose: '主 Agent 诊断', repair: '子 Agent 修复', repair_review: '主 Agent 验收', revise_plan: '方案修订', commit: '提交' };
   const failure = collaboration?.failure ? normalizeTeamFailure(collaboration.failure) : null;
   const phase = failure ? names[failure.phase] || '协作' : '协作';
@@ -1064,9 +1076,12 @@ function launchEvolution(task, payload = {}) {
   state.changeSummary = '';
   state.privacyFindings = [];
   state.collaboration = settings.dualAgentEnabled
-    ? { phase: 'research', status: 'running', activeAgent: settings.subAgent }
+    ? { phase: 'triage', status: 'running', activeAgent: settings.mainAgent }
     : null;
   state.runtimeIssueBatch = task === 'safety' ? toRuntimeIssueBatch(runtimeIssues) : [];
+  state.feedbackBatch = getDailyFeedback().captureBatch();
+  state.feedbackCleanupPending = false;
+  state.learningReceipt = '';
   if (task === 'safety') {
     state.lastSafetyEvolveDate = getLocalDateKey();
     state.summary = `安全巡检执行中（${agentLabel}，防封审计）`;
@@ -1233,6 +1248,7 @@ function launchEvolution(task, payload = {}) {
     if (outcome === 'pending_apply' && teamJournal?.repairOnly) {
       next.summary = `${tag}的编排故障修复已通过测试和主 Agent 验收，并已推送，待确认应用。原巡检尚未完成，应用后继续。`;
     }
+    settleDailyReview(next);
     writeState(next);
     const notificationContent = [next.summary, next.changeSummary, ...next.privacyFindings].filter(Boolean).join('\n');
     await notify(
@@ -1547,6 +1563,7 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
     latest.summary = latest.collaboration?.repairOnly
       ? `编排故障修复 ${commit.slice(0, 8)} 已推送，待确认应用；原巡检将在应用后继续`
       : `进化提交 ${commit.slice(0, 8)} 已在自动重试后核对到 GitHub origin/main，待确认应用`;
+    settleDailyReview(latest);
     writeState(latest);
     await notify('农场 bot 进化推送已恢复', [latest.summary, latest.changeSummary].filter(Boolean).join('\n'));
   });
@@ -1664,6 +1681,7 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
     next.handledUnknownIds = [...new Set([...next.handledUnknownIds, ...active.newUnknown])].slice(-200);
     next.handledEndedIds = [...new Set([...next.handledEndedIds, ...active.newEnded])].slice(-200);
   }
+  settleDailyReview(next);
   writeState(next);
   running = false;
   await notify(`农场 bot ${tag}恢复结果`, [next.summary, next.changeSummary, ...next.privacyFindings]
@@ -1764,6 +1782,7 @@ function startActivityEvolver(options = {}) {
       reconciled.state.runtimeIssueBatch = [];
     }
   }
+  settleDailyReview(reconciled.state);
   writeState(reconciled.state);
   if (reconciled.state.status === 'running' && reconciled.state.activeRun) {
     watchRecoveredEvolution(reconciled.state.activeRun);
@@ -1794,8 +1813,40 @@ function startActivityEvolver(options = {}) {
   }
 }
 
+/** Successful master review releases only this batch; failures and newer events survive. */
+function settleDailyReview(state, options = {}) {
+  const journal = state.collaboration;
+  const head = options.head || gitHead();
+  const expectedAgent = state.lastAgent || state.mainAgent;
+  if (!['no_change', 'pending_apply', 'applied'].includes(state.status) || !state.dualAgentEnabled
+      || journal?.repairOnly || head !== (state.commit || head)
+      || (journal?.reviewedBy && journal.reviewedBy !== expectedAgent)
+      || !isTeamResultApproved(journal, head)) return false;
+  const feedback = options.feedback || getDailyFeedback();
+  const saveLessons = options.saveLessons || recordApprovedLessons;
+  const receipt = crypto.createHash('sha256').update(JSON.stringify([journal.head, journal.lessons || []])).digest('hex');
+  try {
+    if (state.learningReceipt !== receipt) {
+      const mainAgent = expectedAgent;
+      saveLessons({ dataDir: path.dirname(STATE_FILE), lessons: journal.lessons || [], mainAgent,
+        writerAgent: mainAgent, commit: journal.head });
+      state.learningReceipt = receipt;
+    }
+    if (journal.feedbackReviewed === true && state.feedbackBatch) {
+      state.feedbackCleanupPending = !feedback.acknowledgeBatch(state.feedbackBatch);
+      if (!state.feedbackCleanupPending) state.feedbackBatch = null;
+    } else state.feedbackCleanupPending = false;
+    return !state.feedbackCleanupPending;
+  } catch {
+    // Keep the feedback until knowledge persistence and batch cleanup can both finish.
+    state.feedbackCleanupPending = true;
+    return false;
+  }
+}
+
 function getEvolveState() {
   const state = readState();
+  if (state.feedbackCleanupPending) { settleDailyReview(state); writeState(state); }
   const issueSnapshot = getRuntimeIssueSnapshot();
   const schedule = getSchedulerRegistrySnapshot('activity_evolver').schedulers[0];
   const nextAutoRunAt = (schedule && schedule.tasks || [])
@@ -1808,6 +1859,7 @@ function getEvolveState() {
     collaboration: readTeamJournal(EVOLVE_LOG_DIR, state.activeRun) || state.collaboration,
     nextAutoRunAt,
     dailyFeedback: getDailyFeedback().snapshot(),
+    learning: (() => { const { count, updatedAt } = readLearningSummary(path.dirname(STATE_FILE)); return { count, updatedAt }; })(),
     validation: getValidationSummary(path.dirname(STATE_FILE)),
     references: getPublicReferenceSummary(path.dirname(STATE_FILE)),
     pendingRuntimeIssueCount: issueSnapshot.length,
@@ -1952,6 +2004,7 @@ module.exports = {
   classifyEvolutionExit,
   normalizePersistedState,
   normalizeEvolutionMemory,
+  settleDailyReview,
   normalizeActiveRun,
   resolveClaudeBin,
   resolveCodexBin,

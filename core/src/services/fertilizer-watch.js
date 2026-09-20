@@ -60,7 +60,9 @@ const priorityGids = new Set();
 
 function setPriorityGids(gids) {
   priorityGids.clear();
-  for (const gid of Array.isArray(gids) ? gids : []) {
+  // 面板配置可能以数组或 Set 传入；其他输入（含字符串）视为空，不让整串被迭代成 ID。
+  const list = Array.isArray(gids) || gids instanceof Set ? gids : [];
+  for (const gid of list) {
     const id = toNum(gid);
     if (id) priorityGids.add(id);
   }

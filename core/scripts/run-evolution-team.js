@@ -22,7 +22,7 @@ const PROTECTED_FILES = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js',
   'core/src/services/activity-evolver.js',
-    'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
+    'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
 ]);
@@ -179,7 +179,7 @@ async function main(input) {
     const references = await collectPublicReferences({ dataDir });
     const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 必须只读深入核对指定两个项目及新发现候选；未能访问的部分如实交接，主 Agent 核实结论。`;
     const result = await runTeamWorkflow({
-      settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true,
+      settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true, dailyBrain: true,
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
         const command = buildEvolutionAgentCommand(agent, stagePrompt);

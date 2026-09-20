@@ -10,6 +10,7 @@ const evolutionStore = useEvolutionStore()
 const disabled = computed(() => evolutionStore.agentsLocked || evolutionStore.saving || evolutionStore.loading || !evolutionStore.evolve)
 
 const COLLABORATION_PHASE_LABELS: Record<string, string> = {
+  triage: '主 Agent 每日反馈复盘',
   research: '资料检索',
   plan: '方案确认',
   revise_plan: '子 Agent 修订方案（只读）',
@@ -144,8 +145,8 @@ async function saveAgentSettings() {
       <span v-if="phaseText" class="rounded-full px-2 py-0.5 font-medium" :class="phaseClass">{{ phaseText }}</span>
     </div>
     <p :class="hintClass">
-      推荐组合：主 Codex（确认方案与复核）+ 子 Claude（检索 GitHub、巡查与实施）；关闭双 Agent 时仅由主 Agent 单独执行。
-      执行恢复、只读方案修订和验收返工分别限两次；方案通过后才允许实施。
+      推荐组合：主 Codex（每日诊断、方案、验收与经验沉淀）+ 子 Claude（检索、复现与实施）；关闭双 Agent 时仅由主 Agent 单独执行。
+      主 Agent 先分派每日问题；执行恢复、只读方案修订和验收返工分别限两次。
     </p>
     <p v-if="evolutionStore.error" :class="errorClass">
       {{ evolutionStore.error }}
@@ -155,6 +156,10 @@ async function saveAgentSettings() {
       {{ evolutionStore.evolve.dailyFeedback.counts.requests }} 次相关请求，
       {{ evolutionStore.evolve.dailyFeedback.counts.failures }} 条异常。
       <span v-if="evolutionStore.evolve.dailyFeedback.dropped || evolutionStore.evolve.dailyFeedback.unreadableFiles">部分记录未收集完整。</span>
+    </p>
+    <p v-if="evolutionStore.evolve?.learning" :class="hintClass">
+      已验收可复用经验：{{ evolutionStore.evolve.learning.count }} 条。反馈最多保留 24 小时，验收后清理本轮已处理部分。
+      <span v-if="evolutionStore.evolve.feedbackCleanupPending">清理暂忙，将自动重试。</span>
     </p>
     <p v-if="evolutionStore.evolve?.validation" :class="hintClass">
       完整回归：{{ { unknown: '等待首次验证', running: '验证中', passed: '已通过，逻辑变更后重验', failed: '未通过，待诊断' }[evolutionStore.evolve.validation.state] }}。

@@ -248,7 +248,7 @@ process.stdin.on('end', () => {
     if (fs.existsSync('core/data/touch-web')) fs.writeFileSync('web/src/example.js', 'export default 2;\\n');
   }
   const reject = fs.existsSync('core/data/reject-review');
-  const decision = { research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve', diagnose: reject ? 'stop' : 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
+  const decision = { triage: 'triaged', research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve', diagnose: reject ? 'stop' : 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
   const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {}), ...(phase === 'plan' ? {allowedFiles:['core/src/example.js','docs/HANDOFF.md','web/src/example.js'], acceptanceChecks:['example returns expected value']} : {})};
   if (agent === 'claude') {
     const schemaIndex = process.argv.indexOf('--json-schema');
@@ -293,7 +293,7 @@ process.stdin.on('end', () => {
     const active = { runId: 'success', baseCommit, agent: 'codex', subAgent: 'claude', dualAgentEnabled: true };
     assert.equal(isTeamResultApproved(readTeamJournal(path.join(dir, 'core/data/logs'), active), head), true);
     assert.match(success.stdout, /# pass 1/);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\nplan:codex\nimplement:claude\nreview:codex\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'triage:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
     // 此 reset 只操作测试创建的临时仓库。
     git(['reset', '--hard', baseCommit]);
     write('core/data/reject-review', '1');
@@ -313,7 +313,7 @@ process.stdin.on('end', () => {
     assert.equal(journal.recoveryAttempt, 1);
     assert.equal(journal.lastFailure.code, 'invalid_output');
     assert.equal(isTeamResultApproved(journal, recoveredHead), true);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\ndiagnose:codex\nrepair:claude\nrepair_review:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'triage:codex\nresearch:claude\ndiagnose:codex\nrepair:claude\nrepair_review:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
     assert.ok(fs.readdirSync(path.join(dir, 'core/data/logs')).every(file => !file.endsWith('-schema.json')));
     git(['reset', '--hard', baseCommit]);
     write('core/data/touch-web', '1');
