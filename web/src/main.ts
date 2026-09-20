@@ -2,6 +2,7 @@ import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
+import { installDailyFeedback, recordClientFailure } from '@/utils/daily-feedback'
 import App from './App.vue'
 import router from './router'
 import '@unocss/reset/tailwind.css'
@@ -51,6 +52,7 @@ app.config.errorHandler = (err: any, _instance, info) => {
   const message = err.message || String(err)
   if (message.includes('ResizeObserver loop'))
     return
+  recordClientFailure('vue_error')
   toast.error(`应用错误: ${message}`)
 }
 
@@ -60,6 +62,7 @@ window.addEventListener('unhandledrejection', (event) => {
     return
 
   console.error('Unhandled Rejection:', reason)
+  recordClientFailure('unhandled_rejection')
   const message = reason?.message || String(reason)
   toast.error(`异步错误: ${message}`)
 })
@@ -68,6 +71,7 @@ window.onerror = (message, _source, _lineno, _colno, error) => {
   console.error('Global Error:', message, error)
   if (String(message).includes('Script error'))
     return
+  recordClientFailure('script_error')
   toast.error(`系统错误: ${message}`)
 }
 
@@ -75,4 +79,5 @@ window.onerror = (message, _source, _lineno, _colno, error) => {
 const appStore = useAppStore()
 appStore.fetchTheme()
 
+installDailyFeedback()
 app.mount('#app')

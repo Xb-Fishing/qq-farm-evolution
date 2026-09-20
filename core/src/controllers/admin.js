@@ -27,6 +27,7 @@ const store = require("../models/store");
 const { addOrUpdateAccount, deleteAccount } = store;
 const { findAccountByRef } = require("../services/account-resolver");
 const { createModuleLogger } = require("../services/logger");
+const { createFeedbackMiddleware, registerAdminFeedbackRoutes } = require("./admin-feedback-routes");
 const { registerAdminActivityRoutes } = require("./admin-activity-routes");
 const {
   registerAdminAccountRuntimeRoutes,
@@ -140,7 +141,7 @@ function configureCorsMiddleware(expressApp) {
     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS, PUT");
     res.header(
       "Access-Control-Allow-Headers",
-      "Content-Type, x-account-id, x-admin-token, x-proxy-api-key, x-proxy-api-url, x-proxy-app-id",
+      "Content-Type, x-account-id, x-admin-token, x-feedback-id, x-proxy-api-key, x-proxy-api-url, x-proxy-app-id",
     );
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Max-Age", "86400");
@@ -344,6 +345,9 @@ function startAdminServer(dataProvider) {
     requireAdminToken,
     updateAdminSessions,
   } = adminSessionManager;
+
+  app.use(createFeedbackMiddleware({ hasAdminToken }));
+  registerAdminFeedbackRoutes({ app, requireAdminToken });
 
   const adminAccountAccess = createAdminAccountAccess({
     store,
