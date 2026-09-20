@@ -37,6 +37,9 @@ export interface EvolutionState {
   subAgent?: EvolutionAgentKind
   dualAgentEnabled?: boolean
   collaboration?: EvolutionCollaboration | null
+  dailyFeedback?: { day: string, counts: { clicks: number, requests: number, failures: number }, dropped: number, unreadableFiles: number }
+  validation?: { state: 'unknown' | 'running' | 'passed' | 'failed', checkedAt: number, fingerprint: string, checks: string[] }
+  references?: { state: string, searchedAt?: string, candidateCount?: number, queriesSucceeded?: number, newCandidates?: string[], discoveryComplete?: boolean }
 }
 
 export interface EvolutionAgentDraft {

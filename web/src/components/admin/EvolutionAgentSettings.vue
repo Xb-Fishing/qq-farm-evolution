@@ -150,5 +150,20 @@ async function saveAgentSettings() {
     <p v-if="evolutionStore.error" :class="errorClass">
       {{ evolutionStore.error }}
     </p>
+    <p v-if="evolutionStore.evolve?.dailyFeedback" :class="hintClass">
+      最近 24 小时反馈：{{ evolutionStore.evolve.dailyFeedback.counts.clicks }} 次点击，
+      {{ evolutionStore.evolve.dailyFeedback.counts.requests }} 次相关请求，
+      {{ evolutionStore.evolve.dailyFeedback.counts.failures }} 条异常。
+      <span v-if="evolutionStore.evolve.dailyFeedback.dropped || evolutionStore.evolve.dailyFeedback.unreadableFiles">部分记录未收集完整。</span>
+    </p>
+    <p v-if="evolutionStore.evolve?.validation" :class="hintClass">
+      完整回归：{{ { unknown: '等待首次验证', running: '验证中', passed: '已通过，逻辑变更后重验', failed: '未通过，待诊断' }[evolutionStore.evolve.validation.state] }}。
+      已通过的同一逻辑版本复用结果；每日新增反馈仍会检查。
+    </p>
+    <p v-if="evolutionStore.evolve?.references" :class="hintClass">
+      每日检索：{{ evolutionStore.evolve.references.queriesSucceeded || 0 }}/6 组查询，
+      {{ evolutionStore.evolve.references.candidateCount || 0 }} 个候选，其中 {{ evolutionStore.evolve.references.newCandidates?.length || 0 }} 个新发现；
+      {{ evolutionStore.evolve.references.discoveryComplete ? '本轮发现查询已完成' : '等待检索或部分检索未完成' }}。
+    </p>
   </div>
 </template>

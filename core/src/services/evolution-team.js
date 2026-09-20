@@ -14,6 +14,9 @@ const PRIVATE_CONTROLS = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js', 'scripts/evolution-hooks/pre-push',
   'core/src/services/activity-evolver.js',
+    'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
+    'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
+    'web/src/utils/daily-feedback.ts',
 ]);
 const STAGE_DECISIONS = {
   research: ['researched'], revise_plan: ['researched'], plan: ['approve', 'no_change', 'reject'],
@@ -203,7 +206,7 @@ function parseStageResult(text, phase, runtimeTerms) {
 function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
   const repairOnly = handoffs.some(item => item.phase === 'repair_ready');
   const roles = {
-    research: `你是子 Agent ${LABELS[settings.subAgent]}，负责广泛检索 GitHub 与本地巡查。每轮以 qq farm、QQ农场、farm bot、nqf 等多组关键词搜索公开仓库，不局限于既有参考项目；按相关性、最近更新与实现差异筛选，至少尝试三组关键词并比较多个项目。限定本轮检索时间与请求数（最多 4 组搜索、12 个候选仓库），遇限流/网络失败记明未完成部分，不重试风暴、不声称已完成检索。只读比较调度分层、任务追踪、有界恢复、活动/UI/配置组织。来源 owner/repo 与固定 SHA 可保存到 ignored 的 client-config-evidence/sources.json，保留既有内容，不存 URL/原文。结合本地增量证据给主 Agent 提出具体方案、受影响文件、风险与验证步骤；没有可靠收益就建议零改动。decision 固定为 researched。`,
+    research: `你是子 Agent ${LABELS[settings.subAgent]}，负责广泛检索 GitHub 与本地巡查。先核对协调进程本轮公开仓库发现记录中的查询完成情况；完整记录可复用，不重复相同关键词搜索。缺失时以 qq farm、QQ农场、farm bot、nqf 等关键词补查，不局限于既有项目；按相关性、最近更新与实现差异筛选并比较多个项目。每日先查 xxxscarlxrd404/qq-farm-bot、liyangpengs/qq-farm-bot；读取协调进程六组查询、最多四十个候选的发现记录，再只读深入对照至少两个新候选（不足时如实说明）。优先检查已更新 SHA、新项目以及与每日反馈相关的实现。限定额外深入对照最多六个仓库，沿用总超时预算，遇限流/网络失败记明未完成部分，不重试风暴、不声称已完成检索。只读比较调度分层、任务追踪、有界恢复、活动/UI/配置组织。来源 owner/repo 与固定 SHA 可保存到 ignored 的 client-config-evidence/sources.json，保留既有内容，不存 URL/原文。逐项审阅最近24小时daily-feedback摘要中的点击→请求→结果与异常，以匿名trace关联本机流水，不读取输入文本或凭据。把实际回归覆盖与未验证路径列清；旧成功记录只证明当时已登记测试，新错误仍须复现、补行为测试。结合本地增量证据给主 Agent 提出具体方案、受影响文件、风险与验证步骤；没有可靠收益就建议零改动。decision 固定为 researched。`,
     plan: `你是主 Agent ${LABELS[settings.mainAgent]}，负责独立巡查并确认思路。逐条审查子 Agent 的证据、GitHub 借鉴适用性、HANDOFF 不变量和修改范围。批准时给出明确文件范围、实施步骤、验收条件，将具体实现交给子 Agent。decision 为 approve（批准具体方案）、no_change（确认无需改动）或 reject（方案需重写）。approve 必须在 allowedFiles 明确列出实施文件（含 HANDOFF 和测试），并在 acceptanceChecks 逐条列出可执行的行为验收条件；其他决策给空数组。拒绝后只允许子 Agent 修订方案，不得提前实施。保留用户已批准并上线的功能，不因本轮未重新找到历史材料就撤销授权或删除入口。不得仅复述子 Agent 建议。`,
     revise_plan: `你是子 Agent ${LABELS[settings.subAgent]}，根据主 Agent 最近一次拒绝理由修订研究结论和实施建议。此阶段始终只读，不写代码、测试或文档，不重新扩展无关任务；逐条回应缺口，给出最小文件范围与真实行为测试方案，交回主 Agent 重新审批。decision 固定为 researched。`,
     implement: `你是子 Agent ${LABELS[settings.subAgent]}，负责实施主 Agent 已批准的方案，只能修改已批准 allowedFiles，逐项满足 acceptanceChecks；这些条件是本轮验收合同。修改代码、补必要回归、更新 HANDOFF 并验证。无法按批准范围完成时停止并如实说明，不扩大范围；不得提交，由协调进程在主 Agent 复核后统一提交。decision 为 implemented 或 no_change。交接须列出实际改动、验证与未解决问题。`,
@@ -234,7 +237,7 @@ ${JSON.stringify(handoffs)}
 }
 
 // 显式阶段机：审批、修复范围和测试结果都绑定当前工作区，不以退出 0 代替验收。
-async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '' }) {
+async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '', verifyBaseline = false }) {
   const baseline = await inspect();
   if (baseline.dirty) throw createTeamError('unsafe_worktree');
   const handoffs = [];
@@ -286,16 +289,19 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     if (before.dirty && (before.files || []).some(file => !authorizedFiles.has(file))) {
       throw fail(createTeamError('repair_scope'), 'verify', '');
     }
-    if (!before.dirty || before.fingerprint === verifiedFingerprint) return;
+    if ((!before.dirty && !verifyBaseline) || before.fingerprint === verifiedFingerprint) return;
     await onProgress('verify', '', details());
-    try { await verify({ reviewedOrchestrationFiles: [...reviewedOrchestrationFiles] }); }
+    let validation;
+    try { validation = await verify({ reviewedOrchestrationFiles: [...reviewedOrchestrationFiles] }); }
     catch (error) { throw fail(error, 'verify', ''); }
     const after = await inspect();
     if (after.head !== baseline.head || after.fingerprint !== before.fingerprint) {
       throw fail(createTeamError('worktree_changed'), 'verify', '');
     }
     verifiedFingerprint = after.fingerprint;
-    handoffs.push({ phase: 'verify', decision: 'passed', summary: '协调进程全量后端测试通过；涉及前端时类型检查与生产构建通过。' });
+    handoffs.push({ phase: 'verify', decision: 'passed', summary: validation?.cached
+      ? '当前逻辑指纹与已通过的完整回归一致，复用后端测试及前端类型/隔离构建记录；新增每日反馈仍需审查。'
+      : '协调进程完成当前逻辑的全部已登记后端回归及前端检查；测试覆盖之外的路径不得宣称已验证。' });
   };
   const recover = async (initialFailure) => {
     let failure = initialFailure;
@@ -384,6 +390,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       await recover(normalizeTeamFailure(initialFailure));
       if (requiresApply) throw repairReady;
     }
+    // Clean/no-change runs must also establish evidence once for each logic version.
+    if (verifyBaseline) await retry(verifyCurrent);
     await retry(() => phase('research', settings.subAgent));
     let plan;
     while (true) {

@@ -60,7 +60,10 @@ function workflowFixture(overrides = {}) {
     runStage: async (phase, agent, prompt) => {
       assert.ok(prompt.indexOf('完整读取 docs/HANDOFF.md') < prompt.indexOf('双 Agent 阶段契约'));
       if (phase === 'research') {
-        assert.match(prompt, /多组关键词搜索公开仓库/);
+        assert.match(prompt, /六组查询/);
+        assert.match(prompt, /xxxscarlxrd404\/qq-farm-bot/);
+        assert.match(prompt, /liyangpengs\/qq-farm-bot/);
+        assert.match(prompt, /新候选/);
         assert.match(prompt, /不要执行外部脚本/);
       }
       if (phase === 'implement') {
@@ -208,13 +211,14 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
   const git = args => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
     write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
-    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team']) {
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
-    write('.gitignore', 'core/data/\nweb/dist/\n');
+    write('core/src/services/evolution-references.js', 'module.exports.collectPublicReferences = async () => ({state:"complete", discoveryComplete:true});\n');
+    write('.gitignore', 'core/data/\nweb/dist/\nweb/node_modules/\n');
     write('docs/HANDOFF.md', 'Fixture constraints\n');
     write('core/src/example.js', 'module.exports = 1;\n');
-    write('core/test/example.test.js', 'require("node:assert/strict").equal(require("../src/example"), 2);\n');
+    write('core/test/example.test.js', 'require("node:assert/strict").ok([1, 2].includes(require("../src/example")));\n');
     write('web/src/example.js', 'export default 1;\n');
     write('web/package.json', JSON.stringify({ scripts: { build: 'node build.cjs' } }));
     write('web/build.cjs', `
@@ -225,6 +229,10 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
       fs.writeFileSync(require('node:path').join(output, 'index.html'), 'candidate UI');
       fs.writeFileSync('../core/data/build-location.json', JSON.stringify({ output }));
     `);
+    write('web/node_modules/.bin/vue-tsc', '#!/usr/bin/env node\n');
+    write('web/node_modules/.bin/vite', '#!/usr/bin/env node\nrequire("../../build.cjs");\n');
+    fs.chmodSync(path.join(dir, 'web/node_modules/.bin/vue-tsc'), 0o700);
+    fs.chmodSync(path.join(dir, 'web/node_modules/.bin/vite'), 0o700);
     write('web/dist/index.html', 'approved UI');
     const fakeCli = `#!/usr/bin/env node
 const fs = require('node:fs');

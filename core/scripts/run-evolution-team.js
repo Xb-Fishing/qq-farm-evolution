@@ -5,6 +5,8 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { buildEvolutionAgentCommand, buildEvolutionAgentEnv } = require('../src/services/activity-evolver');
 const { collectRuntimePrivacyTerms } = require('../src/services/privacy-guard');
+const { runEvolutionValidation } = require('../src/services/evolution-validation');
+const { collectPublicReferences } = require('../src/services/evolution-references');
 const {
   parseStageResult, runTeamWorkflow, teamJournalPath, buildStageSchema,
   createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
@@ -20,6 +22,9 @@ const PROTECTED_FILES = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js',
   'core/src/services/activity-evolver.js',
+    'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
+    'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
+    'web/src/utils/daily-feedback.ts',
 ]);
 const PROTECTED_HOOKS_PREFIX = 'scripts/evolution-hooks/';
 
@@ -170,8 +175,11 @@ async function main(input) {
   };
   try {
     if (inspectWorktree().head !== baseCommit) throw createTeamError('head_changed');
+    await onProgress('research', settings.subAgent, {});
+    const references = await collectPublicReferences({ dataDir });
+    const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 必须只读深入核对指定两个项目及新发现候选；未能访问的部分如实交接，主 Agent 核实结论。`;
     const result = await runTeamWorkflow({
-      settings, prompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback,
+      settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true,
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
         const command = buildEvolutionAgentCommand(agent, stagePrompt);
@@ -207,22 +215,13 @@ async function main(input) {
           if (ORCHESTRATION_FILES.has(file) && !reviewed.has(file)) throw createTeamError('protected_change');
         }
         if (files.length && !files.includes('docs/HANDOFF.md')) throw createTeamError('missing_handoff');
-        const tests = fs.readdirSync(path.join(repoRoot, 'core/test')).filter(file => file.endsWith('.test.js'));
-        const webTouched = files.some(file => file.startsWith('web/'));
         try {
-          await execute(process.execPath, ['--test', '--test-concurrency=1', ...tests.map(file => `test/${file}`)], {
-            cwd: path.join(repoRoot, 'core'), env,
-          });
-          if (webTouched) {
-            // 验证产物留在私有临时目录，不能在验收前覆盖正在提供服务的 web/dist。
-            const buildDir = fs.mkdtempSync(path.join(logDir, 'evolve-web-check-'));
-            try {
-              await execute('npm', ['run', 'build', '--', '--outDir', buildDir, '--emptyOutDir'], { cwd: path.join(repoRoot, 'web'), env });
-            } finally { fs.rmSync(buildDir, { recursive: true, force: true }); }
-          }
+          const validation = await runEvolutionValidation({ repoRoot, dataDir, execute, env });
+          persist({ validation });
+          return validation;
         } catch (error) {
           // 真实测试/构建失败归为验证未通过并保留退出码；执行器无法启动等问题保留原类别。
-          if (error?.code === 'cli_exit') {
+          if (error?.code === 'cli_exit' || String(error?.code || '').startsWith('EVOLUTION_VALIDATION_')) {
             throw createTeamError('verification_failed', { exitCode: error.exitCode, signal: error.signal });
           }
           throw error;
