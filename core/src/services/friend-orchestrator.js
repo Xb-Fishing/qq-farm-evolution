@@ -170,6 +170,21 @@ function isWatchlistObservationWindow(remainMs) {
   return remain > 0 && remain <= getWatchlistWakeBeforeMs();
 }
 
+/**
+ * 实际尝试完成后安排下一次重点巡田时刻（三种结果共用）。
+ * 异常期只放慢未知/窗口外的普通基线巡检：基线间隔之上追加额外等待；
+ * 观察窗内与已确认的施肥 HOT 不加额外等待，保持原有节奏。
+ */
+function scheduleWatchlistPollNext(gid, now, remainMs, slowdown) {
+  const baselineDelay = nextWatchlistPollDelayMs(remainMs);
+  const inObservationWindow = isWatchlistObservationWindow(remainMs);
+  if (slowdown && slowdown.active && !isFertilizerHot(gid, now) && !inObservationWindow) {
+    const floorMs = Math.max(30_000, Number(slowdown.recommendedDelayMs) || 90_000);
+    return now + baselineDelay + gaussianInt(floorMs, Math.floor(floorMs * 1.5));
+  }
+  return now + baselineDelay;
+}
+
 function recomputeFriendSummaryClocks(now = Date.now()) {
   const watchlistSet = new Set(getWatchlistFriendGids(process.env.FARM_ACCOUNT_ID || '').map(toNum));
   let allMin = 0;
@@ -1274,25 +1289,15 @@ async function watchlistPollTick() {
       return;
     }
     const now = Date.now();
-    const slowdown = getBreakerState(now);
     const blacklist = new Set(getFriendBlacklist(accountId));
     for (const gid of gids) {
       if (ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
       if (gid === userState.gid || blacklist.has(gid)) continue;
       if ((watchlistPollNextAt.get(gid) || 0) > now) continue;
-      // 异常期只放慢普通重点巡检，不再等一个长冷却窗口结束。
-      // 已确认的施肥 HOT 仍保持原有秒级节奏。
+      // 异常期不再在到期前反复延期（持续 slow 时每次到期都重设更晚时刻会
+      // 永远不访问）：首次到期先尝试正常基线读取，实际访问仍受通信硬预算、
+      // 免打扰与自己的到点收获保护；额外等待在实际尝试完成后追加。
       const knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
-      const inObservationWindow = isWatchlistObservationWindow(knownRipeAt - now);
-      if (slowdown.active && !isFertilizerHot(gid, now) && !inObservationWindow) {
-        const baselineDelay = nextWatchlistPollDelayMs(knownRipeAt - now);
-        const floorMs = Math.max(30_000, Number(slowdown.recommendedDelayMs) || 90_000);
-        watchlistPollNextAt.set(
-          gid,
-          now + baselineDelay + gaussianInt(floorMs, Math.floor(floorMs * 1.5))
-        );
-        continue;
-      }
       const name = watchlistNames.get(gid) || `GID:${gid}`;
       const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
       let result = null;
@@ -1303,13 +1308,16 @@ async function watchlistPollTick() {
         try { await sellAllFruits(); } catch { }
       }
       const visitedAt = Date.now();
+      // 失败时仍可信的 knownRipeAt 继续决定档位：观察窗内保持 45-75s，
+      // 未知/窗口外退慢档。
+      let remainMs = Math.max(0, knownRipeAt - visitedAt);
       if (result && result.entered) {
         const ripeAt = Number(result.ripeAtMs) || 0;
         if (ripeAt > visitedAt) {
+          remainMs = ripeAt - visitedAt;
           watchlistPollRipeAt.set(gid, ripeAt);
           // 新读到的成熟时刻立即并进偷菜唤醒，不等下一轮巡查
           armStealWakeForWorker();
-          const remainMs = ripeAt - visitedAt;
           // 进入 122 分钟窗口报一次（摘要没有成熟时刻时，这是唯一的窗口日志来源）
           if (remainMs <= getWatchlistWakeBeforeMs()) {
             const announced = watchlistWindowAnnounced.get(gid);
@@ -1327,18 +1335,24 @@ async function watchlistPollTick() {
           if (remainMs <= DUE_PREARM_WATCHLIST_MS) {
             watchFriend(gid, name, { now: visitedAt, ripeAt, mode: 'prearm', reason: 'ripe_prearm' });
           }
-          watchlistPollNextAt.set(gid, visitedAt + nextWatchlistPollDelayMs(remainMs));
         } else {
           // 没有在长的作物（或刚被偷光）：退到慢档，等新一茬
           watchlistPollRipeAt.delete(gid);
           watchlistWindowAnnounced.delete(gid);
           // 不提前关闭治理器的成熟竞速宽限；让 ripeAt 后 60 秒自然过期，
           // 避免“第一轮偷完部分地块”后续抢收失败被误计入异常降速阈值。
-          watchlistPollNextAt.set(gid, visitedAt + nextWatchlistPollDelayMs(0));
+          remainMs = 0;
         }
-      } else {
-        watchlistPollNextAt.set(gid, visitedAt + nextWatchlistPollDelayMs(0));
       }
+      watchlistPollNextAt.set(gid, scheduleWatchlistPollNext(gid, visitedAt, remainMs, getBreakerState(visitedAt)));
+      // 匿名巡检健康日志：仅在实际尝试后记一次，供 24h 复盘基线是否真的执行。
+      log('好友', '重点巡田完成', {
+        module: 'friend',
+        event: 'priority_poll_health',
+        result: result && result.entered ? 'ok' : 'failed',
+        mode: isWatchlistObservationWindow(remainMs) ? 'observation' : 'baseline',
+        nextDelayMs: watchlistPollNextAt.get(gid) - visitedAt,
+      });
       if (ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
       await randomDelay(800, 1500);
     }
@@ -1523,6 +1537,7 @@ module.exports = {
   getWatchlistRipeSnapshots,
   getWatchlistWakeBeforeMs,
   nextWatchlistPollDelayMs,
+  applyStealScheduleFromFriends,
   setArmStealWakeCallback,
   WATCHLIST_WAKE_BEFORE_MS,
   refreshFriendRipeSchedule,

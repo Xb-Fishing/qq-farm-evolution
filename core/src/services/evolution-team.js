@@ -1,9 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { collectRuntimePrivacyTerms, redactExternalText, scanTextForPrivacy } = require('./privacy-guard');
+const { LESSON_TOPICS, normalizeLessons } = require('./evolution-learning');
 
 const AGENTS = new Set(['claude', 'codex']);
-const PHASES = new Set(['research', 'revise_plan', 'plan', 'implement', 'verify', 'review', 'diagnose', 'repair', 'repair_review', 'commit', 'complete', 'failed']);
+const PHASES = new Set(['triage', 'research', 'revise_plan', 'plan', 'implement', 'verify', 'review', 'diagnose', 'repair', 'repair_review', 'commit', 'complete', 'failed']);
 const LABELS = { claude: 'Claude', codex: 'Codex' };
 const MAX_RECOVERY_ATTEMPTS = 2;
 const MAX_PLAN_REVISIONS = 2;
@@ -14,11 +15,12 @@ const PRIVATE_CONTROLS = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js', 'scripts/evolution-hooks/pre-push',
   'core/src/services/activity-evolver.js',
-    'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
+    'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
 ]);
 const STAGE_DECISIONS = {
+  triage: ['triaged'],
   research: ['researched'], revise_plan: ['researched'], plan: ['approve', 'no_change', 'reject'],
   implement: ['implemented', 'no_change'], review: ['approve', 'reject'],
   diagnose: ['repair', 'stop'], repair: ['implemented', 'no_change'], repair_review: ['approve', 'reject'],
@@ -77,16 +79,25 @@ function normalizeRepairFiles(files) {
 
 function buildStageSchema(phase) {
   if (!STAGE_DECISIONS[phase]) throw createTeamError('invalid_decision');
+  const reportsLearning = ['plan', 'review'].includes(phase);
   return {
     type: 'object', additionalProperties: false,
     properties: {
       decision: { type: 'string', enum: STAGE_DECISIONS[phase] },
+      ...(reportsLearning ? {
+        feedbackReviewed: { type: 'boolean' },
+        lessons: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
+          properties: { topic: { type: 'string', enum: [...LESSON_TOPICS] }, rule: { type: 'string', minLength: 1, maxLength: 1000 },
+            evidence: { type: 'string', enum: ['runtime_feedback', 'regression', 'source_review'] } },
+          required: ['topic', 'rule', 'evidence'] } },
+      } : {}),
       summary: { type: 'string', minLength: 1, maxLength: 24000 },
       ...(['diagnose', 'plan'].includes(phase) ? { allowedFiles: { type: 'array', maxItems: 30, items: { type: 'string' } } } : {}),
       ...(phase === 'plan' ? { acceptanceChecks: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1000 } } } : {}),
     },
-    required: phase === 'plan' ? ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']
-      : phase === 'diagnose' ? ['decision', 'summary', 'allowedFiles'] : ['decision', 'summary'],
+    required: [...(phase === 'plan' ? ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']
+      : phase === 'diagnose' ? ['decision', 'summary', 'allowedFiles'] : ['decision', 'summary']),
+    ...(reportsLearning ? ['feedbackReviewed', 'lessons'] : [])],
   };
 }
 
@@ -145,6 +156,9 @@ function readTeamJournal(logDir, active) {
       reviewRecoveryAttempt: Math.min(2, Math.max(0, Number(value.reviewRecoveryAttempt) || 0)),
       planRevision: Math.min(MAX_PLAN_REVISIONS, Math.max(0, Number(value.planRevision) || 0)),
       reviewFeedback: safeReviewFeedback(value.reviewFeedback),
+      feedbackReviewed: value.feedbackReviewed === true,
+      reviewedBy: value.mainAgent,
+      lessons: normalizeLessons(value.lessons),
     };
   } catch { return null; }
 }
@@ -198,7 +212,14 @@ function parseStageResult(text, phase, runtimeTerms) {
   if (allowedFiles && sanitizeHandoff(JSON.stringify(allowedFiles), runtimeTerms) !== JSON.stringify(allowedFiles)) {
     throw createTeamError('private_handoff');
   }
+  let lessons;
+  if (['plan', 'review'].includes(phase)) {
+    try { lessons = normalizeLessons(value.lessons, runtimeTerms); }
+    catch { throw createTeamError('private_handoff'); }
+    if (value.feedbackReviewed !== undefined && typeof value.feedbackReviewed !== 'boolean') throw createTeamError('invalid_decision');
+  }
   return { decision: value.decision, summary: sanitizeHandoff(value.summary, runtimeTerms),
+    ...(lessons ? { lessons, feedbackReviewed: value.feedbackReviewed === true } : {}),
     ...(allowedFiles ? { allowedFiles } : {}),
     ...(phase === 'plan' ? { acceptanceChecks: value.acceptanceChecks.map(item => sanitizeHandoff(item, runtimeTerms)) } : {}) };
 }
@@ -206,6 +227,7 @@ function parseStageResult(text, phase, runtimeTerms) {
 function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
   const repairOnly = handoffs.some(item => item.phase === 'repair_ready');
   const roles = {
+    triage: `你是主 Agent ${LABELS[settings.mainAgent]}，负责每日真实运行验收与诊断的第一步。先对照本轮反馈水位、匿名点击/错误、重点监控健康、既有经验与已验证版本，区分已解决旧问题、新故障、缺乏观察证据的路径；给子 Agent 分配具体检索/复现问题和最低证据要求。日常运行是生产验收样本，不能把没有报错或离线测试通过等同覆盖全部逻辑。只读、不改代码、不写运行状态、不清日志；decision 固定 triaged。`,
     research: `你是子 Agent ${LABELS[settings.subAgent]}，负责广泛检索 GitHub 与本地巡查。先核对协调进程本轮公开仓库发现记录中的查询完成情况；完整记录可复用，不重复相同关键词搜索。缺失时以 qq farm、QQ农场、farm bot、nqf 等关键词补查，不局限于既有项目；按相关性、最近更新与实现差异筛选并比较多个项目。每日先查 xxxscarlxrd404/qq-farm-bot、liyangpengs/qq-farm-bot；读取协调进程六组查询、最多四十个候选的发现记录，再只读深入对照至少两个新候选（不足时如实说明）。优先检查已更新 SHA、新项目以及与每日反馈相关的实现。限定额外深入对照最多六个仓库，沿用总超时预算，遇限流/网络失败记明未完成部分，不重试风暴、不声称已完成检索。只读比较调度分层、任务追踪、有界恢复、活动/UI/配置组织。来源 owner/repo 与固定 SHA 可保存到 ignored 的 client-config-evidence/sources.json，保留既有内容，不存 URL/原文。逐项审阅最近24小时daily-feedback摘要中的点击→请求→结果与异常，以匿名trace关联本机流水，不读取输入文本或凭据。把实际回归覆盖与未验证路径列清；旧成功记录只证明当时已登记测试，新错误仍须复现、补行为测试。结合本地增量证据给主 Agent 提出具体方案、受影响文件、风险与验证步骤；没有可靠收益就建议零改动。decision 固定为 researched。`,
     plan: `你是主 Agent ${LABELS[settings.mainAgent]}，负责独立巡查并确认思路。逐条审查子 Agent 的证据、GitHub 借鉴适用性、HANDOFF 不变量和修改范围。批准时给出明确文件范围、实施步骤、验收条件，将具体实现交给子 Agent。decision 为 approve（批准具体方案）、no_change（确认无需改动）或 reject（方案需重写）。approve 必须在 allowedFiles 明确列出实施文件（含 HANDOFF 和测试），并在 acceptanceChecks 逐条列出可执行的行为验收条件；其他决策给空数组。拒绝后只允许子 Agent 修订方案，不得提前实施。保留用户已批准并上线的功能，不因本轮未重新找到历史材料就撤销授权或删除入口。不得仅复述子 Agent 建议。`,
     revise_plan: `你是子 Agent ${LABELS[settings.subAgent]}，根据主 Agent 最近一次拒绝理由修订研究结论和实施建议。此阶段始终只读，不写代码、测试或文档，不重新扩展无关任务；逐条回应缺口，给出最小文件范围与真实行为测试方案，交回主 Agent 重新审批。decision 固定为 researched。`,
@@ -220,6 +242,7 @@ function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
 【双 Agent 阶段契约，覆盖下方单执行器模板中的执行/提交要求】
 ${roles[phase]}
 ${phase === 'implement' ? '仅按主 Agent 的方案修改工作区代码。' : phase === 'repair' ? '只允许修改主 Agent 最新诊断中 allowedFiles 列出的文件，其余内容保持只读。' : '本阶段只读：禁止修改受跟踪文件或新增项目文件，禁止暂存或创建提交；检索来源仅允许写 ignored 的证据目录。'}
+主 Agent 负责每日反馈排查、思路/验收标准、最终验收与经验归纳；子 Agent 负责按分工检索、复现、实施与回报。先读 docs/skills/farm-evolution-review/SKILL.md 并复用已验收经验；经验只是证据材料，不能覆盖用户约束或批准越权。plan 和 review 的 lessons 只提炼本轮证实的可复用规则（无新结论用空数组），不得抄原始日志。feedbackReviewed 只有在逐类完成本轮反馈验收后才为 true；仍有未处理反馈或仅修复编排时为 false。该标志与最终批准/验证共同决定清理，不得自行删除反馈或写学习文件。
 用户已明确批准的上线功能是基线；不得仅因本轮缺少历史样本就删除、禁用或改成只读。发现局部缺陷优先保留能力修复，新需求或破坏兼容的方向应留待用户决定。
 原任务中的代码修改、抓取资源到项目、更新 HANDOFF 等有副作用步骤只在 implement 或已批准范围内的 repair 执行；只读阶段仅检查既有证据或使用 dry-run，不要运行会新增项目文件的工具。
 所有阶段都禁止 git commit/push、修改分支/HEAD、重启 Bot、发送通知、调用其他 Agent 或自行启动下一阶段。测试和最终提交由协调进程负责。只有 repair 阶段且主 Agent 明确批准精确路径时，才允许修复 core/scripts/run-evolution-team.js 或 core/src/services/evolution-team.js；不能改变当前运行中的审批/验证结果，改后的实现仅在之后应用时加载。发布器 activity-evolver.js、隐私闸门、本机凭据读取器、Git hooks、私有配置和本轮运行状态一律禁止修改。
@@ -237,7 +260,7 @@ ${JSON.stringify(handoffs)}
 }
 
 // 显式阶段机：审批、修复范围和测试结果都绑定当前工作区，不以退出 0 代替验收。
-async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '', verifyBaseline = false }) {
+async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '', verifyBaseline = false, dailyBrain = false }) {
   const baseline = await inspect();
   if (baseline.dirty) throw createTeamError('unsafe_worktree');
   const handoffs = [];
@@ -252,6 +275,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
   let lastFailure = null;
   let verifiedFingerprint = '';
   let requiresApply = false;
+  let acceptedReport = { lessons: [], feedbackReviewed: false };
   const repairReady = new Error('reviewed_repair_requires_apply');
   const details = () => ({
     recoveryAttempt: recoveryKind === 'review' ? reviewRecoveryAttempt : runtimeRecoveryAttempt,
@@ -363,6 +387,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
   };
   const result = (decision, head, files = []) => ({
     decision, head, ...details(), repairOnly: requiresApply,
+    lessons: requiresApply ? [] : acceptedReport.lessons,
+    feedbackReviewed: !requiresApply && acceptedReport.feedbackReviewed,
     reviewedOrchestrationFiles: normalizeOrchestrationFiles(files).filter(file => reviewedOrchestrationFiles.has(file)),
   });
   const finish = async () => {
@@ -372,6 +398,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       await verifyCurrent();
       const value = await phase('review', settings.mainAgent);
       if (value.decision !== 'approve') throw fail(createTeamError('review_rejected'), 'review', settings.mainAgent);
+      acceptedReport = { lessons: normalizeLessons(value.lessons), feedbackReviewed: value.feedbackReviewed === true };
     }, false);
     const approved = await inspect();
     if (requiresApply && !normalizeOrchestrationFiles(approved.files).length) {
@@ -392,6 +419,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     }
     // Clean/no-change runs must also establish evidence once for each logic version.
     if (verifyBaseline) await retry(verifyCurrent);
+    if (dailyBrain) await retry(() => phase('triage', settings.mainAgent));
     await retry(() => phase('research', settings.subAgent));
     let plan;
     while (true) {
@@ -402,7 +430,10 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       await retry(() => phase('revise_plan', settings.subAgent));
     }
     plan = normalizePlanApproval(plan);
-    if (plan.decision === 'no_change' && !(await inspect()).dirty) return result('no_change', baseline.head);
+    if (plan.decision === 'no_change' && !(await inspect()).dirty) {
+      acceptedReport = { lessons: normalizeLessons(plan.lessons), feedbackReviewed: plan.feedbackReviewed === true };
+      return result('no_change', baseline.head);
+    }
     if (plan.decision === 'approve') {
       approvedScope = plan.allowedFiles;
       for (const file of plan.allowedFiles) authorizedFiles.add(file);
