@@ -1,6 +1,7 @@
 import { useStorage } from '@vueuse/core'
 import axios from 'axios'
 import { useToastStore } from '@/stores/toast'
+import { currentFeedbackTrace, recordClientFailure } from '@/utils/daily-feedback'
 
 const tokenRef = useStorage('admin_token', '')
 const accountIdRef = useStorage('current_account_id', '')
@@ -20,6 +21,9 @@ function showNetworkToast(message: string) {
 }
 
 api.interceptors.request.use((config) => {
+  const feedbackTrace = currentFeedbackTrace()
+  if (feedbackTrace)
+    config.headers['x-feedback-id'] = feedbackTrace
   const token = tokenRef.value
   if (token) {
     config.headers['x-admin-token'] = token
@@ -63,6 +67,7 @@ api.interceptors.response.use((response) => {
     }
   }
   else if (error.request) {
+    recordClientFailure(error.code === 'ECONNABORTED' ? 'request_timeout' : 'network_error')
     if (error.code === 'ECONNABORTED') {
       showNetworkToast('请求超时，请稍后重试')
     }

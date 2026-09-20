@@ -3,6 +3,7 @@ const path = require('node:path');
 const process = require('node:process');
 const { ensureDataDir } = require('../config/runtime-paths');
 const { redactSensitiveText } = require('./privacy-guard');
+const { recordRuntimeFeedback } = require('./daily-feedback');
 
 // 尝试加载 winston，失败则使用 fallback
 let winston = null;
@@ -137,6 +138,7 @@ function appendFallbackLog(level, moduleName, message, meta) {
 /** 创建 console-based fallback logger */
 function createConsoleFallback(moduleName) {
   const writeLog = (level, message, meta) => {
+    recordRuntimeFeedback(level === 'info' && ['error', 'failed'].includes(meta?.result) ? 'error' : level, moduleName, meta);
     const timestamp = new Date().toISOString();
     const msg = redactString(message);
     const sanitized = sanitizeMeta(meta);
@@ -243,12 +245,15 @@ function createModuleLogger(name = 'app') {
   const child = logger.child({ module: moduleName });
   return {
     info(message, meta = {}) {
+      if (['error', 'failed'].includes(meta?.result)) recordRuntimeFeedback('error', moduleName, meta);
       child.info(redactString(message), sanitizeMeta(meta));
     },
     warn(message, meta = {}) {
+      recordRuntimeFeedback('warn', moduleName, meta);
       child.warn(redactString(message), sanitizeMeta(meta));
     },
     error(message, meta = {}) {
+      recordRuntimeFeedback('error', moduleName, meta);
       child.error(redactString(message), sanitizeMeta(meta));
     },
     debug(message, meta = {}) {

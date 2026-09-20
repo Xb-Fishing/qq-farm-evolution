@@ -196,6 +196,8 @@ test('失败元信息不透传原错误、凭据、地址或任意未知字段',
 
 test('修复范围不能包含隐私控制、认证文件或路径穿越', () => {
   for (const file of ['.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
+    'core/src/services/evolution-validation.js', 'core/src/services/daily-feedback.js',
+    'core/src/services/evolution-references.js', 'core/src/controllers/admin-feedback-routes.js', 'web/src/utils/daily-feedback.ts',
     'docs/../outside', 'docs/.codex/auth.json', 'docs/private-config.json']) {
     assert.throws(() => parseStageResult(JSON.stringify({ decision: 'repair', summary: 'bad scope', allowedFiles: [file] }), 'diagnose', new Set()), { code: 'repair_scope' });
   }
@@ -312,4 +314,28 @@ test('方案输出必须包含明确文件范围和行为验收合同', () => {
   assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), plan);
   assert.throws(() => parseStageResult(JSON.stringify({ ...plan, acceptanceChecks: [] }), 'plan', new Set()), { code: 'invalid_decision' });
   assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']);
+});
+
+test('干净工作区每日巡检先验证当前逻辑，零改动也不能跳过验证', async () => {
+  const f = setup();
+  f.deps.verifyBaseline = true;
+  const result = await runTeamWorkflow(f.deps);
+  assert.equal(result.decision, 'no_change');
+  assert.equal(f.verified(), 1);
+  assert.equal(f.calls[0].phase, 'verify');
+  assert.equal(f.calls[1].phase, 'research');
+  assert.equal(f.committed(), 0);
+});
+
+test('首次逻辑验证失败交主 Agent 诊断、子 Agent 修复、验收后再巡查', async () => {
+  const f = setup();
+  f.deps.verifyBaseline = true;
+  f.validation(count => { if (count === 1) throw createTeamError('verification_failed'); });
+  const result = await runTeamWorkflow(f.deps);
+  assert.equal(result.decision, 'no_change');
+  assert.equal(f.verified(), 2);
+  assert.equal(f.counts.diagnose, 1);
+  assert.equal(f.counts.repair, 1);
+  assert.equal(f.counts.repair_review, 1);
+  assert.ok(f.calls.findIndex(x => x.phase === 'repair_review') < f.calls.findIndex(x => x.phase === 'research'));
 });

@@ -159,10 +159,15 @@ test('已验收修复仅能放行指定协作文件，发布器与隐私控制�
   assert.ok(secretResult.findings.some(item => item.rule === 'provider-token'));
   f.write(publisher, 'module.exports = 1;\n');
   f.write(privacy, 'module.exports = 1;\n');
+  const feedbackControl = 'core/src/services/daily-feedback.js';
+  const validationControl = 'core/src/services/evolution-validation.js';
+  f.write(feedbackControl, 'module.exports = 1;\n');
+  f.write(validationControl, 'module.exports = 1;\n');
   const result = auditGitRange(f.root, f.base, f.commit(), {
     runtimeTerms: new Set(), reviewedOrchestrationFiles: [runner, publisher, privacy],
   });
   assert.equal(result.ok, false);
   assert.ok(result.findings.some(item => item.file === publisher && item.rule === 'privacy-control-changed'));
   assert.ok(result.findings.some(item => item.file === privacy && item.rule === 'privacy-control-changed'));
+  for (const file of [feedbackControl, validationControl]) assert.ok(result.findings.some(item => item.file === file && item.rule === 'privacy-control-changed'));
 });
