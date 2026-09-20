@@ -56,8 +56,16 @@ function registerAdminPetDiaryOperateRoutes({
       activityReader.clear(accountId);
       res.json({ ok: true, ...result });
     } catch (err) {
-      const status = err && err.business ? 400 : 502;
-      res.status(status).json({ ok: false, error: (err && err.message) || '活动操作失败' });
+      // 业务前置拒绝（元数据经 Worker 管理通道还原）返回 400 + 固定 code；
+      // 普通传输失败或未知异常仍为 502，不按错误文字猜业务类型，不改成成功
+      const businessCode = err && err.business === true && typeof err.code === 'string'
+        ? err.code
+        : '';
+      res.status(businessCode ? 400 : 502).json({
+        ok: false,
+        error: (err && err.message) || '活动操作失败',
+        ...(businessCode ? { code: businessCode } : {}),
+      });
     }
   });
 }

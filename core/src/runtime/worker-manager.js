@@ -1,5 +1,20 @@
 const { createScheduler } = require('../services/scheduler');
 
+// 萌宠业务错误元数据校验（2026-09-20 跨 Worker 丢失修复）：
+// Worker 回传的 errorMeta 只接受严格布尔标记 + 限定格式固定业务码
+// （与 worker.js collectPetDiaryErrorMeta 同一格式）；缺失、畸形、超长或
+// 非标量（含 JSON/structuredClone 往返后的旧式响应）一律按普通错误处理，
+// 堆栈、cause 与额外属性不透传。
+const PET_DIARY_ERROR_CODE_RE = /^PET_DIARY_[A-Z0-9_]{1,48}$/;
+
+function normalizePetDiaryErrorMeta(meta) {
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+    if (meta.business !== true) return null;
+    const code = meta.code;
+    if (typeof code !== 'string' || !PET_DIARY_ERROR_CODE_RE.test(code)) return null;
+    return { business: true, code };
+}
+
 /**
  * 创建 Worker 管理器
  * 负责账号 Worker 进程/线程的启动、停止、重启、消息处理和 RPC 调用
@@ -571,8 +586,19 @@ function createWorkerManager(deps) {
 
             const pending = wrk.requests.get(id);
             if (pending) {
-                if (error) pending.reject(new Error(error));
-                else pending.resolve(result);
+                if (error) {
+                    const err = new Error(error);
+                    // 萌宠业务错误元数据还原：校验通过才恢复 business 标记与
+                    // 固定 code；旧式仅含 error 字符串的响应仍是普通 Error
+                    const meta = normalizePetDiaryErrorMeta(msg.errorMeta);
+                    if (meta) {
+                        err.business = true;
+                        err.code = meta.code;
+                    }
+                    pending.reject(err);
+                } else {
+                    pending.resolve(result);
+                }
                 wrk.requests.delete(id);
             }
         } else if (msg.type === 'friend_blacklist_add') {
