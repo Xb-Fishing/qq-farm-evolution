@@ -177,7 +177,7 @@ async function main(input) {
     if (inspectWorktree().head !== baseCommit) throw createTeamError('head_changed');
     await onProgress('research', settings.subAgent, {});
     const references = await collectPublicReferences({ dataDir });
-    const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 必须只读深入核对指定两个项目及新发现候选；未能访问的部分如实交接，主 Agent 核实结论。`;
+    const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。`;
     const result = await runTeamWorkflow({
       settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true, dailyBrain: true,
       runStage: async (phase, agent, stagePrompt) => {

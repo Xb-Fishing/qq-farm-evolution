@@ -61,8 +61,7 @@ function workflowFixture(overrides = {}) {
       assert.ok(prompt.indexOf('完整读取 docs/HANDOFF.md') < prompt.indexOf('双 Agent 阶段契约'));
       if (phase === 'research') {
         assert.match(prompt, /六组查询/);
-        assert.match(prompt, /xxxscarlxrd404\/qq-farm-bot/);
-        assert.match(prompt, /liyangpengs\/qq-farm-bot/);
+        assert.match(prompt, /本机私有参考配置/);
         assert.match(prompt, /新候选/);
         assert.match(prompt, /不要执行外部脚本/);
       }
