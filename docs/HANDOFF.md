@@ -1584,3 +1584,46 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 本轮已对新增参考的三个近期改动做只读源码比较：成熟感知调度在本地已有更完整墙钟/HOT/PREARM 实现；移动端四格图片约束已有等价处理，均无证据需要重复移植。暂时没有分享资格是否应被视为当日完成值得继续核对，但官方回包语义仍待证，不据外部实现新增领取重试。具体来源映射仅存私有证据；可复查本地 `core/src/services/share.js` 与 `core/src/core/worker.js` 的完成态路径。没有改已批准的活动操作、监控、收益调度、登录或协议。
 - 踩坑：只按星数/少量头部结果取样会漏掉新近更新；只知道仓库最后推送时间也不能证明持续维护。缓存策略变更不能等到次日才生效；提交列表中的作者/消息不能原样落到公开报告。参考匿名化不能删掉定位所需的源码路径和提交锚点。
 - 验证：Node 20 全量后端 577/577 通过，前端类型检查与隔离生产构建通过，改动文件 ESLint 无错误，skill 校验通过；当前逻辑指纹的成功结果可复用。实际发现完成六组查询、获得 28 个候选，三个私有重点项目均取得最新提交，10 个候选有可用提交活跃度样本；部分详情请求超时，结果诚实保留 partial。已核对匿名化前后图标资源路径、提交锚点及哈希完全一致。回滚只撤销检索策略差异，不能把参考地址/仓库名写回公开文件，也不删除本机私有配置或历史映射；原运行反馈和未完成巡检继续保留其既定生命周期。部署复用已有 farm:0.0。
+
+## 萌宠手动操作业务错误跨 Worker 传递修复（2026-09-20，双 Agent implement）
+
+### 确定缺陷与证据边界
+
+- 确定的代码级信息丢失链：萌宠手动操作服务抛出的业务前置拒绝带 `business: true` 与固定 `code`（PET_DIARY_* 前缀）；`worker.js` 的管理 RPC `handleApiCall` catch 后只回传 `err.message` 字符串；`worker-manager.js` 的 `api_response` 处理把它重建成普通 `Error`；活动路由按 `err.business` 区分 400（业务拒绝）与 502（服务故障）。因此既有业务拒绝一律被面板误报为 502/unknown，掩盖真实上游故障信号。
+- 本轮反馈窗口内九次萌宠操作失败（投喂、领狗、种子礼包、补偿各 2 次、初始化 1 次，均为 58–99ms 快速失败）**具体拒绝条件未知**：当时日志没有保存各次业务拒绝原因，不能全部认定为限额/已领取类正常拒绝，也不能认定为上游 502。本修复只还原「业务拒绝可被正确分类」，不宣称已还原该九次的失败原因。
+- 不修改反馈分类器、清理规则或活动操作服务本身；七项已批准手动按钮、List/时间校验、余额/次数/状态校验、失败不自动重试、活动读缓存全部保留。
+
+### 本次改动（管理通道三处最小修复，非收益链）
+
+1. `worker.js` 仅改 `handleApiCall` 错误收集与 `api_response` 构造：新增 `collectPetDiaryErrorMeta()`，只在 catch 到 `business === true` 且 `code` 匹配 `^PET_DIARY_[A-Z0-9_]{1,48}$` 的固定业务码时附加 `errorMeta: { business, code }`。不序列化整个 Error、堆栈、cause 或任意附加属性，不扩大到其他业务错误；成功响应与旧式 error 字符串响应格式不变（无 errorMeta 字段）。
+2. `worker-manager.js` 仅改 `api_response` 错误重建：`normalizePetDiaryErrorMeta()` 用同一格式校验（严格布尔 + 限定码格式；数组/缺失/畸形/超长/非字符串一律不认），校验通过才给重建的 Error 恢复 `business`/`code`。请求关联、超时清理、成功返回、并发/乱序/重复/迟到响应与生命周期代码逐字不变。
+3. `admin-pet-diary-operate-routes.js` 仅改 catch 分支：验证后的业务拒绝返回 HTTP 400、`ok:false`、原有提示和固定 `code`（新增字段）；普通传输失败或未知异常仍为 502 且不带业务码。不按错误文字猜业务类型、不改成成功、不加自动重试。权限校验、运行状态校验、成功缓存失效流程原样。
+
+### 跨层行为回归（新增 `core/test/worker-api-error.test.js`，14 条）
+
+真实调用链：真实活动服务（仅模拟游戏传输边界）→ 从 worker.js 提取的真实 `handleApiCall`（vm 沙箱，本地消息通道分别按 **JSON 序列化往返**与 **structuredClone** 两种 Worker 传输形态模拟）→ 真实 `createWorkerManager` 的 `api_response` 错误重建 → 真实活动路由。覆盖：
+
+- 业务前置拒绝（feed 成年段拒绝）跨层得到 400 + `PET_DIARY_INVALID_STAGE` + 原有提示；前置拒绝只发生必要状态读取（List+GetGroup），操作编码与写请求为零，无自动重试。
+- **传输失败三处分别覆盖（List / GetGroup / Operate 读取与发送失败，两种传输形态共 6 条）**：跨层仍为 HTTP 502、`ok:false`、无业务码、零重试，全部调用仍在原 `ActivityService` 接口（记录每次调用的 service 名断言不切换接口）；Operate 发送失败明确写请求已尝试恰好一次（List+GetGroup 前置读取 + 一次 Operate），不得描述为零写请求。
+- 跨层成功返回原有结果与奖励结构，写请求恰好一次（List+GetGroup+Operate）。
+- 元数据两种传输形态保留；缺失 business、business 非严格布尔、code 非字符串/超长/前缀不符、数组形态均不当业务拒绝；额外属性（stack/cause/extra）不透传。
+- 并发、乱序响应、重复响应不串单不重复完成；超时后迟到响应无副作用且不遗留计时器；成功响应原样返回。
+- 旧式仅含 error 字符串的响应仍正常拒绝为普通 Error（账号未就绪路径语义不变）。
+- **跨层成功使读写路由共享的真实活动缓存失效（真实读写链）**：写路径为真实 `runManualPetDiaryAction`（经 handleApiCall/管理器/操作路由）；读路径为真实读路由 + 同一 Worker 管理通道的 `getBearActivity` → 真实 `readPetDiaryGroup`（同一上游传输边界读 List+GetGroup），两者共享同一 `activityReader`。断言一次写、原有结果与奖励字段、成功后新状态读取（`upstreamCached:false`）、失效前挂起的旧读取返回旧状态但不回写缓存、再读命中缓存中的新值不再打上游；上游调用序列精确锁定（3×List + 3×GetGroup + 1×Operate），无重试、无额外刷新。
+
+### 前置校验与缓存行为扩展（`pet-diary-operate.test.js` +2、`pet-diary-cache.test.js` +1）
+
+- 逐项覆盖 initialize（已领养）、feed（成年后拒绝、幼年次数已满、幼年空背包余额不足）、claimDog（未成年、已领取）、seeds（无可领礼包、已领取）、compensation（无可领补偿）、story（编号无效、未解锁、已领取、不存在）、exchange（商品编号无效、商品未下发、钻石成本、钻石货币成本、限购、余额不足）前置拒绝：全部携带 `business: true` + 固定 code + 原有提示，且零操作编码、零写请求。
+- **逐场景精确读取计数**：每个前置拒绝断言恰好 `['List','GetGroup']`（重复读取任意次都会失败，不再是"调用名属于读取集合即通过"）；背包读取按场景精确断言（仅 feed 余额校验与 exchange 余额校验各读一次，其余拒绝零背包读取）；compensation/story/exchange 成功路径同样断言精确调用序列与背包读取次数（0/0/1）。
+- 「写请求已发送后响应不匹配」：`PET_DIARY_REPLY_MISMATCH` 失败保留、写请求恰好一次、无自动重试——此类失败是发包后失败，不得描述为发包前拒绝或零写请求。
+- 业务拒绝（400+code）、传输失败（502）、账号未运行（409）均不清除成功读缓存、不触发额外刷新或写请求；成功操作仍正常清缓存（既有行为）。权限拒绝零 Worker 调用由既有用例继续覆盖。
+
+### 验证、边界与回滚
+
+- Node 20（v20.20.2）`node --test --test-concurrency=1 test/*.test.js` 串行全量 **594/594** 通过（基线 577 + 新增 17：worker-api-error 14 条、pet-diary-operate 扩展 2 条、pet-diary-cache 扩展 1 条）；新增/扩展定向全部通过；`friends-panel-readiness` 的 vm 提取（worker.js 源码切片）不受本次新增段影响。本轮 repair 未改前端与源码业务逻辑（仅测试与文档），协调进程已完成前端类型检查与隔离生产构建（线上 web/dist 产物未动）；本轮差异后的新逻辑指纹由协调进程按登记流程重验。本轮不重启 Bot、不提交、不推送——本地提交由协调进程在主 Agent 复核后统一执行。
+- **repair 轮修正（2026-09-20，主 Agent review 拒绝后返工）**：补齐三处传输失败（List/GetGroup/Operate）的真实跨层覆盖并把「Operate 发送失败 = 写请求已尝试一次」明确入断言；把原缓存用例从局部模拟 provider 升级为真实读写链共享 `activityReader`（此前用例只在路由层直接模拟 provider 增加版本，未经 handleApiCall/管理器，本文档曾将其误述为完整跨层验证）；pet-diary-operate 拒绝场景从"调用名属于读取集合"改为逐场景精确调用序列与背包读取计数；修正本文档此前文件数量误述。实施期间修正测试自身两处笔误（Operate 模拟路由返回结构、读路径版本取值少一层字段），服务实现零改动。
+- 工作区差异仅涉及批准文件共七个路径：三个源码文件（`worker.js` 管理响应错误段、`worker-manager.js` 管理响应错误重建段、`admin-pet-diary-operate-routes.js` catch 分支）、三个测试文件（新增 `worker-api-error.test.js`，扩展 `pet-diary-operate.test.js`、`pet-diary-cache.test.js`）与本文件；其他调度、生命周期与游戏传输代码逐字不变。核心收益链（自己成熟前 10 秒预留与 30–80ms Harvest、好友到点偷菜、重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE）零改动。
+- 本轮未决反馈（仅记录待处理，不要求本轮代码修复）：前端离线窗口的种子列表轮询噪声（下游定时器未检查账号运行状态）、15:39 一次背包网络失败后的五次 unknown 归因待复现、三条无请求归属的客户端 network_error、七次无关联请求点击（含两次导航与五次按钮）的覆盖缺口。
+- 待应用生产验证：修复未在运行中进程加载；下一轮反馈应观察萌宠操作业务拒绝是否返回 400+固定码而非 502/unknown，九次现场失败归因仍未知。
+- 回滚 `git revert <本轮提交>`：恢复业务拒绝一律 502/unknown 的旧行为（跨层元数据丢失），不影响活动操作能力本身；不得借回滚删除七个手动按钮或修改 pet-diary 操作服务。应用或回滚只能在既有 `farm:0.0` 窗格完成。
+- 遗留待证项不变：挑战书三档/幸运星/bichon/leyuan 专属图、种子目录 21 条历史待证基线、daily_share 成功回包解码、商城状态码语义。
