@@ -311,9 +311,9 @@ test('真正验收拒绝携带具体反馈，不能冒充隐私扫描命中', ()
 test('方案输出必须包含明确文件范围和行为验收合同', () => {
   const plan = { decision: 'approve', summary: 'fix the local race', allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'],
     acceptanceChecks: ['unready requests return without any upstream call'] };
-  assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), { ...plan, feedbackReviewed: false, lessons: [] });
+  assert.deepEqual(parseStageResult(JSON.stringify(plan), 'plan', new Set()), { ...plan, baselineChecks: [], feedbackReviewed: false, lessons: [] });
   assert.throws(() => parseStageResult(JSON.stringify({ ...plan, acceptanceChecks: [] }), 'plan', new Set()), { code: 'invalid_decision' });
-  assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks', 'feedbackReviewed', 'lessons']);
+  assert.deepEqual(buildStageSchema('plan').required, ['decision', 'summary', 'allowedFiles', 'acceptanceChecks', 'baselineChecks', 'feedbackReviewed', 'lessons']);
 });
 
 test('干净工作区每日巡检先验证当前逻辑，零改动也不能跳过验证', async () => {
@@ -338,4 +338,42 @@ test('首次逻辑验证失败交主 Agent 诊断、子 Agent 修复、验收后
   assert.equal(f.counts.repair, 1);
   assert.equal(f.counts.repair_review, 1);
   assert.ok(f.calls.findIndex(x => x.phase === 'repair_review') < f.calls.findIndex(x => x.phase === 'research'));
+});
+
+for (const [mainAgent, subAgent] of [['codex', 'claude'], ['claude', 'codex']]) {
+  test(`精简工作流服从角色选择 ${mainAgent}/${subAgent}，返工只回最终验收`, async () => {
+    const f = setup();
+    Object.assign(f.deps, { settings: { mainAgent, subAgent }, dailyBrain: true, efficientMode: true });
+    f.stages((phase, count) => {
+      if (phase === 'plan') return { decision: 'approve', summary: 'approved scope' };
+      if (phase === 'implement') { f.files['core/src/example.js'] = 'first'; return { decision: 'implemented', summary: 'implementation' }; }
+      if (phase === 'review' && count === 1) return { decision: 'reject', summary: 'correct approved behavior' };
+      if (phase === 'repair') { f.files['core/src/example.js'] = 'fixed'; return { decision: 'implemented', summary: 'fixed' }; }
+    });
+    assert.equal((await runTeamWorkflow(f.deps)).decision, 'approve');
+    assert.equal(f.calls[0].phase, 'research');
+    assert.equal(f.calls[0].agent, subAgent);
+    assert.deepEqual(f.calls.filter(call => call.agent === mainAgent).map(call => call.phase), ['plan', 'review', 'review']);
+    assert.equal(f.counts.triage, undefined);
+    assert.equal(f.counts.diagnose, undefined);
+    assert.equal(f.counts.repair_review, undefined);
+    assert.equal(f.counts.repair, 1);
+    assert.equal(f.committed(), 1);
+  });
+}
+
+test('批准范围内的验证失败由子 Agent 修复，主 Agent 不重复诊断', async () => {
+  const f = setup();
+  f.deps.efficientMode = true;
+  f.stages((phase) => {
+    if (phase === 'plan') return { decision: 'approve', summary: 'approved scope' };
+    if (phase === 'implement') f.files['core/src/example.js'] = 'first';
+    if (phase === 'repair') { f.files['core/src/example.js'] = 'fixed'; return { decision: 'implemented', summary: 'fixed' }; }
+  });
+  f.validation(count => { if (count === 1) throw createTeamError('verification_failed'); });
+  await runTeamWorkflow(f.deps);
+  assert.equal(f.counts.diagnose, undefined);
+  assert.equal(f.counts.repair_review, undefined);
+  assert.equal(f.counts.review, 1);
+  assert.equal(f.verified(), 2);
 });

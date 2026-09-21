@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { collectRuntimePrivacyTerms, redactExternalText, scanTextForPrivacy } = require('./privacy-guard');
 const { LESSON_TOPICS, normalizeLessons } = require('./evolution-learning');
+const { normalizeBaselineChecks } = require('./evolution-countercheck');
 
 const AGENTS = new Set(['claude', 'codex']);
 const PHASES = new Set(['triage', 'research', 'revise_plan', 'plan', 'implement', 'verify', 'review', 'diagnose', 'repair', 'repair_review', 'commit', 'complete', 'failed']);
@@ -15,6 +16,7 @@ const PRIVATE_CONTROLS = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js', 'scripts/evolution-hooks/pre-push',
   'core/src/services/activity-evolver.js',
+    'core/src/services/evolution-countercheck.js', 'core/scripts/countercheck-reporter.cjs',
     'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
@@ -93,9 +95,13 @@ function buildStageSchema(phase) {
       } : {}),
       summary: { type: 'string', minLength: 1, maxLength: 24000 },
       ...(['diagnose', 'plan'].includes(phase) ? { allowedFiles: { type: 'array', maxItems: 30, items: { type: 'string' } } } : {}),
+      ...(phase === 'plan' ? { baselineChecks: { type: 'array', maxItems: 4, items: { type: 'object', additionalProperties: false,
+        properties: { sourceFiles: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } },
+          testFiles: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } }, minFailures: { type: 'integer', minimum: 1, maximum: 100 } },
+        required: ['sourceFiles', 'testFiles', 'minFailures'] } } } : {}),
       ...(phase === 'plan' ? { acceptanceChecks: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1000 } } } : {}),
     },
-    required: [...(phase === 'plan' ? ['decision', 'summary', 'allowedFiles', 'acceptanceChecks']
+    required: [...(phase === 'plan' ? ['decision', 'summary', 'allowedFiles', 'acceptanceChecks', 'baselineChecks']
       : phase === 'diagnose' ? ['decision', 'summary', 'allowedFiles'] : ['decision', 'summary']),
     ...(reportsLearning ? ['feedbackReviewed', 'lessons'] : [])],
   };
@@ -195,7 +201,10 @@ function normalizePlanApproval(value) {
     throw createTeamError('invalid_decision');
   }
   if (allowedFiles.some(file => ORCHESTRATION_FILES.has(file))) throw createTeamError('repair_scope');
-  return { ...value, allowedFiles, acceptanceChecks: checks };
+  let baselineChecks;
+  try { baselineChecks = normalizeBaselineChecks(value.baselineChecks); } catch { throw createTeamError('invalid_decision'); }
+  if (baselineChecks.some(check => check.sourceFiles.some(file => !allowedFiles.includes(file)))) throw createTeamError('invalid_decision');
+  return { ...value, allowedFiles, acceptanceChecks: checks, baselineChecks };
 }
 
 function parseStageResult(text, phase, runtimeTerms) {
@@ -221,15 +230,15 @@ function parseStageResult(text, phase, runtimeTerms) {
   return { decision: value.decision, summary: sanitizeHandoff(value.summary, runtimeTerms),
     ...(lessons ? { lessons, feedbackReviewed: value.feedbackReviewed === true } : {}),
     ...(allowedFiles ? { allowedFiles } : {}),
-    ...(phase === 'plan' ? { acceptanceChecks: value.acceptanceChecks.map(item => sanitizeHandoff(item, runtimeTerms)) } : {}) };
+    ...(phase === 'plan' ? { acceptanceChecks: value.acceptanceChecks.map(item => sanitizeHandoff(item, runtimeTerms)), baselineChecks: value.baselineChecks } : {}) };
 }
 
 function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
   const repairOnly = handoffs.some(item => item.phase === 'repair_ready');
   const roles = {
     triage: `你是主 Agent ${LABELS[settings.mainAgent]}，负责每日真实运行验收与诊断的第一步。先对照本轮反馈水位、匿名点击/错误、重点监控健康、既有经验与已验证版本，区分已解决旧问题、新故障、缺乏观察证据的路径；给子 Agent 分配具体检索/复现问题和最低证据要求。日常运行是生产验收样本，不能把没有报错或离线测试通过等同覆盖全部逻辑。只读、不改代码、不写运行状态、不清日志；decision 固定 triaged。`,
-    research: `你是子 Agent ${LABELS[settings.subAgent]}，负责广泛检索 GitHub 与本地巡查。先核对协调进程本轮公开仓库发现记录中的查询完成情况；完整记录可复用，不重复相同关键词搜索。缺失时以 qq farm、QQ农场、farm bot、nqf 等关键词补查，不局限于既有项目；按相关性、最近更新与实现差异筛选并比较多个项目。每日先核对本机私有参考配置中的项目；读取六组查询及完整候选清单（最多四十个），按更新时间、近七天提交采样、活跃天数和本地问题相关性逐项初筛。采样达到上限只是频率下界，不能宣称统计了全部提交。新增和最近更新的候选都必须在交接中给出“有借鉴线索/已有等价实现/待证或未深读”的结论；只读深入对照更新的重点项目及至少两个新候选（不足时如实说明）。SHA未变且有此前主 Agent 确认的比较记录时复用旧结论；见过元数据不等于已经审阅源码。每批深入对照最多六个仓库，超出预算的明确留在私有待评估清单，下次继续，不能省略后冒称全覆盖；沿用总超时预算，遇限流/网络失败记明未完成部分，不重试风暴、不声称已完成检索。只读比较调度分层、任务追踪、有界恢复、活动/UI/配置组织。来源、SHA、已比较文件、结论及待评估项只写 ignored 的 client-config-evidence/sources.json，保留既有内容；公开代码/文档只用参考别名并保留提交与文件定位，不写来源地址或仓库名，不存外部原文。逐项审阅最近24小时daily-feedback摘要中的点击→请求→结果与异常，以匿名trace关联本机流水，不读取输入文本或凭据。把实际回归覆盖与未验证路径列清；旧成功记录只证明当时已登记测试，新错误仍须复现、补行为测试。结合本地增量证据给主 Agent 提出具体方案、受影响文件、风险与验证步骤；没有可靠收益就建议零改动。decision 固定为 researched。`,
-    plan: `你是主 Agent ${LABELS[settings.mainAgent]}，负责独立巡查并确认思路。逐条审查子 Agent 的证据、GitHub 借鉴适用性、HANDOFF 不变量和修改范围。批准时给出明确文件范围、实施步骤、验收条件，将具体实现交给子 Agent。decision 为 approve（批准具体方案）、no_change（确认无需改动）或 reject（方案需重写）。approve 必须在 allowedFiles 明确列出实施文件（含 HANDOFF 和测试），并在 acceptanceChecks 逐条列出可执行的行为验收条件；其他决策给空数组。拒绝后只允许子 Agent 修订方案，不得提前实施。保留用户已批准并上线的功能，不因本轮未重新找到历史材料就撤销授权或删除入口。不得仅复述子 Agent 建议。`,
+    research: `你是子 Agent ${LABELS[settings.subAgent]}，负责每日反馈初检、问题定位、广泛检索 GitHub 与本地巡查，并准备复现和验证证据，承担主要执行工作。先核对协调进程本轮公开仓库发现记录中的查询完成情况；完整记录可复用，不重复相同关键词搜索。缺失时以 qq farm、QQ农场、farm bot、nqf 等关键词补查，不局限于既有项目；按相关性、最近更新与实现差异筛选并比较多个项目。每日先核对本机私有参考配置中的项目；读取六组查询及完整候选清单（最多四十个），按更新时间、近七天提交采样、活跃天数和本地问题相关性逐项初筛。采样达到上限只是频率下界，不能宣称统计了全部提交。新增和最近更新的候选都必须在交接中给出“有借鉴线索/已有等价实现/待证或未深读”的结论；只读深入对照更新的重点项目及至少两个新候选（不足时如实说明）。SHA未变且有此前主 Agent 确认的比较记录时复用旧结论；见过元数据不等于已经审阅源码。每批深入对照最多六个仓库，超出预算的明确留在私有待评估清单，下次继续，不能省略后冒称全覆盖；沿用总超时预算，遇限流/网络失败记明未完成部分，不重试风暴、不声称已完成检索。只读比较调度分层、任务追踪、有界恢复、活动/UI/配置组织。来源、SHA、已比较文件、结论及待评估项只写 ignored 的 client-config-evidence/sources.json，保留既有内容；公开代码/文档只用参考别名并保留提交与文件定位，不写来源地址或仓库名，不存外部原文。逐项审阅最近24小时daily-feedback摘要中的点击→请求→结果与异常，以匿名trace关联本机流水，不读取输入文本或凭据。把实际回归覆盖与未验证路径列清；旧成功记录只证明当时已登记测试，新错误仍须复现、补行为测试。结合本地增量证据给主 Agent 提出具体方案、受影响文件、风险与验证步骤；没有可靠收益就建议零改动。decision 固定为 researched。`,
+    plan: `你是主 Agent ${LABELS[settings.mainAgent]}，负责独立巡查并确认思路。逐条审查子 Agent 的证据、GitHub 借鉴适用性、HANDOFF 不变量和修改范围。批准时给出明确文件范围、实施步骤、验收条件，将具体实现交给子 Agent。decision 为 approve（批准具体方案）、no_change（确认无需改动）或 reject（方案需重写）。approve 必须在 allowedFiles 明确列出实施文件（含 HANDOFF 和测试），并在 acceptanceChecks 逐条列出可执行的行为验收条件；需要协调器做旧代码反向对照时，必须在 baselineChecks 声明 sourceFiles/testFiles/minFailures（基线由协调器固定、只在隔离副本执行）；没有要求则为空数组。不要只在文字验收清单里要求执行器没有登记的工具动作。其他决策给空数组。拒绝后只允许子 Agent 修订方案，不得提前实施。保留用户已批准并上线的功能，不因本轮未重新找到历史材料就撤销授权或删除入口。不得仅复述子 Agent 建议。`,
     revise_plan: `你是子 Agent ${LABELS[settings.subAgent]}，根据主 Agent 最近一次拒绝理由修订研究结论和实施建议。此阶段始终只读，不写代码、测试或文档，不重新扩展无关任务；逐条回应缺口，给出最小文件范围与真实行为测试方案，交回主 Agent 重新审批。decision 固定为 researched。`,
     implement: `你是子 Agent ${LABELS[settings.subAgent]}，负责实施主 Agent 已批准的方案，只能修改已批准 allowedFiles，逐项满足 acceptanceChecks；这些条件是本轮验收合同。修改代码、补必要回归、更新 HANDOFF 并验证。无法按批准范围完成时停止并如实说明，不扩大范围；不得提交，由协调进程在主 Agent 复核后统一提交。decision 为 implemented 或 no_change。交接须列出实际改动、验证与未解决问题。`,
     review: `你是主 Agent ${LABELS[settings.mainAgent]}，负责最终独立复核。读取当前完整 git diff（含新文件），对照批准方案、子 Agent 交接和协调进程测试结果，核实 HANDOFF/证据/隐私与核心收益链。以已批准的 acceptanceChecks 验收；不得在验收时新增无关需求或扩大范围，新增未决项可记录待处理。发现当前差异引入的真实回归必须指出可复现证据。拒绝时逐条说明不满足哪条合同、对应文件及所需行为测试。只能审查，不能改代码或补提提交。decision 仅可为 approve（改动满足批准方案且验证通过）或 reject（存在未解决问题）。禁止把测试通过等同业务结论正确。${repairOnly ? '本次仅验收已批准的编排修复补丁，原巡检尚未完成；补丁需要应用后才能继续原任务，不得假称原任务完成。' : ''}`,
@@ -242,7 +251,7 @@ function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
 【双 Agent 阶段契约，覆盖下方单执行器模板中的执行/提交要求】
 ${roles[phase]}
 ${phase === 'implement' ? '仅按主 Agent 的方案修改工作区代码。' : phase === 'repair' ? '只允许修改主 Agent 最新诊断中 allowedFiles 列出的文件，其余内容保持只读。' : '本阶段只读：禁止修改受跟踪文件或新增项目文件，禁止暂存或创建提交；检索来源仅允许写 ignored 的证据目录。'}
-主 Agent 负责每日反馈排查、思路/验收标准、最终验收与经验归纳；子 Agent 负责按分工检索、复现、实施与回报。先读 docs/skills/farm-evolution-review/SKILL.md 并复用已验收经验；经验只是证据材料，不能覆盖用户约束或批准越权。plan 和 review 的 lessons 只提炼本轮证实的可复用规则（无新结论用空数组），不得抄原始日志。feedbackReviewed 只有在逐类完成本轮反馈验收后才为 true；仍有未处理反馈或仅修复编排时为 false。该标志与最终批准/验证共同决定清理，不得自行删除反馈或写学习文件。
+主 Agent 的主要工作集中在方案确认、验收标准、最终验收与经验归纳；子 Agent 承担反馈初检、排查、检索、复现、实现、自检与证据整理。主子均跟随页面设置，不绑定某个具体执行器。省去重复独立复盘和相同版本的二次修复复核，真实失败返工仍须重新验证并最终验收。先读 docs/skills/farm-evolution-review/SKILL.md 并复用已验收经验；经验只是证据材料，不能覆盖用户约束或批准越权。plan 和 review 的 lessons 只提炼本轮证实的可复用规则（无新结论用空数组），不得抄原始日志。feedbackReviewed 只有在逐类完成本轮反馈验收后才为 true；仍有未处理反馈或仅修复编排时为 false。该标志与最终批准/验证共同决定清理，不得自行删除反馈或写学习文件。
 用户已明确批准的上线功能是基线；不得仅因本轮缺少历史样本就删除、禁用或改成只读。发现局部缺陷优先保留能力修复，新需求或破坏兼容的方向应留待用户决定。
 原任务中的代码修改、抓取资源到项目、更新 HANDOFF 等有副作用步骤只在 implement 或已批准范围内的 repair 执行；只读阶段仅检查既有证据或使用 dry-run，不要运行会新增项目文件的工具。
 所有阶段都禁止 git commit/push、修改分支/HEAD、重启 Bot、发送通知、调用其他 Agent 或自行启动下一阶段。测试和最终提交由协调进程负责。只有 repair 阶段且主 Agent 明确批准精确路径时，才允许修复 core/scripts/run-evolution-team.js 或 core/src/services/evolution-team.js；不能改变当前运行中的审批/验证结果，改后的实现仅在之后应用时加载。发布器 activity-evolver.js、隐私闸门、本机凭据读取器、Git hooks、私有配置和本轮运行状态一律禁止修改。
@@ -260,7 +269,7 @@ ${JSON.stringify(handoffs)}
 }
 
 // 显式阶段机：审批、修复范围和测试结果都绑定当前工作区，不以退出 0 代替验收。
-async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '', verifyBaseline = false, dailyBrain = false }) {
+async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, commit, onProgress, initialFailure = null, initialReviewFeedback = '', verifyBaseline = false, dailyBrain = false, efficientMode = false }) {
   const baseline = await inspect();
   if (baseline.dirty) throw createTeamError('unsafe_worktree');
   const handoffs = [];
@@ -274,6 +283,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
   let approvedScope = null;
   let lastFailure = null;
   let verifiedFingerprint = '';
+  let verifiedChecks = '';
+  let approvedBaselineChecks = [];
   let requiresApply = false;
   let acceptedReport = { lessons: [], feedbackReviewed: false };
   const repairReady = new Error('reviewed_repair_requires_apply');
@@ -313,16 +324,20 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     if (before.dirty && (before.files || []).some(file => !authorizedFiles.has(file))) {
       throw fail(createTeamError('repair_scope'), 'verify', '');
     }
-    if ((!before.dirty && !verifyBaseline) || before.fingerprint === verifiedFingerprint) return;
+    if ((!before.dirty && !verifyBaseline) || (before.fingerprint === verifiedFingerprint && verifiedChecks === JSON.stringify(approvedBaselineChecks))) return;
     await onProgress('verify', '', details());
     let validation;
-    try { validation = await verify({ reviewedOrchestrationFiles: [...reviewedOrchestrationFiles] }); }
+    try { validation = await verify({ reviewedOrchestrationFiles: [...reviewedOrchestrationFiles], baselineChecks: approvedBaselineChecks, baseCommit: baseline.head }); }
     catch (error) { throw fail(error, 'verify', ''); }
     const after = await inspect();
     if (after.head !== baseline.head || after.fingerprint !== before.fingerprint) {
       throw fail(createTeamError('worktree_changed'), 'verify', '');
     }
     verifiedFingerprint = after.fingerprint;
+    verifiedChecks = JSON.stringify(approvedBaselineChecks);
+    if (validation?.countercheck?.state === 'passed') {
+      handoffs.push({ phase: 'countercheck', decision: 'passed', summary: sanitizeHandoff(JSON.stringify(validation.countercheck)) });
+    }
     handoffs.push({ phase: 'verify', decision: 'passed', summary: validation?.cached
       ? '当前逻辑指纹与已通过的完整回归一致，复用后端测试及前端类型/隔离构建记录；新增每日反馈仍需审查。'
       : '协调进程完成当前逻辑的全部已登记后端回归及前端检查；测试覆盖之外的路径不得宣称已验证。' });
@@ -339,10 +354,13 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       else runtimeRecoveryAttempt += 1;
       handoffs.push({ phase: 'failure', ...failure, attempt: used + 1, reviewFeedback });
       const latestReview = handoffs.slice().reverse().find(item => ['review', 'repair_review'].includes(item.phase) && item.decision === 'reject');
-      const diagnosis = failure.code === 'review_rejected' && approvedScope && latestReview
-        ? { decision: 'repair', allowedFiles: approvedScope, summary: latestReview.summary }
+      const reuseReview = failure.code === 'review_rejected' && approvedScope && latestReview;
+      const scopedValidationRepair = efficientMode && approvedScope && ['verification_failed', 'missing_handoff'].includes(failure.code);
+      const diagnosis = reuseReview || scopedValidationRepair
+        ? { decision: 'repair', allowedFiles: approvedScope, summary: reuseReview ? latestReview.summary
+          : '协调进程验证未通过。子 Agent 在主 Agent 已批准的范围内读取真实验证失败并修复，不扩大范围；再次验证通过后由主 Agent 最终验收。' }
         : await phase('diagnose', settings.mainAgent);
-      if (failure.code === 'review_rejected' && approvedScope && latestReview) handoffs.push({ phase: 'diagnose', ...diagnosis });
+      if (reuseReview || scopedValidationRepair) handoffs.push({ phase: 'diagnose', ...diagnosis });
       if (diagnosis.decision !== 'repair') throw fail(createTeamError('diagnosis_stopped'), 'diagnose', settings.mainAgent);
       const allowedFiles = normalizeRepairFiles(diagnosis.allowedFiles);
       const allowed = new Set(allowedFiles);
@@ -364,11 +382,15 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
         }
         if (repairError) throw repairError;
         await verifyCurrent();
-        const review = await phase('repair_review', settings.mainAgent);
-        if (review.decision !== 'approve') throw fail(createTeamError('review_rejected'), 'repair_review', settings.mainAgent);
+        // In the lean flow, the original final review accepts the repaired tree once.
+        // Separate repair_review remains only for legacy in-flight workflows.
+        if (!efficientMode) {
+          const review = await phase('repair_review', settings.mainAgent);
+          if (review.decision !== 'approve') throw fail(createTeamError('review_rejected'), 'repair_review', settings.mainAgent);
+        }
         if ([...paths].some(file => ORCHESTRATION_FILES.has(file) && before.fileFingerprints?.[file] !== after.fileFingerprints?.[file])) {
           requiresApply = true;
-          handoffs.push({ phase: 'repair_ready', summary: '编排修复已通过测试和修复验收。本次先独立复核并提交修复补丁，应用后再继续原巡检。' });
+          handoffs.push({ phase: 'repair_ready', summary: '编排修复已通过协调验证，本次进入主 Agent 最终复核后单独提交；应用后再继续原巡检。' });
         }
         return;
       } catch (error) {
@@ -419,7 +441,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     }
     // Clean/no-change runs must also establish evidence once for each logic version.
     if (verifyBaseline) await retry(verifyCurrent);
-    if (dailyBrain) await retry(() => phase('triage', settings.mainAgent));
+    if (dailyBrain && !efficientMode) await retry(() => phase('triage', settings.mainAgent));
     await retry(() => phase('research', settings.subAgent));
     let plan;
     while (true) {
@@ -436,6 +458,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     }
     if (plan.decision === 'approve') {
       approvedScope = plan.allowedFiles;
+      approvedBaselineChecks = plan.baselineChecks;
       for (const file of plan.allowedFiles) authorizedFiles.add(file);
       await retry(async () => {
         const before = await inspect();

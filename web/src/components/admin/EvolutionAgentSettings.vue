@@ -145,8 +145,8 @@ async function saveAgentSettings() {
       <span v-if="phaseText" class="rounded-full px-2 py-0.5 font-medium" :class="phaseClass">{{ phaseText }}</span>
     </div>
     <p :class="hintClass">
-      推荐组合：主 Codex（每日诊断、方案、验收与经验沉淀）+ 子 Claude（检索、复现与实施）；关闭双 Agent 时仅由主 Agent 单独执行。
-      主 Agent 先分派每日问题；执行恢复、只读方案修订和验收返工分别限两次。
+      主 Agent 按页面选择负责方案确认和最终验收；子 Agent 承担初检、排查、检索、实现和自检。角色可互换，关闭双 Agent 时由所选主 Agent 单独执行。
+      每天最多自动启动一轮综合巡检，失败不另起自动任务；本轮必要返工仍有次数上限。
     </p>
     <p v-if="evolutionStore.error" :class="errorClass">
       {{ evolutionStore.error }}

@@ -728,8 +728,7 @@ test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitH
   assert.match(source, /evolution_agent_watch/);
   assert.match(source, /evolution_recovery_watch/);
   assert.match(source, /function finalizeRecoveredEvolution/);
-  assert.match(source, /active\.dailyRetryCount < MAX_DAILY_FAILURE_RETRIES/);
-  assert.match(source, /scheduleDailySafetyRetry\(dailyDate, active\.dailyRetryCount \+ 1, retryDelay\)/);
+  assert.match(source, /lastAutomaticEvolveDate/);
   assert.match(handoff, /每轮改动必须同步更新 `docs\/HANDOFF\.md`/);
   assert.match(handoff, /每轮改动测试通过后必须上传 GitHub/);
   assert.match(handoff, /HANDOFF 是回归约束/);
@@ -742,16 +741,6 @@ test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitH
   assert.match(panel, /force=1/);
 });
 
-test('每日安全巡检和轻量活动核对顺序执行且失败只重试一次', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/services/activity-evolver.js'), 'utf8');
-  assert.match(source, /function scheduleDailyActivityFollowup/);
-  assert.match(source, /function scheduleDailySafetyRetry/);
-  assert.match(source, /MAX_DAILY_FAILURE_RETRIES = 1/);
-  assert.match(source, /payload\.dailyFollowup/);
-  assert.match(source, /Bot 错过窗口或中途重启时补当天 safety/);
-  assert.doesNotMatch(source, /else if \(state\.lastEvolveDate !== getLocalDateKey\(\)\)/);
-  assert.match(source, /task !== 'safety' && COMPLETED_STATUSES\.has\(outcome\)/);
-});
 
 test('自动进化暴露下次调度并按完成边界清理短期问题', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/services/activity-evolver.js'), 'utf8');

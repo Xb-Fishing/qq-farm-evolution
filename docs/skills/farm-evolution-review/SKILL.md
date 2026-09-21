@@ -5,11 +5,11 @@ description: Review daily farm-bot feedback, direct a worker Agent, verify fixes
 
 # Daily review and reusable lessons
 
-The configured main Agent owns diagnosis, task selection, acceptance criteria, and lessons. The current preferred roles are Codex as main and Claude as worker; preserve the user's role selectors.
+The configured main Agent owns diagnosis, task selection, acceptance criteria, and lessons. Both executors follow the page selections; never bind either role to a particular provider.
 
 Treat the day's actual operations as production acceptance evidence. First separate new failures from previously reviewed events, distinguish a successful request from a confirmed effect, and identify paths with no execution evidence. Read [HANDOFF](../../HANDOFF.md) for established invariants and the incident's relevant history. Never infer that missing logs or passing offline tests prove every live path works.
 
-Main Agent triage gives the worker concrete questions to research or reproduce. The worker compares public projects, builds isolated reproductions, and proposes focused changes. The main Agent approves exact files and executable acceptance checks. The worker implements within that scope; the coordinator runs real validation; the main Agent independently accepts or rejects the result. Workflow failures follow main diagnosis → worker repair → validation → main review.
+The worker performs the initial daily triage, compares public projects, builds isolated reproductions, and proposes focused changes. The main Agent approves exact files and executable acceptance checks. The worker implements within that scope; the coordinator runs real validation; the main Agent independently accepts or rejects the result. Within approved scope, validation failures and review feedback go directly to the worker for repair, then coordinator validation and one final main-Agent review. Escalate to main diagnosis only when the approved scope is insufficient. Avoid a separate repair review followed by the same final review.
 
 Use the injected content-fingerprint validation record. Reuse unchanged successful regressions; changes to logic, tests, configuration, or dependencies require new validation. New live failures still need investigation even if the old suite passed. Do not replay purchases, rewards, planting, or other game writes to manufacture coverage.
 
@@ -22,3 +22,5 @@ Set `feedbackReviewed` only after reviewing the captured feedback batch. Unresol
 Propose durable documentation or skill refinements in the main Agent's approved scope, with real regression evidence. The worker may implement approved documentation changes; the main Agent must verify their accuracy. Do not create repetitive commits just to record a daily run.
 
 Use the private reference configuration and full discovered candidate list. Prioritize recent changes and bounded seven-day commit samples; a sample limit is not an exact total update frequency. Classify every new or recently changed candidate, distinguish metadata discovery from reading code, and carry unfinished comparisons forward. Reuse unchanged comparisons only when a prior main-Agent-reviewed conclusion exists. Keep concrete repository names and addresses in private evidence; public notes retain reference aliases, commit anchors, code paths, and verification reasoning.
+
+Automatic safety and cached activity checks share one daily run, including after failure or restart. Manual runs are explicit and independent. If acceptance needs an old-code counterexample, the plan must declare executable `baselineChecks` (sourceFiles, testFiles, minFailures). The coordinator runs current and baseline variants in isolated copies, rejects import/environment failures as counterevidence, and provides signed-by-content result digests in handoff. Worker self-reports do not replace this evidence.

@@ -6,6 +6,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { buildEvolutionAgentCommand, buildEvolutionAgentEnv } = require('../src/services/activity-evolver');
 const { collectRuntimePrivacyTerms } = require('../src/services/privacy-guard');
 const { runEvolutionValidation } = require('../src/services/evolution-validation');
+const { runBaselineChecks } = require('../src/services/evolution-countercheck');
 const { collectPublicReferences } = require('../src/services/evolution-references');
 const {
   parseStageResult, runTeamWorkflow, teamJournalPath, buildStageSchema,
@@ -22,6 +23,7 @@ const PROTECTED_FILES = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js',
   'core/src/services/activity-evolver.js',
+    'core/src/services/evolution-countercheck.js', 'core/scripts/countercheck-reporter.cjs',
     'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
@@ -179,7 +181,7 @@ async function main(input) {
     const references = await collectPublicReferences({ dataDir });
     const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。`;
     const result = await runTeamWorkflow({
-      settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true, dailyBrain: true,
+      settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true, dailyBrain: false, efficientMode: true,
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
         const command = buildEvolutionAgentCommand(agent, stagePrompt);
@@ -207,7 +209,7 @@ async function main(input) {
         }
         return parseStageResult(response, phase, runtimeTerms);
       },
-      verify: async ({ reviewedOrchestrationFiles } = {}) => {
+      verify: async ({ reviewedOrchestrationFiles, baselineChecks = [] } = {}) => {
         const { files } = inspectWorktree();
         const reviewed = new Set(normalizeOrchestrationFiles(reviewedOrchestrationFiles));
         for (const file of files) {
@@ -217,11 +219,12 @@ async function main(input) {
         if (files.length && !files.includes('docs/HANDOFF.md')) throw createTeamError('missing_handoff');
         try {
           const validation = await runEvolutionValidation({ repoRoot, dataDir, execute, env });
+          validation.countercheck = await runBaselineChecks({ repoRoot, dataDir, baseCommit, checks: baselineChecks, env });
           persist({ validation });
           return validation;
         } catch (error) {
           // 真实测试/构建失败归为验证未通过并保留退出码；执行器无法启动等问题保留原类别。
-          if (error?.code === 'cli_exit' || String(error?.code || '').startsWith('EVOLUTION_VALIDATION_')) {
+          if (error?.code === 'cli_exit' || /^EVOLUTION_(?:VALIDATION|COUNTERCHECK)_/.test(String(error?.code || ''))) {
             throw createTeamError('verification_failed', { exitCode: error.exitCode, signal: error.signal });
           }
           throw error;
