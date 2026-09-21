@@ -67,7 +67,7 @@ const {
     delFriend
 } = require('../services/friend');
 const { mergeDueAt } = require('../services/steal-schedule');
-const { getNextWatchDueAt, inspectFriendLands } = require('../services/fertilizer-watch');
+const { getNextWatchDueAt, inspectFriendLands, getDueWatchFriends } = require('../services/fertilizer-watch');
 const { getInteractRecords } = require('../services/interact');
 const { processInviteCodes } = require('../services/invite');
 const {
@@ -727,8 +727,14 @@ async function runOwnHarvestStrike() {
 const SENTINEL_ARM_WATCHLIST_MS = 5_000;  // 重点好友：剩 5s 武装
 const SENTINEL_ARM_NORMAL_MS = 2_000;     // 普通好友：剩 2s 武装
 const SENTINEL_ACT_DELAY_MS = [30, 80];   // 到点出手延迟区间
+// 预进门（2026-09-22，借鉴 wjnnone 蹲守）：武装时提前 3s 进目标农场驻留，
+// 到点 Strike 跳过 Enter 往返（省一个 RTT，100-300ms → 直接出手）。
+const SENTINEL_PRE_ENTER_AHEAD_MS = 3_000;
 let sentinelTimer = null;
 let sentinelArmedFor = null; // { kind: 'friend', dueAt, gid? }
+// 预进门驻留状态：{ gid, dueAt, enteredAt }；Strike 消费或超时清理。
+let sentinelPreEnter = null;
+let sentinelPreEnterTimer = null;
 
 function clearSentinel() {
     if (sentinelTimer) {
@@ -736,6 +742,60 @@ function clearSentinel() {
         sentinelTimer = null;
     }
     sentinelArmedFor = null;
+    clearSentinelPreEnter();
+}
+
+function clearSentinelPreEnter() {
+    if (sentinelPreEnterTimer) {
+        clearTimeout(sentinelPreEnterTimer);
+        sentinelPreEnterTimer = null;
+    }
+    sentinelPreEnter = null;
+}
+
+/**
+ * 打开成熟抢收紧急窗口（见 request-governor setUrgentMode）。
+ * 惰性查找 globalThis.__setUrgentStrikeMode：生产路径在 worker 初始化时
+ * 挂上真实实现；测试沙箱（vm context）注入同名桩即可覆盖，不需要 require。
+ */
+function setUrgentStrikeMode(windowMs) {
+    const helper = globalThis.__setUrgentStrikeMode
+        || ((ms) => { require('../services/request-governor').setUrgentMode(true, Date.now() + ms); });
+    helper(windowMs);
+}
+
+/**
+ * 预进门驻留：武装成立后提前 3s 进目标农场（请求治理紧急通道放行）。
+ * 进门后不做任何操作，纯驻留；到点 Strike 直接发偷取请求。
+ * 失败静默（连接断/被踢等）——Strike 走常规完整路径兜底。
+ * 不主动 Leave：驻留过期由服务端会话管理，成功 Strike 的业务路径自己会 Leave。
+ */
+function armSentinelPreEnter(armed) {
+    const gid = Number(armed && armed.gid) || 0;
+    const dueAt = Number(armed && armed.dueAt) || 0;
+    if (!gid || !dueAt) return;
+    const now = Date.now();
+    const aheadMs = dueAt - now;
+    if (aheadMs <= 0 || aheadMs > SENTINEL_PRE_ENTER_AHEAD_MS + 1_500) return;
+    clearSentinelPreEnter();
+    sentinelPreEnterTimer = setTimeout(async () => {
+        sentinelPreEnterTimer = null;
+        const stillArmed = sentinelArmedFor && Number(sentinelArmedFor.gid) === gid;
+        if (!stillArmed) return;
+        try {
+            setUrgentStrikeMode(15_000);
+            const enterReply = await require('../services/friend-api').enterFriendFarm(gid);
+            sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply };
+            // 兜底清理：dueAt 后 60s 仍未被 Strike 消费则丢弃驻留标记。
+            sentinelPreEnterTimer = setTimeout(() => {
+                if (sentinelPreEnter && Number(sentinelPreEnter.gid) === gid) {
+                    sentinelPreEnter = null;
+                }
+            }, 60_000);
+            sentinelPreEnterTimer.unref?.();
+        } catch { /* 预进门失败：Strike 走完整路径 */ }
+    }, Math.max(0, aheadMs - SENTINEL_PRE_ENTER_AHEAD_MS));
+    sentinelPreEnterTimer.unref?.();
 }
 
 /** 好友哨兵到点动作：走偷菜快路径（含抢收快路径逻辑）。 */
@@ -746,16 +806,32 @@ async function runSentinelStrike() {
     if (!armed || friendSyncPaused) return;
     const autoConfig = getAutomation();
     const startedAt = Date.now();
+    const preEnter = sentinelPreEnter
+        && Number(sentinelPreEnter.gid) === Number(armed.gid)
+        && sentinelPreEnter.enteredAt > 0
+        ? sentinelPreEnter
+        : null;
     try {
         if (autoConfig.friend_steal && !ownHarvestIsImminent(10_000)) {
-            const handled = await checkFriends({ onlySteal: true });
+            // 抢收紧急通道：到点链路（Enter/CheckCanOperate/Harvest/Leave）
+            // 不被 60s 硬预算丢弃；窗口 15s，覆盖整次 Strike。
+            // 注：用惰性 require 保持测试沙箱（vm context 无 require）可注入桩。
+            if (typeof setUrgentStrikeMode === 'function') setUrgentStrikeMode(15_000);
+            const handled = await checkFriends({
+                onlySteal: true,
+                preEnter: preEnter
+                    ? { gid: preEnter.gid, enteredAt: preEnter.enteredAt, enterReply: preEnter.enterReply }
+                    : null,
+            });
+            if (preEnter) clearSentinelPreEnter();
             if (!handled) return;
-            log('系统', `哨兵抢收完成，成熟到点后 ${Date.now() - startedAt}ms 出手`, {
-                module: 'system', event: '哨兵抢收', result: 'ok'
+            log('系统', `哨兵抢收完成，成熟到点后 ${Date.now() - startedAt}ms 出手${preEnter ? '（预进门驻留）' : ''}`, {
+                module: 'system', event: '哨兵抢收', result: 'ok', preEnter: !!preEnter
             });
         }
     } catch { /* 失败交由常规 tick 兜底 */ }
     finally {
+        clearSentinelPreEnter();
         // 哨兵已处理该时刻，把常规偷菜唤醒顺延一小段，避免同一时刻重复进门
         nextStealRunAt = Date.now() + randInt(1500, 3000);
         markStealDueAt(0);
@@ -791,10 +867,15 @@ function armMaturitySentinel(now = Date.now()) {
         && Math.abs(sentinelArmedFor.dueAt - candidate.dueAt) < 500) return; // 已武装同一目标
 
     clearSentinel();
-    sentinelArmedFor = { kind: candidate.kind, dueAt: candidate.dueAt };
+    // 目标 gid：优先从到点盯梢（PREARM/HOT）解析；普通好友摘要 due 无 gid 时
+    // 不做预进门（armMaturitySentinel 的合并时钟拿不到归属），Strike 走完整路径。
+    const dueWatch = getDueWatchFriends(now);
+    const dueGid = dueWatch.length > 0 ? Number(dueWatch[0].gid) || 0 : 0;
+    sentinelArmedFor = { kind: candidate.kind, dueAt: candidate.dueAt, gid: dueGid };
     const delay = Math.max(0, candidate.dueAt - now) + randInt(SENTINEL_ACT_DELAY_MS[0], SENTINEL_ACT_DELAY_MS[1]);
     sentinelTimer = setTimeout(runSentinelStrike, delay);
     sentinelTimer.unref?.();
+    if (dueGid) armSentinelPreEnter(sentinelArmedFor);
 }
 
 // 偷菜 due 连续「已过期仍未被一轮成功巡查清掉」的次数；恢复到未来 due 即清零。
