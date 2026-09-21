@@ -448,7 +448,14 @@ function getLogMsgClass(tag: string) {
   return 'text-gray-700 dark:text-gray-300'
 }
 
-function formatLogTime(timeStr: string) {
+function formatLogTime(timeStr: string, ts?: number) {
+  // 优先用数字时间戳在浏览器本地时区格式化；服务端格式化的 time 字符串是服务器时区，
+  // 与今日事件（浏览器时区）相差一个时区偏移，会让运行日志看起来"时间不对"。
+  if (ts && Number.isFinite(ts) && ts > 0) {
+    const d = new Date(ts)
+    const pad = (v: number) => String(v).padStart(2, '0')
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  }
   if (!timeStr)
     return ''
   const parts = timeStr.split(' ')
@@ -973,7 +980,7 @@ useIntervalFn(updateCountdowns, 1000)
               </div>
             </div>
             <div v-for="log in allLogs" :key="log.ts + log.msg" class="mb-1 break-all">
-              <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time) }}]</span>
+              <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time, log.ts) }}]</span>
               <span class="mr-2 rounded px-1.5 py-0.5 text-xs font-bold" :class="getLogTagClass(log.tag)">{{ log.tag }}</span>
               <span v-if="log.meta?.event" class="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-500 dark:bg-blue-900/20 dark:text-blue-400">{{ getEventLabel(log.meta.event) }}</span>
               <span :class="getLogMsgClass(log.tag)">{{ log.msg }}</span>
