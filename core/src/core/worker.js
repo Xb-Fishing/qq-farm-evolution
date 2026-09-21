@@ -487,6 +487,11 @@ let nextStealRunAt = 0;
 const STEAL_IDLE_MS = 24 * 3600 * 1000;
 const STEAL_REDISCOVERY_MIN_MS = 5 * 60_000;
 const STEAL_REDISCOVERY_MAX_MS = 8 * 60_000;
+// ponytail: 重点好友摘要刷新下限，60-120s 高斯抖动。请求代价是空闲期每下限
+// 一次 getAllFriends（全部好友共用一次请求）；要更快的催熟捕获就收紧这两个值，
+// 代价是更高请求密度（防封红线内已尽量取宽）。
+const PRIORITY_SUMMARY_FLOOR_MIN_MS = 60_000;
+const PRIORITY_SUMMARY_FLOOR_MAX_MS = 120_000;
 
 /**
  * 只有完全没有成熟墙钟时才低频重新发现。普通偷菜有已知时刻后直接等到点，
@@ -796,16 +801,29 @@ function armMaturitySentinel(now = Date.now()) {
 let stealOverdueStrikes = 0;
 
 function armStealWake(now = Date.now()) {
+    const watchlistDue = Number(getNextWatchlistStealDueAtMs()) || 0;
     const dueAt = mergeDueAt(
         Number(getNextStealDueAtMs()) || 0,
         getNextWatchDueAt(now),
-        Number(getNextWatchlistStealDueAtMs()) || 0
+        watchlistDue
     );
     if (dueAt > now) {
         stealOverdueStrikes = 0;
         // 普通偷菜按成熟墙钟一次性到点唤醒；若 dueAt 来自 HOT/PREARM，
         // 它本身就是该目标下一次独立进门时刻，不需要全好友摘要轮询。
-        nextStealRunAt = dueAt + randInt(30, 120);
+        // 重点好友催熟兜底（2026-09-22）：催熟可从任意时刻直接立即可偷，
+        // 122 分钟观察窗与窗口外 5-8 分钟巡田都盖不住「窗口外催熟→秒偷」；
+        // 有重点好友挂未来成熟墙钟时加 60-120s 摘要刷新下限（一次
+        // getAllFriends 覆盖全部好友），瞬熟立即出现在摘要可偷列表走既有
+        // 抢收、普通施肥提前触发摘要跳变 HOT。真实到期更近时 min 自然取
+        // 真实值，HOT/PREARM 的更短到期不受影响。
+        const summaryFloorMs = watchlistDue > now
+            ? gaussianInt(PRIORITY_SUMMARY_FLOOR_MIN_MS, PRIORITY_SUMMARY_FLOOR_MAX_MS)
+            : 0;
+        nextStealRunAt = Math.min(
+            dueAt + randInt(30, 120),
+            summaryFloorMs > 0 ? now + summaryFloorMs : Number.POSITIVE_INFINITY
+        );
         markStealDueAt(dueAt);
         armMaturitySentinel(now);
         return;

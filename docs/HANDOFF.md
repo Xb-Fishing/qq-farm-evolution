@@ -1744,3 +1744,24 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 隐私拦截的**自动改写推送**仍刻意不做：自动改写被拦截内容会掩盖真实泄密（如 token），fail-closed + 可续接重做是正确闭环；运维侧人工匿名化恢复（如 91104eb 先例）只在确认是别名/身份类误伤时使用。
 - `agentSessionId` 等新字段经 normalizePersistedState 白名单校验（格式不符清空）；session 文件纳入 evolve 日志保留期清理。
 - 回滚：revert 本次提交；已推送提交的保护（ensureHeadPushed 前置检查）独立于此提交，建议保留。
+
+## 重点好友窗口外催熟检测盲区：偷菜唤醒摘要刷新下限（2026-09-22，维护会话 III）
+
+### 问题根因（用户指出的隐藏 bug）
+
+场景：重点监控好友自然成熟还在 2 小时以上（122 分钟观察窗口之外），好友使用催熟化肥使作物**立即成熟**，随后被秒偷。现有两层感知都盖不住：
+
+- **窗口外巡田是 5-8 分钟一次**（enterFriendFarm 每好友）；设计假设“化肥一次最多催熟约 2 小时”只覆盖窗口内的常规加速，瞬熟从任意时刻直接可偷，5-8 分钟足够错失全部作物。
+- **摘要刷新被饿死**：`armStealWake` 在有已知未来到期（如 2.5h 后）时把下一次偷菜唤醒直接设到到期点，期间 `getAllFriends` 完全不跑——`noteFriendSummaries` 的重点跳变检测（PRIORITY_SUMMARY_SHOCK 10min）从未有机会触发，事后连“发生过施肥”都无法识别。
+
+### 本次改动
+
+- `armStealWake`（worker.js）：当 `watchlistDue > now`（任一重点好友挂未来成熟墙钟）时，偷菜唤醒取 `min(真实到期, now + 60-120s 高斯抖动)`。每次下限唤醒走既有 `runStealTick → checkFriends({onlySteal:true})`：一次 getAllFriends 覆盖全部好友——瞬熟好友立即出现在摘要 `steal_plant_num` 走既有抢收链；常规施肥提前触发摘要跳变进 HOT 秒级盯梢；即便到时已被偷光，摘要成熟时刻跳变（advance ≥ 10min）仍会触发 HOT 并留下施肥趋势日志。真实到期更近时 min 自然取真实值，HOT（0.4-1.2s）与 PREARM（≤60s）到期不受影响；哨兵武装与空闲 horizon 展示仍按真实墙钟。
+- 请求代价：空闲期每 60-120s 一次 getAllFriends（此前窗口外巡田本身 5-8 分钟一次且是每好友进门，摘要请求信息密度更高）。无重点好友时零变化。
+
+### 踩坑、注意点与回滚
+
+- 催熟+秒偷在 60s 内完成的极端竞速仍无解（需亚分钟级轮询 = 请求指纹，防封红线不做）；本修复把识别延迟从“最长 8 分钟/或彻底错过”压到 ≤2 分钟，且保证趋势至少被识别记录。
+- LandsNotify 好友地块推送路径已存在（onFriendLandsChanged → inspectFriendLands partial → HOT）：若服务端对好友施肥主动下发推送，即为零成本瞬时通道，巡检时留意该事件是否实际到达。
+- 下限值 60-120s 写死常量（PRIORITY_SUMMARY_FLOOR_MIN/MAX_MS）；需要更快捕获可收紧，代价是请求密度上升。
+- 测试：maturity-sentinel 断言更新（min 结构 + 常量校验）30/30；全量 616/619（3 个环境预存失败与本次无关）。回滚：revert 本次提交即恢复“按真实到期一次性唤醒”。
