@@ -183,13 +183,23 @@ test('known ordinary steal maturity waits for due while HOT and PREARM keep inde
   const end = src.indexOf('async function runStealTick', start);
   const body = src.slice(start, end);
   assert.match(body, /getNextWatchDueAt\(now\)/);
-  assert.match(body, /nextStealRunAt = dueAt \+ randInt\(30, 120\)/);
+  // 2026-09-22 催熟兜底：重点好友挂未来墙钟时，真实到期与 60-120s 摘要
+  // 刷新下限取 min；无重点墙钟时保持按真实到期一次性唤醒。
+  assert.match(body, /nextStealRunAt = Math\.min\(/);
+  assert.match(body, /dueAt \+ randInt\(30, 120\)/);
+  assert.match(body, /gaussianInt\(PRIORITY_SUMMARY_FLOOR_MIN_MS, PRIORITY_SUMMARY_FLOOR_MAX_MS\)/);
+  assert.match(body, /watchlistDue > now/);
   assert.doesNotMatch(body, /ripeRecheckDelayMs/);
   assert.doesNotMatch(body, /nextPreRipeScanAt/);
 
   const farmStart = src.indexOf('async function runFarmTick');
   const farmEnd = src.indexOf('// ==================== 帮助 Tick', farmStart);
   assert.doesNotMatch(src.slice(farmStart, farmEnd), /refreshFriendRipeSchedule/);
+});
+
+test('催熟兜底摘要下限常量保持高斯抖动且不低于一分钟', () => {
+  assert.match(src, /PRIORITY_SUMMARY_FLOOR_MIN_MS = 60_000/);
+  assert.match(src, /PRIORITY_SUMMARY_FLOOR_MAX_MS = 120_000/);
 });
 
 test('unknown friend maturity uses only a five-to-eight-minute rediscovery fallback', () => {
