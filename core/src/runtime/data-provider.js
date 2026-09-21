@@ -160,6 +160,10 @@ function createDataProvider(deps) {
         getFriends: (ref, force = false) => callWorkerApi(resolveAccountId(ref), 'getFriends', force,
             force ? FRIEND_TIMEOUT : undefined),
         clearFriendsCache: (ref) => callWorkerApi(resolveAccountId(ref), 'clearFriendsCache'),
+        // 只读探测：摘要字段在线漂移（gapMs 秒间隔两次全量摘要 diff），超时放宽到 90s。
+        probeFriendSummaryDrift: (ref, gapMs = 15_000) => callWorkerApi(
+            resolveAccountId(ref), 'probeFriendSummaryDrift', gapMs, 90_000
+        ),
         getInteractRecords: (ref) => callWorkerApi(resolveAccountId(ref), 'getInteractRecords'),
         getFriendLands: (ref, gid) => callWorkerApi(resolveAccountId(ref), 'getFriendLands', gid),
         doFriendOp: (ref, gid, op) => callWorkerApi(resolveAccountId(ref), 'doFriendOp', gid, op),

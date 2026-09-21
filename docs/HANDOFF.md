@@ -1783,3 +1783,26 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 测试沙箱（maturity-sentinel vm context）无 require：setUrgentStrikeMode 用 globalThis.__setUrgentStrikeMode 惰性查找注入；armSentinelPreEnter 里的 friend-api require 只在真实 gid + 定时器触发时执行，沙箱 gid=0 早退不受影响。
 - 预进门驻留 3 秒 + Enter 一次是额外请求，但发生在“到点必然要 Enter”的同一目标上，总量不变、时间提前；紧急窗口 15s 覆盖整次 Strike，不叠加油门。
 - 测试：request-governor 14/14（新增紧急通道用例：链路放行/非链路拦截/窗口过期恢复）；maturity-sentinel 25/25（新增预进门+紧急通道源断言）；全量 619/621（2 个环境预存失败与本次无关）。回滚：revert 本次提交，哨兵回到“到点才 Enter”。
+
+## 好友在线信号验证：摘要字段漂移探测（2026-09-22，维护会话 V）
+
+### 背景
+
+用户确认方向：检测重点好友「是否上线」的行为痕迹作为额外判断信号（行为时段画像被否决——无固定规律）。协议无好友 online 字段，唯一候选是「好友在线期间摘要字段会漂移」（gold/level/tags/plant 微态）。本条目先落只读探测工具，验证结论后再生检测逻辑。
+
+### 本次改动
+
+- worker 新增 `probeFriendSummaryDrift(gapMs)` API（handleApiCall 分发）：间隔 gapMs（5-60s，默认 15s）拉两次 force-refresh 全量好友摘要，逐好友 diff level/gold/tags/plant 子字段（steal/dry/weed/insect/ripe_time），返回漂移明细（好友名 + 字段变化），不带 gid。
+- 暴露链路：data-provider `probeFriendSummaryDrift`（超时 90s）→ `GET /api/friends/summary-drift-probe?gapMs=15000`（管理员鉴权，走既有 worker API 通道与请求治理预算）。
+- 两次摘要之间不加任何额外请求；probe 本身不进 FRIEND_PANEL_ENTRY_METHODS 就绪闸门（只读探测不暂停自动化）。
+
+### 使用与判读
+
+- curl 或浏览器带管理 token 调 `/api/friends/summary-drift-probe`，观察 `drifts` 数组：窗口内谁哪些字段变了。
+- 判读要点：plant 微态变化大部分来自作物自然生长/被偷（离线也会变）；**gold/level/tags 变化才是在线行为痕迹**（消费/收菜/升级）。需在「已知好友在线」（如刚触发施肥 HOT）与「深夜无活动」两个时段各跑几次对照，才能确认字段有效性。
+- 若 gold 精度足够（非整数档位），检测逻辑可做「重点好友 gold/tags 窗口内变化 → 该好友在线 → 收紧其巡田节奏」——具体阈值等验证结论。
+
+### 踩坑与回滚
+
+- getFriendsList(true) 强刷两次间隔 15s：两次都是全量摘要请求，计入治理画像（正常预算内）；探测频率由人工控制，不自动轮询。
+- 回滚：revert 本次提交，探测入口移除，无任何调度/检测行为变化（纯只读工具）。
