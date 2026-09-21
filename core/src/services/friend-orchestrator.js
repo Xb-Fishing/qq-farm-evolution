@@ -31,6 +31,7 @@ const {
   getNextKnownFriendRipeEntry,
 } = require('./fertilizer-watch');
 const { getBreakerState } = require('./request-governor');
+const { isFriendRecentlyActive: isFriendActiveEvidence } = require('./friend-activity');
 const {
   stealIsDue,
   stealIsImminent,
@@ -155,6 +156,12 @@ function nextWatchlistPollDelayMs(remainMs, options = {}) {
     // PREARM 已独立按成熟墙钟触发，无需继续进门确认日常状态。
     return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
   }
+  // 好友活跃证据命中（社交道具/隐时钟，2026-09-22）：该好友 30 分钟内
+  // 有动作，窗口外基线档临时收紧到 45-75s——比 HOT 秒级保守，但比 5-8
+  // 分钟快一个数量级，覆盖"刚活跃→可能继续施肥"的窗口。
+  if (options.activityEvidence) {
+    return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
+  }
   // 不错过成熟前 60 秒的 PREARM 武装点；其余时间保持单目标抖动基线刷新。
   return Math.max(
     WATCHLIST_POLL_TICK_MS,
@@ -176,9 +183,12 @@ function isWatchlistObservationWindow(remainMs) {
  * 观察窗内与已确认的施肥 HOT 不加额外等待，保持原有节奏。
  */
 function scheduleWatchlistPollNext(gid, now, remainMs, slowdown) {
-  const baselineDelay = nextWatchlistPollDelayMs(remainMs);
+  const baselineDelay = nextWatchlistPollDelayMs(remainMs, {
+    activityEvidence: isFriendActiveEvidence(gid, now),
+  });
   const inObservationWindow = isWatchlistObservationWindow(remainMs);
-  if (slowdown && slowdown.active && !isFertilizerHot(gid, now) && !inObservationWindow) {
+  const hasActivityEvidence = isFriendActiveEvidence(gid, now);
+  if (slowdown && slowdown.active && !isFertilizerHot(gid, now) && !inObservationWindow && !hasActivityEvidence) {
     const floorMs = Math.max(30_000, Number(slowdown.recommendedDelayMs) || 90_000);
     return now + baselineDelay + gaussianInt(floorMs, Math.floor(floorMs * 1.5));
   }
@@ -1547,6 +1557,7 @@ module.exports = {
   getNextStealDueAtMs,
   getNextWatchlistStealDueAtMs,
   getWatchlistRipeSnapshots,
+  getActivityEvidenceSummary: require('./friend-activity').getActivityEvidenceSummary,
   getWatchlistWakeBeforeMs,
   nextWatchlistPollDelayMs,
   applyStealScheduleFromFriends,
