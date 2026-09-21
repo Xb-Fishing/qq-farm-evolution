@@ -1534,7 +1534,7 @@ function runEvolutionNow(task = 'activity', options = {}) {
       reason: 'no_candidates',
       error: force
         ? '当前扫描报告没有可重新复核的活动'
-        : '当前没有待处理的新活动或结束活动，无需启动 Agent',
+        : '当前没有待处理的新活动或结束活动，未启动 Agent（每日综合巡检仍会做 GitHub 公开对照）。如需立即复核当前活动并检索参考项目，请点「重新进化当前活动」',
     };
   }
   return launchEvolution('activity', { report, newUnknown, newEnded, reviewIds });
