@@ -1705,3 +1705,21 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 - 本轮**零代码改动**：无可靠问题证据、无安全收益、现有逻辑符合要求（核心收益链 55/55 成功、治理零拦截、修复项产线闭环），按硬门 8 代码保持不变；本条目仅按硬门 10g 记录新证据链（萌宠业务码产线闭环、账号 A 待扫码、外部版本线索），`git revert <本轮提交>` 无任何行为影响。本轮 Agent 不重启 Bot、不推送远端。
 - 下轮注意：账号 A 重新扫码前，微信长凭据保活失败会继续按已知路径低频出现，不要当作新异常收紧；萌宠操作 400+rejected 已是正常业务拒绝形态，reason=unknown 分类方案仍待主 Agent 批准后才实施。
+
+## 隐私闸门拦截根因修复：向 Agent 注入参考别名映射（2026-09-22，维护会话）
+
+### 事件与根因
+
+- 本轮安全巡检提交（零代码改动、仅 HANDOFF 18 行）在 HANDOFF「公开对照」行写出了外部参考仓库真实 `owner/repo`，被父进程隐私闸门按 runtime-personal-data 拦截，整轮提交按硬门 5 被回退丢弃。**根因不是 Agent 违规写敏感数据，而是 Prompt 只要求“公开文件用参考别名”，却从未提供仓库→别名映射**：映射只存在于 ignored 的 private-config.json（privacy-guard 读它构造拦截词表），Agent 无从落笔。
+- 处置：维护会话把该提交内容恢复并将真实仓库名替换为既有别名 `public-reference-2`，经 auditGitRange 全量复检通过后以提交 91104eb 推送 GitHub（纯文档、零行为变化），并已把 activity-evolve-state.json 收口为 pending_apply。
+
+### 本次改动
+
+- `buildPublicReferenceGuidance()` 末尾动态注入 `buildReferenceAliasMap()`：从 private-config.json 的 `evolutionReferenceAliases` 生成「别名 = 真实仓库」清单并附硬性说明（引用参考仓库必须逐字用别名）；映射为空时不注入任何额外段落。别名本身不在隐私拦截词表中，写 `public-reference-N` 恒可过闸；真实仓库名仍是拦截词，写错必被丢弃——该闸门行为未放松。
+- 新增测试：注入映射出现且含逐字别名要求、空映射不注入；session-lifecycle 36/36 通过。
+
+### 踩坑、注意点与回滚
+
+- 私有映射进入的是本地 Prompt（stdin），不会写入任何受跟踪文件；测试用 `options.file` 指向临时配置，不依赖本机真实 private-config。
+- 闸门拦截词表同时收录真实仓库名与别名映射的值（privacy-guard `collectRuntimePrivacyTerms`），本改动只影响 Agent 能写对，不降低拦截强度。
+- 回滚：revert 本次提交即可，Prompt 退回“要求别名但无映射”的旧行为（会重新出现同类拦截丢轮）。

@@ -561,6 +561,24 @@ test('活动与安全进化共用历史踩坑回归硬门', () => {
   assert.doesNotMatch(safetyPrompt, /没有可修的就只更新 HANDOFF/);
 });
 
+test('参考别名映射注入公开对照指引，无映射时不注入', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-map-'));
+  const file = path.join(dir, 'private-config.json');
+  try {
+    fs.writeFileSync(file, JSON.stringify({
+      evolutionReferenceAliases: { 'public-reference-1': 'someone/example-farm' },
+    }));
+    const guidance = buildPublicReferenceGuidance({ file });
+    assert.match(guidance, /public-reference-1 = someone\/example-farm/);
+    assert.match(guidance, /必须逐字使用左侧别名/);
+    // 空映射：不注入空段，指引其余内容保持不变。
+    fs.writeFileSync(file, JSON.stringify({}));
+    assert.doesNotMatch(buildPublicReferenceGuidance({ file }), /必须逐字使用左侧别名/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('拒绝重做继承上一轮提交、日志和变更摘要', () => {
   const context = normalizeRevisionContext({
     commit: '1234567890abcdef',
