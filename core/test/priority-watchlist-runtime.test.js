@@ -84,6 +84,8 @@ function fixture(t, options = {}) {
         leaveFriendFarm: async () => { leaves++; },
         getPlantBlacklist: () => [], analyzeFriendLands: () => ({ stealable: [] }),
         getCurrentPhase: () => ({ phase: 1 }), PlantPhase: { MATURE: 4 },
+        isFriendActiveEvidence: () => false,
+        noteFriendActivity: () => {},
     };
     const functions = ['getWatchlistWakeBeforeMs', 'nextWatchlistPollDelayMs', 'isWatchlistObservationWindow',
         'scheduleWatchlistPollNext', 'watchlistPollTick', 'applyStealScheduleFromFriends']
