@@ -27,6 +27,8 @@ export interface EvolutionState {
   lastTask?: string
   lastSafetyEvolveDate?: string
   lastEvolveDate?: string
+  /** 每日综合巡检合并复核活动侧的完成日（不写 lastEvolveDate，防封去重语义保留） */
+  lastActivityReviewDate?: string
   userInstruction?: string
   nextAutoRunAt?: number
   pendingRuntimeIssueCount?: number

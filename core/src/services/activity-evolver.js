@@ -1953,6 +1953,11 @@ function getEvolveState() {
     running,
     lastTask,
     ...state,
+    // 综合巡检的活动侧复核不写 lastEvolveDate（防封去重语义保留），单独暴露完成日供面板展示，
+    // 否则活动进化卡片在每日合并轮后永远显示“未跑”。
+    lastActivityReviewDate: getLocalDateKey(
+      Number(normalizeEvolutionMemory(state.evolutionMemory).activity?.reviewedAt) || 0,
+    ) || state.lastEvolveDate || '',
     collaboration: readTeamJournal(EVOLVE_LOG_DIR, state.activeRun) || state.collaboration,
     nextAutoRunAt,
     dailyFeedback: getDailyFeedback().snapshot(),
