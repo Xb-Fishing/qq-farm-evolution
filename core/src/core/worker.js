@@ -1501,6 +1501,63 @@ function collectPetDiaryErrorMeta(err) {
     return { business: true, code };
 }
 
+/**
+ * 只读探测：好友摘要字段在线漂移验证（2026-09-22）。
+ * 拉两次 force-refresh 摘要（间隔 gapMs，默认 15s），逐好友 diff
+ * gold/level/tags/plant 子字段，返回漂移明细 + 完整前后快照（脱敏 gid）。
+ * 目的：验证「好友在线期间摘要字段会变」是否成立，为在线检测选字段。
+ */
+async function probeFriendSummaryDrift(gapMs = 15_000) {
+    const gap = Math.max(5_000, Math.min(60_000, Number(gapMs) || 15_000));
+    const snapshotFields = (friend) => ({
+        level: Number(friend && friend.level) || 0,
+        gold: Number(friend && friend.gold) || 0,
+        tags: friend && friend.tags ? JSON.stringify(friend.tags) : '',
+        plant: friend && friend.plant ? {
+            stealPlantNum: Number(friend.plant.stealPlantNum ?? friend.plant.steal_plant_num) || 0,
+            dryNum: Number(friend.plant.dryNum ?? friend.plant.dry_num) || 0,
+            weedNum: Number(friend.plant.weedNum ?? friend.plant.weed_num) || 0,
+            insectNum: Number(friend.plant.insectNum ?? friend.plant.insect_num) || 0,
+            ripeTimeSec: Number(friend.plant.ripeTimeSec ?? friend.plant.ripe_time_sec) || 0,
+        } : null,
+    });
+    const before = await getFriendsList(true);
+    const beforeMap = new Map((before.friends || before || []).map(f => [Number(f.gid), f]));
+    await new Promise(resolve => setTimeout(resolve, gap));
+    const after = await getFriendsList(true);
+    const afterMap = new Map((after.friends || after || []).map(f => [Number(f.gid), f]));
+
+    const drifts = [];
+    for (const [gid, friend] of afterMap) {
+        const prev = beforeMap.get(gid);
+        if (!prev) continue;
+        const a = snapshotFields(prev);
+        const b = snapshotFields(friend);
+        const changed = [];
+        if (a.level !== b.level) changed.push(`level ${a.level}→${b.level}`);
+        if (a.gold !== b.gold) changed.push(`gold ${a.gold}→${b.gold}`);
+        if (a.tags !== b.tags) changed.push('tags');
+        if (JSON.stringify(a.plant) !== JSON.stringify(b.plant)) {
+            if (a.plant && b.plant) {
+                for (const key of Object.keys(a.plant)) {
+                    if (a.plant[key] !== b.plant[key]) changed.push(`${key} ${a.plant[key]}→${b.plant[key]}`);
+                }
+            } else changed.push('plant presence');
+        }
+        if (changed.length > 0) {
+            drifts.push({ name: friend.name || friend.remark || '', changed });
+        }
+    }
+    return {
+        gapMs: gap,
+        friendsBefore: beforeMap.size,
+        friendsAfter: afterMap.size,
+        driftedFriends: drifts.length,
+        drifts,
+        note: 'drifts>0 说明摘要字段在窗口内变化；结合巡田/趋势触发日志可判断是否与在线活动相关',
+    };
+}
+
 async function handleApiCall(msg) {
     const { id, method, args } = msg;
     let result = null;
@@ -1539,6 +1596,12 @@ async function handleApiCall(msg) {
                 break;
             case 'getFriends':
                 result = await getFriendsList(args[0] === true);
+                break;
+            case 'probeFriendSummaryDrift':
+                // 只读探测（2026-09-22 在线信号验证）：间隔取两次全量好友摘要并
+                // diff 字段（gold/level/tags/plant 微态），输出哪些字段在好友
+                // 在线期间发生漂移。两次调用走既有 getAllFriends 通道与治理预算。
+                result = await probeFriendSummaryDrift(args[0]);
                 break;
             case 'clearFriendsCache':
                 require('../services/friend').clearFriendsListCache();
