@@ -80,6 +80,30 @@ test('friend sentinel keeps its own short timer without sharing own-harvest stat
   assert.ok(src.indexOf('stopUnifiedScheduler();', clearAt) > clearAt);
 });
 
+test('哨兵到点链路有预进门驻留与请求治理紧急通道（2026-09-22）', () => {
+  // 预进门：武装成立后提前 3s 进目标农场驻留，Strike 复用 Enter 回复。
+  assert.match(src, /SENTINEL_PRE_ENTER_AHEAD_MS = 3_000/);
+  assert.match(src, /function armSentinelPreEnter/);
+  assert.match(src, /armSentinelPreEnter\(sentinelArmedFor\)/);
+  assert.match(src, /sentinelPreEnter = \{ gid, dueAt, enteredAt: Date\.now\(\), enterReply \}/);
+  // Strike 打开 15s 紧急窗口并把会话传给 checkFriends 快路径。
+  const strike = src.slice(
+    src.indexOf('async function runSentinelStrike'),
+    src.indexOf('function armMaturitySentinel')
+  );
+  assert.match(strike, /setUrgentStrikeMode\(15_000\)/);
+  assert.match(strike, /preEnter: preEnter/);
+  assert.match(strike, /clearSentinelPreEnter\(\)/);
+  // 紧急窗口最终落在 request-governor setUrgentMode（15s），沙箱可注入桩。
+  assert.match(src, /function setUrgentStrikeMode\(windowMs\) \{/);
+  assert.match(src, /globalThis\.__setUrgentStrikeMode/);
+  assert.match(src, /setUrgentMode\(true, Date\.now\(\) \+ ms\)/);
+  // 预进门失败静默兜底：Strike 走完整路径。
+  assert.match(src, /\/\* 预进门失败：Strike 走完整路径 \*\//);
+  // visitFriendForSteal 复用预进门回复，不重复 Enter。
+  assert.match(friendVisitSrc, /preEnter && preEnter\.enterReply/);
+});
+
 test('immediately stealable friends arm contention grace even without a ripe timestamp', () => {
   const start = friendSrc.indexOf('if (stealTargets.length > 0 && doSteal)');
   const stealBlock = friendSrc.slice(
@@ -474,9 +498,14 @@ test('普通面板 getFriends 在途：自己成熟收获、好友到点偷菜�
       SENTINEL_ARM_WATCHLIST_MS: 5_000,
       SENTINEL_ARM_NORMAL_MS: 2_000,
       SENTINEL_ACT_DELAY_MS: [30, 80],
+      SENTINEL_PRE_ENTER_AHEAD_MS: 3_000,
       OWN_HARVEST_RESERVE_MS: 10_000,
       sentinelTimer: null,
       sentinelArmedFor: null,
+      sentinelPreEnter: null,
+      sentinelPreEnterTimer: null,
+      getDueWatchFriends: () => [],
+      __setUrgentStrikeMode: () => {},
       getNextStealDueAtMs: () => 0,
       getNextWatchDueAt: () => Date.now() + 20,
       getNextWatchlistStealDueAtMs: () => 0,

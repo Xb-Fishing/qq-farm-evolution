@@ -33,12 +33,28 @@ const WATCH_FAILURE_EXEMPT_METHODS = new Set([
     'gamepb.plantpb.PlantService.CheckCanOperate',
     'gamepb.plantpb.PlantService.Harvest',
 ]);
+// 成熟抢收紧急窗口内放行的完整偷菜链路请求。
+const URGENT_METHODS = new Set([...WATCH_FAILURE_EXEMPT_METHODS]);
 // 施肥 HOT 窗口内放宽倍数：目标接口单项 ×3、总量 ×1.5，仍兜底异常风暴。
 const WATCHMODE_BOOST = Number(process.env.FARM_WATCHMODE_BOOST) || 3;
 // 施肥 HOT 到期时刻；0 = 无窗口。只有 fertilizer-watch 确认施肥趋势后设置。
 let watchModeUntil = 0;
 // 成熟/偷菜竞争只豁免预期业务失败，不放宽 Enter/AllLands 门限。
 let contentionModeUntil = 0;
+// 成熟抢收紧急窗口（哨兵/预进门到点链路）：窗口内偷菜快路径的目标请求
+// （Enter/Leave/CheckCanOperate/Harvest）不受 60s 硬预算拦截——参考同类项目
+// 的 bypassRateLimit 紧急通道。仍计入请求画像（recordSent 正常登记），只是
+// 不被预算丢弃；窗口极短（秒级），不会演变成请求风暴。
+let urgentModeUntil = 0;
+
+/** 进入/退出成熟抢收紧急窗口（哨兵到点前后、PREARM 预进门链路调用） */
+function setUrgentMode(active, untilMs = 0) {
+    urgentModeUntil = active ? Math.max(urgentModeUntil, Number(untilMs) || 0) : 0;
+}
+
+function urgentModeActive(now = Date.now()) {
+    return now < urgentModeUntil;
+}
 
 /** 进入/退出施肥 HOT 窗口（确认出现施肥趋势后调用） */
 function setWatchMode(active, untilMs = 0) {
@@ -95,6 +111,12 @@ function checkRequest(serviceName, methodName, now = Date.now()) {
     // 异常阈值只通知上层降低普通巡查节奏，不在这里整号拒绝业务请求。
     // 成熟抢收仍受下面的 60s 总量/单方法硬预算保护。
     if (whitelisted) return { allowed: true, reason: 'whitelist' };
+
+    // 成熟抢收紧急窗口：偷菜快路径链路请求不被硬预算丢弃（仍计入画像）。
+    // 只豁免这五个目标方法，其他请求照常过闸，防止窗口被滥用成全局限流旁路。
+    if (urgentModeActive(now) && URGENT_METHODS.has(key)) {
+        return { allowed: true, reason: 'urgent' };
+    }
 
     // 施肥 HOT 内总预算同步放宽（目标好友需要高频往返，80/min 的常规预算
     // 会被盯梢+常规巡查挤满，导致 Enter 被拦、盯哨失明）
@@ -229,6 +251,8 @@ module.exports = {
     clearBreaker,
     setWatchMode,
     setContentionMode,
+    setUrgentMode,
+    urgentModeActive,
     resetForTest,
     WINDOW_MS,
     TOTAL_LIMIT,

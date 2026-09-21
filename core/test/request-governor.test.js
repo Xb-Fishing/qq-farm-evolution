@@ -226,3 +226,38 @@ test('profile exposes top methods and drop counters', () => {
     assert.equal(hot.count, 2);
     assert.equal(hot.errCount, 1);
 });
+
+// 2026-09-22 成熟抢收紧急通道：哨兵预进门链路（Enter/Leave/CheckCanOperate/
+// Harvest）在预算满时仍放行；非链路请求照常被预算拦截；窗口过期后恢复拦截。
+test('urgent mode bypasses hard budget only for strike-chain methods', () => {
+    governor.resetForTest();
+    // 预算打满：单方法超 PER_METHOD_LIMIT，总量也打满（80/min）。
+    for (let i = 0; i < governor.PER_METHOD_LIMIT + 5; i++) {
+        governor.recordSent('gamepb.visitpb.VisitService', 'Enter', true, T0 + i * 10);
+    }
+    for (let i = 0; i < governor.TOTAL_LIMIT; i++) {
+        governor.recordSent('gamepb.otherpb.Svc', 'Filler', true, T0 + i * 10);
+    }
+    const blocked = governor.checkRequest('gamepb.visitpb.VisitService', 'Enter', T0 + 1_000);
+    assert.equal(blocked.allowed, false);
+
+    governor.setUrgentMode(true, T0 + 15_000);
+    const chain = [
+        ['gamepb.visitpb.VisitService', 'Enter'],
+        ['gamepb.visitpb.VisitService', 'Leave'],
+        ['gamepb.plantpb.PlantService', 'CheckCanOperate'],
+        ['gamepb.plantpb.PlantService', 'Harvest'],
+    ];
+    for (const [svc, method] of chain) {
+        const r = governor.checkRequest(svc, method, T0 + 1_500);
+        assert.equal(r.allowed, true, `${method} should pass in urgent mode`);
+        // Harvest/Steal 本就是白名单；其余链路方法走 urgent 放行。
+        assert.ok(r.reason === 'urgent' || r.reason === 'whitelist', `unexpected reason ${r.reason}`);
+    }
+    // 非链路请求在紧急窗口内仍被预算拦截（窗口不是全局限流旁路）。
+    const other = governor.checkRequest('gamepb.friendpb.FriendService', 'GetAll', T0 + 1_500);
+    assert.equal(other.allowed, false);
+    // 窗口过期恢复拦截。
+    const expired = governor.checkRequest('gamepb.visitpb.VisitService', 'Enter', T0 + 20_000);
+    assert.equal(expired.allowed, false);
+});
