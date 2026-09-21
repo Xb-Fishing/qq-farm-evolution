@@ -403,6 +403,15 @@ async function checkFriends(options = {}) {
   const onlySteal = options.onlySteal || false;
   const onlyBad = options.onlyBad || false;
   const ignoreExpLimit = options.ignoreExpLimit || false;
+  // 哨兵预进门会话（{ gid, enteredAt, enterReply }）：目标已提前 Enter 驻留，
+  // 偷取时复用 Enter 回复跳过重复 Enter，直接分析+偷。
+  const preEnter = options.preEnter && Number(options.preEnter.gid) > 0
+    ? {
+        gid: Number(options.preEnter.gid),
+        enteredAt: Number(options.preEnter.enteredAt) || 0,
+        enterReply: options.preEnter.enterReply || null,
+      }
+    : null;
 
   if (ownHarvestIsDue() || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) return false;
   await bootstrapFriendDogInfoCacheIfNeeded();
@@ -437,9 +446,12 @@ async function checkFriends(options = {}) {
         const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
         for (const target of dueWatches) {
           if (!canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
+          const targetPreEnter = preEnter && Number(preEnter.gid) === Number(target.gid)
+            ? preEnter
+            : null;
           let result = null;
           try {
-            result = await visitFriendForSteal(target, tally, userState.gid, accountId);
+            result = await visitFriendForSteal(target, tally, userState.gid, accountId, { preEnter: targetPreEnter });
           } catch { }
           applyStealVisitResult(target.gid, result);
           if (ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;

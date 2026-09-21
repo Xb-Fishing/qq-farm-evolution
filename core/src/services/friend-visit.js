@@ -521,26 +521,40 @@ async function visitFriend(friend, tally, myGid, accountId) {
 /**
  * Visit a friend specifically to steal crops.
  */
-async function visitFriendForSteal(friend, tally, myGid, accountId) {
+/**
+ * 偷取好友成熟作物。options.preEnter = { gid, enterReply } 表示哨兵已提前
+ * Enter 驻留（Worker armSentinelPreEnter）：复用其 Enter 回复省一次往返，
+ * 不再重复发 Enter；Leave 仍走正常路径。
+ */
+async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}) {
   const { gid, name } = friend;
+  const preEnter = options && options.preEnter && Number(options.preEnter.gid) === Number(gid)
+    ? options.preEnter
+    : null;
   let enterReply;
 
-  try {
-    enterReply = await enterFriendFarm(gid);
-  } catch (err) {
-    const handled = handleFriendEnterError(gid, name, err);
-    if (handled.handled) {
-      if (handled.kind === 'blacklist') unwatchFriend(gid);
+  if (preEnter && preEnter.enterReply) {
+    // 哨兵预进门驻留：直接复用 Enter 回复。地块状态到点可能变化，成熟判定
+    // 由后续 CheckCanOperate/Harvest 的服务端应答兜底，本地分析仅做选择。
+    enterReply = preEnter.enterReply;
+  } else {
+    try {
+      enterReply = await enterFriendFarm(gid);
+    } catch (err) {
+      const handled = handleFriendEnterError(gid, name, err);
+      if (handled.handled) {
+        if (handled.kind === 'blacklist') unwatchFriend(gid);
+        return { acted: false, entered: false };
+      }
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
       return { acted: false, entered: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
-    return { acted: false, entered: false };
   }
 
   const lands = enterReply.lands || [];

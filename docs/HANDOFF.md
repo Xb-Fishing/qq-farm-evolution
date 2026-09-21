@@ -1765,3 +1765,21 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - LandsNotify 好友地块推送路径已存在（onFriendLandsChanged → inspectFriendLands partial → HOT）：若服务端对好友施肥主动下发推送，即为零成本瞬时通道，巡检时留意该事件是否实际到达。
 - 下限值 60-120s 写死常量（PRIORITY_SUMMARY_FLOOR_MIN/MAX_MS）；需要更快捕获可收紧，代价是请求密度上升。
 - 测试：maturity-sentinel 断言更新（min 结构 + 常量校验）30/30；全量 616/619（3 个环境预存失败与本次无关）。回滚：revert 本次提交即恢复“按真实到期一次性唤醒”。
+
+## 抢收提速：哨兵预进门驻留 + 请求治理紧急通道（2026-09-22，维护会话 IV）
+
+### 背景
+
+用户否决均匀 60-120s 摘要下限方案（保留为兜底、暂不应用是后续讨论项），批准先落地外部调研（wjnnone/qq-farm-bot 蹲守模式）借鉴的两个纯收益技巧。调研结论同步记录：QQ 端 LandsNotify 好友推送不可信（linguo2625469 源码注释：QQ 环境只有 ItemNotify），零轮询方案不成立；所有同类项目都保留 10-30s 摘要轮询；登录态检测无协议通道（GameFriend 无 online 字段）。
+
+### 本次改动
+
+1. **预进门驻留（worker.js armSentinelPreEnter）**：哨兵武装成立时（目标 gid 从 getDueWatchFriends 解析，仅 PREARM/HOT 目标有）提前 3 秒 Enter 目标农场驻留并把 Enter 回复存进 sentinelPreEnter；到点 runSentinelStrike 把会话传给 checkFriends({onlySteal, preEnter}) → visitFriendForSteal 复用 enterReply 跳过重复 Enter，省一个 RTT。预进门失败静默，Strike 走完整路径兜底；60s 未被消费的驻留标记自动丢弃；不主动 Leave（由成功路径的业务 Leave 收尾）。
+2. **请求治理紧急通道（request-governor setUrgentMode）**：sentinel 预进门与到点 Strike 各打开 15s 紧急窗口，窗口内偷菜链路五方法（VisitService.Enter/Leave、PlantService.CheckCanOperate/Harvest/AllLands）不被 60s 总量/单方法硬预算丢弃（Harvest/Steal 本就白名单）；仍计入请求画像。非链路请求照常拦截——窗口不是全局限流旁路。
+
+### 踩坑、注意点与回滚
+
+- 普通好友摘要 due 无目标 gid（合并时钟拿不到归属），不预进门，只有 PREARM/HOT 盯梢目标走驻留——与“抢的是盯梢目标”的业务事实一致。
+- 测试沙箱（maturity-sentinel vm context）无 require：setUrgentStrikeMode 用 globalThis.__setUrgentStrikeMode 惰性查找注入；armSentinelPreEnter 里的 friend-api require 只在真实 gid + 定时器触发时执行，沙箱 gid=0 早退不受影响。
+- 预进门驻留 3 秒 + Enter 一次是额外请求，但发生在“到点必然要 Enter”的同一目标上，总量不变、时间提前；紧急窗口 15s 覆盖整次 Strike，不叠加油门。
+- 测试：request-governor 14/14（新增紧急通道用例：链路放行/非链路拦截/窗口过期恢复）；maturity-sentinel 25/25（新增预进门+紧急通道源断言）；全量 619/621（2 个环境预存失败与本次无关）。回滚：revert 本次提交，哨兵回到“到点才 Enter”。
