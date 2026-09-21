@@ -1723,3 +1723,24 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 - 私有映射进入的是本地 Prompt（stdin），不会写入任何受跟踪文件；测试用 `options.file` 指向临时配置，不依赖本机真实 private-config。
 - 闸门拦截词表同时收录真实仓库名与别名映射的值（privacy-guard `collectRuntimePrivacyTerms`），本改动只影响 Agent 能写对，不降低拦截强度。
 - 回滚：revert 本次提交即可，Prompt 退回“要求别名但无映射”的旧行为（会重新出现同类拦截丢轮）。
+
+## 隐私闸门拦截闭环：已推送提交不回滚 + 拦截轮可续接原会话重做（2026-09-22，维护会话 II）
+
+### 事件与根因（第三次拦截，与前两次不同）
+
+- 17:35 面板启动活动进化（基线 a85aa15）；17:39 Agent 仍在运行时，运维会话提交并推送了 560b11f（面板日期修复）。Agent 本轮零改动（日志 0 字节）。收尾逻辑把 `headAfter(560b11f) ≠ headBefore(a85aa15)` 误判为 Agent 产出，对其跑隐私闸门——范围内含受保护文件改动（运维修复，无双 Agent 验收凭据）→ 拦截 + `git reset --keep a85aa15` 回滚。但 560b11f **已在 GitHub 上**：闸门拦不住已公开内容，唯一效果是本地落后远端一个提交。飞书误报“本轮自动提交已安全丢弃”。
+- 根因两条：①收尾无法区分“Agent 的提交”与“运行期间运维插入的提交”；②对已在远端的提交做审计+回滚，本身就是错误行为。
+
+### 本次改动
+
+- `ensureHeadPushed`：`remoteHead === head` 的判断移到审计**之前**——已在远端即视为已放行，返回 ok，不再审计、不再回滚。收尾回滚前二次确认提交不在远端（防竞态窗口）。
+- **Agent 会话可续接**：单 Agent Claude 轮改用 `--output-format json`，stdout 落独立的 `*.session.json`；收尾解析 `session_id` 持久化到 `state.agentSessionId`，JSON 的 result 文本回写日志（审计链不变）。仅显式重做（`payload.resume === true`）时用 `--resume <id>` 续接原对话；每日常规轮始终全新会话，杜绝旧上下文污染。
+- **隐私拦截轮可重做**：拦截时记录 `privacyBlockedCommit/privacyBlockedBase`（丢弃的提交对象保留在本地 git）；`reviseEvolution` 接受 privacy_blocked(_local) 状态——privacy_blocked_local 先 reset 回基线（旧提交不进推送范围，审计不再命中），revisionContext 携带闸门命中项，重做轮带 `--resume` 续接原会话修复。面板「拒绝本次并按要求重做」对拦截状态可用；飞书/状态文案改为指引重做而非只报丢弃。
+- 测试：session-lifecycle 37/37（新增隐私重做上下文与状态字段校验；buildEvolutionAgentCommand 断言更新为含 --output-format json / --resume）。
+
+### 踩坑、注意点与回滚
+
+- `--output-format json` 只用于单 Agent Claude 轮；双 Agent 团队模式与 codex 路径不变（团队上下文由 journal 承载）。
+- 隐私拦截的**自动改写推送**仍刻意不做：自动改写被拦截内容会掩盖真实泄密（如 token），fail-closed + 可续接重做是正确闭环；运维侧人工匿名化恢复（如 91104eb 先例）只在确认是别名/身份类误伤时使用。
+- `agentSessionId` 等新字段经 normalizePersistedState 白名单校验（格式不符清空）；session 文件纳入 evolve 日志保留期清理。
+- 回滚：revert 本次提交；已推送提交的保护（ensureHeadPushed 前置检查）独立于此提交，建议保留。
