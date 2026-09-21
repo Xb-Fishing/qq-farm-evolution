@@ -10,6 +10,7 @@
 const { toNum, toTimeSec, getServerTimeSec, log } = require('../utils/utils');
 const { gaussianInt } = require('../utils/behavior');
 const { ripeDueAtMs } = require('./steal-schedule');
+const friendActivity = require('./friend-activity');
 
 const WATCH_STATUS = Object.freeze({
   HOT: 'HOT',
@@ -50,6 +51,8 @@ const GLOBAL_BUDGET_VISITS = 10;
 
 const watches = new Map();
 const ripeSnapshots = new Map();
+// gid -> 上次地块快照观察时刻（隐时钟 diff 的区间下界）。
+const landObservedAt = new Map();
 // gid -> Map<landId, snapshot>。LandsNotify 只带变化地块，必须增量合并。
 const landSnapshots = new Map();
 const landSnapshotNames = new Map();
@@ -444,6 +447,11 @@ function plantSnapshot(land, serverSec, fallbackLandId) {
   const fertRaw = plant.left_inorc_fert_times != null
     ? plant.left_inorc_fert_times
     : plant.leftInorcFertTimes;
+  // 隐时钟字段（2026-09-22 好友活跃证据）：dry_time/insect_time 挂在当前
+  // 阶段 PlantPhaseInfo 上，是未来的变干/生虫时刻（秒），只有主人浇水/
+  // 除虫才会重置后移。phases 末项即当前阶段。
+  const dryAtSec = toNum(last && (last.dry_time != null ? last.dry_time : last.dryTime));
+  const insectAtSec = toNum(last && (last.insect_time != null ? last.insect_time : last.insectTime));
   return {
     landId: toNum(land && land.id) || toNum(fallbackLandId),
     plantId: toNum(plant.id),
@@ -452,6 +460,8 @@ function plantSnapshot(land, serverSec, fallbackLandId) {
     fertLeft: fertRaw == null ? null : toNum(fertRaw),
     nudged: !!(plant.is_nudged || plant.isNudged),
     growing: matureAt > serverSec,
+    dryAtMs: dryAtSec > 0 ? dryAtSec * 1000 : 0,
+    insectAtMs: insectAtSec > 0 ? insectAtSec * 1000 : 0,
   };
 }
 
@@ -501,6 +511,14 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
         strongReasons.add('fertilizer_count_decreased');
       }
       if (snapshot.nudged && !prev.nudged) strongReasons.add('nudged_rising');
+      // 状态隐时钟（2026-09-22 好友活跃证据）：同一茬内倒计时显著后移 =
+      // 主人在两次观察之间浇过水/除过虫。同一茬才可比（换茬会重置）。
+      if (prev.dryAtMs > 0 && snapshot.dryAtMs > prev.dryAtMs + 5 * 60_000) {
+        weakReasons.add('owner_watered_recently');
+      }
+      if (prev.insectAtMs > 0 && snapshot.insectAtMs > prev.insectAtMs + 5 * 60_000) {
+        weakReasons.add('owner_derugged_recently');
+      }
     } else if (snapshot.nudged) {
       // 没有同一茬基线时仍直接短时 HOT；持久 true 不会产生新证据续热。
       weakReasons.add('nudged_without_baseline');
@@ -547,6 +565,22 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
       reason: [...weakReasons].join(','),
     });
   }
+
+  // 好友活跃证据（2026-09-22，零成本搭车）：
+  // 1. 社交道具：地块上非我放置且最近 30 分钟内的社交道具 → 操作者活跃。
+  // 2. 隐时钟：weakReasons 里的 owner_watered/derugged → 主人刚动过。
+  // 证据不触发 HOT（不是施肥证据），只进 friend-activity 记录。
+  try {
+    friendActivity.noteSocialItems(lands, options.myGid, now);
+  } catch { /* 证据记录失败不影响主流程 */ }
+  if (weakReasons.has('owner_watered_recently') || weakReasons.has('owner_derugged_recently')) {
+    try {
+      const prevObservedAt = landObservedAt.get(id) || now - 60_000;
+      friendActivity.recordActivity(id, prevObservedAt, 'implicit_clock',
+        [...weakReasons].filter(reason => reason.startsWith('owner_')).join(','));
+    } catch { /* 同上 */ }
+  }
+  landObservedAt.set(id, now);
 
   // 只有完整基线（或其增量合并）才能证明全场没有作物。
   if (!growing && completeLandSnapshotGids.has(id)) {

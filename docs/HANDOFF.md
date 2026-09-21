@@ -1806,3 +1806,24 @@ node --test test/steal-schedule.test.js test/fertilizer-watch.test.js test/reque
 
 - getFriendsList(true) 强刷两次间隔 15s：两次都是全量摘要请求，计入治理画像（正常预算内）；探测频率由人工控制，不自动轮询。
 - 回滚：revert 本次提交，探测入口移除，无任何调度/检测行为变化（纯只读工具）。
+
+## 好友活跃证据：社交道具 + 状态隐时钟（2026-09-22，维护会话 VI）
+
+### 调研背景（五路 fan-out 结论）
+
+QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在线"检测；协议无 online 字段（GameFriend 只有 level/gold/tags/plant）。中文社区老版开心农场有消息盒子（api.php?mod=chat&act=getAllInfo）先例，但新版对应接口未逆向——用户明确否决抓包验证（钓鱼接口风险），只做零成本搭车信号。第一步审计（心跳 reply + 14 种未识别推送）结论：无白送的好友活跃信号（ItemUseDailyNotify 227B 道具使用、ActiviesChange 10.8KB 活动快照、BulletinListChangedNTF 125B 公告板、其余 0-4B 红点类；心跳 reply proto 只有 server_time+version_info）。
+
+### 本次改动（第二步，用户批准）
+
+- 新服务 `core/src/services/friend-activity.js`：per-gid 活跃证据表（30 分钟窗口、200 gid 有界淘汰最旧）。
+  - **社交道具信号**（用户批准）：`PlantInfo.social_items[].owner_gid + created_at`——好友在我/目标地块放黄金虫/足球/鹊羽灵露的操作者+时间戳，字段一直在进门回包里，此前被丢弃。自家农场地块推送（farming-orchestrator onLandsChangedPush）和好友进门（fertilizer-watch inspectFriendLands）两处搭车提取，只认非我 owner 且 30 分钟内放置的条目。
+  - **状态隐时钟**：`PlantPhaseInfo.dry_time / insect_time`（挂在当前阶段上）是未来变干/生虫时刻——只有主人浇水/除虫才重置后移。plantSnapshot 增加 dryAtMs/insectAtMs；同一茬内（sameCrop 已保证）倒计时后移 >5 分钟 → `owner_watered_recently`/`owner_derugged_recently`（weakReasons，不触发 HOT）→ 记录该 gid 隐时钟活跃。
+- 消费：重点巡田 scheduleWatchlistPollNext/nextWatchlistPollDelayMs 在窗口外档位上，活跃证据命中的好友收紧到 45-75s（窗口档）而非 5-8 分钟；降速（breaker）期间活跃证据好友不被追加额外等待。注意 dry_time/insect_time 在 **PlantPhaseInfo**（phases 数组元素）不在 PlantInfo 上——读 last 阶段。
+- getEvolveState 侧暴露 getActivityEvidenceSummary（面板可扩展展示）。
+
+### 验证与边界
+
+- 测试 friend-activity 5/5（社交道具过滤、过期、有界淘汰、inspectFriendLands 隐时钟集成）；priority-watchlist 沙箱补 isFriendActiveEvidence 桩后 6/6；全量 624/626（2 环境预存失败无关）。
+- 信号语义边界：社交道具只覆盖"有人放道具"场景（低频但精确）；隐时钟只覆盖"主人浇水/除虫"（进自己农场大概率做）；都是低覆盖率精确信号，作为巡田节奏的加分项而非依赖项。证据记录失败一律静默不影响主流程。
+- 心跳/未知推送审计结论如上，NewProtectLogNotify 0 字节纯事件戳且用户到点保护下无被偷场景，维持只记录不响应。
+- 回滚：revert 本次提交；巡田节奏回到纯窗口档位。
