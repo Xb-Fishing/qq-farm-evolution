@@ -99,6 +99,26 @@ function registerAdminFriendRoutes({
     }
   });
 
+  // 只读探测：好友摘要字段在线漂移验证（2026-09-22）。gapMs 5-60s，默认 15s；
+  // 两次全量摘要都走既有通道与请求治理预算，超时按最长间隔放宽。
+  app.get("/api/friends/summary-drift-probe", async (req, res) => {
+    const accountId = getAccountOrRespond(req, res, access);
+    if (!accountId) return;
+    const gapMs = Number(req.query.gapMs) || 15_000;
+
+    req.setTimeout(90_000);
+    res.setTimeout(90_000);
+    try {
+      if (typeof provider.probeFriendSummaryDrift !== "function") {
+        throw new TypeError("当前运行版本未加载探测入口，请重启后再试");
+      }
+      const data = await provider.probeFriendSummaryDrift(accountId, gapMs);
+      res.json({ ok: true, data });
+    } catch (error) {
+      sendProviderError(res, error);
+    }
+  });
+
   app.post("/api/friends/fetch-dog-info", async (req, res) => {
     req.setTimeout(DOG_INFO_HTTP_TIMEOUT_MS);
     res.setTimeout(DOG_INFO_HTTP_TIMEOUT_MS);
