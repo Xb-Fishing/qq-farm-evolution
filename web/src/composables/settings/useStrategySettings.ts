@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { computed, onScopeDispose, ref, watchEffect } from 'vue'
+import { computed, onScopeDispose, ref, watch, watchEffect } from 'vue'
 import api from '@/api'
 import { useFarmStore } from '@/stores/farm'
 import { useSettingStore } from '@/stores/setting'
@@ -28,10 +28,13 @@ const analyticsSortByMap: Record<string, string> = {
 
 export function useStrategySettings({
   currentAccountId,
+  currentAccountRunning,
   getAutomationSettings,
   showAlert,
 }: {
   currentAccountId: Ref<string | number | null | undefined>
+  /** 当前账号严格运行态：账号缺失、未运行或无选择均为 false，由调用方从既有账号列表派生 */
+  currentAccountRunning: Ref<boolean>
   getAutomationSettings: () => AutomationSettingsSnapshot
   showAlert: (message: string, type?: AlertType) => void
 }) {
@@ -80,7 +83,27 @@ export function useStrategySettings({
   const bagSeedsError = ref<string | null>(null)
   const draggingBagSeedId = ref<number | null>(null)
   let bagSeedsRequestId = 0
+  // 当前在途的种子请求（代次 id + 归一化账号标识）；null = 无在途。
+  // 三个触发入口（就绪 watcher / 15 秒周期 / 显式重置）统一走 requestBagSeeds 去重。
+  // 就绪 watcher 为 post flush：账号切换时 Settings 的账号 watch（pre flush）先执行显式重置，
+  // 由重置发起唯一的新代次请求，watcher 随后经统一入口去重跳过——同拍立即恰好读取一次。
+  let bagSeedsActiveRequest: { id: number, accountId: string } | null = null
   let strategyPreviewRequestId = 0
+
+  // 账号未运行（含账号缺失/无选择）时暂停背包种子首取与轮询：后端固定返回「账号未运行」，
+  // 离线轮询只会产生 304 噪声；运行态恢复后立即读取一次，再由既有 15 秒周期接管。
+  const bagSeedFetchEligible = computed(() =>
+    localStrategySettings.value.plantingStrategy === 'bag_priority'
+    && !!currentAccountId.value
+    && currentAccountRunning.value === true)
+
+  // 递增请求代次并放弃在途请求：停止、失格、切换、重置、卸载后，
+  // 旧在途请求的成功/失败/finally 不得再写状态。
+  function invalidateBagSeedRequests() {
+    bagSeedsRequestId++
+    bagSeedsActiveRequest = null
+    bagSeedsLoading.value = false
+  }
 
   const sortedBagSeeds = computed(() => {
     const priority = localStrategySettings.value.bagSeedPriority || []
@@ -127,19 +150,38 @@ export function useStrategySettings({
     localStrategySettings.value.bagSeedPriority = [...new Set([...priority, ...currentIds])]
   }
 
-  async function fetchBagSeeds() {
+  // 该请求是否仍是当前有效代次：代次与账号双重匹配，且当前选择没有变。
+  function isBagSeedRequestCurrent(requestId: number, requestedId: string) {
+    return bagSeedsActiveRequest !== null
+      && bagSeedsActiveRequest.id === requestId
+      && bagSeedsActiveRequest.accountId === requestedId
+      && String(currentAccountId.value ?? '') === requestedId
+  }
+
+  // 统一种子读取入口：不满足条件直接返回；当前选择已有在途请求时不再发起第二次。
+  // 就绪 watcher、15 秒周期与显式重置都从这里进，同一账号同一时刻最多一个在途请求。
+  function requestBagSeeds() {
+    if (!bagSeedFetchEligible.value)
+      return
     const accountId = currentAccountId.value
     if (!accountId)
       return
     const requestedId = String(accountId)
+    if (bagSeedsActiveRequest && bagSeedsActiveRequest.accountId === requestedId)
+      return
     const requestId = ++bagSeedsRequestId
+    bagSeedsActiveRequest = { id: requestId, accountId: requestedId }
     bagSeedsLoading.value = true
     bagSeedsError.value = null
+    void runBagSeedRequest(requestId, requestedId, accountId)
+  }
+
+  async function runBagSeedRequest(requestId: number, requestedId: string, accountId: string | number) {
     try {
       const res = await api.get('/api/bag/seeds', {
         headers: { 'x-account-id': accountId },
       })
-      if (requestId !== bagSeedsRequestId || String(currentAccountId.value || '') !== requestedId)
+      if (!isBagSeedRequestCurrent(requestId, requestedId))
         return
       if (res.data.ok) {
         bagSeeds.value = res.data.data || []
@@ -165,12 +207,15 @@ export function useStrategySettings({
       }
     }
     catch (e: any) {
-      if (requestId === bagSeedsRequestId && String(currentAccountId.value || '') === requestedId)
+      if (isBagSeedRequestCurrent(requestId, requestedId))
         bagSeedsError.value = e.message || '加载失败'
     }
     finally {
-      if (requestId === bagSeedsRequestId)
+      // 只有仍是当前在途请求才清 loading：旧代次的 finally 不得清除新代次的 loading。
+      if (bagSeedsActiveRequest !== null && bagSeedsActiveRequest.id === requestId) {
+        bagSeedsActiveRequest = null
         bagSeedsLoading.value = false
+      }
     }
   }
 
@@ -241,17 +286,26 @@ export function useStrategySettings({
     draggingBagSeedId.value = null
   }
 
-  watchEffect(() => {
-    if (localStrategySettings.value.plantingStrategy === 'bag_priority' && currentAccountId.value) {
-      fetchBagSeeds()
-    }
-  })
+  // 只观察运行态布尔值与策略的实际变化：账号列表对象整体替换（约 3 秒一次）或
+  // loading/错误变化不触发新的首取；失格时放弃在途请求。
+  // post flush 是刻意的：Settings 的账号 watch（pre flush，注册更晚）在同一拍先执行
+  // 显式重置——重置无条件失效在途请求并立即发起唯一的新代次请求，本 watcher 随后在
+  // post 阶段经统一入口去重跳过。切换同拍因此仍立即恰好读取一次，且唯一请求是重置后
+  // 发起的，不依赖复用重置前的在途请求。
+  watch(bagSeedFetchEligible, (eligible, wasEligible) => {
+    if (eligible)
+      requestBagSeeds()
+    else if (wasEligible)
+      invalidateBagSeedRequests()
+  }, { immediate: true, flush: 'post' })
 
   const bagSeedsRefreshTimer = window.setInterval(() => {
-    if (localStrategySettings.value.plantingStrategy === 'bag_priority' && currentAccountId.value && !bagSeedsLoading.value)
-      void fetchBagSeeds()
+    requestBagSeeds()
   }, 15_000)
-  onScopeDispose(() => window.clearInterval(bagSeedsRefreshTimer))
+  onScopeDispose(() => {
+    window.clearInterval(bagSeedsRefreshTimer)
+    invalidateBagSeedRequests()
+  })
 
   const preferredSeedOptions = computed(() => {
     const options: { label: string, value: number, disabled?: boolean }[] = [{ label: '自动选择', value: 0, disabled: false }]
@@ -385,11 +439,15 @@ export function useStrategySettings({
   }
 
   function resetStrategyState() {
+    // 显式重置（账号切换/应用默认方案）：无条件递增代次并放弃全部在途请求——
+    // 同一选择的在途请求也不得复用，其迟到成功/失败/finally 不得回填重置后的新草稿。
+    // 重置后条件仍满足时立即读取一次（新代次），不等下一个 15 秒周期。
+    invalidateBagSeedRequests()
     bagSeeds.value = []
     bagSeedsError.value = null
-    bagSeedsLoading.value = false
     draggingBagSeedId.value = null
     strategyPreviewLabel.value = null
+    requestBagSeeds()
   }
 
   return {

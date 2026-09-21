@@ -1,11 +1,14 @@
 /**
- * 自动进化服务（双任务）
+ * 自动进化服务（每日一轮综合巡检）
  *
- * - activity：活动监控发现新活动/结束活动时触发（事件驱动，每日一次）
- * - safety：北京时间每日 00:00-01:00 随机触发一次防封安全巡检（每天必跑）
+ * - 每天北京时间 00:00-01:00 随机时刻最多自动启动一轮「综合巡检」：
+ *   安全巡检 prompt + 缓存活动增量上下文一起交给同一个 Agent 团队，
+ *   当天失败也消费名额（不自动重跑），重启不重跑。
+ * - 监控扫描事件只登记待处理活动标记，供下一轮综合巡检使用，不自动拉 Agent。
  *
  * 共用流程：headless Claude/Codex 改代码 → 全量测试门 → git 提交（不重启）→
  * 飞书通知，人工在面板点「应用进化」才重启生效（半自动）。
+ * 手动按钮独立触发，不受每日自动名额影响，也不消费自动日期。
  */
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -53,11 +56,8 @@ const CN_TZ_OFFSET_MS = 8 * 3600 * 1000;
 const SAFETY_WINDOW_START_HOUR = 0;
 const SAFETY_WINDOW_SPAN_MS = 1 * 60 * 60 * 1000;
 const DAILY_RETRY_MS = 60 * 1000;
-const ACTIVITY_FOLLOWUP_MIN_MS = 60 * 1000;
-const ACTIVITY_FOLLOWUP_JITTER_MS = 60 * 1000;
 const FAILED_RUN_RETRY_MIN_MS = 10 * 60 * 1000;
 const FAILED_RUN_RETRY_JITTER_MS = 5 * 60 * 1000;
-const MAX_DAILY_FAILURE_RETRIES = 1;
 const PUSH_RETRY_DELAY_MS = 10 * 60 * 1000;
 const BLOCKING_STATUSES = new Set(['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local', 'review_blocked']);
 const COMPLETED_STATUSES = new Set(['pending_apply', 'no_change']);
@@ -146,6 +146,13 @@ function defaultState() {
     revisionContext: null,
     lastEvolveDate: '',
     lastSafetyEvolveDate: '',
+    // 当日自动综合巡检名额是否已消费（准备 spawn 时写入，失败不清，重启不重跑）；
+    // 手动运行只写 lastManualRunDate，不消费自动名额。
+    lastAutomaticEvolveDate: '',
+    lastManualRunDate: '',
+    pendingActivity: null,
+    // 面板可展示的固定自动调度说明；UI 未接也可正常工作。
+    automaticPolicy: '每天最多自动启动一轮综合巡检（北京时间 00:00-01:00，安全巡检 + 缓存活动增量交给同一 Agent 团队）；失败不自动重跑，重启不重跑；手动按钮独立执行，不消费自动名额',
     lastTask: '',
     lastRunAt: 0,
     status: 'idle', // idle | running | revising | rejected | revision_failed | pending_apply | applying | applied | push_failed | privacy_blocked | privacy_blocked_local | failed | interrupted | deferred | no_change
@@ -166,6 +173,25 @@ function defaultState() {
       safety: { reviewedAt: 0, reviewedHead: '' },
       activity: { reviewedAt: 0, reviewedHead: '', evidenceFingerprint: '' },
     },
+  };
+}
+
+function normalizeDateKey(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : '';
+}
+
+/** 扫描事件登记的待处理活动标记，只含脱敏 ID，供下一轮综合巡检合并。 */
+function normalizePendingActivity(value) {
+  if (!value || typeof value !== 'object') return null;
+  const ids = list => [...new Set((Array.isArray(list) ? list : [])
+    .map(Number).filter(id => id > 0))].slice(0, 200);
+  const newUnknown = ids(value.newUnknown);
+  const newEnded = ids(value.newEnded);
+  if (!newUnknown.length && !newEnded.length) return null;
+  return {
+    newUnknown,
+    newEnded,
+    updatedAt: Math.max(0, Number(value.updatedAt) || 0),
   };
 }
 
@@ -212,9 +238,7 @@ function normalizeActiveRun(value) {
     newUnknown: normalizeIds(value.newUnknown),
     newEnded: normalizeIds(value.newEnded),
     reviewIds: normalizeIds(value.reviewIds),
-    dailyFollowup: value.dailyFollowup === true,
-    dailyDate: String(value.dailyDate || '').slice(0, 20),
-    dailyRetryCount: Math.max(0, Math.floor(Number(value.dailyRetryCount) || 0)),
+    combinedDaily: value.combinedDaily === true,
     evidenceFingerprint: /^[0-9a-f]{64}$/i.test(String(value.evidenceFingerprint || ''))
       ? String(value.evidenceFingerprint)
       : '',
@@ -225,6 +249,14 @@ function normalizePersistedState(value, now = Date.now()) {
   const state = { ...defaultState(), ...(value || {}) };
   Object.assign(state, normalizeAgentSettings(value || {}));
   state.lastAgent = EVOLUTION_AGENTS.has(state.lastAgent) ? state.lastAgent : '';
+  if (!Object.hasOwn(value || {}, 'lastAutomaticEvolveDate')) {
+    const dates = [state.lastSafetyEvolveDate, state.lastEvolveDate,
+      state.lastRunAt > 0 ? getLocalDateKey(state.lastRunAt) : ''].map(normalizeDateKey).filter(Boolean);
+    state.lastAutomaticEvolveDate = dates.sort().at(-1) || '';
+  }
+  state.lastAutomaticEvolveDate = normalizeDateKey(state.lastAutomaticEvolveDate);
+  state.lastManualRunDate = normalizeDateKey(state.lastManualRunDate);
+  state.pendingActivity = normalizePendingActivity(state.pendingActivity);
   state.userInstruction = normalizeEvolutionInstruction(state.userInstruction);
   state.revisionContext = normalizeRevisionContext(state.revisionContext);
   state.changeSummary = String(state.changeSummary || '').slice(0, 3500);
@@ -322,10 +354,27 @@ function cleanupEvolutionLogs(now = Date.now()) {
   } catch {}
 }
 
-function getLocalDateKey() {
+function getLocalDateKey(now = Date.now()) {
   // 进化闸门按北京时间跨日，与窗口时区一致
-  const d = new Date(Date.now() + CN_TZ_OFFSET_MS);
+  const d = new Date(now + CN_TZ_OFFSET_MS);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
+ * 当日自动综合巡检名额是否已被消费。
+ *
+ * 旧数据保守迁移：没有自动/手动标记时，当天已有安全/活动日期或当日 lastRunAt
+ * 都视为已用，防止升级后当天重复自动启动；手动历史不明确时保守不再自动启动可接受。
+ */
+function isAutomaticQuotaUsed(state, dateKey = getLocalDateKey()) {
+  const key = normalizeDateKey(dateKey);
+  if (!key) return true;
+  if (Object.hasOwn(state || {}, 'lastAutomaticEvolveDate')) return normalizeDateKey(state.lastAutomaticEvolveDate) === key;
+  if (normalizeDateKey(state?.lastManualRunDate) === key) return false;
+  if (normalizeDateKey(state?.lastSafetyEvolveDate) === key
+      || normalizeDateKey(state?.lastEvolveDate) === key) return true;
+  const lastRunAt = Number(state?.lastRunAt || 0);
+  return lastRunAt > 0 && getLocalDateKey(lastRunAt) === key;
 }
 
 function gitHead() {
@@ -925,9 +974,39 @@ ${lines.join('\n')}
 这些摘要只是排查线索，不是修改依据。必须回看对应时段的本机短期日志并定位代码；证据不足、属于外部登录冲突或现有策略已经正确时，可以不改代码。禁止因为这些问题恢复整号熔断或放慢核心收益链。`;
 }
 
+/**
+ * 每日自动综合巡检附带的「缓存活动增量上下文」小段：只汇总脱敏 ID、指纹与提示，
+ * 让子 Agent 读现成扫描报告；不重复拼一份活动大 Prompt，不新增游戏请求。
+ */
+function buildCachedActivityContext({ activityPlan = null, pendingActivity = null, reportAvailable = false } = {}) {
+  const plan = activityPlan && typeof activityPlan === 'object' ? activityPlan : null;
+  const pending = normalizePendingActivity(pendingActivity);
+  const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(id => id > 0).join('、') || '无';
+  const lines = [
+    '【缓存活动增量上下文（本轮综合巡检附带，不单独开启活动轮）】',
+    `- 最新活动扫描报告：${reportAvailable ? '可用；先读取现成 core/data/activity-update-report.json，不为本轮新增任何游戏请求' : '不可用；本轮只完成安全巡检部分，不为了等待报告重试'}`,
+  ];
+  if (plan) {
+    lines.push(`- 待处理新活动 ID：${ids(plan.newUnknown)}`);
+    lines.push(`- 已结束活动 ID：${ids(plan.newEnded)}`);
+    lines.push(`- 需复核的已登记活动 ID：${ids(plan.reviewIds)}`);
+    if (/^[0-9a-f]{64}$/i.test(String(plan.fingerprint || ''))) {
+      lines.push(`- 活动证据指纹：${plan.fingerprint}`);
+    }
+    if (plan.evidenceChanged) lines.push('- 活动证据相对上次已审指纹有变化，须按活动域硬门复核缺口');
+  } else {
+    lines.push('- 本轮未取得可用的活动增量计划（见上一行报告可用性说明）');
+  }
+  if (pending) {
+    lines.push(`- 已知未决项（此前扫描登记、尚未处理）：新活动 ${ids(pending.newUnknown)}；已结束 ${ids(pending.newEnded)}；随本轮综合巡检一并处理`);
+  }
+  lines.push('- 活动结论与证据一律以现成扫描报告和本摘要为准；不得为本轮发起额外游戏请求，不得把原始响应、账号或地址写进任何文件。');
+  return lines.join('\n');
+}
+
 function buildSafetyPrompt(userInstruction = '', revisionContext = null, runtimeIssues = [],
-  incrementalContext = '') {
-  return `你是 qq-farm-bot 项目的防封安全巡检 agent，仓库根目录就是当前工作目录（git 仓库；你只能创建本地提交，不能推送）。
+  incrementalContext = '', cachedActivityContext = '') {
+  const base = `你是 qq-farm-bot 项目的防封安全巡检 agent，仓库根目录就是当前工作目录（git 仓库；你只能创建本地提交，不能推送）。
 
 ${buildEvolutionGuardrails(userInstruction, revisionContext)}
 
@@ -968,6 +1047,7 @@ ${incrementalContext || buildIncrementalReviewContext({}, 'safety')}
 6. 没有可靠证据支持的可修项时，允许代码和 HANDOFF 完全不改、不提交，以 0 退出并说明“无可靠改动”；不要为了每日出一个提交而刷新巡检记录。
 7. 有实际改动时才执行 cd core && node --test test/*.test.js；失败必须 git 还原所有改动，写明失败原因后结束。
 8. 有实际改动且测试通过则 git add -A && git commit，message 以「安全巡检:」开头。严禁执行 git push；父进程会先做隐私扫描再推送。不要重启 bot。`;
+  return cachedActivityContext ? `${base}\n\n${cachedActivityContext}` : base;
 }
 
 async function notify(title, content) {
@@ -995,6 +1075,31 @@ async function notify(title, content) {
   } catch (error) {
     logger.warn(`进化通知发送失败: ${error.message}`);
   }
+}
+
+/**
+ * 综合巡检成功收口时结算活动侧检查点：合并 handled 标记、清掉待处理标记、
+ * 更新活动证据指纹记忆。不写 lastEvolveDate（该字段仍只表示独立活动轮完成）。
+ */
+function settleCombinedActivityMemory(next, { newUnknown = [], newEnded = [], fingerprint = '', head = '' } = {}) {
+  next.handledUnknownIds = [...new Set([...next.handledUnknownIds, ...newUnknown])].slice(-200);
+  next.handledEndedIds = [...new Set([...next.handledEndedIds, ...newEnded])].slice(-200);
+  const pending = normalizePendingActivity(next.pendingActivity);
+  next.pendingActivity = normalizePendingActivity({
+    newUnknown: (pending?.newUnknown || []).filter(id => !next.handledUnknownIds.includes(id)),
+    newEnded: (pending?.newEnded || []).filter(id => !next.handledEndedIds.includes(id)),
+    updatedAt: pending?.updatedAt || 0,
+  });
+  if (/^[0-9a-f]{64}$/i.test(String(fingerprint || ''))) {
+    const memory = normalizeEvolutionMemory(next.evolutionMemory);
+    memory.activity = {
+      reviewedAt: Date.now(),
+      reviewedHead: head || gitHead(),
+      evidenceFingerprint: String(fingerprint).toLowerCase(),
+    };
+    next.evolutionMemory = memory;
+  }
+  return next;
 }
 
 function launchEvolution(task, payload = {}) {
@@ -1075,16 +1180,21 @@ function launchEvolution(task, payload = {}) {
   state.commit = '';
   state.changeSummary = '';
   state.privacyFindings = [];
+  // 启动协作直接进入 research，由子 Agent 先行；主 Agent 不再单独 triage。
   state.collaboration = settings.dualAgentEnabled
-    ? { phase: 'triage', status: 'running', activeAgent: settings.mainAgent }
+    ? { phase: 'research', status: 'running', activeAgent: settings.subAgent }
     : null;
+  // 手动运行只记手动日期，不消费/改写自动名额字段。
+  if (payload.automatic !== true) state.lastManualRunDate = getLocalDateKey();
   state.runtimeIssueBatch = task === 'safety' ? toRuntimeIssueBatch(runtimeIssues) : [];
   state.feedbackBatch = getDailyFeedback().captureBatch();
   state.feedbackCleanupPending = false;
   state.learningReceipt = '';
   if (task === 'safety') {
     state.lastSafetyEvolveDate = getLocalDateKey();
-    state.summary = `安全巡检执行中（${agentLabel}，防封审计）`;
+    state.summary = payload.combinedDaily
+      ? `自动综合巡检执行中（${agentLabel}，安全巡检 + 缓存活动增量）`
+      : `安全巡检执行中（${agentLabel}，防封审计）`;
   } else {
     payload.newUnknown = Array.isArray(payload.newUnknown) ? payload.newUnknown : [];
     payload.newEnded = Array.isArray(payload.newEnded) ? payload.newEnded : [];
@@ -1103,10 +1213,24 @@ function launchEvolution(task, payload = {}) {
   const out = fs.openSync(logFile, 'a', 0o600);
   try { fs.chmodSync(logFile, 0o600); } catch {}
   const headBefore = gitHead();
-  const evidenceFingerprint = task === 'activity' ? activityEvidenceFingerprint(payload.report) : '';
+  const evidenceFingerprint = task === 'activity'
+    ? activityEvidenceFingerprint(payload.report)
+    : (payload.combinedDaily ? String(payload.activityPlan?.fingerprint || '') : '');
   const incrementalContext = buildIncrementalReviewContext(current, task, payload.report);
   const prompt = task === 'safety'
-    ? buildSafetyPrompt(current.userInstruction, current.revisionContext, runtimeIssues, incrementalContext)
+    ? buildSafetyPrompt(
+        current.userInstruction,
+        current.revisionContext,
+        runtimeIssues,
+        incrementalContext,
+        payload.combinedDaily
+          ? buildCachedActivityContext({
+              activityPlan: payload.activityPlan || null,
+              pendingActivity: current.pendingActivity,
+              reportAvailable: !!payload.report,
+            })
+          : '',
+      )
     : buildPrompt(
         payload.report,
         payload.newUnknown,
@@ -1148,12 +1272,10 @@ function launchEvolution(task, payload = {}) {
     launchedAt: state.lastRunAt,
     baseCommit: headBefore,
     logFile,
-    newUnknown: payload.newUnknown,
-    newEnded: payload.newEnded,
-    reviewIds: payload.reviewIds,
-    dailyFollowup: payload.dailyFollowup,
-    dailyDate: payload.dailyDate,
-    dailyRetryCount: payload.dailyRetryCount,
+    newUnknown: task === 'safety' ? (payload.activityPlan?.newUnknown || []) : payload.newUnknown,
+    newEnded: task === 'safety' ? (payload.activityPlan?.newEnded || []) : payload.newEnded,
+    reviewIds: task === 'safety' ? (payload.activityPlan?.reviewIds || []) : payload.reviewIds,
+    combinedDaily: payload.combinedDaily === true,
     evidenceFingerprint,
   });
   state.activeRun = activeRun;
@@ -1218,7 +1340,7 @@ function launchEvolution(task, payload = {}) {
         : outcome === 'no_change'
           ? `${tag}（${agentLabel}）完成：agent 判断无需代码改动`
           : retryableAgentFailure
-            ? `${tag}（${agentLabel}）${capacityFailure ? '执行器模型暂时满载' : '执行器临时失败'}，已中止本轮并安排自动重试${agentFailureReason ? `：${agentFailureReason}` : ''}，详见 ${path.basename(logFile)}`
+            ? `${tag}（${agentLabel}）${capacityFailure ? '执行器模型暂时满载' : '执行器临时失败'}，已中止本轮${agentFailureReason ? `：${agentFailureReason}` : ''}；自动轮当天名额已消费，不再自动重跑，详见 ${path.basename(logFile)}`
           : interrupted
             ? `${tag}（${agentLabel}）已中止（${signal || `退出码 ${code}`}），未标记为审计失败、未应用代码；可在工作区空闲时重新执行`
             : `${tag}（${agentLabel}）执行失败（${launchError || `退出码 ${code}`}），详见 ${path.basename(logFile)}`;
@@ -1230,6 +1352,16 @@ function launchEvolution(task, payload = {}) {
     if (task !== 'safety' && COMPLETED_STATUSES.has(outcome) && !teamJournal?.repairOnly) {
       next.handledUnknownIds = [...new Set([...next.handledUnknownIds, ...payload.newUnknown])].slice(-200);
       next.handledEndedIds = [...new Set([...next.handledEndedIds, ...payload.newEnded])].slice(-200);
+    }
+    // 综合巡检完成时同样结算活动侧检查点：只记 handled 与指纹，不伪造 lastEvolveDate。
+    if (task === 'safety' && payload.combinedDaily
+        && COMPLETED_STATUSES.has(outcome) && !teamJournal?.repairOnly) {
+      settleCombinedActivityMemory(next, {
+        newUnknown: payload.activityPlan?.newUnknown || [],
+        newEnded: payload.activityPlan?.newEnded || [],
+        fingerprint: evidenceFingerprint,
+        head: evolved ? headAfter : headBefore,
+      });
     }
     if (task === 'safety' && outcome === 'no_change') {
       acknowledgeRuntimeIssues(next.runtimeIssueBatch);
@@ -1257,22 +1389,7 @@ function launchEvolution(task, payload = {}) {
         : `${notificationContent}\n新活动: ${payload.newUnknown.join(',') || '无'}；结束: ${payload.newEnded.join(',') || '无'}；复核: ${payload.reviewIds.join(',') || '无'}`,
     );
     if (outcome === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
-    const dailyDate = payload.dailyDate || getLocalDateKey();
-    const dailyRetryCount = Number(payload.dailyRetryCount || 0);
-    if (payload.dailyFollowup && (outcome === 'failed' || outcome === 'interrupted')
-        && !(settings.dualAgentEnabled && (teamJournal?.recoveryAttempt > 0 || teamJournal?.planRevision > 0))
-        && dailyRetryCount < MAX_DAILY_FAILURE_RETRIES) {
-      const retryDelay = FAILED_RUN_RETRY_MIN_MS
-        + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS);
-      if (task === 'safety') scheduleDailySafetyRetry(dailyDate, dailyRetryCount + 1, retryDelay);
-      else scheduleDailyActivityFollowup(dailyDate, retryDelay, dailyRetryCount + 1);
-    } else if (retryableAgentFailure && !running && dailyRetryCount < MAX_DAILY_FAILURE_RETRIES) {
-      // 手动触发的临时执行器故障同样最多补一次，不突破当日失败重试上限。
-      if (task === 'safety') scheduleDailySafetyRetry(dailyDate, dailyRetryCount + 1, DAILY_RETRY_MS);
-      else scheduleDailyActivityFollowup(dailyDate, DAILY_RETRY_MS, dailyRetryCount + 1);
-    } else if (task === 'safety' && payload.dailyFollowup && !BLOCKING_STATUSES.has(outcome)) {
-      scheduleDailyActivityFollowup(dailyDate);
-    }
+    // 每日自动名额已消费（含失败），不再自动重跑；内部两次有界返工由团队工作流自己完成。
   };
   const watchAgent = () => {
     if (finalized) return;
@@ -1350,34 +1467,31 @@ function planDailyActivityEvolution(report, state = {}) {
   };
 }
 
-function rememberNoChangeActivityReview(state, report, dateKey = getLocalDateKey()) {
-  const next = state;
-  const memory = normalizeEvolutionMemory(next.evolutionMemory);
-  memory.activity = {
-    reviewedAt: Date.now(),
-    reviewedHead: gitHead(),
-    evidenceFingerprint: activityEvidenceFingerprint(report),
-  };
-  next.evolutionMemory = memory;
-  next.lastEvolveDate = dateKey;
-  next.lastTask = 'activity';
-  next.status = 'no_change';
-  next.summary = '活动每日检测已完成：在线证据指纹、待处理活动和活动域代码均未变化，本轮复用脱敏检查点，未重复启动 Agent';
-  writeState(next);
-  return next;
-}
-
 /**
- * 每次监控扫描后调用：有未处理的新活动/结束活动就触发活动进化。
- * handled 集合才是事件去重依据；凌晨无候选空跑过不能吞掉当天稍后开放的新活动。
+ * 每次监控扫描后调用：只把未处理的新活动/结束活动登记为待处理标记，
+ * 供下一轮每日综合巡检合并进缓存活动增量上下文；扫描事件本身不自动拉 Agent。
+ * handled 集合是事件去重依据；凌晨无候选空跑过不能吞掉当天稍后开放的新活动。
  */
 function checkAndMaybeEvolve(report) {
-  if (running) return;
-  const state = readState();
-  const { shouldRun, newUnknown, newEnded, reviewIds } = planActivityEvolution(report, state);
-  if (!shouldRun) return;
-
-  launchEvolution('activity', { report, newUnknown, newEnded, reviewIds });
+  const state = (deps.readState || readState)();
+  const { shouldRun, newUnknown, newEnded } = planActivityEvolution(report, state);
+  const pending = normalizePendingActivity(state.pendingActivity);
+  if (!shouldRun && !pending) return;
+  const merged = normalizePendingActivity({
+    newUnknown: [...(pending?.newUnknown || []), ...newUnknown],
+    newEnded: [...(pending?.newEnded || []), ...newEnded],
+    updatedAt: Date.now(),
+  });
+  if (!merged) return;
+  const sameIds = pending
+    && pending.newUnknown.length === merged.newUnknown.length
+    && pending.newEnded.length === merged.newEnded.length
+    && pending.newUnknown.every(id => merged.newUnknown.includes(id))
+    && pending.newEnded.every(id => merged.newEnded.includes(id));
+  if (sameIds) return;
+  state.pendingActivity = merged;
+  (deps.writeState || writeState)(state);
+  logger.info(`发现待处理活动，已登记待下次每日综合巡检：新活动 ${merged.newUnknown.join(',')}；结束 ${merged.newEnded.join(',')}`);
 }
 
 /** 手动触发（面板按钮/验证用），跳过每日闸门。task: 'activity' | 'safety' */
@@ -1484,57 +1598,49 @@ function nextSafetyRunAt(from = new Date()) {
   return targetUtcMs > from.getTime() ? targetUtcMs : targetUtcMs + 24 * 3600 * 1000;
 }
 
-/** safety 收口后再顺序执行 activity，避免两个 agent 同时改同一个工作区。 */
-function scheduleDailyActivityFollowup(dateKey, delayMs, retryCount = 0) {
-  const delay = Number.isFinite(delayMs)
-    ? Math.max(0, delayMs)
-    : ACTIVITY_FOLLOWUP_MIN_MS + Math.floor(Math.random() * ACTIVITY_FOLLOWUP_JITTER_MS);
-  scheduler.setTimeoutTask('daily_activity_followup', delay, () => {
-    if (getLocalDateKey() !== dateKey) return;
-    if (running) {
-      scheduleDailyActivityFollowup(dateKey, DAILY_RETRY_MS);
-      return;
+/**
+ * 每日自动综合巡检：北京时间每天最多一轮，安全巡检 prompt + 缓存活动增量
+ * 一起交给同一个 Agent 团队。真正准备 spawn 时才写 lastAutomaticEvolveDate
+ * （失败不清，重启不重跑）；无可用活动报告也照做安全巡检，不为等报告重试。
+ */
+function attemptDailyEvolution(dateKey, allowBusyRetry = true) {
+  const nowFn = deps.now || Date.now;
+  if (getLocalDateKey(nowFn()) !== dateKey) return;
+  if (running) {
+    // busy 只补一次下次调度，禁止循环拉模型。
+    if (allowBusyRetry) {
+      scheduler.setTimeoutTask('daily_evolution_retry', DAILY_RETRY_MS,
+        () => attemptDailyEvolution(dateKey, false));
     }
-    const state = readState();
-    if (state.lastEvolveDate === dateKey || BLOCKING_STATUSES.has(state.status)) return;
-    const report = readLatestReport();
-    if (!report || report.status === 'unavailable' || report?.online?.available === false) {
-      scheduleDailyActivityFollowup(dateKey, DAILY_RETRY_MS, retryCount);
-      return;
-    }
-    const plan = planDailyActivityEvolution(report, state);
-    if (!plan.shouldRun) {
-      const completed = rememberNoChangeActivityReview(state, report, dateKey);
-      void notify('农场 bot 活动增量检测结果', completed.summary);
-      return;
-    }
-    launchEvolution('activity', {
-      report,
-      newUnknown: plan.newUnknown,
-      newEnded: plan.newEnded,
-      reviewIds: plan.reviewIds,
-      dailyFollowup: true,
-      dailyDate: dateKey,
-      dailyRetryCount: retryCount,
-    });
+    return;
+  }
+  const state = (deps.readState || readState)();
+  if (isAutomaticQuotaUsed(state, dateKey, nowFn())) return;
+  if (BLOCKING_STATUSES.has(state.status)) return; // 等下个每日窗口，不重试
+  if ((deps.worktreeChanges || worktreeChanges)()) return; // 工作区未收口，等下个窗口
+  const report = (deps.readLatestReport || readLatestReport)();
+  const reportUsable = !!report && report.status !== 'unavailable' && report?.online?.available !== false;
+  const activityPlan = reportUsable ? planDailyActivityEvolution(report, state) : null;
+  state.lastAutomaticEvolveDate = dateKey;
+  if (!(deps.writeState || writeState)(state)) return { ok: false, reason: 'state_write_failed' };
+  const launch = deps.launchEvolution || launchEvolution;
+  const result = launch('safety', {
+    automatic: true,
+    combinedDaily: true,
+    report: reportUsable ? report : null,
+    activityPlan,
   });
+  if (result && result.ok === false) {
+    logger.warn(`每日自动综合巡检启动未成功（${result.reason || ''}）：${result.error || ''}；当天名额已消费`);
+  }
+  return result;
 }
 
-function scheduleDailySafetyRetry(dateKey, retryCount, delayMs) {
-  scheduler.setTimeoutTask('daily_safety_retry', delayMs, () => {
-    if (getLocalDateKey() !== dateKey) return;
-    if (running) {
-      scheduleDailySafetyRetry(dateKey, retryCount, DAILY_RETRY_MS);
-      return;
-    }
-    const state = readState();
-    if (state.lastSafetyEvolveDate === dateKey || BLOCKING_STATUSES.has(state.status)) return;
-    launchEvolution('safety', {
-      dailyFollowup: true,
-      dailyDate: dateKey,
-      dailyRetryCount: retryCount,
-    });
-  });
+/** 重启后补当天未消费的自动名额；一次性延迟调度，已消费（含失败）则不补，重启不重跑。 */
+function scheduleAutomaticCatchup(dateKey) {
+  scheduler.setTimeoutTask('daily_automatic_catchup',
+    FAILED_RUN_RETRY_MIN_MS + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS),
+    () => attemptDailyEvolution(dateKey));
 }
 
 /** 短暂网络故障不应要求人工改状态；只重推当前 HEAD 对应的那一个进化提交。 */
@@ -1569,21 +1675,7 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
   });
 }
 
-function attemptDailyEvolution(dateKey) {
-  if (getLocalDateKey() !== dateKey) return;
-  if (running) {
-    scheduler.setTimeoutTask('daily_evolution_retry', DAILY_RETRY_MS, () => attemptDailyEvolution(dateKey));
-    return;
-  }
-  const state = readState();
-  if (state.lastSafetyEvolveDate !== dateKey) {
-    launchEvolution('safety', { dailyFollowup: true, dailyDate: dateKey, dailyRetryCount: 0 });
-    return;
-  }
-  if (state.lastEvolveDate !== dateKey) scheduleDailyActivityFollowup(dateKey);
-}
-
-/** 每日窗口调度：先跑 safety；activity 不再被 else-if 永久饿死，而是在其收口后跟进。 */
+/** 每日窗口调度：每天窗口内最多自动启动一轮综合巡检。 */
 function scheduleDailyEvolution() {
   const delay = nextSafetyRunAt() - Date.now();
   scheduler.setTimeoutTask('daily_evolution', delay, () => {
@@ -1681,22 +1773,23 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
     next.handledUnknownIds = [...new Set([...next.handledUnknownIds, ...active.newUnknown])].slice(-200);
     next.handledEndedIds = [...new Set([...next.handledEndedIds, ...active.newEnded])].slice(-200);
   }
+  // 恢复收口的综合巡检同样结算活动侧检查点，不伪造 lastEvolveDate。
+  if (task === 'safety' && active.combinedDaily
+      && COMPLETED_STATUSES.has(next.status) && !teamJournal?.repairOnly) {
+    settleCombinedActivityMemory(next, {
+      newUnknown: active.newUnknown,
+      newEnded: active.newEnded,
+      fingerprint: active.evidenceFingerprint,
+      head: evolved ? headAfter : active.baseCommit,
+    });
+  }
   settleDailyReview(next);
   writeState(next);
   running = false;
   await notify(`农场 bot ${tag}恢复结果`, [next.summary, next.changeSummary, ...next.privacyFindings]
     .filter(Boolean).join('\n'));
   if (next.status === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
-  const dailyDate = active.dailyDate || getLocalDateKey();
-  if (active.dailyFollowup && (next.status === 'failed' || next.status === 'interrupted')
-      && active.dailyRetryCount < MAX_DAILY_FAILURE_RETRIES) {
-    const retryDelay = FAILED_RUN_RETRY_MIN_MS
-      + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS);
-    if (task === 'safety') scheduleDailySafetyRetry(dailyDate, active.dailyRetryCount + 1, retryDelay);
-    else scheduleDailyActivityFollowup(dailyDate, retryDelay, active.dailyRetryCount + 1);
-  } else if (task === 'safety' && active.dailyFollowup && !BLOCKING_STATUSES.has(next.status)) {
-    scheduleDailyActivityFollowup(dailyDate);
-  }
+
 }
 
 function watchRecoveredEvolution(activeRun) {
@@ -1798,18 +1891,8 @@ function startActivityEvolver(options = {}) {
   const dateKey = getLocalDateKey();
   if (reconciled.state.status === 'push_failed' && reconciled.state.commit) {
     schedulePushRetry(reconciled.state.commit, DAILY_RETRY_MS);
-  } else if (reconciled.state.lastSafetyEvolveDate !== dateKey
-      && !BLOCKING_STATUSES.has(reconciled.state.status)) {
-    // Bot 错过窗口或中途重启时补当天 safety；延迟 10-15 分钟，避免启动即突发。
-    scheduleDailySafetyRetry(
-      dateKey,
-      0,
-      FAILED_RUN_RETRY_MIN_MS + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS),
-    );
-  } else if (reconciled.state.lastSafetyEvolveDate === dateKey
-      && reconciled.state.lastEvolveDate !== dateKey
-      && !BLOCKING_STATUSES.has(reconciled.state.status)) {
-    scheduleDailyActivityFollowup(dateKey);
+  } else if (!isAutomaticQuotaUsed(reconciled.state, dateKey) && !BLOCKING_STATUSES.has(reconciled.state.status)) {
+    scheduleAutomaticCatchup(dateKey);
   }
 }
 
@@ -2001,6 +2084,11 @@ module.exports = {
   runEvolutionNow,
   applyEvolution,
   nextSafetyRunAt,
+  getLocalDateKey,
+  isAutomaticQuotaUsed,
+  attemptDailyEvolution,
+  buildCachedActivityContext,
+  settleCombinedActivityMemory,
   classifyEvolutionExit,
   normalizePersistedState,
   normalizeEvolutionMemory,

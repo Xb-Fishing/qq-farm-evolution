@@ -615,7 +615,7 @@ onUnmounted(() => evolutionStore.stopPolling())
             自动进化（活动 + 防封安全巡检）
           </h4>
           <p class="mt-1 text-xs text-purple-700/90 dark:text-purple-300/90">
-            每天北京时间 00:00-01:00 自动执行安全巡检和活动核对。双 Agent 模式：子 Agent 检索与巡查 → 主 Agent 确认方案 → 子 Agent 实施 → 全量测试 → 主 Agent 复核 → 提交。完成后由你点「应用进化」生效。
+            每天北京时间 00:00-01:00 最多自动启动一轮，合并安全巡检和缓存活动核对。子 Agent 初检与实施，主 Agent 确认方案和最终验收；协调进程执行真实测试及批准的反向对照。完成后由你点「应用进化」生效。
           </p>
         </div>
         <button
@@ -688,7 +688,7 @@ onUnmounted(() => evolutionStore.stopPolling())
       <div class="mt-3 grid gap-2 md:grid-cols-2">
         <div class="rounded border border-purple-200 bg-white/60 p-2.5 dark:border-purple-700/50 dark:bg-gray-800/60">
           <div class="text-xs font-medium text-purple-900 dark:text-purple-200">
-            安全巡检（防封审计）
+            {{ evolve?.lastTask === 'activity' ? '活动进化' : '安全巡检（防封审计）' }}
           </div>
           <div class="mt-1 text-xs text-purple-800 dark:text-purple-300">
             状态：{{ evolveStatusLabel }}

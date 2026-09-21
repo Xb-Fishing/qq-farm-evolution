@@ -210,7 +210,7 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
   const git = args => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
     write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
-    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation']) {
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation', 'evolution-countercheck']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
     write('core/src/services/evolution-references.js', 'module.exports.collectPublicReferences = async () => ({state:"complete", discoveryComplete:true});\n');
@@ -245,10 +245,15 @@ process.stdin.on('end', () => {
     fs.writeFileSync('core/src/example.js', 'module.exports = 2;\\n');
     fs.appendFileSync('docs/HANDOFF.md', 'Verified implementation\\n');
     if (fs.existsSync('core/data/touch-web')) fs.writeFileSync('web/src/example.js', 'export default 2;\\n');
+    if (fs.existsSync('core/data/countercheck-required')) fs.writeFileSync('core/test/behavior.test.js', 'require("node:test")("detect old behavior", () => require("node:assert/strict").equal(require("../src/example"), 2));\\n');
+  }
+  if (phase === 'review' && fs.existsSync('core/data/countercheck-required')) {
+    const proof = JSON.parse(fs.readFileSync('core/data/evolution-countercheck.json'));
+    if (proof.state !== 'passed' || proof.checks[0].baseline.behaviorFailures !== 1 || proof.checks[0].current.failed !== 0) throw new Error('Coordinator evidence missing');
   }
   const reject = fs.existsSync('core/data/reject-review');
   const decision = { triage: 'triaged', research: 'researched', plan: 'approve', implement: 'implemented', review: reject ? 'reject' : 'approve', diagnose: reject ? 'stop' : 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
-  const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {}), ...(phase === 'plan' ? {allowedFiles:['core/src/example.js','docs/HANDOFF.md','web/src/example.js'], acceptanceChecks:['example returns expected value']} : {})};
+  const result = {decision, summary: 'Verified fixture change', ...(phase === 'diagnose' ? {allowedFiles: []} : {}), ...(phase === 'plan' ? {allowedFiles:['core/src/example.js','docs/HANDOFF.md','web/src/example.js','core/test/behavior.test.js'], acceptanceChecks:['example returns expected value'], baselineChecks:fs.existsSync('core/data/countercheck-required')?[{sourceFiles:['core/src/example.js'],testFiles:['core/test/behavior.test.js'],minFailures:1}]:[]} : {})};
   if (agent === 'claude') {
     const schemaIndex = process.argv.indexOf('--json-schema');
     if (schemaIndex < 0 || !JSON.parse(process.argv[schemaIndex + 1]).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
@@ -292,7 +297,7 @@ process.stdin.on('end', () => {
     const active = { runId: 'success', baseCommit, agent: 'codex', subAgent: 'claude', dualAgentEnabled: true };
     assert.equal(isTeamResultApproved(readTeamJournal(path.join(dir, 'core/data/logs'), active), head), true);
     assert.match(success.stdout, /# pass 1/);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'triage:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\nplan:codex\nimplement:claude\nreview:codex\n');
     // 此 reset 只操作测试创建的临时仓库。
     git(['reset', '--hard', baseCommit]);
     write('core/data/reject-review', '1');
@@ -312,7 +317,7 @@ process.stdin.on('end', () => {
     assert.equal(journal.recoveryAttempt, 1);
     assert.equal(journal.lastFailure.code, 'invalid_output');
     assert.equal(isTeamResultApproved(journal, recoveredHead), true);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'triage:codex\nresearch:claude\ndiagnose:codex\nrepair:claude\nrepair_review:codex\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'research:claude\ndiagnose:codex\nrepair:claude\nresearch:claude\nplan:codex\nimplement:claude\nreview:codex\n');
     assert.ok(fs.readdirSync(path.join(dir, 'core/data/logs')).every(file => !file.endsWith('-schema.json')));
     git(['reset', '--hard', baseCommit]);
     write('core/data/touch-web', '1');
@@ -322,5 +327,13 @@ process.stdin.on('end', () => {
     const built = JSON.parse(fs.readFileSync(path.join(dir, 'core/data/build-location.json')));
     assert.notEqual(built.output, path.join(dir, 'web/dist'));
     assert.equal(fs.existsSync(built.output), false);
+    git(['reset', '--hard', baseCommit]);
+    write('core/data/countercheck-required', '1');
+    const counterchecked = run('countercheck');
+    assert.equal(counterchecked.status, 0, counterchecked.stderr);
+    const proof = JSON.parse(fs.readFileSync(path.join(dir, 'core/data/evolution-countercheck.json')));
+    assert.equal(proof.state, 'passed');
+    assert.equal(proof.checks[0].baseline.behaviorFailures, 1);
+    assert.equal(proof.checks[0].baseline.otherFailures, 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
