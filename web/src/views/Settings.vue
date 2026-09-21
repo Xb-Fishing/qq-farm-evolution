@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/api'
 import ConfirmModal from '@/components/ConfirmModal.vue'
@@ -130,6 +130,13 @@ const {
   confirmClearStopped,
 } = useAccountSettings(showAlert)
 
+// 从既有账号列表派生当前账号严格运行态：账号缺失、未运行或未选择都暂停背包种子读取。
+// 复用 accounts 已有的轮询刷新，不新增状态请求；列表对象整体替换不影响该布尔值。
+const currentAccountRunning = computed(() => {
+  const current = accounts.value.find(item => String(item.id) === String(currentAccountId.value ?? ''))
+  return current?.running === true
+})
+
 const {
   localAutomationSettings,
   localAutoCodeRefresh,
@@ -171,6 +178,7 @@ const {
   resetStrategyState,
 } = useStrategySettings({
   currentAccountId,
+  currentAccountRunning,
   getAutomationSettings: () => localAutomationSettings.value,
   showAlert,
 })
@@ -202,15 +210,20 @@ async function applyDefaultPlan(account: any) {
   }
 }
 
-watch(currentAccountId, async () => {
-  settingStore.clearSettingsState()
-  resetStrategyState()
-  if (currentAccountId.value) {
-    await loadStrategyData()
-    syncLocalAutomationSettings()
-    syncLocalOfflineSettings()
-  }
-})
+// 字符串/数字形式的同一选择按统一标识观察：类型变化不触发重置、
+// 配置重载或种子重新读取（与 composable 内的 String() 归一化一致）。
+watch(
+  () => (currentAccountId.value == null ? '' : String(currentAccountId.value)),
+  async () => {
+    settingStore.clearSettingsState()
+    resetStrategyState()
+    if (currentAccountId.value) {
+      await loadStrategyData()
+      syncLocalAutomationSettings()
+      syncLocalOfflineSettings()
+    }
+  },
+)
 
 onMounted(async () => {
   await fetchAccounts()
