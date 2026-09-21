@@ -317,8 +317,20 @@ test('Claude/Codex 可跨 NVM Node 版本解析并生成各自非交互命令', 
     assert.equal(resolveCodexBin({ env: { PATH: '' }, homeDir: tempHome }), codexBin);
 
     const claude = buildEvolutionAgentCommand('claude', '审计', { env: { PATH: '' }, homeDir: tempHome });
-    assert.deepEqual(claude.args, ['-p', '--dangerously-skip-permissions']);
+    assert.deepEqual(claude.args, ['-p', '--dangerously-skip-permissions', '--output-format', 'json']);
     assert.equal(claude.stdin, '审计');
+    // 重做轮传 resumeSessionId：续接原会话；非法值忽略。
+    const resumed = buildEvolutionAgentCommand('claude', '重做', {
+      env: { PATH: '' }, homeDir: tempHome, resumeSessionId: 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
+    });
+    assert.deepEqual(resumed.args, [
+      '-p', '--dangerously-skip-permissions', '--output-format', 'json',
+      '--resume', 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
+    ]);
+    const badResume = buildEvolutionAgentCommand('claude', '重做', {
+      env: { PATH: '' }, homeDir: tempHome, resumeSessionId: '../etc/passwd',
+    });
+    assert.deepEqual(badResume.args, ['-p', '--dangerously-skip-permissions', '--output-format', 'json']);
     const codex = buildEvolutionAgentCommand('codex', '审计', { env: { PATH: '' }, homeDir: tempHome });
     assert.deepEqual(codex.args, ['exec', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
     assert.equal(codex.stdin, '审计');
@@ -605,6 +617,37 @@ test('拒绝重做继承上一轮提交、日志和变更摘要', () => {
   assert.match(activityPrompt, /git show --stat 1234567890abcdef/);
 });
 
+test('隐私拦截重做：命中项进续接上下文、会话与拦截提交状态可持久化', () => {
+  const context = normalizeRevisionContext({
+    commit: 'abcdef1234567890',
+    task: 'activity',
+    logFile: '/tmp/evolve-activity-claude.log',
+    summary: '被隐私闸门拦截',
+    privacyFindings: ['runtime-personal-data @ docs/HANDOFF.md:1702 (commit abcdef12)'],
+    rejectedAt: 456,
+  });
+  const continuity = buildRevisionContinuity(context);
+  assert.match(continuity, /被隐私闸门拦截的命中项/);
+  assert.match(continuity, /runtime-personal-data @ docs\/HANDOFF\.md:1702/);
+
+  // 状态字段：合法 session id / commit 保留，非法值清空，重做后清空拦截记录。
+  const state = normalizePersistedState({
+    status: 'privacy_blocked',
+    agentSessionId: 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
+    privacyBlockedCommit: 'abcdef1234567890',
+    privacyBlockedBase: '1234567890abcdef',
+    revisionContext: context,
+  });
+  assert.equal(state.agentSessionId, 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d');
+  assert.equal(state.privacyBlockedCommit, 'abcdef1234567890');
+  assert.equal(state.privacyBlockedBase, '1234567890abcdef');
+  const dirty = normalizePersistedState({
+    agentSessionId: 'rm -rf /', privacyBlockedCommit: 'HEAD~1', privacyBlockedBase: '',
+  });
+  assert.equal(dirty.agentSessionId, '');
+  assert.equal(dirty.privacyBlockedCommit, '');
+});
+
 test('活动进化 Prompt 获得完整活动域职责和脱敏证据而非只登记 ID', () => {
   const groups = [{
     id: 2026070300,
@@ -753,7 +796,7 @@ test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitH
   assert.match(source, /function reviseEvolution/);
   assert.match(source, /gitHead\(\) !== state\.commit/);
   assert.match(source, /\['revert', '--no-edit', rejectedCommit\]/);
-  assert.match(panel, /拒绝本次并按要求重做（当前无待应用提交）/);
+  assert.match(panel, /拒绝本次并按要求重做（当前无可重做提交）/);
   assert.doesNotMatch(panel, /v-if="evolve\?\.status === 'pending_apply'"/);
   assert.match(panel, /重新进化当前活动/);
   assert.match(panel, /force=1/);

@@ -29,6 +29,8 @@ export interface EvolutionState {
   lastEvolveDate?: string
   /** 每日综合巡检合并复核活动侧的完成日（不写 lastEvolveDate，防封去重语义保留） */
   lastActivityReviewDate?: string
+  /** 上一轮 Agent 会话 ID（隐私拦截/拒绝重做时 --resume 续接原对话） */
+  agentSessionId?: string
   userInstruction?: string
   nextAutoRunAt?: number
   pendingRuntimeIssueCount?: number

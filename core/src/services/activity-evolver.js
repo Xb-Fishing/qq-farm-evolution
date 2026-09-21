@@ -264,6 +264,12 @@ function normalizePersistedState(value, now = Date.now()) {
   state.privacyFindings = Array.isArray(state.privacyFindings)
     ? state.privacyFindings.map(item => String(item || '').slice(0, 300)).slice(0, 20)
     : [];
+  state.agentSessionId = /^[a-f0-9-]{8,64}$/i.test(String(state.agentSessionId || ''))
+    ? String(state.agentSessionId) : '';
+  state.privacyBlockedCommit = /^[0-9a-f]{7,64}$/i.test(String(state.privacyBlockedCommit || ''))
+    ? String(state.privacyBlockedCommit) : '';
+  state.privacyBlockedBase = /^[0-9a-f]{7,64}$/i.test(String(state.privacyBlockedBase || ''))
+    ? String(state.privacyBlockedBase) : '';
   state.runtimeIssueBatch = normalizeRuntimeIssueBatch(state.runtimeIssueBatch);
   state.feedbackBatch = Number.isSafeInteger(state.feedbackBatch?.throughAt) && state.feedbackBatch.throughAt > 0
     && state.feedbackBatch.throughAt <= now ? { throughAt: state.feedbackBatch.throughAt } : null;
@@ -320,6 +326,10 @@ function normalizeRevisionContext(value) {
     logFile: String(value.logFile || '').trim().slice(0, 1000),
     summary: String(value.summary || '').trim().slice(0, 1000),
     changeSummary: String(value.changeSummary || '').trim().slice(0, 3500),
+    // 隐私拦截重做：闸门命中的具体规则，让续接会话的 Agent 知道要修什么。
+    privacyFindings: Array.isArray(value.privacyFindings)
+      ? value.privacyFindings.map(item => String(item || '').slice(0, 300)).slice(0, 20)
+      : [],
     rejectedAt: Number(value.rejectedAt) || 0,
   };
 }
@@ -348,7 +358,7 @@ function writeState(value) {
 function cleanupEvolutionLogs(now = Date.now()) {
   try {
     for (const entry of fs.readdirSync(EVOLVE_LOG_DIR, { withFileTypes: true })) {
-      if (!entry.isFile() || !/^evolve-[\w-]+\.(?:log|json|json\.tmp)$/.test(entry.name)) continue;
+      if (!entry.isFile() || !/^evolve-[\w-]+\.(?:log|json|json\.tmp|session\.json)$/.test(entry.name)) continue;
       const file = path.join(EVOLVE_LOG_DIR, entry.name);
       if (now - fs.statSync(file).mtimeMs > EVOLUTION_LOG_RETENTION_MS) fs.unlinkSync(file);
     }
@@ -613,11 +623,16 @@ function buildEvolutionAgentCommand(agentValue, prompt, options = {}) {
       stdin: String(prompt || ''),
     };
   }
+  // --output-format json：stdout 输出单条 JSON（含 session_id），父进程据此持久化会话，
+  // 隐私拦截/用户拒绝重做时用 --resume 续接原对话上下文而不是从零重来。
+  const args = ['-p', '--dangerously-skip-permissions', '--output-format', 'json'];
+  const resumeSessionId = String(options.resumeSessionId || '').trim();
+  if (/^[a-f0-9-]{8,64}$/i.test(resumeSessionId)) args.push('--resume', resumeSessionId);
   return {
     agent,
     label: AGENT_LABELS[agent],
     bin: resolveClaudeBin(options),
-    args: ['-p', '--dangerously-skip-permissions'],
+    args,
     stdin: String(prompt || ''),
   };
 }
@@ -659,9 +674,11 @@ async function remoteMainHead() {
 async function ensureHeadPushed(head, auditBase = '', collaboration = null) {
   if (!head) return { ok: false, error: '本地提交为空' };
   const remoteHead = await remoteMainHead();
+  // 已在远端 = 该提交已被推送通道放行（通常是 Agent 运行期间运维插入的提交）。
+  // 此时审计无意义（拦不住已公开内容），回滚本地只会制造本地/远端分叉。
+  if (remoteHead === head) return { ok: true };
   const base = String(auditBase || remoteHead || '').trim();
   if (!base || base === head) {
-    if (remoteHead === head) return { ok: true };
     return { ok: false, privacyBlocked: true, error: '隐私闸门无法确定安全基线，已禁止推送' };
   }
   const reviewedOrchestrationFiles = isTeamResultApproved(collaboration, head)
@@ -721,6 +738,27 @@ function readAgentFailureReason(logFile) {
     return candidate ? redactExternalText(candidate).slice(0, 300) : '';
   } catch {
     return '';
+  }
+}
+
+/**
+ * 解析 Claude 单 Agent 轮的 JSON stdout（--output-format json）。
+ * 提取 session_id 持久化（重做 --resume 用），把 result 文本追加进日志，
+ * 保证日志仍是人类可读的审计链、失败原因检索不受输出格式影响。
+ */
+function readAgentSessionResult(sessionFile, logFile) {
+  try {
+    const raw = fs.readFileSync(sessionFile, 'utf8').trim();
+    if (!raw) return { sessionId: '' };
+    const parsed = JSON.parse(raw);
+    const sessionId = /^[a-f0-9-]{8,64}$/i.test(String(parsed.session_id || '')) ? String(parsed.session_id) : '';
+    const result = String(parsed.result || '').trim();
+    if (result) {
+      try { fs.appendFileSync(logFile, `${result}\n`, { mode: 0o600 }); } catch {}
+    }
+    return { sessionId };
+  } catch {
+    return { sessionId: '' };
   }
 }
 
@@ -834,6 +872,7 @@ function buildRevisionContinuity(revisionContext) {
 ${logLine}
 - 上一轮状态：${redactExternalText(context.summary || '未记录')}
 ${context.changeSummary ? `- 上一轮变更摘要：\n${redactExternalText(context.changeSummary)}` : ''}
+${context.privacyFindings.length ? `- 上一轮被隐私闸门拦截的命中项（本轮必须逐条修复，通常是公开文件写入了外部仓库名/身份/地址，改用参考别名或匿名描述）：\n${context.privacyFindings.map(item => `  · ${redactExternalText(item)}`).join('\n')}` : ''}
 继承上一轮已经验证过的事实、日志结论和正确思路，只重新检查被用户否定及受其影响的部分，避免重复全量探索拖慢速度。被拒绝的代码只能作为问题上下文，不能整包重新应用；要在当前已回退的安全基线上做最小修订，并保持项目整体性。`;
 }
 
@@ -1255,6 +1294,9 @@ function launchEvolution(task, payload = {}) {
         incrementalContext,
       );
   const runId = `${Date.now()}-${crypto.randomUUID()}`;
+  // 单 Agent Claude 轮用 JSON stdout 捕获 session_id（重做时可 --resume 续接原对话）；
+  // 其余模式沿用原全量日志输出。JSON 结果文本在收尾时回写日志，审计链不受影响。
+  const sessionFile = path.join(EVOLVE_LOG_DIR, `evolve-${task}-${agent}-${getLocalDateKey()}.session.json`);
   const agentCommand = settings.dualAgentEnabled
     ? {
         bin: process.execPath,
@@ -1263,15 +1305,22 @@ function launchEvolution(task, payload = {}) {
           initialReviewFeedback,
           logDir: EVOLVE_LOG_DIR, dataDir: path.dirname(STATE_FILE) }),
       }
-    : buildEvolutionAgentCommand(agent, prompt);
+    : buildEvolutionAgentCommand(agent, prompt, {
+        // 仅显式重做（拒绝/隐私拦截 redo）才续接原会话；每日常规轮必须全新上下文。
+        resumeSessionId: payload.resume === true ? current.agentSessionId : '',
+      });
 
+  const sessionOut = agentCommand.agent === 'claude' && !settings.dualAgentEnabled
+    ? fs.openSync(sessionFile, 'w', 0o600)
+    : null;
   const child = spawn(agentCommand.bin, agentCommand.args, {
     cwd: REPO_ROOT,
     detached: true,
-    stdio: ['pipe', out, out],
+    stdio: ['pipe', sessionOut || out, out],
     env: buildEvolutionAgentEnv(process.env),
   });
   fs.closeSync(out);
+  if (sessionOut) fs.closeSync(sessionOut);
   child.stdin.on('error', () => {});
   child.stdin.end(agentCommand.stdin);
   child.unref();
@@ -1310,7 +1359,9 @@ function launchEvolution(task, payload = {}) {
     const pushResult = evolved && !teamBlocked ? await ensureHeadPushed(headAfter, headBefore, teamJournal) : { ok: true };
     const privacyBlocked = !!pushResult.privacyBlocked;
     let privacyRollback = false;
-    if (privacyBlocked && gitHead() === headAfter && !worktreeChanges()) {
+    // 二次保险：回滚前确认提交确实不在远端（闸门检查与回滚之间的竞态窗口内可能已被推送）。
+    if (privacyBlocked && gitHead() === headAfter && !worktreeChanges()
+        && (await remoteMainHead()) !== headAfter) {
       try {
         execFileSync('git', ['merge-base', '--is-ancestor', headBefore, headAfter], {
           cwd: REPO_ROOT,
@@ -1326,6 +1377,8 @@ function launchEvolution(task, payload = {}) {
     const modelUnavailable = !evolved && !signal && code !== 0 && isModelUnavailableFailure(logFile);
     const retryableAgentFailure = !teamBlocked && !evolved && !signal && code !== 0 && !modelUnavailable;
     const agentFailureReason = readAgentFailureReason(logFile);
+    // 解析 Claude JSON stdout：持久化 session_id（重做续接用），结果文本回写日志保持审计链。
+    const agentSession = readAgentSessionResult(sessionFile, logFile);
     let outcome = retryableAgentFailure
       ? 'interrupted'
       : classifyEvolutionExit(settings.dualAgentEnabled && !teamBlocked ? 0 : code,
@@ -1344,11 +1397,20 @@ function launchEvolution(task, payload = {}) {
     next.commit = evolved && !privacyRollback ? headAfter : '';
     next.changeSummary = privacyBlocked || teamBlocked ? '' : changeSummary;
     next.privacyFindings = privacyBlocked ? (pushResult.findings || []).slice(0, 20) : [];
+    next.agentSessionId = agentSession.sessionId;
+    // 隐私拦截轮：记录被丢弃提交与基线，供「拒绝重做」续接原会话修复（提交对象在本地 git 可查）。
+    if (privacyBlocked) {
+      next.privacyBlockedCommit = headAfter;
+      next.privacyBlockedBase = headBefore;
+    } else {
+      next.privacyBlockedCommit = '';
+      next.privacyBlockedBase = '';
+    }
     next.status = outcome;
     next.summary = outcome === 'pending_apply'
       ? `${tag}（${agentLabel}）完成并已核对 GitHub origin/main，待确认应用（提交 ${headAfter.slice(0, 8)}）。满意则点「应用进化」；不满意就在面板填写修改要求并点「拒绝本次并按要求重做」`
       : outcome === 'privacy_blocked' || outcome === 'privacy_blocked_local'
-        ? `${tag}（${agentLabel}）被隐私闸门拦截，未向 GitHub 推送；${privacyRollback ? '本轮自动提交已安全丢弃' : '本地提交已保留并阻止后续自动任务，请人工检查'}`
+        ? `${tag}（${agentLabel}）被隐私闸门拦截，未向 GitHub 推送；${privacyRollback ? `本轮自动提交已安全丢弃（提交 ${headAfter.slice(0, 8)} 保留在本地 git）` : '本地提交已保留并阻止后续自动任务，请人工检查'}。可在面板填写修改要求并点「拒绝本次并按要求重做」，Agent 将续接原会话修复后重新提交`
       : outcome === 'push_failed'
         ? `${tag}（${agentLabel}）已生成本地提交 ${headAfter.slice(0, 8)}，但 GitHub 推送/远端校验失败（${pushResult.error}）；为防止本地与远端分叉，当前禁止应用和启动下一轮`
         : outcome === 'no_change'
@@ -1999,6 +2061,8 @@ function setEvolutionInstruction(value) {
 /**
  * 拒绝尚未应用的进化提交，推送一个可审计的 revert，再携带用户要求重新执行同类任务。
  * 只允许撤销当前 HEAD 对应的 pending_apply，避免覆盖后续人工提交。
+ * 隐私拦截轮（privacy_blocked/privacy_blocked_local）同样可重做：引用被丢弃提交做
+ * 连续上下文，并 --resume 原 Agent 会话续接修复；无需 revert（本地已回退或未推送）。
  */
 async function reviseEvolution(value) {
   const instruction = normalizeEvolutionInstruction(value);
@@ -2006,7 +2070,18 @@ async function reviseEvolution(value) {
   if (running) return { ok: false, error: '已有进化任务在执行' };
 
   const state = readState();
-  if (state.status !== 'pending_apply' || !state.commit) {
+  const privacyRedo = ['privacy_blocked', 'privacy_blocked_local'].includes(state.status);
+  if (privacyRedo) {
+    if (!state.privacyBlockedCommit) {
+      return { ok: false, error: '被拦截提交未记录，无法续接重做；请直接重新执行任务' };
+    }
+    if (state.status === 'privacy_blocked_local' && gitHead() !== state.privacyBlockedCommit) {
+      return { ok: false, error: '本地提交已发生变化，请先核对仓库' };
+    }
+    if (worktreeChanges()) {
+      return { ok: false, error: '工作区存在未提交文件；为避免覆盖人工修改，暂不能拒绝重做' };
+    }
+  } else if (state.status !== 'pending_apply' || !state.commit) {
     return { ok: false, error: `当前没有可拒绝重做的待应用提交（状态：${state.status}）` };
   }
   if (gitHead() !== state.commit) {
@@ -2016,7 +2091,7 @@ async function reviseEvolution(value) {
     return { ok: false, error: '工作区存在未提交文件；为避免覆盖人工修改，暂不能拒绝重做' };
   }
 
-  const rejectedCommit = state.commit;
+  const rejectedCommit = privacyRedo ? state.privacyBlockedCommit : state.commit;
   const task = state.lastTask === 'safety' ? 'safety' : 'activity';
   state.revisionContext = normalizeRevisionContext({
     commit: rejectedCommit,
@@ -2025,58 +2100,92 @@ async function reviseEvolution(value) {
     summary: state.summary,
     changeSummary: state.changeSummary,
     rejectedAt: Date.now(),
+    privacyFindings: privacyRedo ? state.privacyFindings : [],
   });
   state.userInstruction = instruction;
   state.status = 'revising';
-  state.summary = `正在拒绝提交 ${rejectedCommit.slice(0, 8)}，推送回退后将按新要求重新执行${task === 'safety' ? '安全巡检' : '活动进化'}`;
+  state.summary = privacyRedo
+    ? `正在按修改要求重做被隐私闸门拦截的提交 ${rejectedCommit.slice(0, 8)}（Agent 续接原会话）`
+    : `正在拒绝提交 ${rejectedCommit.slice(0, 8)}，推送回退后将按新要求重新执行${task === 'safety' ? '安全巡检' : '活动进化'}`;
   writeState(state);
 
-  try {
-    await execFileAsync('git', ['revert', '--no-edit', rejectedCommit], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: 60 * 1000,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    });
-  } catch (error) {
-    try {
-      execFileSync('git', ['revert', '--abort'], { cwd: REPO_ROOT, stdio: 'ignore' });
-    } catch {
-      // 没进入 revert 流程时无需清理。
+  let revertHead = '';
+  if (privacyRedo) {
+    // privacy_blocked_local：未推送的被拦截提交还挂在本地 HEAD，先回退到拦截前基线，
+    // 让重做轮在干净基线上产出全新提交（旧提交不在推送范围内，审计不会再命中）。
+    if (gitHead() === rejectedCommit && state.privacyBlockedBase) {
+      try {
+        execFileSync('git', ['merge-base', '--is-ancestor', state.privacyBlockedBase, rejectedCommit], {
+          cwd: REPO_ROOT, stdio: 'ignore',
+        });
+        execFileSync('git', ['reset', '--keep', state.privacyBlockedBase], { cwd: REPO_ROOT, stdio: 'ignore' });
+      } catch (error) {
+        const failed = readState();
+        failed.status = 'revision_failed';
+        failed.summary = `回退被拦截提交失败：${String(error.stderr || error.message || '').trim().slice(0, 500)}`;
+        writeState(failed);
+        await notify('农场 bot 进化重做失败', failed.summary);
+        return { ok: false, error: failed.summary };
+      }
     }
-    const failed = readState();
-    failed.status = 'revision_failed';
-    failed.summary = `拒绝进化提交失败：${String(error.stderr || error.message || error).trim().slice(0, 500)}`;
-    writeState(failed);
-    await notify('农场 bot 进化重做失败', failed.summary);
-    return { ok: false, error: failed.summary };
+  } else {
+    // 常规拒绝：推送可审计的 revert，保证远端与本地一致。
+    try {
+      await execFileAsync('git', ['revert', '--no-edit', rejectedCommit], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: 60 * 1000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+    } catch (error) {
+      try {
+        execFileSync('git', ['revert', '--abort'], { cwd: REPO_ROOT, stdio: 'ignore' });
+      } catch {
+        // 没进入 revert 流程时无需清理。
+      }
+      const failed = readState();
+      failed.status = 'revision_failed';
+      failed.summary = `拒绝进化提交失败：${String(error.stderr || error.message || error).trim().slice(0, 500)}`;
+      writeState(failed);
+      await notify('农场 bot 进化重做失败', failed.summary);
+      return { ok: false, error: failed.summary };
+    }
+
+    revertHead = gitHead();
+    const pushResult = await ensureHeadPushed(revertHead);
+    if (!pushResult.ok) {
+      const failed = readState();
+      failed.status = 'revision_failed';
+      failed.commit = revertHead;
+      failed.summary = `已在本地回退不满意的进化，但 GitHub 推送失败（${pushResult.error}）；未启动重做，避免本地与远端分叉`;
+      writeState(failed);
+      await notify('农场 bot 进化回退推送失败', failed.summary);
+      return { ok: false, error: failed.summary };
+    }
+
+    const rejected = readState();
+    rejected.status = 'rejected';
+    rejected.commit = '';
+    rejected.changeSummary = '';
+    rejected.summary = `已拒绝并回退提交 ${rejectedCommit.slice(0, 8)}，修改要求已保存，正在重新执行`;
+    if (task === 'safety') rejected.lastSafetyEvolveDate = '';
+    else rejected.lastEvolveDate = '';
+    writeState(rejected);
+    await notify('农场 bot 进化已拒绝', `${rejected.summary}\n回退提交：${revertHead.slice(0, 8)}`);
   }
 
-  const revertHead = gitHead();
-  const pushResult = await ensureHeadPushed(revertHead);
-  if (!pushResult.ok) {
-    const failed = readState();
-    failed.status = 'revision_failed';
-    failed.commit = revertHead;
-    failed.summary = `已在本地回退不满意的进化，但 GitHub 推送失败（${pushResult.error}）；未启动重做，避免本地与远端分叉`;
-    writeState(failed);
-    await notify('农场 bot 进化回退推送失败', failed.summary);
-    return { ok: false, error: failed.summary };
+  if (privacyRedo) {
+    const redoState = readState();
+    redoState.privacyFindings = [];
+    redoState.privacyBlockedCommit = '';
+    redoState.privacyBlockedBase = '';
+    writeState(redoState);
+    await notify('农场 bot 进化重做中', `被拦截提交 ${rejectedCommit.slice(0, 8)} 已按修改要求转入重做（Agent 续接原会话）`);
   }
-
-  const rejected = readState();
-  rejected.status = 'rejected';
-  rejected.commit = '';
-  rejected.changeSummary = '';
-  rejected.summary = `已拒绝并回退提交 ${rejectedCommit.slice(0, 8)}，修改要求已保存，正在重新执行`;
-  if (task === 'safety') rejected.lastSafetyEvolveDate = '';
-  else rejected.lastEvolveDate = '';
-  writeState(rejected);
-  await notify('农场 bot 进化已拒绝', `${rejected.summary}\n回退提交：${revertHead.slice(0, 8)}`);
 
   let launchResult;
   if (task === 'safety') {
-    launchResult = launchEvolution('safety', {});
+    launchResult = launchEvolution('safety', { resume: true });
   } else {
     const report = readLatestReport() || { online: { activities: [], groups: [] } };
     launchResult = launchEvolution('activity', {
@@ -2084,6 +2193,7 @@ async function reviseEvolution(value) {
       newUnknown: (report.unknownActivityIds || []).map(Number),
       newEnded: (report.endedActivityIds || []).map(Number),
       reviewIds: (report.online?.checkedActivityIds || []).map(Number),
+      resume: true,
     });
   }
   if (!launchResult.ok) {
@@ -2093,7 +2203,7 @@ async function reviseEvolution(value) {
     writeState(failed);
     return { ok: false, error: failed.summary, reverted: true };
   }
-  return { ok: true, revertedCommit: rejectedCommit, revertCommit: revertHead };
+  return { ok: true, revertedCommit: rejectedCommit, revertCommit: privacyRedo ? '' : revertHead };
 }
 
 module.exports = {

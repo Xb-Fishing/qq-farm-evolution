@@ -153,6 +153,8 @@ const EVOLVE_STATUS_LABELS: Record<string, string> = {
 }
 const evolveStatusLabel = computed(() => EVOLVE_STATUS_LABELS[evolve.value?.status || ''] || '空闲')
 const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local', 'review_blocked'].includes(evolve.value?.status || ''))
+// 可「拒绝重做」的状态：待应用提交，或被隐私闸门拦截的轮次（可续接原会话修复）
+const redoeableStatus = computed(() => ['pending_apply', 'privacy_blocked', 'privacy_blocked_local'].includes(evolve.value?.status || ''))
 
 // 所有任务/扫描响应里的 evolve 都同步进共享 store，保证活动中心顶部与弹窗状态一致；
 // 修改要求草稿只在用户动作的响应里重置，10 秒轮询不会覆盖正在编辑的内容
@@ -673,15 +675,15 @@ onUnmounted(() => evolutionStore.stopPolling())
           </button>
           <button
             class="rounded bg-rose-600 px-3 py-1.5 text-xs text-white transition hover:bg-rose-700 disabled:opacity-50"
-            :disabled="revisionRunning || evolve?.status !== 'pending_apply' || !instructionDraft.trim()"
-            :title="evolve?.status === 'pending_apply' ? '回退当前待应用提交并续接上一轮上下文重做' : '当前没有待应用的进化提交'"
+            :disabled="revisionRunning || !redoeableStatus || !instructionDraft.trim()"
+            :title="redoeableStatus ? '回退当前待应用提交并续接上一轮上下文重做；隐私拦截轮会续接原 Agent 会话修复' : '当前没有可重做的进化提交'"
             @click="reviseEvolution"
           >
             {{ revisionRunning
               ? '正在回退并重做…'
-              : evolve?.status === 'pending_apply'
+              : redoeableStatus
                 ? '拒绝本次并按要求重做'
-                : '拒绝本次并按要求重做（当前无待应用提交）' }}
+                : '拒绝本次并按要求重做（当前无可重做提交）' }}
           </button>
         </div>
       </div>
