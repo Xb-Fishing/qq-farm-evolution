@@ -1548,6 +1548,14 @@ async function probeFriendSummaryDrift(gapMs = 15_000) {
             drifts.push({ name: friend.name || friend.remark || '', changed });
         }
     }
+    log('系统', `摘要漂移探测完成：${drifts.length}/${afterMap.size} 位好友字段变化（间隔 ${Math.round(gap / 1000)}s）`,
+        {
+            module: 'system', event: 'summary_drift_probe', result: 'ok',
+            gapMs: gap,
+            friends: afterMap.size,
+            drifted: drifts.length,
+            driftDetail: drifts.map(item => `${item.name}: ${item.changed.join(', ')}`).join(' | ').slice(0, 500),
+        });
     return {
         gapMs: gap,
         friendsBefore: beforeMap.size,
