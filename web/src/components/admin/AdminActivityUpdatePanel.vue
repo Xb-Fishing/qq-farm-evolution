@@ -712,7 +712,12 @@ onUnmounted(() => evolutionStore.stopPolling())
             活动进化
           </div>
           <div class="mt-1 text-xs text-purple-800 dark:text-purple-300">
-            上次：{{ evolve?.lastEvolveDate || '未跑' }}
+            上次：{{ evolve?.lastEvolveDate || evolve?.lastActivityReviewDate || '未跑' }}
+            <span
+              v-if="!evolve?.lastEvolveDate && evolve?.lastActivityReviewDate"
+              class="text-purple-500 dark:text-purple-400"
+              title="每日 00:00-01:00 的自动综合巡检已合并复核活动侧（安全巡检 + 活动增量 + GitHub 公开对照）；只有独立活动轮才更新该字段"
+            >（含每日综合巡检）</span>
           </div>
           <div class="mt-2 flex flex-wrap gap-2">
             <button
