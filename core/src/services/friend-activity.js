@@ -153,6 +153,30 @@ function isFriendActiveRecently(gid, now = Date.now(), windowMs = EVIDENCE_RETEN
   return !!evidence && now - evidence.at <= windowMs;
 }
 
+// 在线快档窗口：at_home 证据只在上次进门时有效，快档轮询每 ~1s 会刷新它；
+// 好友离开后证据停止刷新，窗口一过快档自动衰减回普通节奏（自稳定，无需
+// 显式"离线"事件）。90s = 容忍 45-75s 慢档打进一次门 + 网络抖动。
+const AT_HOME_FRESH_MS = 90 * 1000;
+
+/** 好友是否"此刻在自己农场里"（最近一次进门 at_home=true 且未过期）。 */
+function isFriendAtHomeRecently(gid, now = Date.now(), windowMs = AT_HOME_FRESH_MS) {
+  const evidence = activityEvidence.get(toNum(gid));
+  return !!evidence && evidence.source === 'at_home' && now - evidence.at <= windowMs;
+}
+
+/** 单个好友的最新活跃证据（面板展示用）。 */
+function getFriendActivity(gid, now = Date.now()) {
+  const evidence = activityEvidence.get(toNum(gid));
+  if (!evidence) return null;
+  return {
+    at: evidence.at,
+    source: evidence.source,
+    detail: evidence.detail,
+    online: isFriendAtHomeRecently(gid, now),
+    recent: isFriendActiveRecently(gid, now),
+  };
+}
+
 /** 面板/巡检用：最近活跃证据摘要（匿名 gid）。 */
 function getActivityEvidenceSummary(now = Date.now()) {
   const list = [];
@@ -174,12 +198,15 @@ function resetForTest() {
 
 module.exports = {
   EVIDENCE_RETENTION_MS,
+  AT_HOME_FRESH_MS,
   recordActivity,
   noteSocialItems,
   noteImplicitClock,
   noteSummaryDrift,
   noteLastLogin,
   isFriendActiveRecently,
+  isFriendAtHomeRecently,
+  getFriendActivity,
   getActivityEvidenceSummary,
   resetForTest,
 };

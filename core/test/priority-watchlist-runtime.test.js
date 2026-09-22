@@ -59,6 +59,7 @@ function fixture(t, options = {}) {
         OWN_HARVEST_RESERVE_MS: 10_000, WATCHLIST_POLL_TICK_MS: 3000,
         WATCHLIST_POLL_IDLE_MIN_MS: 300_000, WATCHLIST_POLL_IDLE_MAX_MS: 480_000,
         WATCHLIST_POLL_WINDOW_MIN_MS: 45_000, WATCHLIST_POLL_WINDOW_MAX_MS: 75_000,
+        WATCHLIST_POLL_ONLINE_MIN_MS: 700, WATCHLIST_POLL_ONLINE_MAX_MS: 1_000,
         DUE_PREARM_WATCHLIST_MS: 60_000, DUE_PREARM_MS: 10_000,
         DEFAULT_WATCHLIST_WAKE_BEFORE_MINUTES: 122,
         friendScheduler: { setTimeoutTask: () => {} },
@@ -84,11 +85,12 @@ function fixture(t, options = {}) {
         leaveFriendFarm: async () => { leaves++; if (flags.onLeave) flags.onLeave(); },
         getPlantBlacklist: () => [], analyzeFriendLands: () => ({ stealable: [] }),
         getCurrentPhase: () => ({ phase: 1 }), PlantPhase: { MATURE: 4 },
-        isFriendActiveEvidence: () => false,
+        isFriendActiveEvidence: () => false, isFriendAtHomeRecently: () => false,
+        isFriendAtHome: () => false,
         noteFriendActivity: () => {},
     };
     const functions = ['getWatchlistWakeBeforeMs', 'nextWatchlistPollDelayMs', 'isWatchlistObservationWindow',
-        'scheduleWatchlistPollNext', 'watchlistPollTick', 'applyStealScheduleFromFriends']
+        'scheduleWatchlistPollNext', 'watchlistPollTick', 'watchlistPollTickDelayMs', 'applyStealScheduleFromFriends']
         .map(name => sourceFunction(orchestrator, name));
     vm.createContext(context);
     vm.runInContext([...functions, sourceFunction(api, 'enterFriendFarm'),
@@ -212,4 +214,16 @@ test('truly-empty friend farm still falls back to idle cadence', async t => {
     assert.equal(watch.getWatchStateForTests(9, f.time()), null, '无作物不应布防');
     const health = f.health().pop();
     assert.ok(health.nextDelayMs >= 300_000, '无作物保持 6-8 分钟慢档');
+});
+
+// 好友在线快档（2026-09-22 at_home 实测）：onlineNow 命中时巡田间隔 1 秒内，
+// 观察窗/慢档语义不变
+test('online tier polls sub-second while friend is at home', t => {
+    const f = fixture(t);
+    const delay = f.context.nextWatchlistPollDelayMs(30 * 60_000, { onlineNow: true });
+    assert.ok(delay >= 700 && delay <= 1_000, `online tier delay=${delay}`);
+    const idle = f.context.nextWatchlistPollDelayMs(0, { onlineNow: true });
+    assert.ok(idle >= 300_000, `remain=0 仍走慢档（idle=${idle}）`);
+    const normal = f.context.nextWatchlistPollDelayMs(30 * 60_000, { onlineNow: false });
+    assert.ok(normal >= 45_000, `离线回落 45-75s（normal=${normal}）`);
 });
