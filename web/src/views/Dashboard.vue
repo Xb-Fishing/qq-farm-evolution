@@ -197,6 +197,23 @@ const localUptime = ref(0)
 let localNextFarmRemainSec = 0
 let localNextHelpRemainSec = 0
 let localNextStealKnownRemainSec = 0
+// 倒计时解耦：服务端的 nextChecks 是调度变量，每次 tick 都会重排（偷菜跑完
+// 重排、降速地板、观察窗切换等十几处赋值点）。本地记绝对到期时刻，服务端
+// 新值只在「更早」或「旧时刻已过期」时接受——显示单调递减，不再来回跳。
+let localFarmDeadlineMs = 0
+let localHelpDeadlineMs = 0
+let localStealDeadlineMs = 0
+function mergeDeadlineMs(prevMs: number, remainSec: number) {
+  if (remainSec <= 0)
+    return 0
+  const nextMs = Date.now() + remainSec * 1000
+  if (prevMs <= Date.now() || nextMs < prevMs)
+    return nextMs
+  return prevMs
+}
+function remainFromDeadlineMs(deadlineMs: number) {
+  return deadlineMs > 0 ? Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000)) : 0
+}
 const helpExpCapped = ref(false)
 const slowdownActive = ref(false)
 const slowdownRemainSec = ref(0)
@@ -218,13 +235,25 @@ let watchlistTicker = 0
 // 盯梢窗口分钟数（重点好友可配，默认 122）；inWindow 判断用它而不是写死
 const watchlistWindowMinutes = ref(122)
 
-// 服务端快照按 30s 推一次，这里本地每秒衰减 remainSec 保持平滑
-watch(watchlistRipe, () => {
+// 服务端快照按 30s 推一次，这里本地每秒衰减 remainSec 保持平滑。
+// ripeAt 每次巡田会重估：未成熟期间后移的新估计不接受（保持倒计时单调
+// 递减），更早的（催熟/精确化）接受；成熟后新一轮照单收。
+const lastRipeAtByGid = new Map<number, number>()
+watch(watchlistRipe, (list) => {
+  const now = Date.now()
+  for (const item of list) {
+    const prevRipeAt = lastRipeAtByGid.get(item.gid) || 0
+    if (!item.matured && prevRipeAt > now && item.ripeAt > prevRipeAt)
+      item.ripeAt = prevRipeAt
+    else
+      lastRipeAtByGid.set(item.gid, item.ripeAt)
+    item.remainSec = item.ripeAt > 0 ? Math.max(0, Math.ceil((item.ripeAt - now) / 1000)) : 0
+  }
   clearInterval(watchlistTicker)
   watchlistTicker = window.setInterval(() => {
     for (const item of watchlistRipe.value) {
-      if (item.remainSec > 0) {
-        item.remainSec--
+      if (item.ripeAt > 0) {
+        item.remainSec = Math.max(0, Math.ceil((item.ripeAt - Date.now()) / 1000))
         item.inWindow = item.remainSec <= watchlistWindowMinutes.value * 60
         if (item.remainSec <= 0)
           item.matured = true
@@ -267,6 +296,10 @@ function resetDashboardState() {
   localNextHelpRemainSec = 0
   localNextStealRemainSec = 0
   localNextStealKnownRemainSec = 0
+  localFarmDeadlineMs = 0
+  localHelpDeadlineMs = 0
+  localStealDeadlineMs = 0
+  lastRipeAtByGid.clear()
   stealPending.value = false
   stealTimePartial.value = false
   helpExpCapped.value = false
@@ -340,31 +373,30 @@ function updateCountdowns() {
       slowdownActive.value = false
   }
 
+  localNextFarmRemainSec = remainFromDeadlineMs(localFarmDeadlineMs)
   if (localNextFarmRemainSec > 0) {
-    localNextFarmRemainSec--
     nextFarmCheck.value = formatDuration(localNextFarmRemainSec)
   }
   else {
     nextFarmCheck.value = '检查中...'
   }
 
+  localNextHelpRemainSec = remainFromDeadlineMs(localHelpDeadlineMs)
   if (localNextHelpRemainSec > 0) {
-    localNextHelpRemainSec--
     nextHelpCheck.value = formatDuration(localNextHelpRemainSec)
   }
   else {
     nextHelpCheck.value = '检查中...'
   }
 
+  localNextStealRemainSec = remainFromDeadlineMs(localStealDeadlineMs)
   if (stealPending.value && localNextStealRemainSec > 0) {
-    localNextStealRemainSec--
     nextStealCheck.value = `抢收重试 ${formatDuration(localNextStealRemainSec)}`
   }
   else if (stealPending.value) {
     nextStealCheck.value = '正在抢收...'
   }
   else if (localNextStealRemainSec > 0) {
-    localNextStealRemainSec--
     nextStealCheck.value = formatDuration(localNextStealRemainSec)
   }
   else {
@@ -389,15 +421,24 @@ function updateCountdowns() {
 
 watch(status, (newVal) => {
   if (newVal?.nextChecks) {
-    localNextFarmRemainSec = newVal.nextChecks.farmRemainSec || 0
-    localNextHelpRemainSec = newVal.nextChecks.helpRemainSec || 0
-    stealPending.value = newVal.nextChecks.stealPending === true
-    // 微信好友摘要对部分普通好友不下发成熟时刻；已知地块
-    // 快照仍取最小值，但面板不能把它冒充成全好友完整答案。
     stealTimePartial.value = String((newVal as any).status?.platform || '').toLowerCase() === 'wx'
-    localNextStealRemainSec = stealPending.value
-      ? (newVal.nextChecks.stealRetryRemainSec || 0)
-      : (newVal.nextChecks.stealRemainSec || 0)
+    // stealPending 语义切换（正常 <-> 抢收重试）时重置到期时刻，其余情况单调合并
+    const pendingSwitched = stealPending.value !== (newVal.nextChecks.stealPending === true)
+    stealPending.value = newVal.nextChecks.stealPending === true
+    if (pendingSwitched)
+      localStealDeadlineMs = 0
+    localFarmDeadlineMs = mergeDeadlineMs(localFarmDeadlineMs, newVal.nextChecks.farmRemainSec || 0)
+    localHelpDeadlineMs = mergeDeadlineMs(localHelpDeadlineMs, newVal.nextChecks.helpRemainSec || 0)
+    localNextFarmRemainSec = remainFromDeadlineMs(localFarmDeadlineMs)
+    localNextHelpRemainSec = remainFromDeadlineMs(localHelpDeadlineMs)
+    localStealDeadlineMs = mergeDeadlineMs(
+      localStealDeadlineMs,
+      stealPending.value
+        ? (newVal.nextChecks.stealRetryRemainSec || 0)
+        : (newVal.nextChecks.stealRemainSec || 0),
+    )
+    localNextStealRemainSec = remainFromDeadlineMs(localStealDeadlineMs)
+    // 全局已知最早成熟是信息参考（非调度承诺），照单更新
     localNextStealKnownRemainSec = newVal.nextChecks.stealKnownRemainSec || 0
     helpExpCapped.value = newVal.nextChecks.helpExpCapped === true
     slowdownActive.value = newVal.slowdown?.active === true
