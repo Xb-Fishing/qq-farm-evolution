@@ -325,8 +325,10 @@ function advanceWatch(gid, watch, now) {
   if (watch.status === WATCH_STATUS.HOT &&
       (now >= Number(watch.hotUntil) || now >= Number(watch.hardUntil))) {
     const ripeAt = Number(watch.ripeAt) || 0;
-    if (ripeAt > now && ripeAt <= now + PREARM_GRACE_MS * 2) {
-      armPreRipe(gid, watch.name, { now, ripeAt, mode: 'prearm', force: true });
+    // 催熟常把成熟点压进 HOT 12 秒窗口内：到期时 ripeAt 可能刚成过去时。
+    // 90 秒宽限内"刚熟未收"仍要一次 PREARM 重访，只有远期/未知才冷却。
+    if (ripeAt > now - PREARM_GRACE_MS && ripeAt <= now + PREARM_GRACE_MS * 2) {
+      armPreRipe(gid, watch.name, { now, ripeAt: ripeAt > now ? ripeAt : now + 1_000, mode: 'prearm', force: true });
     } else {
       startCooldown(watch, now, 'no_new_fertilizer_change');
     }

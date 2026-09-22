@@ -579,3 +579,33 @@ test('普通面板 getFriends 在途：自己成熟收获、好友到点偷菜�
     chain.restore();
   }
 });
+
+// 2026-09-22 误报回归：收获+补种会让"全场最早成熟/全场最小施肥次数"天然
+// 变小，旧聚合比较每轮收种都误报"检测到催熟/化肥"。同茬守卫后只有真正的
+// 同一茬墙钟前移/施肥次数下降才报。
+test('own-farm nudge detection ignores replant boundaries and trusts same-crop drops', () => {
+  const farm = require('../src/services/farming-orchestrator');
+  farm.resetOwnNudgeBaselineForTests();
+  const base = 1_800_000_000;
+  // 基线：两块地，慢作物 6h 后熟
+  let lands = [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 200, left_inorc_fert_times: 5, phases: [{ begin_time: base }, { begin_time: base + 3600 }] } },
+  ];
+  let schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3600 }];
+  assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3600, schedule), false);
+  // 补种边界：地 2 收获后改种 6 分钟短作物（新茬 plantId 不同）——不许报
+  lands = [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+  ];
+  schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3960 }];
+  assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3960 - 60, schedule), false, '换茬补种不是催熟');
+  // 同一茬墙钟前移 >25s（真施肥/催熟）——必须报
+  lands = [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: base }, { begin_time: base + 21000 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+  ];
+  schedule = [{ landId: 1, matureAtSec: base + 21000 }, { landId: 2, matureAtSec: base + 3960 }];
+  assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 21000 - 60, schedule), true, '同茬墙钟前移+施肥次数下降必须报');
+});

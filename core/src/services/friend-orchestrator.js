@@ -1357,6 +1357,18 @@ async function watchlistPollTick() {
           if (remainMs <= DUE_PREARM_WATCHLIST_MS) {
             watchFriend(gid, name, { now: visitedAt, ripeAt, mode: 'prearm', reason: 'ripe_prearm' });
           }
+        } else if (ripeAt > 0) {
+          // 催熟典型形态：成熟时刻在本轮进门期间已经过去（ripeAt 落在读取
+          // 与进门结束之间，正是施肥催熟的抢收窗口）。此刻地里站着已成熟的
+          // 作物，必须立即 PREARM 重访抢收，不能退 6-8 分钟慢档等下一茬。
+          watchlistPollRipeAt.delete(gid);
+          watchFriend(gid, name, {
+            now: visitedAt,
+            ripeAt: visitedAt + 1_000,
+            mode: 'prearm',
+            reason: 'ripe_during_visit',
+          });
+          remainMs = DUE_PREARM_WATCHLIST_MS;
         } else {
           // 没有在长的作物（或刚被偷光）：退到慢档，等新一茬
           watchlistPollRipeAt.delete(gid);

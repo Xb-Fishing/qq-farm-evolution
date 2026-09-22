@@ -28,13 +28,12 @@ let farmLoopRunning = false;
 let externalSchedulerMode = false;
 let lastPushTime = 0;
 let shouldRefresh2x2Plan = true;
-let lastNextMatureSec = 0;
 let lastNextMatureDueAtMs = 0;
 let lastNextMatureLandIds = [];
 let ownMatureSchedule = new Map();
 let ownHarvestInFlight = null;
-let lastOwnNudged = false;
-let lastOwnFertLeft = null;
+// 自己农场催熟/化肥检测的上一轮地块基线：landId -> {plantId, matureAtSec, fertLeft, nudged}
+const ownNudgeLandSnapshots = new Map();
 
 const farmScheduler = createScheduler('farm');
 
@@ -48,32 +47,51 @@ function formatRemain(sec) {
   return `${n}秒`;
 }
 
-function noteOwnFarmNudge(lands, nextMatureSec) {
+/**
+ * 自己农场催熟/化肥检测：只信「同一地块、同一茬」的墙钟前移/施肥次数下降。
+ * 全场聚合比较（上一版：全场最早成熟时刻、全场最小剩余施肥次数）会被
+ * 收获+补种骗——新补种的短周期作物天然更早熟、新茬 fertLeft 天然不同，
+ * 每轮收种都会误报一次"检测到催熟/化肥"。
+ */
+function noteOwnFarmNudge(lands, nextMatureSec, matureSchedule = []) {
   const next = toNum(nextMatureSec);
-  let nudged = false;
-  let minFert = null;
+  const matureByLand = new Map();
+  for (const item of Array.isArray(matureSchedule) ? matureSchedule : []) {
+    const landId = toNum(item && item.landId);
+    const matureAtSec = toNum(item && item.matureAtSec);
+    if (landId && matureAtSec) matureByLand.set(landId, matureAtSec);
+  }
+
+  let jumped = false;
+  let fertUsed = false;
+  let newNudge = false;
+  const seenLandIds = new Set();
   for (const land of Array.isArray(lands) ? lands : []) {
     const plant = land && land.plant;
-    if (!plant) continue;
-    if (plant.is_nudged || plant.isNudged) nudged = true;
+    const landId = toNum(land && land.id);
+    if (landId) seenLandIds.add(landId);
+    if (!plant || !landId) continue;
+    const plantId = toNum(plant.id);
     const fertRaw = plant.left_inorc_fert_times != null
       ? plant.left_inorc_fert_times
       : plant.leftInorcFertTimes;
-    if (fertRaw != null) {
-      const left = toNum(fertRaw);
-      minFert = minFert == null ? left : Math.min(minFert, left);
+    const fertLeft = fertRaw == null ? null : toNum(fertRaw);
+    const nudged = !!(plant.is_nudged || plant.isNudged);
+    const matureAtSec = matureByLand.get(landId) || 0;
+    const prev = ownNudgeLandSnapshots.get(landId);
+    // 换茬（plantId 变）直接重建基线，不比较
+    if (prev && prev.plantId === plantId) {
+      if (prev.matureAtSec > 0 && matureAtSec > 0 && matureAtSec < prev.matureAtSec - 25) jumped = true;
+      if (prev.fertLeft != null && fertLeft != null && fertLeft < prev.fertLeft) fertUsed = true;
+      if (nudged && !prev.nudged) newNudge = true;
     }
+    ownNudgeLandSnapshots.set(landId, { plantId, matureAtSec, fertLeft, nudged });
+  }
+  for (const landId of [...ownNudgeLandSnapshots.keys()]) {
+    if (!seenLandIds.has(landId)) ownNudgeLandSnapshots.delete(landId);
   }
 
-  const prevMature = lastNextMatureSec;
-  const jumped = prevMature > 0 && next > 0 && next < prevMature - 25;
-  const fertUsed = lastOwnFertLeft != null && minFert != null && minFert < lastOwnFertLeft;
-  const newNudge = nudged && !lastOwnNudged;
-  lastOwnNudged = nudged;
-  lastOwnFertLeft = minFert;
-  lastNextMatureSec = next;
-
-  if (isFirstFarmCheck || (!jumped && !fertUsed && !newNudge)) return;
+  if (isFirstFarmCheck || (!jumped && !fertUsed && !newNudge)) return false;
   const remain = next > 0 ? Math.max(0, next - getServerTimeSec()) : 0;
   log('农场', `自己农场检测到催熟/化肥，下次收获约 ${formatRemain(remain)}后`, {
     module: 'farm',
@@ -81,6 +99,7 @@ function noteOwnFarmNudge(lands, nextMatureSec) {
     result: 'ok',
     remainSec: remain,
   });
+  return true;
 }
 
 /** 把服务器秒级成熟时间转换为本机绝对毫秒墙钟，保留最近一次校时的小数部分。 */
@@ -272,7 +291,7 @@ async function runFarmOperation(opType) {
 
   const lands = landsReply.lands;
   const analysis = analyzeLands(lands, isFirstFarmCheck);
-  noteOwnFarmNudge(lands, analysis.nextMatureSec);
+  noteOwnFarmNudge(lands, analysis.nextMatureSec, analysis.matureSchedule);
   replaceOwnMaturitySchedule(analysis);
   const labels = [];
 
@@ -575,5 +594,10 @@ module.exports = {
   serverMatureSecToLocalMs,
   startFarmCheckLoop,
   stopFarmCheckLoop,
-  refreshFarmCheckLoop
+  refreshFarmCheckLoop,
+  noteOwnFarmNudgeForTests: noteOwnFarmNudge,
+  resetOwnNudgeBaselineForTests() {
+    ownNudgeLandSnapshots.clear();
+    isFirstFarmCheck = false;
+  },
 };
