@@ -81,7 +81,7 @@ function fixture(t, options = {}) {
         },
         parseBriefDogInfoBytes: () => null, extractVisitEnterBriefDogInfo: () => null,
         handleFriendEnterError: () => ({ handled: true, kind: 'budget' }),
-        leaveFriendFarm: async () => { leaves++; },
+        leaveFriendFarm: async () => { leaves++; if (flags.onLeave) flags.onLeave(); },
         getPlantBlacklist: () => [], analyzeFriendLands: () => ({ stealable: [] }),
         getCurrentPhase: () => ({ phase: 1 }), PlantPhase: { MATURE: 4 },
         isFriendActiveEvidence: () => false,
@@ -190,4 +190,26 @@ test('first successful window discovery reports its actual next mode with only a
     assert.equal(f.health().length, 2);
     assert.equal(f.health()[1].mode, 'baseline');
     assert.ok(f.health()[1].nextDelayMs >= 390_000);
+});
+
+// 2026-09-22 线上事故回归：好友施肥把成熟点催到只剩几秒，本轮进门结束时
+// 成熟时刻已成过去时。旧代码把它当"没有在长的作物"退 6-8 分钟慢档且不布
+// PREARM，菜被在线的主人收走。现在必须立即 PREARM 重访 + 保持窗口档节奏。
+test('ripened-during-visit re-arms PREARM and keeps window cadence instead of idling', async t => {
+    const f = fixture(t, { returnRemain: 5000 });
+    f.flags.onLeave = () => f.setTime(f.time() + 60_000); // 进门期间成熟点已过
+    await f.tick();
+    const state = watch.getWatchStateForTests(9, f.time());
+    assert.equal(state.status, watch.WATCH_STATUS.PREARM, '进门期间已熟必须布 PREARM 重访');
+    assert.ok(state.nextVisitAt <= f.time() + 5_000, 'PREARM 必须立即到期');
+    const health = f.health().pop();
+    assert.ok(health.nextDelayMs < 100_000, `慢档回退是回归（nextDelayMs=${health.nextDelayMs}）`);
+});
+
+test('truly-empty friend farm still falls back to idle cadence', async t => {
+    const f = fixture(t, { returnRemain: 0 });
+    await f.tick();
+    assert.equal(watch.getWatchStateForTests(9, f.time()), null, '无作物不应布防');
+    const health = f.health().pop();
+    assert.ok(health.nextDelayMs >= 300_000, '无作物保持 6-8 分钟慢档');
 });
