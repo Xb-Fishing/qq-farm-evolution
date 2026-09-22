@@ -125,6 +125,28 @@ function noteSummaryDrift(friends, myGid, now = Date.now()) {
   }
 }
 
+/**
+ * 好友摘要 last_login（field 19，2026-09-22 调研：liyangpengs/qqfarm-sdk
+ * 双方独立逆向确认存在）：服务端如果填值，值变化（重新登录）就是官方
+ * 口径的"好友刚上线"。搭车 GetAll 摘要 diff；服务端不填值时恒 0，
+ * 自然无事件，零误报。
+ */
+const lastLoginBaselines = new Map();
+
+function noteLastLogin(friends, myGid, now = Date.now()) {
+  const my = toNum(myGid);
+  for (const friend of Array.isArray(friends) ? friends : []) {
+    const gid = toNum(friend && friend.gid);
+    const value = toNum(friend && friend.last_login);
+    if (!gid || gid === my) continue;
+    const prev = lastLoginBaselines.get(gid) ?? null;
+    lastLoginBaselines.set(gid, value);
+    if (prev == null || prev === value) continue;
+    const atMs = value > 1e12 ? value : value > 1e9 ? value * 1000 : now;
+    recordActivity(gid, Math.min(atMs, now), 'last_login_change', `${prev} -> ${value}`);
+  }
+}
+
 /** 该好友是否有未过期的活跃证据（默认 30 分钟窗口）。 */
 function isFriendActiveRecently(gid, now = Date.now(), windowMs = EVIDENCE_RETENTION_MS) {
   const evidence = activityEvidence.get(toNum(gid));
@@ -147,6 +169,7 @@ function getActivityEvidenceSummary(now = Date.now()) {
 function resetForTest() {
   activityEvidence.clear();
   summaryBaselines.clear();
+  lastLoginBaselines.clear();
 }
 
 module.exports = {
@@ -155,6 +178,7 @@ module.exports = {
   noteSocialItems,
   noteImplicitClock,
   noteSummaryDrift,
+  noteLastLogin,
   isFriendActiveRecently,
   getActivityEvidenceSummary,
   resetForTest,

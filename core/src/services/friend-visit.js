@@ -330,6 +330,20 @@ async function visitFriend(friend, tally, myGid, accountId) {
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
   const ripeAtMs = Number(inspectResult.ripeAt) || 0;
 
+  // 好友实时在场信号（2026-09-22 调研，qqfarm-sdk 逆向 field 6/17）：进门
+  // 回包自带"好友此刻在不在农场"与最后上线时刻。at_home=true 是唯一真·
+  // 实时在线信号，直接进活跃表收紧巡田节奏；值语义未定前原样记 detail。
+  try {
+    if (enterReply.at_home) {
+      friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
+    }
+    const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
+    if (lastOnlineSec > 0) {
+      const atMs = lastOnlineSec > 1e12 ? lastOnlineSec : lastOnlineSec * 1000;
+      friendActivity.recordActivity(gid, Math.min(atMs, Date.now()), 'last_online', String(lastOnlineSec));
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
+
   const plantBlacklist = getPlantBlacklist(accountId);
   const analysis = analyzeFriendLands(lands, myGid, name, { plantBlacklist });
   const actionLogs = [];
@@ -567,6 +581,18 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
   const ripeAtMs = Number(inspectResult.ripeAt) || 0;
+
+  // 好友实时在场信号（同 visitFriend）：at_home / last_online 进活跃表
+  try {
+    if (enterReply.at_home) {
+      friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
+    }
+    const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
+    if (lastOnlineSec > 0) {
+      const atMs = lastOnlineSec > 1e12 ? lastOnlineSec : lastOnlineSec * 1000;
+      friendActivity.recordActivity(gid, Math.min(atMs, Date.now()), 'last_online', String(lastOnlineSec));
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
 
   const plantBlacklist = getPlantBlacklist(accountId);
   const analysis = analyzeFriendLands(lands, myGid, name, { plantBlacklist });
