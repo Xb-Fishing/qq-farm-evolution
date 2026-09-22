@@ -177,6 +177,42 @@ function noteAtHomeEdge(gid, atHome) {
   return atHome === true && !prev;
 }
 
+/**
+ * 批量在场状态机（2026-09-22 调研落地）：BatchGetBasicInfo 的
+ * BasicInfo.last_online 在线时不下发（0）、离线时=离线时刻（秒）。
+ * 字段消失/出现的边沿 = 上线/下线事件——精确 trigger，无需进门。
+ * 返回 'online' | 'offline' | null（null=首次建基线或无变化）。
+ */
+const presenceStates = new Map(); // gid -> { online, lastOnlineSec }
+
+function notePresenceFromBatch(gid, lastOnlineSec, now = Date.now()) {
+  const id = toNum(gid);
+  if (!id) return null;
+  const sec = toNum(lastOnlineSec);
+  const online = !(sec > 0);
+  const prev = presenceStates.get(id);
+  presenceStates.set(id, { online, lastOnlineSec: sec });
+  if (!prev) return null; // 首次观测只建基线
+  if (online && !prev.online) {
+    recordActivity(id, now, 'presence_online', 'batch last_online cleared');
+    return 'online';
+  }
+  if (!online && prev.online) {
+    const atMs = sec > 1e12 ? sec : sec > 1e9 ? sec * 1000 : now;
+    recordActivity(id, Math.min(atMs, now), 'last_online', String(sec));
+    return 'offline';
+  }
+  return null;
+}
+
+/** 在线信号是否新鲜（at_home 或批量在场任一命中，供秒级快档判定）。 */
+function isFriendOnlineRecently(gid, now = Date.now(), windowMs = AT_HOME_FRESH_MS) {
+  const evidence = activityEvidence.get(toNum(gid));
+  if (!evidence) return false;
+  if (evidence.source !== 'at_home' && evidence.source !== 'presence_online') return false;
+  return now - evidence.at <= windowMs;
+}
+
 /** 单个好友的最新活跃证据（面板展示用）。 */
 function getFriendActivity(gid, now = Date.now()) {
   const evidence = activityEvidence.get(toNum(gid));
@@ -208,6 +244,7 @@ function resetForTest() {
   summaryBaselines.clear();
   lastLoginBaselines.clear();
   atHomeStates.clear();
+  presenceStates.clear();
 }
 
 module.exports = {
@@ -220,7 +257,9 @@ module.exports = {
   noteLastLogin,
   isFriendActiveRecently,
   isFriendAtHomeRecently,
+  isFriendOnlineRecently,
   noteAtHomeEdge,
+  notePresenceFromBatch,
   getFriendActivity,
   getActivityEvidenceSummary,
   resetForTest,

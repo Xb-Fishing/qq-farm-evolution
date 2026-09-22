@@ -123,3 +123,15 @@ message ReportArkClickReply {
 message BasicNotify {
     BasicInfo basic = 1;
 }
+
+// ============ 批量查询用户基础信息（在线感知 trigger，2026-09-22）============
+// qqfarm-sdk 实证：请求 field 1 packed gids；回包 field 1 repeated BasicInfo。
+// BasicInfo.last_online(17) 在线时不下发、离线时=离线时刻（秒级 epoch，
+// 已实测验证）——字段消失/出现的边沿就是上线/下线事件。
+message BatchBasicInfoRequest {
+    repeated int64 gids = 1;
+}
+
+message BatchBasicInfoReply {
+    repeated BasicInfo users = 1;
+}
