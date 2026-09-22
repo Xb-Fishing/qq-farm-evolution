@@ -38,6 +38,12 @@ const currentPage = defineModel<number>('currentPage', { required: true })
 function goToPage(page: number) {
   currentPage.value = Math.max(1, Math.min(page, props.totalPages))
 }
+
+function formatActiveAgo(atMs: number) {
+  const minutes = Math.max(1, Math.round((Date.now() - atMs) / 60000))
+  if (minutes < 60) return `${minutes}分钟前`
+  return `${Math.floor(minutes / 60)}小时前`
+}
 </script>
 
 <template>
@@ -67,6 +73,17 @@ function goToPage(page: number) {
             {{ friend.name }} ({{ friend.gid }})
 
             <span v-if="blacklistGidSet.has(Number(friend.gid))" class="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400">已屏蔽</span>
+            <span v-if="friend.online" class="inline-flex items-center gap-1 rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-600 dark:bg-green-900/30 dark:text-green-400">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+              在线
+            </span>
+            <span
+              v-else-if="friend.activeAt && Date.now() - friend.activeAt < 30 * 60 * 1000"
+              class="rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400"
+              :title="`证据：${friend.activeSource || ''}`"
+            >
+              {{ formatActiveAgo(friend.activeAt) }}活跃
+            </span>
             <span v-if="watchlistGidSet.has(Number(friend.gid))" class="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400">重点监控</span>
             <span v-if="Number(friend?.dogId) === 90021" class="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-400">护主犬</span>
           </div>

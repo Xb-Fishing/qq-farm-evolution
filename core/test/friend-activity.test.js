@@ -143,3 +143,25 @@ test('last_login change records activity; unfilled field stays silent', () => {
   activity.noteLastLogin([{ gid: 1, last_login: 200 }], 1, now + 1000);
   assert.equal(activity.isFriendActiveRecently(1, now + 1000), false);
 });
+
+// 在线快档信号（2026-09-22 at_home 实测成立）：source=at_home 且新鲜才算在线
+test('isFriendAtHomeRecently tracks at_home evidence freshness', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  const now = Date.now();
+  // 无证据 → 不在线
+  assert.equal(activity.isFriendAtHomeRecently(9, now), false);
+  // at_home 证据 30 秒前 → 在线
+  activity.recordActivity(9, now - 30_000, 'at_home', 'host in farm');
+  assert.equal(activity.isFriendAtHomeRecently(9, now), true);
+  // at_home 证据 2 分钟前 → 衰减（好友已离开的判定窗口 90s）
+  assert.equal(activity.isFriendAtHomeRecently(9, now + 120_000), false);
+  // 其他来源的活跃证据不算在线
+  activity.recordActivity(10, now - 10_000, 'last_online', 'x');
+  assert.equal(activity.isFriendAtHomeRecently(10, now), false);
+  assert.equal(activity.isFriendActiveRecently(10, now), true);
+  // 面板访问器
+  const info = activity.getFriendActivity(9, now);
+  assert.equal(info.online, true);
+  assert.equal(info.source, 'at_home');
+});

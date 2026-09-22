@@ -288,7 +288,24 @@ function mergeRipeSnapshotIntoFriend(friend) {
 }
 
 function mergeRipeSnapshotsIntoFriends(friends) {
-  return (Array.isArray(friends) ? friends : []).map(mergeRipeSnapshotIntoFriend);
+  const activity = require('./friend-activity');
+  const now = Date.now();
+  return (Array.isArray(friends) ? friends : []).map(friend => {
+    const merged = mergeRipeSnapshotIntoFriend(friend);
+    // 好友在场/活跃证据（at_home 实时信号 + 六路活跃表）顺手带给面板
+    try {
+      const evidence = activity.getFriendActivity(merged.gid, now);
+      if (evidence) {
+        merged.activeAt = evidence.at;
+        merged.activeSource = evidence.source;
+        merged.online = evidence.online;
+      }
+      else {
+        merged.online = false;
+      }
+    } catch { merged.online = false; }
+    return merged;
+  });
 }
 
 /**
