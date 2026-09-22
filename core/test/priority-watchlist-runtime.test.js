@@ -86,7 +86,8 @@ function fixture(t, options = {}) {
         getPlantBlacklist: () => [], analyzeFriendLands: () => ({ stealable: [] }),
         getCurrentPhase: () => ({ phase: 1 }), PlantPhase: { MATURE: 4 },
         isFriendActiveEvidence: () => false, isFriendAtHomeRecently: () => false,
-        isFriendAtHome: () => false,
+        isFriendAtHome: () => false, isFriendOnlineRecently: () => false,
+        isFriendOnlineEvidence: () => false,
         noteFriendActivity: () => {},
     };
     const functions = ['getWatchlistWakeBeforeMs', 'nextWatchlistPollDelayMs', 'isWatchlistObservationWindow',
