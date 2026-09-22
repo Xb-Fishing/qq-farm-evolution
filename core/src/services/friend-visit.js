@@ -548,6 +548,14 @@ async function visitFriend(friend, tally, myGid, accountId) {
  * Enter 驻留（Worker armSentinelPreEnter）：复用其 Enter 回复省一次往返，
  * 不再重复发 Enter；Leave 仍走正常路径。
  */
+// 驻留实验（2026-09-22）：重点好友进门后不 Leave——验证服务器是否向"驻留在
+// 农场里的访客"推送该农场的变化（催熟/收菜的毫秒级真·trigger 通道）。
+// 实验结论出来前只对重点好友生效；非重点好友行为不变。
+async function maybeLurkLeave(gid) {
+  if (isPriorityGid(gid)) return;
+  await leaveFriendFarm(gid);
+}
+
 async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}) {
   const { gid, name } = friend;
   const preEnter = options && options.preEnter && Number(options.preEnter.gid) === Number(gid)
@@ -583,7 +591,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
   if (lands.length === 0) {
     inspectFriendLands(gid, name, []);
     unwatchFriend(gid);
-    await leaveFriendFarm(gid);
+    await maybeLurkLeave(gid);
     return { acted: false, entered: true, ripeAtMs: 0 };
   }
 
@@ -632,7 +640,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
   });
 
   if (!hasStealSlot && analysis.stealable.length === 0) {
-    await leaveFriendFarm(gid);
+    await maybeLurkLeave(gid);
     return { acted: false, entered: true, ripeAtMs };
   }
 
@@ -695,7 +703,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     });
   }
 
-  await leaveFriendFarm(gid);
+  await maybeLurkLeave(gid);
   return {
     acted: actionLogs.length > 0,
     entered: true,

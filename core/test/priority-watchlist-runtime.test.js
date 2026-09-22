@@ -83,6 +83,7 @@ function fixture(t, options = {}) {
         parseBriefDogInfoBytes: () => null, extractVisitEnterBriefDogInfo: () => null,
         handleFriendEnterError: () => ({ handled: true, kind: 'budget' }),
         leaveFriendFarm: async () => { leaves++; if (flags.onLeave) flags.onLeave(); },
+        maybeLurkLeave: async () => { leaves++; if (flags.onLeave) flags.onLeave(); },
         getPlantBlacklist: () => [], analyzeFriendLands: () => ({ stealable: [] }),
         getCurrentPhase: () => ({ phase: 1 }), PlantPhase: { MATURE: 4 },
         isFriendActiveEvidence: () => false, isFriendAtHomeRecently: () => false,
