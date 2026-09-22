@@ -73,8 +73,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
   const qrCode = ref<string | null>(null)
   const qrCreatedAt = ref(0)
   const uuid = ref('')
-  // 快捷登录：qrconnect 页地址（桌面端自动探测本地微信客户端，显示官方快捷登录按钮）
-  const qrConnectUrl = ref('')
   const wxid = ref('')
   const status = ref<'idle' | 'qr_loading' | 'qr_ready' | 'scanning' | 'confirming' | 'code_loading' | 'success' | 'error'>('idle')
   const statusMessage = ref('')
@@ -88,7 +86,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     qrCode.value = null
     qrCreatedAt.value = 0
     uuid.value = ''
-    qrConnectUrl.value = ''
     wxid.value = ''
     status.value = 'idle'
     statusMessage.value = ''
@@ -149,7 +146,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
             Data: {
               Uuid: result.data.Uuid || result.data.uuid,
               QrBase64: result.data.QrBase64 || result.data.qrBase64,
-              QrConnectUrl: result.data.QrConnectUrl || result.data.qrConnectUrl || '',
             },
           }
         }
@@ -171,7 +167,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       if (data.Success && data.Data) {
         uuid.value = data.Data.Uuid
         qrCode.value = data.Data.QrBase64 || data.Data.qrBase64 || ''
-        qrConnectUrl.value = data.Data.QrConnectUrl || data.Data.qrConnectUrl || ''
         qrCreatedAt.value = Date.now()
         status.value = 'qr_ready'
         statusMessage.value = '请使用微信扫码登录'
@@ -360,7 +355,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     qrCode,
     qrCreatedAt,
     uuid,
-    qrConnectUrl,
     wxid,
     status,
     statusMessage,

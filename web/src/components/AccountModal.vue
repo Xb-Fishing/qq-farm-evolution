@@ -404,29 +404,30 @@ const wxConfirmUrl = computed(() =>
   wxLoginStore.uuid ? `https://open.weixin.qq.com/connect/confirm?uuid=${wxLoginStore.uuid}` : '',
 )
 
-// 快捷登录：打开 qrconnect 页（后端同源生成）。桌面端微信客户端在跑时，
-// 页面自动探测 localhost.weixin.qq.com 显示官方「微信快捷登录」绿按钮，
-// 一键完成免扫码；手机端微信内打开同理。降级：没装/没登录微信客户端
-// 时页面就是原二维码页，扫码照常。
-const wxQuickLoginUrl = computed(() => wxLoginStore.qrConnectUrl || '')
-
 const wxConfirmCopied = ref(false)
 async function copyWxConfirmUrl() {
-  const url = wxConfirmUrl.value
-  if (!url)
+  if (!wxConfirmUrl.value)
     return
   try {
-    await navigator.clipboard.writeText(url)
+    await navigator.clipboard.writeText(wxConfirmUrl.value)
     wxConfirmCopied.value = true
     setTimeout(() => { wxConfirmCopied.value = false }, 2000)
   }
   catch {}
 }
 
+/**
+ * 唤起微信快捷登录：confirm 页本身带「打开微信」引导（页面内嵌 weixin://
+ * scheme 唤起按钮）。跳过去后微信用已登录会话完成确认——用户在微信里点
+ * 一下授权，本页 2s 轮询自然看到 authorized。
+ * - 普通手机浏览器：window.location 跳 confirm 页 → 页面引导拉起微信
+ * - 已在微信内：直接打开 confirm 页一键确认
+ * - 桌面：按钮隐藏逻辑不做（留着无害，点了是新标签打开 confirm 页说明）
+ */
 function openWxQuickLogin() {
-  if (!wxQuickLoginUrl.value)
+  if (!wxConfirmUrl.value)
     return
-  window.open(wxQuickLoginUrl.value, '_blank', 'noopener')
+  window.open(wxConfirmUrl.value, '_blank', 'noopener')
 }
 
 function close() {
@@ -542,12 +543,12 @@ watch(activeTab, (tab) => {
           <div class="flex flex-col items-center justify-center py-4 space-y-4">
             <a
               v-if="wxQrImageSrc"
-              :href="wxQuickLoginUrl || wxConfirmUrl"
+              :href="wxConfirmUrl"
               target="_blank"
               rel="noopener"
               class="border rounded-lg p-2 transition-opacity hover:opacity-80"
               :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 20%, transparent)', background: '#fff' }"
-              :title="wxQuickLoginUrl ? '点击打开微信快捷登录页（装了微信客户端可一键登录）；或用微信扫此码' : ''"
+              :title="wxConfirmUrl ? '点击唤起微信一键登录；或用微信扫码' : ''"
             >
               <img :src="wxQrImageSrc" class="h-48 w-48">
             </a>
@@ -578,10 +579,9 @@ watch(activeTab, (tab) => {
                 {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
               </BaseButton>
 
-              <!-- 快捷登录：打开 qrconnect 官方页。桌面微信客户端在跑时该页
-                   自动探测本地服务（localhost.weixin.qq.com）显示官方
-                   「微信快捷登录」按钮一键完成；无客户端时就是原二维码页。 -->
-              <BaseButton v-if="wxQuickLoginUrl" variant="primary" size="sm" @click="openWxQuickLogin">
+              <!-- 快捷登录：拉起微信 App，微信内已登录会话直接弹授权确认，免扫码。
+                   移动端专用（weixin:// scheme 桌面无效），微信内浏览器中退化为直接打开 confirm 页。 -->
+              <BaseButton v-if="wxConfirmUrl" variant="primary" size="sm" @click="openWxQuickLogin">
                 微信快捷登录
               </BaseButton>
 
@@ -592,8 +592,8 @@ watch(activeTab, (tab) => {
           </div>
 
           <div class="text-center text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
-            <template v-if="wxQuickLoginUrl">
-              点「微信快捷登录」打开官方登录页：电脑装了微信客户端会显示一键登录按钮，免扫码；没装则该页可继续扫码
+            <template v-if="wxConfirmUrl">
+              手机点「微信快捷登录」直接唤起微信完成授权（免扫码）；电脑端照常扫码
             </template>
             <template v-else>
               使用微信扫描二维码登录，成功后会自动添加账号
