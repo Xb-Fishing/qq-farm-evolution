@@ -29,14 +29,16 @@ const PRIORITY_JUMP_SLACK_MAX_MS = 5_000;
 const PRIORITY_SUMMARY_SHOCK_MS = 10 * 60 * 1000;
 const PRIORITY_LAND_JUMP_SLACK_SEC = 10;
 
-// 触发后只对目标好友秒级追踪。连续 12 秒没有新变化即视为不再可疑，单次 HOT
-// 最长 45 秒；持久 is_nudged=true 不会续热。
+// 触发后对目标好友秒级追踪。趋势停止的确认门槛（2026-09-22 用户定标）：
+// 连续 60 秒成熟时刻不再前移才算施肥结束——好友在线时常分多次施肥，
+// 12 秒的窗口会把"施肥中"误判成"已停止"而提前降频丢菜。单次 HOT 硬上限
+// 10 分钟（持续有新证据可续到上限）；持久 is_nudged=true 不会续热。
 const HOT_FIRST_MIN_MS = 400;
 const HOT_FIRST_MAX_MS = 800;
 const HOT_RECHECK_MIN_MS = 700;
 const HOT_RECHECK_MAX_MS = 1_200;
-const HOT_IDLE_MS = 12_000;
-const HOT_MAX_MS = 45_000;
+const HOT_IDLE_MS = 60_000;
+const HOT_MAX_MS = 10 * 60_000;
 const COOLDOWN_MS = 30_000;
 
 // 自然成熟到点后保留 90 秒受控重试；成功进门即删除。这样预算瞬时拥塞不会让

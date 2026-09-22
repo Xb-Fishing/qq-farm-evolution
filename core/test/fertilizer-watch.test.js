@@ -376,7 +376,8 @@ test('an expiring HOT close to maturity becomes PREARM instead of polling foreve
   assert.equal(hot.status, WATCH_STATUS.HOT);
   const prearm = getWatchStateForTests(51, hot.hotUntil + 1);
   assert.equal(prearm.status, WATCH_STATUS.PREARM);
-  assert.equal(prearm.nextVisitAt, ripeAt);
+  // 60s 空闲窗下 ripeAt 已是过去时：PREARM 必须立即到期（1s 内）而不是等墙钟
+  assert.ok(prearm.nextVisitAt <= hot.hotUntil + 2_000, `nextVisitAt=${prearm.nextVisitAt}`);
 });
 
 test('rolling global budget caps ten trend visits per ten seconds', () => {
@@ -437,7 +438,9 @@ test('HOT expiry with just-past ripeAt re-arms PREARM instead of cooling down', 
 test('HOT expiry with long-past or unknown ripeAt still cools down', () => {
   const now = Date.now();
   watchFriend(81, '远期', { now, ripeAt: now + 3600_000, reason: 'test_strong' });
-  assert.equal(getWatchStateForTests(81, now + 20_000).status, WATCH_STATUS.COOLDOWN);
+  const hot81 = getWatchStateForTests(81, now);
+  assert.equal(getWatchStateForTests(81, hot81.hotUntil + 1).status, WATCH_STATUS.COOLDOWN);
   watchFriend(82, '未知', { now, reason: 'test_strong' });
-  assert.equal(getWatchStateForTests(82, now + 20_000).status, WATCH_STATUS.COOLDOWN);
+  const hot82 = getWatchStateForTests(82, now);
+  assert.equal(getWatchStateForTests(82, hot82.hotUntil + 1).status, WATCH_STATUS.COOLDOWN);
 });

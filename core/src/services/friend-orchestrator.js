@@ -49,6 +49,7 @@ const { createScheduler } = require('./scheduler');
 const {
   getAllFriends,
   batchGetBasicInfo,
+  briefGetBasicInfo,
   extractReplyFriends,
   inFriendQuietHours,
   postToMaster,
@@ -108,8 +109,10 @@ const WATCHLIST_POLL_TICK_MS = 3_000;
 // 普通重点巡田只负责更新成熟墙钟/施肥基线，不关心对方日常收菜和重种。
 // 未知或无作物保持 5-8 分钟；已知进入 122 分钟观察范围收紧到 45-75 秒。
 // 真正发现施肥趋势后由 fertilizer-watch 独立切换到秒级 HOT。
-const WATCHLIST_POLL_IDLE_MIN_MS = 5 * 60_000;
-const WATCHLIST_POLL_IDLE_MAX_MS = 8 * 60_000;
+// 2026-09-22 用户定标"对好友上线极其敏感"：常态档从 5-8 分钟压到 90-150s
+// （约 30 次 Enter/小时/好友）。进观察窗后 45-75s，确认在线后 1s 快档。
+const WATCHLIST_POLL_IDLE_MIN_MS = 90_000;
+const WATCHLIST_POLL_IDLE_MAX_MS = 150_000;
 const WATCHLIST_POLL_WINDOW_MIN_MS = 45_000;
 const WATCHLIST_POLL_WINDOW_MAX_MS = 75_000;
 // 好友在线快档（at_home 命中）：1 秒内感知农场变化
@@ -1342,15 +1345,19 @@ function ensureWatchlistPollLoop() {
   if (watchlistPollLoopArmed) return;
   watchlistPollLoopArmed = true;
   friendScheduler.setTimeoutTask('watchlist_poll', watchlistPollTickDelayMs(), () => watchlistPollTick());
-  ensurePresencePollLoop();
+  // 批量在场感知暂停启用（2026-09-22 实测：wx 端 BatchGetBasicInfo 回空包、
+  // GetBriefInfo 直接报错；代码保留，QQ 平台验证通过后恢复）。
+  // ensurePresencePollLoop();
 }
 
 // ===== 批量在场感知（精确 trigger，2026-09-22 调研落地）=====
 // BatchGetBasicInfo：一个轻量 RPC 查全部重点好友的 last_online，
 // 不进农场不留痕。在线时字段消失、离线时=离线时刻——边沿即事件。
-// 20 秒一拍 = 上线发现延迟 ≤20s，代价 3 次/分钟的 User 服务查询。
-const PRESENCE_POLL_MS = 20_000;
+// 10 秒一拍 = 上线发现延迟 ≤10s（用户定标"极其敏感"），代价 6 次/分钟的
+// 轻量 User 服务批量查询（不进农场不留痕）。
+const PRESENCE_POLL_MS = 10_000;
 let presencePollArmed = false;
+let presenceBaselineLogged = false;
 
 function ensurePresencePollLoop() {
   if (presencePollArmed) return;
@@ -1365,8 +1372,32 @@ async function presencePollTick() {
       .map(toNum)
       .filter(Boolean);
     if (gids.length === 0 || !isConnected()) return;
-    const users = await batchGetBasicInfo(gids);
+    // 批量版 wx 端回空包：退化为单查询（每重点好友一次，小列表成本相同）
+    let users = [];
+    try {
+      users = await batchGetBasicInfo(gids);
+    } catch { users = []; }
+    if (users.length === 0) {
+      const briefs = [];
+      for (const gid of gids) {
+        try { briefs.push(await briefGetBasicInfo(gid)); } catch { /* 单查失败跳过 */ }
+      }
+      users = briefs.filter(u => toNum(u && u.gid) > 0);
+    }
     const now = Date.now();
+    if (!presenceBaselineLogged && users.length === 0) {
+      presenceBaselineLogged = true;
+      logWarn('好友', '批量在场感知回包为空（RPC 通但无用户，检查回包字段号）', {
+        module: 'friend', event: 'presence_baseline_failed', requested: gids.length,
+      });
+    }
+    if (!presenceBaselineLogged && users.length > 0) {
+      presenceBaselineLogged = true;
+      const sample = users.slice(0, 3).map(u => `${toNum(u.gid)}:last_online=${toNum(u.last_online)}`).join(' ');
+      log('好友', `批量在场感知基线建立：${users.length} 位好友（${sample}）`, {
+        module: 'friend', event: 'presence_baseline', count: users.length,
+      });
+    }
     for (const user of Array.isArray(users) ? users : []) {
       const gid = toNum(user && user.gid);
       if (!gid) continue;
@@ -1384,8 +1415,15 @@ async function presencePollTick() {
         }
       }
     }
-  } catch { /* 批量在场查询失败静默，下轮再试 */ }
-  finally {
+  } catch (err) {
+    // 一次性记录失败原因（接口名/字段不对会永远静默，必须可见）
+    if (!presenceBaselineLogged) {
+      presenceBaselineLogged = true;
+      logWarn('好友', `批量在场感知首轮失败: ${err && err.message}`, {
+        module: 'friend', event: 'presence_baseline_failed',
+      });
+    }
+  } finally {
     if (presencePollArmed) {
       friendScheduler.setTimeoutTask('presence_poll', PRESENCE_POLL_MS, () => presencePollTick());
     }
