@@ -416,6 +416,20 @@ async function copyWxConfirmUrl() {
   catch {}
 }
 
+/**
+ * 唤起微信快捷登录：confirm 页本身带「打开微信」引导（页面内嵌 weixin://
+ * scheme 唤起按钮）。跳过去后微信用已登录会话完成确认——用户在微信里点
+ * 一下授权，本页 2s 轮询自然看到 authorized。
+ * - 普通手机浏览器：window.location 跳 confirm 页 → 页面引导拉起微信
+ * - 已在微信内：直接打开 confirm 页一键确认
+ * - 桌面：按钮隐藏逻辑不做（留着无害，点了是新标签打开 confirm 页说明）
+ */
+function openWxQuickLogin() {
+  if (!wxConfirmUrl.value)
+    return
+  window.open(wxConfirmUrl.value, '_blank', 'noopener')
+}
+
 function close() {
   stopWxCheck()
   stopCaptureCheck()
@@ -534,7 +548,7 @@ watch(activeTab, (tab) => {
               rel="noopener"
               class="border rounded-lg p-2 transition-opacity hover:opacity-80"
               :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 20%, transparent)', background: '#fff' }"
-              :title="wxConfirmUrl ? '在微信中打开可一键确认（免扫码）' : ''"
+              :title="wxConfirmUrl ? '点击唤起微信一键登录；或用微信扫码' : ''"
             >
               <img :src="wxQrImageSrc" class="h-48 w-48">
             </a>
@@ -560,18 +574,26 @@ watch(activeTab, (tab) => {
               {{ wxLoginStore.errorMessage }}
             </p>
 
-            <BaseButton variant="secondary" size="sm" :loading="wxLoginStore.isLoading" @click="loadWxQRCode">
-              {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
-            </BaseButton>
+            <div class="flex flex-wrap items-center justify-center gap-2">
+              <BaseButton variant="secondary" size="sm" :loading="wxLoginStore.isLoading" @click="loadWxQRCode">
+                {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
+              </BaseButton>
 
-            <BaseButton v-if="wxConfirmUrl" variant="secondary" size="sm" @click="copyWxConfirmUrl">
-              {{ wxConfirmCopied ? '已复制，去微信粘贴打开' : '复制确认链接（微信内一键登录）' }}
-            </BaseButton>
+              <!-- 快捷登录：拉起微信 App，微信内已登录会话直接弹授权确认，免扫码。
+                   移动端专用（weixin:// scheme 桌面无效），微信内浏览器中退化为直接打开 confirm 页。 -->
+              <BaseButton v-if="wxConfirmUrl" variant="primary" size="sm" @click="openWxQuickLogin">
+                微信快捷登录
+              </BaseButton>
+
+              <BaseButton v-if="wxConfirmUrl" variant="secondary" size="sm" @click="copyWxConfirmUrl">
+                {{ wxConfirmCopied ? '已复制' : '复制链接' }}
+              </BaseButton>
+            </div>
           </div>
 
           <div class="text-center text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
             <template v-if="wxConfirmUrl">
-              手机快捷登录：复制确认链接 → 微信里粘贴打开（或直接点二维码）→ 一键确认，免扫码；电脑端照常扫码
+              手机点「微信快捷登录」直接唤起微信完成授权（免扫码）；电脑端照常扫码
             </template>
             <template v-else>
               使用微信扫描二维码登录，成功后会自动添加账号
