@@ -1219,6 +1219,7 @@ async function refreshFriendRipeSchedule(options = {}) {
     // gold/level/tags 只有本人操作能变：低频摘要 diff 即可感知好友刚上线，
     // 命中后 isFriendActiveEvidence 自动把重点巡田收紧到 45-75s。
     friendActivity.noteSummaryDrift(rawFriends, userState.gid);
+    friendActivity.noteLastLogin(rawFriends, userState.gid);
     void pullInteractActivity();
     return true;
   } catch (err) {
