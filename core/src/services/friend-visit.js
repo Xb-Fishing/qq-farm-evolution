@@ -337,6 +337,13 @@ async function visitFriend(friend, tally, myGid, accountId) {
   try {
     if (enterReply.at_home) {
       friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
+      // 上线上升沿 → 今日事件（持续在线只记一次）
+      if (friendActivity.noteAtHomeEdge(gid, true)) {
+        recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+          `好友上线：${name || `GID:${gid}`}`);
+      }
+    } else {
+      friendActivity.noteAtHomeEdge(gid, false);
     }
     const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
     if (lastOnlineSec > 0) {
@@ -587,6 +594,13 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
   try {
     if (enterReply.at_home) {
       friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
+      // 上线上升沿 → 今日事件（持续在线只记一次）
+      if (friendActivity.noteAtHomeEdge(gid, true)) {
+        recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+          `好友上线：${name || `GID:${gid}`}`);
+      }
+    } else {
+      friendActivity.noteAtHomeEdge(gid, false);
     }
     const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
     if (lastOnlineSec > 0) {

@@ -627,6 +627,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   harvest_failed: '收菜异常',
   plant_failed: '播种异常',
   farming_failed: '务农异常',
+  friend_online: '好友上线',
 }
 
 function formatEventTime(ts: number) {
