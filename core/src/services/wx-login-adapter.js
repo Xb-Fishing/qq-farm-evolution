@@ -238,9 +238,7 @@ async function getQRCode(owner) {
             Data: {
                 Uuid: uuid,
                 QrBase64: qr.toString('base64'),
-                // QR 图片编码的就是这个 confirm 链接：微信扫码 = 微信内置浏览器打开它。
                 // 在微信内打开面板点此链接，等同扫码后的确认页，免存图免扫码。
-                ConfirmUrl: `https://open.weixin.qq.com/connect/confirm?uuid=${session.uuid}`,
             },
         };
     }
