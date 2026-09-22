@@ -99,3 +99,26 @@ test('inspectFriendLands 隐时钟集成：dry 倒计时后移触发 owner 活�
   assert.ok(entry, '应有 4242 的证据');
   assert.equal(entry.source, 'implicit_clock');
 });
+
+// 2026-09-22 调研落地：gold/level/tags 只有本人操作能变，是"好友刚在线"
+// 的最强归因信号。首次建基线不报，变化必报，静默不报。
+test('summary drift records activity only when gold/level/tags change', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  const now = Date.now();
+  const friend = (gold, level, tags) => ({ gid: 42, gold, level, tags });
+  // 首次观察：只建基线
+  activity.noteSummaryDrift([friend(1000, 10, { is_new: 0, is_follow: 1 })], 1, now);
+  assert.equal(activity.isFriendActiveRecently(42, now), false);
+  // 静默：无变化
+  activity.noteSummaryDrift([friend(1000, 10, { is_new: 0, is_follow: 1 })], 1, now + 60_000);
+  assert.equal(activity.isFriendActiveRecently(42, now + 60_000), false);
+  // gold 变化（收菜卖钱）→ 活跃
+  activity.noteSummaryDrift([friend(1500, 10, { is_new: 0, is_follow: 1 })], 1, now + 120_000);
+  assert.equal(activity.isFriendActiveRecently(42, now + 120_000), true);
+  // 自己不算
+  activity.resetForTest();
+  activity.noteSummaryDrift([{ gid: 1, gold: 1, level: 1 }], 1, now);
+  activity.noteSummaryDrift([{ gid: 1, gold: 2, level: 1 }], 1, now + 1000);
+  assert.equal(activity.isFriendActiveRecently(1, now + 1000), false);
+});

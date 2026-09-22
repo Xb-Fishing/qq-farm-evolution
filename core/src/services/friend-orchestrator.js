@@ -31,7 +31,9 @@ const {
   getNextKnownFriendRipeEntry,
 } = require('./fertilizer-watch');
 const { getBreakerState } = require('./request-governor');
-const { isFriendActiveRecently: isFriendActiveEvidence } = require('./friend-activity');
+const friendActivity = require('./friend-activity');
+const { isFriendActiveRecently: isFriendActiveEvidence } = friendActivity;
+const { getInteractRecords } = require('./interact');
 const {
   stealIsDue,
   stealIsImminent,
@@ -1172,6 +1174,27 @@ async function syncFriendsFromGids(gids) {
   return await getFriendsList(true);
 }
 
+// 访客记录喂活跃证据：InteractRecords 是全协议唯一带精确 server_time 的
+// 好友行为流（谁何时偷/帮/捣乱过我的农场），拉取有 60s 缓存、失败自动退避，
+// 这里再按 5 分钟节流搭车摘要刷新，零额外成本。
+const INTERACT_ACTIVITY_MIN_MS = 5 * 60_000;
+let lastInteractActivityAt = 0;
+
+async function pullInteractActivity(now = Date.now()) {
+  if (now - lastInteractActivityAt < INTERACT_ACTIVITY_MIN_MS) return;
+  lastInteractActivityAt = now;
+  try {
+    const records = await getInteractRecords();
+    for (const record of Array.isArray(records) ? records : []) {
+      const gid = toNum(record.visitorGid);
+      const at = Number(record.serverTimeMs) || 0;
+      if (!gid || !at || now - at > friendActivity.EVIDENCE_RETENTION_MS) continue;
+      friendActivity.recordActivity(gid, at, 'interact_record',
+        record.actionLabel || `action ${record.actionType}`);
+    }
+  } catch { /* 访客记录接口不可用时静默，下轮再试 */ }
+}
+
 async function refreshFriendRipeSchedule(options = {}) {
   const force = !!options.force;
   const now = Date.now();
@@ -1193,6 +1216,10 @@ async function refreshFriendRipeSchedule(options = {}) {
       myGid: userState.gid,
       blacklist: new Set(getFriendBlacklist(accountId)),
     });
+    // gold/level/tags 只有本人操作能变：低频摘要 diff 即可感知好友刚上线，
+    // 命中后 isFriendActiveEvidence 自动把重点巡田收紧到 45-75s。
+    friendActivity.noteSummaryDrift(rawFriends, userState.gid);
+    void pullInteractActivity();
     return true;
   } catch (err) {
     if (!isTransientNetworkError(err)) {
