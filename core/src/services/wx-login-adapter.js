@@ -24,6 +24,23 @@ const { getAccounts, addOrUpdateAccount } = require('../models/store');
 const logger = (0, logger_1.createModuleLogger)('wx-login-adapter');
 // 农场小游戏 appid（与 ACE 反作弊 tsdk MINI_PROGRAM_APP_ID 一致）
 const TARGET_APP_ID = 'wx5306c5978fdb76e4';
+/**
+ * qrconnect 页地址（与 WxLoginService.createQrSession 的参数逐字一致）。
+ * 每次会话都新建（createQrSession 内部访问），此 URL 只是让前端能直接打开
+ * 该页用官方「微信快捷登录」（桌面端探测本地微信客户端免扫码）。
+ */
+function buildQrConnectUrl() {
+    const params = new URLSearchParams({
+        appid: 'wxd44977328b36e647',
+        redirect_uri: 'https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_oauth?login_type=WX',
+        response_type: 'code',
+        scope: 'snsapi_login,snsapi_runtime_pcsdk',
+        state: 'web',
+        fast_login: '1',
+        self_redirect: 'true',
+    });
+    return `https://open.weixin.qq.com/connect/qrconnect?${  params.toString()}`;
+}
 const WX_SESSION_TTL_MS = 300 * 1000;
 const wxLogin = new service_1.WxLoginService();
 // uuid -> { owner, session, openid, loginBuffer, createdAt }
@@ -233,11 +250,14 @@ async function getQRCode(owner) {
         const { session, qr } = await wxLogin.createQrSession();
         const uuid = node_crypto_1.default.randomBytes(16).toString('hex');
         wxSessions.set(uuid, { owner: String(owner || ''), session, createdAt: Date.now() });
+        // QrConnectUrl：快捷登录用。qrconnect 页对桌面端自动探测本地微信客户端
+        // （localhost.weixin.qq.com）显示官方「微信快捷登录」按钮，免去扫码。
         return {
             Success: true,
             Data: {
                 Uuid: uuid,
                 QrBase64: qr.toString('base64'),
+                QrConnectUrl: buildQrConnectUrl(),
             },
         };
     }
