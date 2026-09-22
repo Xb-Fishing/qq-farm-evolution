@@ -58,19 +58,21 @@ test('隐时钟：倒计时显著后移记为 owner 活跃，小幅抖动忽略'
 test('有界：超容量时淘汰最旧证据', () => {
   resetForTest();
   const now = Date.now();
-  // 塞满 200 条 + 1 条新的，最旧的应被淘汰。
+  // 塞满 200 条 + 1 条新的，最旧的应被淘汰。时间戳用严格递减的秒
+  // （原版 now-index 毫秒跨秒边界会导致"最旧"随 now%1000 漂移，~20% 概率 flaky）。
   for (let index = 0; index < 201; index++) {
     noteSocialItems([
       { id: 10, plant: { social_items: [
-        { item_id: 1, owner_gid: 1000 + index, created_at: Math.floor((now - index) / 1000) },
+        // gid 1000+index，放置时刻 = base+index 秒（index 大=更晚放置）
+        { item_id: 1, owner_gid: 1000 + index, created_at: Math.floor(now / 1000) + index },
       ] } },
-    ], 1, now);
+    ], 1, now + 201_000);
   }
-  const summary = getActivityEvidenceSummary(now);
+  const summary = getActivityEvidenceSummary(now + 201_000);
   assert.ok(summary.length <= 200);
-  // gid 1000（最早放置的）应已被淘汰，gid 1200 仍在。
-  assert.equal(isFriendActiveRecently(1000, now), false);
-  assert.equal(isFriendActiveRecently(1200, now), true);
+  // gid 1000（最早放置的）应已被淘汰，gid 1200（最后放置）仍在。
+  assert.equal(isFriendActiveRecently(1000, now + 201_000), false);
+  assert.equal(isFriendActiveRecently(1200, now + 201_000), true);
 });
 
 test('inspectFriendLands 隐时钟集成：dry 倒计时后移触发 owner 活跃记录', () => {
@@ -174,4 +176,24 @@ test('noteAtHomeEdge fires only on offline-to-online transition', () => {
   assert.equal(activity.noteAtHomeEdge(9, true), false, '持续在线不重复');
   assert.equal(activity.noteAtHomeEdge(9, false), false);
   assert.equal(activity.noteAtHomeEdge(9, true), true, '离线后再上线=新上升沿');
+});
+
+// 批量在场状态机（2026-09-22 调研落地）：last_online 出现/消失的边沿
+// = 下线/上线事件；首次建基线不触发；isFriendOnlineRecently 覆盖两路在线源
+test('notePresenceFromBatch fires on last_online appearance/disappearance edges', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  const now = Date.now();
+  // 首次观测（离线态，last_online 有值）：建基线无事件
+  assert.equal(activity.notePresenceFromBatch(11, 1_790_000_000, now), null);
+  // 字段消失 → 上线
+  assert.equal(activity.notePresenceFromBatch(11, 0, now + 30_000), 'online');
+  assert.equal(activity.isFriendOnlineRecently(11, now + 30_000), true);
+  // 字段重新出现 → 下线（证据时刻=新时间戳）
+  const leaveSec = Math.floor((now + 120_000) / 1000);
+  assert.equal(activity.notePresenceFromBatch(11, leaveSec, now + 120_000), 'offline');
+  assert.equal(activity.isFriendOnlineRecently(11, now + 120_000), false, '下线后在线信号失效');
+  assert.equal(activity.isFriendActiveRecently(11, now + 120_000), true, '仍算活跃（30 分钟窗）');
+  // 持续离线无事件
+  assert.equal(activity.notePresenceFromBatch(11, leaveSec, now + 150_000), null);
 });

@@ -702,6 +702,26 @@ async function delFriend(gid) {
 }
 
 /** Enter a friend's farm. Visit reason = 2 (general visit). */
+/**
+ * 批量查询用户基础信息（在线感知 trigger）：不进农场、不留访客痕迹，
+ * 一次覆盖全部重点好友。回包 BasicInfo.last_online 在线时不下发、
+ * 离线时=离线时刻——出现/消失的边沿即上线/下线事件。
+ */
+async function batchGetBasicInfo(gids) {
+  const idList = [...new Set((Array.isArray(gids) ? gids : []).map(toNum).filter(Boolean))];
+  if (idList.length === 0) return [];
+  const payload = types.BatchBasicInfoRequest.encode(
+    types.BatchBasicInfoRequest.create({ gids: idList.map(id => toLong(id)) })
+  ).finish();
+  const { body } = await sendMsgAsync(
+    'gamepb.userpb.UserService',
+    'BatchGetBasicInfo',
+    payload
+  );
+  const reply = types.BatchBasicInfoReply.decode(body);
+  return Array.isArray(reply.users) ? reply.users : [];
+}
+
 async function enterFriendFarm(gid) {
   const payload = types.VisitEnterRequest.encode(
     types.VisitEnterRequest.create({ host_gid: toLong(gid), reason: 2 })
@@ -802,6 +822,7 @@ function clearAllInvalidKnownFriendGidCooldown() {
 
 // ===== Exports =====
 module.exports = {
+  batchGetBasicInfo,
   DOG_NAMES,
   getDogName,
   postToMaster,

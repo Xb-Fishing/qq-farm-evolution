@@ -33,7 +33,8 @@ const {
 const { getBreakerState } = require('./request-governor');
 const friendActivity = require('./friend-activity');
 const { isFriendActiveRecently: isFriendActiveEvidence } = friendActivity;
-const { isFriendAtHomeRecently: isFriendAtHome } = friendActivity;
+const { isFriendAtHomeRecently: isFriendAtHome, isFriendOnlineRecently: isFriendOnlineEvidence } = friendActivity;
+const { recordEvent } = require('./daily-events');
 const { getInteractRecords } = require('./interact');
 const {
   stealIsDue,
@@ -47,6 +48,7 @@ const { setOperationLimitsCallback } = require('./farm');
 const { createScheduler } = require('./scheduler');
 const {
   getAllFriends,
+  batchGetBasicInfo,
   extractReplyFriends,
   inFriendQuietHours,
   postToMaster,
@@ -197,7 +199,7 @@ function isWatchlistObservationWindow(remainMs) {
  * 观察窗内与已确认的施肥 HOT 不加额外等待，保持原有节奏。
  */
 function scheduleWatchlistPollNext(gid, now, remainMs, slowdown) {
-  const onlineNow = isFriendAtHome(gid, now);
+  const onlineNow = isFriendOnlineEvidence(gid, now);
   const baselineDelay = nextWatchlistPollDelayMs(remainMs, {
     activityEvidence: isFriendActiveEvidence(gid, now),
     onlineNow,
@@ -1340,6 +1342,54 @@ function ensureWatchlistPollLoop() {
   if (watchlistPollLoopArmed) return;
   watchlistPollLoopArmed = true;
   friendScheduler.setTimeoutTask('watchlist_poll', watchlistPollTickDelayMs(), () => watchlistPollTick());
+  ensurePresencePollLoop();
+}
+
+// ===== 批量在场感知（精确 trigger，2026-09-22 调研落地）=====
+// BatchGetBasicInfo：一个轻量 RPC 查全部重点好友的 last_online，
+// 不进农场不留痕。在线时字段消失、离线时=离线时刻——边沿即事件。
+// 20 秒一拍 = 上线发现延迟 ≤20s，代价 3 次/分钟的 User 服务查询。
+const PRESENCE_POLL_MS = 20_000;
+let presencePollArmed = false;
+
+function ensurePresencePollLoop() {
+  if (presencePollArmed) return;
+  presencePollArmed = true;
+  friendScheduler.setTimeoutTask('presence_poll', PRESENCE_POLL_MS, () => presencePollTick());
+}
+
+async function presencePollTick() {
+  if (!presencePollArmed) return;
+  try {
+    const gids = getWatchlistFriendGids(process.env.FARM_ACCOUNT_ID || '')
+      .map(toNum)
+      .filter(Boolean);
+    if (gids.length === 0 || !isConnected()) return;
+    const users = await batchGetBasicInfo(gids);
+    const now = Date.now();
+    for (const user of Array.isArray(users) ? users : []) {
+      const gid = toNum(user && user.gid);
+      if (!gid) continue;
+      const transition = friendActivity.notePresenceFromBatch(gid, toNum(user.last_online), now);
+      if (transition === 'online') {
+        const name = watchlistNames.get(gid) || `GID:${gid}`;
+        log('好友', `[重点] ${name} 已上线（批量在场感知）`, {
+          module: 'friend', event: 'presence_online', friendGid: gid, friendName: name,
+        });
+        recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+          `好友上线：${name}`);
+        // 上线即刻收紧：把该好友的巡田到期时刻提到现在
+        if ((watchlistPollNextAt.get(gid) || 0) > now) {
+          watchlistPollNextAt.set(gid, now + gaussianInt(500, 1_500));
+        }
+      }
+    }
+  } catch { /* 批量在场查询失败静默，下轮再试 */ }
+  finally {
+    if (presencePollArmed) {
+      friendScheduler.setTimeoutTask('presence_poll', PRESENCE_POLL_MS, () => presencePollTick());
+    }
+  }
 }
 
 async function watchlistPollTick() {

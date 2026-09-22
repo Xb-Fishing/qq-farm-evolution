@@ -66,6 +66,8 @@ async function performLoad() {
     resolved.LoginReply = newRoot.lookupType('gamepb.userpb.LoginReply');
     resolved.HeartbeatRequest = newRoot.lookupType('gamepb.userpb.HeartbeatRequest');
     resolved.HeartbeatReply = newRoot.lookupType('gamepb.userpb.HeartbeatReply');
+    resolved.BatchBasicInfoRequest = newRoot.lookupType('gamepb.userpb.BatchBasicInfoRequest');
+    resolved.BatchBasicInfoReply = newRoot.lookupType('gamepb.userpb.BatchBasicInfoReply');
     resolved.ReportArkClickRequest = newRoot.lookupType('gamepb.userpb.ReportArkClickRequest');
     resolved.ReportArkClickReply = newRoot.lookupType('gamepb.userpb.ReportArkClickReply');
     resolved.AntiDataRequest = newRoot.lookupType('gamepb.acepb.AntiDataRequest');
