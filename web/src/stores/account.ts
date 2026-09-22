@@ -115,6 +115,12 @@ export const useAccountStore = defineStore('account', () => {
     await fetchAccounts()
   }
 
+  // 直接登录：refreshtoken 活着就免扫码刷凭据+重启；死了返回 needScan 提示扫码
+  async function reloginAccount(id: string) {
+    const res = await api.post(`/api/accounts/${id}/relogin`, {}, { timeout: 120000 })
+    return res.data as { ok: boolean, needScan?: boolean, error?: string }
+  }
+
   async function stopAccount(id: string) {
     await api.post(`/api/accounts/${id}/stop`)
     await fetchAccounts()
@@ -183,6 +189,7 @@ export const useAccountStore = defineStore('account', () => {
     fetchAccounts,
     selectAccount,
     startAccount,
+    reloginAccount,
     stopAccount,
     holdAccountOffline,
     refreshWxCodes,

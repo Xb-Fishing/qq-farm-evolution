@@ -398,6 +398,13 @@ const wxQrImageSrc = computed(() => {
   return `data:image/png;base64,${wxLoginStore.qrCode}`
 })
 
+// 微信内一键授权：confirm 链接就是 QR 码编码的内容，在微信内置浏览器里
+// 打开它 = 扫码后的确认页，点「授权登录」即完成，免存图免扫码。
+// 普通浏览器里打开只会得到微信的「请在微信客户端打开链接」提示（无害降级）。
+const isInWeChat = typeof navigator !== 'undefined' && /MicroMessenger/i.test(navigator.userAgent)
+const isMobileUA = typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+const wxQuickAuthUrl = computed(() => wxLoginStore.confirmUrl || '')
+
 function close() {
   stopWxCheck()
   stopCaptureCheck()
@@ -541,6 +548,22 @@ watch(activeTab, (tab) => {
             <BaseButton variant="secondary" size="sm" :loading="wxLoginStore.isLoading" @click="loadWxQRCode">
               {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
             </BaseButton>
+
+            <a
+              v-if="wxQuickAuthUrl && isInWeChat"
+              :href="wxQuickAuthUrl"
+              class="w-full rounded-lg px-4 py-2.5 text-center text-sm font-medium text-white"
+              :style="{ background: 'var(--theme-gradient)' }"
+            >
+              一键授权登录（免扫码）
+            </a>
+            <p
+              v-if="isMobileUA && !isInWeChat"
+              class="text-center text-xs opacity-60"
+              :style="{ color: 'var(--theme-text)' }"
+            >
+              手机端免扫码：把本页面链接发送到微信（如文件传输助手），在微信里打开此页即可一键授权
+            </p>
           </div>
 
           <div class="text-center text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
