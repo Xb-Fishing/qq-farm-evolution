@@ -125,11 +125,13 @@ message BasicNotify {
 }
 
 // ============ 批量查询用户基础信息（在线感知 trigger，2026-09-22）============
-// qqfarm-sdk 实证：请求 field 1 packed gids；回包 field 1 repeated BasicInfo。
+// qqfarm-sdk 实证：请求 field 1 为 unpacked varints（每个 gid 一个 tag，
+// 不是 packed——proto3 默认 packed 会触发 1020001 网络繁忙）；回包 field 1
+// repeated BasicInfo。
 // BasicInfo.last_online(17) 在线时不下发、离线时=离线时刻（秒级 epoch，
 // 已实测验证）——字段消失/出现的边沿就是上线/下线事件。
 message BatchBasicInfoRequest {
-    repeated int64 gids = 1;
+    repeated int64 gids = 1 [packed = false];
 }
 
 message BatchBasicInfoReply {
