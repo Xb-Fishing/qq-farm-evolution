@@ -1827,3 +1827,23 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - 信号语义边界：社交道具只覆盖"有人放道具"场景（低频但精确）；隐时钟只覆盖"主人浇水/除虫"（进自己农场大概率做）；都是低覆盖率精确信号，作为巡田节奏的加分项而非依赖项。证据记录失败一律静默不影响主流程。
 - 心跳/未知推送审计结论如上，NewProtectLogNotify 0 字节纯事件戳且用户到点保护下无被偷场景，维持只记录不响应。
 - 回滚：revert 本次提交；巡田节奏回到纯窗口档位。
+
+## 好友在线感知补全：摘要漂移 + 访客记录（2026-09-22，维护会话 VII）
+
+### 调研结论（四路 fan-out：本地协议盘点 / GitHub 生态 / 微信QQ外部接口 / 小游戏在线机制）
+
+- **协议层不存在在线信号**：GameFriend 无 online/last_active（全网 90+ 同源 fork 一致）；服务端 Notify 全集只关于自己，无好友上线广播；QQ 平台连 LandsNotify 都不下发。
+- **微信/QQ 外部接口全部不可用**：QQ webpresence 恒返 0（隐私设置挡死）、wpa 图片/临时会话已退役、QZone 说说需登录 cookie 且风控重、微信无好友在线概念、开放数据域状态服务只能真客户端调；且游戏 gid ≠ QQ 号，身份映射不成立。
+- **公开生态最优实践**：InteractRecords 访客记录（唯一带精确 server_time 的好友行为流，Aoluis1005 用它做 72h 活跃画像）+ GetAll 摘要 diff（gold/level 归因最强，作物字段离线也会变不能信）。
+
+### 本次改动（b5fe067）
+
+- `friend-activity.noteSummaryDrift`：gold/level/tags 只有本人操作能变（收菜卖钱/消费/升级）——diff 既有 GetAll 摘要（refreshFriendRipeSchedule 路径），零新增请求。首次建基线不报，变化必报。
+- `pullInteractActivity`：搭车摘要刷新拉 InteractRecords（5 分钟节流，上游 60s 缓存+退避），visitor_gid+server_time 直接进活跃表（30 分钟窗口）。此前该接口只喂面板。
+- 消费端已就绪：isFriendActiveEvidence 命中 → 重点巡田自动收紧 45-75s（会话 VI 已接）。
+- 偷菜事故修复见 53e4c31（进门期间成熟的催熟形态两处 ripeAt>now 边界丢弃 → PREARM 立即重访）；自己农场"检测到催熟"误报修复（同茬守卫，收种边界不再误报）。
+
+### 验证与边界
+
+- friend-activity 6/6（新增漂移用例）；fertilizer-watch 30/30；priority-watchlist 10/10；相关回归全绿。
+- 漂移信号延迟上限 = 摘要轮询周期（实践 5-8 分钟）；访客记录只覆盖"来过我农场的人"。均为分钟级感知，非秒级在线——协议天花板如此。unknownNotifyTypes 记录器保持开启，隐藏推送若出现可发现。
