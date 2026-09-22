@@ -13,6 +13,7 @@ const {
   handleFriendEnterError,
 } = require('./friend-api');
 const { inspectFriendLands, unwatchFriend, isPriorityGid } = require('./fertilizer-watch');
+const friendActivity = require('./friend-activity');
 const { getCurrentPhase } = require('./farm-land-analyzer');
 const { analyzeFriendLands } = require('./friend-land-analyzer');
 const {
