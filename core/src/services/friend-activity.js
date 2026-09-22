@@ -98,6 +98,33 @@ function noteImplicitClock(gid, prev, next, observedAtMs = Date.now()) {
   return true;
 }
 
+/**
+ * 好友摘要漂移（2026-09-22，调研结论落地）：gold/level/tags 只有本人操作
+ * 能改变（收菜卖钱/消费/升级），是归因最强的"好友刚在线"信号——对比作物
+ * 状态字段离线也会自然变化。搭车既有 GetAll 摘要轮询做 diff，零新增请求。
+ * 首次观察只建基线；变化即记一次活跃证据。
+ */
+const summaryBaselines = new Map();
+
+function noteSummaryDrift(friends, myGid, now = Date.now()) {
+  const my = toNum(myGid);
+  for (const friend of Array.isArray(friends) ? friends : []) {
+    const gid = toNum(friend && friend.gid);
+    if (!gid || gid === my) continue;
+    const tags = friend.tags || {};
+    const state = [
+      toNum(friend.gold),
+      toNum(friend.level),
+      toNum(tags.is_new),
+      toNum(tags.is_follow),
+    ].join('|');
+    const prev = summaryBaselines.get(gid);
+    summaryBaselines.set(gid, state);
+    if (!prev || prev === state) continue;
+    recordActivity(gid, now, 'summary_drift', `${prev} -> ${state}`);
+  }
+}
+
 /** 该好友是否有未过期的活跃证据（默认 30 分钟窗口）。 */
 function isFriendActiveRecently(gid, now = Date.now(), windowMs = EVIDENCE_RETENTION_MS) {
   const evidence = activityEvidence.get(toNum(gid));
@@ -119,6 +146,7 @@ function getActivityEvidenceSummary(now = Date.now()) {
 
 function resetForTest() {
   activityEvidence.clear();
+  summaryBaselines.clear();
 }
 
 module.exports = {
@@ -126,6 +154,7 @@ module.exports = {
   recordActivity,
   noteSocialItems,
   noteImplicitClock,
+  noteSummaryDrift,
   isFriendActiveRecently,
   getActivityEvidenceSummary,
   resetForTest,
