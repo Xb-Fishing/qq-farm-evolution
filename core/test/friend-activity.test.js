@@ -165,3 +165,13 @@ test('isFriendAtHomeRecently tracks at_home evidence freshness', () => {
   assert.equal(info.online, true);
   assert.equal(info.source, 'at_home');
 });
+
+// 上线上升沿：只在上线的第一次观测触发（今日事件去重基础）
+test('noteAtHomeEdge fires only on offline-to-online transition', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  assert.equal(activity.noteAtHomeEdge(9, true), true, '首次在线=上升沿');
+  assert.equal(activity.noteAtHomeEdge(9, true), false, '持续在线不重复');
+  assert.equal(activity.noteAtHomeEdge(9, false), false);
+  assert.equal(activity.noteAtHomeEdge(9, true), true, '离线后再上线=新上升沿');
+});

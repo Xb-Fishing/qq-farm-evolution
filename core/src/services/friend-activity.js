@@ -164,6 +164,19 @@ function isFriendAtHomeRecently(gid, now = Date.now(), windowMs = AT_HOME_FRESH_
   return !!evidence && evidence.source === 'at_home' && now - evidence.at <= windowMs;
 }
 
+// at_home 上升沿检测（好友从离线变为在线的瞬间）：今日事件只记上线一次，
+// 不记持续在线期间的每次刷新。进程重启后首个观测若为在线也会记一次
+// （状态表内存态，不落盘——今日事件本身就是当日语义）。
+const atHomeStates = new Map();
+
+function noteAtHomeEdge(gid, atHome) {
+  const id = toNum(gid);
+  if (!id) return false;
+  const prev = atHomeStates.get(id) === true;
+  atHomeStates.set(id, atHome === true);
+  return atHome === true && !prev;
+}
+
 /** 单个好友的最新活跃证据（面板展示用）。 */
 function getFriendActivity(gid, now = Date.now()) {
   const evidence = activityEvidence.get(toNum(gid));
@@ -194,6 +207,7 @@ function resetForTest() {
   activityEvidence.clear();
   summaryBaselines.clear();
   lastLoginBaselines.clear();
+  atHomeStates.clear();
 }
 
 module.exports = {
@@ -206,6 +220,7 @@ module.exports = {
   noteLastLogin,
   isFriendActiveRecently,
   isFriendAtHomeRecently,
+  noteAtHomeEdge,
   getFriendActivity,
   getActivityEvidenceSummary,
   resetForTest,
