@@ -31,7 +31,7 @@ const {
   getNextKnownFriendRipeEntry,
 } = require('./fertilizer-watch');
 const { getBreakerState } = require('./request-governor');
-const { isFriendRecentlyActive: isFriendActiveEvidence } = require('./friend-activity');
+const { isFriendActiveRecently: isFriendActiveEvidence } = require('./friend-activity');
 const {
   stealIsDue,
   stealIsImminent,
