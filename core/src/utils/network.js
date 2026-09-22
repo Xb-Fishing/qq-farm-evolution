@@ -416,9 +416,17 @@ function handleNotify(msg) {
                 if (lands.length > 0) {
                     // 如果是自己的农场，触发事件
                     if (hostGid === userState.gid || hostGid === 0) {
+                        log('系统', `收到自家 LandsNotify（${lands.length} 块地）`, {
+                            module: 'system', event: 'lands_notify_rx', hostGid, lands: lands.length,
+                        });
                         networkEvents.emit('landsChanged', lands);
                     } else {
-                        // 好友农场变化推送（若服务器下发）：催熟/施肥的事件驱动感知
+                        // 好友农场变化推送（若服务器下发）：催熟/施肥的事件驱动感知。
+                        // 2026-09-22 驻留实验：此日志用于验证服务器是否向"在农场里的
+                        // 访客"推送好友农场变化——这是唯一可能的真·trigger 通道。
+                        log('好友', `收到好友 LandsNotify：GID ${hostGid}（${lands.length} 块地变化）`, {
+                            module: 'friend', event: 'friend_lands_notify_rx', hostGid, lands: lands.length,
+                        });
                         networkEvents.emit('friendLandsChanged', { hostGid, lands });
                     }
                 }
