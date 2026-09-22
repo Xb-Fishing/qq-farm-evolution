@@ -413,3 +413,31 @@ test('priority friend triggers HOT on small summary advance, normal friend does 
   assert.equal(getWatchStateForTests(70, now + 1000).status, WATCH_STATUS.HOT);
   assert.equal(getWatchStateForTests(71, now + 1000), null);
 });
+
+// 2026-09-22 线上事故回归：好友把成熟点催熟到只剩几秒，HOT 12 秒窗口到期时
+// ripeAt 已成过去时。旧代码直接冷却导致 6-8 分钟不回访、菜被主人收走。
+test('HOT expiry with just-past ripeAt re-arms PREARM instead of cooling down', () => {
+  const now = Date.now();
+  const sec = Math.floor(now / 1000);
+  // 第一次进门建立基线，第二次进门看到同一茬成熟点前移 + 施肥次数下降 → HOT
+  inspectFriendLands(80, '催熟抢收', [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: sec }, { begin_time: sec + 120 }] } },
+  ], now);
+  inspectFriendLands(80, '催熟抢收', [
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 8 }] } },
+  ], now + 1000);
+  const hot = getWatchStateForTests(80, now + 1000);
+  assert.equal(hot.status, WATCH_STATUS.HOT);
+  // HOT 到期（~now+13s）时 ripeAt（~now+8s）刚过去 5 秒，仍在 90 秒宽限内
+  const bridged = getWatchStateForTests(80, hot.hotUntil + 1);
+  assert.equal(bridged.status, WATCH_STATUS.PREARM, '刚熟未收必须桥接 PREARM 重访');
+  assert.ok(bridged.nextVisitAt <= hot.hotUntil + 2_000, 'PREARM 必须立即到期');
+});
+
+test('HOT expiry with long-past or unknown ripeAt still cools down', () => {
+  const now = Date.now();
+  watchFriend(81, '远期', { now, ripeAt: now + 3600_000, reason: 'test_strong' });
+  assert.equal(getWatchStateForTests(81, now + 20_000).status, WATCH_STATUS.COOLDOWN);
+  watchFriend(82, '未知', { now, reason: 'test_strong' });
+  assert.equal(getWatchStateForTests(82, now + 20_000).status, WATCH_STATUS.COOLDOWN);
+});
