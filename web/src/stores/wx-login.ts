@@ -71,6 +71,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
   // 扫码登录状态
   const isLoading = ref(false)
   const qrCode = ref<string | null>(null)
+  // 微信会话真 uuid 的 confirm 链接（QR 图片编码的内容）：微信内打开 = 扫码
+  const confirmUrl = ref('')
   const qrCreatedAt = ref(0)
   const uuid = ref('')
   const wxid = ref('')
@@ -84,6 +86,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
   // 重置登录状态
   function resetState() {
     qrCode.value = null
+    confirmUrl.value = ''
     qrCreatedAt.value = 0
     uuid.value = ''
     wxid.value = ''
@@ -146,6 +149,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
             Data: {
               Uuid: result.data.Uuid || result.data.uuid,
               QrBase64: result.data.QrBase64 || result.data.qrBase64,
+              ConfirmUrl: result.data.ConfirmUrl || result.data.confirmUrl || '',
             },
           }
         }
@@ -167,6 +171,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       if (data.Success && data.Data) {
         uuid.value = data.Data.Uuid
         qrCode.value = data.Data.QrBase64 || data.Data.qrBase64 || ''
+        confirmUrl.value = data.Data.ConfirmUrl || data.Data.confirmUrl || ''
         qrCreatedAt.value = Date.now()
         status.value = 'qr_ready'
         statusMessage.value = '请使用微信扫码登录'
@@ -353,6 +358,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     config,
     isLoading,
     qrCode,
+    confirmUrl,
     qrCreatedAt,
     uuid,
     wxid,

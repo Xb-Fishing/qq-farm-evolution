@@ -180,7 +180,8 @@ function createAutoCodeRefreshService(deps) {
   async function refreshAccountCode(accountId, reason = 'timer') {
     let account = findAccount(accountId);
     if (!account) return false;
-    if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account) && reason !== 'manual_start') {
+    const manualReason = reason === 'manual_start' || reason === 'manual_relogin';
+    if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account) && !manualReason) {
       return false;
     }
 
