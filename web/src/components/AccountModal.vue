@@ -398,6 +398,24 @@ const wxQrImageSrc = computed(() => {
   return `data:image/png;base64,${wxLoginStore.qrCode}`
 })
 
+// 快捷登录：二维码内容即 confirm URL。在微信内（把面板链接发给文件传输助手
+// 后打开）点击即带登录态一键确认，免去掏相机扫码；桌面端仍可正常扫码。
+const wxConfirmUrl = computed(() =>
+  wxLoginStore.uuid ? `https://open.weixin.qq.com/connect/confirm?uuid=${wxLoginStore.uuid}` : '',
+)
+
+const wxConfirmCopied = ref(false)
+async function copyWxConfirmUrl() {
+  if (!wxConfirmUrl.value)
+    return
+  try {
+    await navigator.clipboard.writeText(wxConfirmUrl.value)
+    wxConfirmCopied.value = true
+    setTimeout(() => { wxConfirmCopied.value = false }, 2000)
+  }
+  catch {}
+}
+
 function close() {
   stopWxCheck()
   stopCaptureCheck()
@@ -509,13 +527,17 @@ watch(activeTab, (tab) => {
           />
 
           <div class="flex flex-col items-center justify-center py-4 space-y-4">
-            <div
+            <a
               v-if="wxQrImageSrc"
-              class="border rounded-lg p-2"
+              :href="wxConfirmUrl"
+              target="_blank"
+              rel="noopener"
+              class="border rounded-lg p-2 transition-opacity hover:opacity-80"
               :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 20%, transparent)', background: '#fff' }"
+              :title="wxConfirmUrl ? '在微信中打开可一键确认（免扫码）' : ''"
             >
               <img :src="wxQrImageSrc" class="h-48 w-48">
-            </div>
+            </a>
             <div
               v-else
               class="h-48 w-48 flex cursor-pointer items-center justify-center rounded-lg transition-opacity hover:opacity-80"
@@ -541,10 +563,19 @@ watch(activeTab, (tab) => {
             <BaseButton variant="secondary" size="sm" :loading="wxLoginStore.isLoading" @click="loadWxQRCode">
               {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
             </BaseButton>
+
+            <BaseButton v-if="wxConfirmUrl" variant="secondary" size="sm" @click="copyWxConfirmUrl">
+              {{ wxConfirmCopied ? '已复制，去微信粘贴打开' : '复制确认链接（微信内一键登录）' }}
+            </BaseButton>
           </div>
 
           <div class="text-center text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
-            使用微信扫描二维码登录，成功后会自动添加账号
+            <template v-if="wxConfirmUrl">
+              手机快捷登录：复制确认链接 → 微信里粘贴打开（或直接点二维码）→ 一键确认，免扫码；电脑端照常扫码
+            </template>
+            <template v-else>
+              使用微信扫描二维码登录，成功后会自动添加账号
+            </template>
           </div>
         </div>
 
