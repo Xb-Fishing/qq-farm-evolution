@@ -75,6 +75,8 @@ message BasicInfo {
     // map<int64, ShareInfo> share_infos = 12;
     int32 authorized_status = 13;
     bool disable_nudge = 14;
+    // 最后上线时刻（qqfarm-sdk 逆向 field 17；服务端是否填值待验证）
+    int64 last_online = 17;
 }
 
 // QQ群信息

@@ -122,3 +122,24 @@ test('summary drift records activity only when gold/level/tags change', () => {
   activity.noteSummaryDrift([{ gid: 1, gold: 2, level: 1 }], 1, now + 1000);
   assert.equal(activity.isFriendActiveRecently(1, now + 1000), false);
 });
+
+// 2026-09-22 深度调研落地：GameFriend field 19（last_login）。值变化=重新
+// 登录=刚上线；服务端不填值时恒 0 无事件（零误报）。
+test('last_login change records activity; unfilled field stays silent', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  const now = Date.now();
+  // 服务端不填值：两次都是 0，无事件
+  activity.noteLastLogin([{ gid: 7, last_login: 0 }], 1, now);
+  activity.noteLastLogin([{ gid: 7, last_login: 0 }], 1, now + 60_000);
+  assert.equal(activity.isFriendActiveRecently(7, now + 60_000), false);
+  // 秒级 epoch：值更新 → 事件，证据时刻=新值
+  const freshLoginSec = Math.floor(now / 1000); // 刚刚
+  activity.noteLastLogin([{ gid: 7, last_login: freshLoginSec }], 1, now + 120_000);
+  assert.equal(activity.isFriendActiveRecently(7, now + 120_000), true);
+  // 自己不算
+  activity.resetForTest();
+  activity.noteLastLogin([{ gid: 1, last_login: 100 }], 1, now);
+  activity.noteLastLogin([{ gid: 1, last_login: 200 }], 1, now + 1000);
+  assert.equal(activity.isFriendActiveRecently(1, now + 1000), false);
+});
