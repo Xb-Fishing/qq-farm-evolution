@@ -1160,6 +1160,16 @@ function launchEvolution(task, payload = {}) {
   if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
   const current = readState();
+  // privacy_blocked_local 自愈（2026-09-23 死锁修复）：该阻断态的成因是
+  // 「本地 HEAD 与 origin/main 不一致」。一旦对齐且没有待应用提交，直接
+  // 复位继续本轮，而不是永久卡死等待人工干预。
+  const trackedMain = gitRefHead('origin/main');
+  if (current.status === 'privacy_blocked_local' && trackedMain && gitHead() === trackedMain
+      && !current.commit && !(current.privacyFindings || []).length) {
+    current.status = 'idle';
+    current.summary = '隐私阻断自愈：HEAD 已与 origin/main 对齐，恢复正常调度';
+    writeState(current);
+  }
   if (BLOCKING_STATUSES.has(current.status)) {
     return {
       ok: false,
@@ -1168,7 +1178,6 @@ function launchEvolution(task, payload = {}) {
     };
   }
 
-  const trackedMain = gitRefHead('origin/main');
   if (trackedMain && gitHead() !== trackedMain) {
     lastTask = task;
     current.status = 'privacy_blocked_local';
