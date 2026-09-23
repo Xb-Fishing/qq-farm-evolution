@@ -1681,6 +1681,18 @@ function getNextStealMatureInMs() {
 
 // ===== Exports =====
 /** 重点好友当前已知的成熟时刻快照（给面板展示剩余时间用） */
+/**
+ * 把某好友的下一次巡田立即拉近（2026-09-23 用户定标：发现好友动作后 1 秒内
+ * 出手）。推送到达即调用；实际进门仍受 tick 下限（500ms）与通信预算约束。
+ */
+function pullWatchlistPollToNow(gid, delayMs = 300) {
+  const id = toNum(gid);
+  if (!id) return;
+  const target = Date.now() + Math.max(0, Number(delayMs) || 0);
+  const next = watchlistPollNextAt.get(id) || 0;
+  if (next > target) watchlistPollNextAt.set(id, target);
+}
+
 function getWatchlistRipeSnapshots(now = Date.now()) {
   const list = [];
   for (const [gid, ripeAt] of watchlistPollRipeAt.entries()) {
@@ -1711,6 +1723,7 @@ module.exports = {
   getNextStealDueAtMs,
   getNextWatchlistStealDueAtMs,
   getWatchlistRipeSnapshots,
+  pullWatchlistPollToNow,
   getActivityEvidenceSummary: require('./friend-activity').getActivityEvidenceSummary,
   getWatchlistWakeBeforeMs,
   nextWatchlistPollDelayMs,
