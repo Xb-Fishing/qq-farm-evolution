@@ -6,6 +6,20 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TMUX_TARGET="${FARM_TMUX_TARGET:-}"
 NODE_BIN_DIR="${FARM_NODE_BIN_DIR:-$(dirname -- "$(command -v node)")}"
 
+# web 构建需要 Node >= 20.19（vite 7 硬要求），而 Bot 进程可能跑在系统 Node 18 上
+# （2026-09-23 应用进化反复失败的根因）。构建节点独立解析：优先 nvm 下的 v20/v22，
+# 找不到再回退 Bot 进程的 node。重启命令仍用 NODE_BIN_DIR，不改变 Bot 运行时。
+node_meets_vite() {
+  "$1" -e 'const [M,m]=process.versions.node.split(".").map(Number);process.exit(M>20||(M===20&&m>=19)?0:1)' >/dev/null 2>&1
+}
+BUILD_NODE_DIR="$NODE_BIN_DIR"
+if ! node_meets_vite "$BUILD_NODE_DIR/node"; then
+  for cand in "$HOME"/.nvm/versions/node/v2[02].*; do
+    [[ -x "$cand/node" ]] || continue
+    if node_meets_vite "$cand/node"; then BUILD_NODE_DIR="$(cd -- "$cand" && pwd)"; break; fi
+  done
+fi
+
 # 目标由父进程根据 Bot PID 反查得到；没有目标时禁止猜 pane，避免重启错误会话。
 # 旧版 FARM_TMUX_TARGET:-farm:0.0 仅作迁移提示，当前绝不回退到固定 pane。
 if [[ -z "$TMUX_TARGET" ]]; then
@@ -32,7 +46,7 @@ trap cleanup_build EXIT
 APPLY_BUILD_LOG="${FARM_DATA_DIR:-$REPO_ROOT/core/data}/logs/evolve-apply.log"
 (
   cd "$REPO_ROOT/web"
-  PATH="$NODE_BIN_DIR:$PATH" npm run build -- --outDir "$EVOLUTION_BUILD_ROOT/dist" --emptyOutDir
+  PATH="$BUILD_NODE_DIR:$PATH" npm run build -- --outDir "$EVOLUTION_BUILD_ROOT/dist" --emptyOutDir
 ) >"$APPLY_BUILD_LOG" 2>&1
 test -f "$EVOLUTION_BUILD_ROOT/dist/index.html"
 test "$(git rev-parse HEAD)" = "$APPLY_EXPECTED_HEAD"
