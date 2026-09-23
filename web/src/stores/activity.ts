@@ -477,6 +477,48 @@ export interface HeluActivityData {
   }
 }
 
+export interface SeasonRuleActivityData {
+  activityId: number
+  title: string
+  startTime: number
+  endTime: number
+  statusLabel: string
+  visible: boolean
+  enabled: boolean
+  status: number
+  uid: string
+  uidConfirmed: boolean
+  clientUiUid: string
+  readOnly: boolean
+  writeOperationsSupported: boolean
+  gameplayGuides: Array<{
+    key: string
+    title: string
+    steps: string[]
+    missingState: string
+    actionLabel: string
+    evidence: string
+    operationSupported: false
+    statusAvailable: false
+  }>
+  notices: string[]
+  ruleSections: Array<{ index: number, line: string }>
+  subActivities: Array<{
+    id: number
+    title: string
+    type: number
+    parentId: number
+    startTime: number
+    endTime: number
+    statusLabel: string
+    clientUiUid: string
+    protobufField: number
+    protocolObserved: boolean
+  }>
+  protocol: { declaredReadOnlyFields: number[], opaqueReadOnlyFields: number[] }
+  missingEvidence: string[]
+}
+
 export interface BearActivityData {
   activityId: number
   title: string
@@ -528,11 +570,27 @@ export const useActivityStore = defineStore('activity', () => {
   const bearError = ref('')
   let bearRequestId = 0
 
+  // 说明驱动的只读活动（秋祈良愿 / 快乐不独享）；共享一个请求代次防止账号切换旧响应回填
+  const wishActivity = ref<SeasonRuleActivityData | null>(null)
+  const wishLoading = ref(false)
+  const wishError = ref('')
+  const happyShareActivity = ref<SeasonRuleActivityData | null>(null)
+  const happyShareLoading = ref(false)
+  const happyShareError = ref('')
+  let seasonRuleRequestId = 0
+
   function clearActivityData() {
     ++bearRequestId
+    ++seasonRuleRequestId
     bearActivity.value = null
     bearLoading.value = false
     bearError.value = ''
+    wishActivity.value = null
+    wishLoading.value = false
+    wishError.value = ''
+    happyShareActivity.value = null
+    happyShareLoading.value = false
+    happyShareError.value = ''
   }
 
   function isCurrentAccount(accountId: string) {
@@ -573,6 +631,54 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
+  // 秋祈良愿 / 快乐不独享：纯只读快照，无操作入口
+  async function fetchSeasonRuleActivity(
+    kind: 'wish' | 'happyShare',
+    accountId: string,
+  ) {
+    if (!accountId)
+      return
+    const requestedId = String(accountId)
+    const requestId = ++seasonRuleRequestId
+    const isWish = kind === 'wish'
+    const loading = isWish ? wishLoading : happyShareLoading
+    const errorRef = isWish ? wishError : happyShareError
+    const dataRef = isWish ? wishActivity : happyShareActivity
+    loading.value = true
+    errorRef.value = ''
+    try {
+      const { data } = await api.get(isWish ? '/api/activity/wish' : '/api/activity/happy-share', {
+        headers: { 'x-account-id': accountId },
+      })
+      if (requestId !== seasonRuleRequestId || !isCurrentAccount(requestedId))
+        return data
+      dataRef.value = data.ok ? data.activity || null : null
+      if (!data.ok)
+        errorRef.value = data.error || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
+      return data
+    }
+    catch (err: any) {
+      const error = err.message || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
+      if (requestId === seasonRuleRequestId && isCurrentAccount(requestedId)) {
+        dataRef.value = null
+        errorRef.value = error
+      }
+      return { ok: false, error }
+    }
+    finally {
+      if (requestId === seasonRuleRequestId)
+        loading.value = false
+    }
+  }
+
+  function fetchWishActivity(accountId: string) {
+    return fetchSeasonRuleActivity('wish', accountId)
+  }
+
+  function fetchHappyShareActivity(accountId: string) {
+    return fetchSeasonRuleActivity('happyShare', accountId)
+  }
+
   // 萌宠手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
   const bearOperating = ref('')
   async function operateBearPet(accountId: string, action: string, input: Record<string, unknown> = {}) {
@@ -596,5 +702,21 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
-  return { bearActivity, bearLoading, bearError, bearOperating, clearActivityData, fetchBearActivity, operateBearPet }
+  return {
+    bearActivity,
+    bearLoading,
+    bearError,
+    bearOperating,
+    clearActivityData,
+    fetchBearActivity,
+    operateBearPet,
+    wishActivity,
+    wishLoading,
+    wishError,
+    fetchWishActivity,
+    happyShareActivity,
+    happyShareLoading,
+    happyShareError,
+    fetchHappyShareActivity,
+  }
 })

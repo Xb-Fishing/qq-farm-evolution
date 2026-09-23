@@ -1787,6 +1787,16 @@ async function handleApiCall(msg) {
                 result = await getBearActivity();
                 break;
             }
+            case 'getWishActivity': {
+                const { getWishActivity } = require('../services/activity');
+                result = await getWishActivity();
+                break;
+            }
+            case 'getHappyShareActivity': {
+                const { getHappyShareActivity } = require('../services/activity');
+                result = await getHappyShareActivity();
+                break;
+            }
             case 'operatePetDiary': {
                 const { runManualPetDiaryAction } = require('../services/pet-diary-operate');
                 const { getBag } = require('../services/warehouse');
