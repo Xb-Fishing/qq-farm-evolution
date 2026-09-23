@@ -38,8 +38,8 @@ message GameFriend {
     // repeated AvatarFrame equip_avatar_frames = 13;  // 略
     // int64 exp = 14;  // 略
     // FriendActivity activity = 18;  // {activity_id, progress, updated_at} 略
-    // 最后登录/活跃时刻（liyangpengs 命名 last_active_time，qqfarm-sdk 命名
-    // last_login，同一 field 19 双方独立逆向确认存在；服务端是否填值待验证）
+    // 最后登录/活跃时刻（公开参考项目 2 命名 last_active_time，另一外部参考
+    // 仓库命名 last_login，同一 field 19 双方独立逆向确认存在；服务端是否填值待验证）
     int64 last_login = 19;
 }
 

@@ -727,7 +727,7 @@ async function runOwnHarvestStrike() {
 const SENTINEL_ARM_WATCHLIST_MS = 5_000;  // 重点好友：剩 5s 武装
 const SENTINEL_ARM_NORMAL_MS = 2_000;     // 普通好友：剩 2s 武装
 const SENTINEL_ACT_DELAY_MS = [30, 80];   // 到点出手延迟区间
-// 预进门（2026-09-22，借鉴 wjnnone 蹲守）：武装时提前 3s 进目标农场驻留，
+// 预进门（2026-09-22，借鉴外部参考项目的蹲守模式）：武装时提前 3s 进目标农场驻留，
 // 到点 Strike 跳过 Enter 往返（省一个 RTT，100-300ms → 直接出手）。
 const SENTINEL_PRE_ENTER_AHEAD_MS = 3_000;
 let sentinelTimer = null;
