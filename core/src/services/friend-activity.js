@@ -126,8 +126,8 @@ function noteSummaryDrift(friends, myGid, now = Date.now()) {
 }
 
 /**
- * 好友摘要 last_login（field 19，2026-09-22 调研：liyangpengs/qqfarm-sdk
- * 双方独立逆向确认存在）：服务端如果填值，值变化（重新登录）就是官方
+ * 好友摘要 last_login（field 19，2026-09-22 调研：公开参考项目 2 与另一
+ * 外部参考仓库双方独立逆向确认存在）：服务端如果填值，值变化（重新登录）就是官方
  * 口径的"好友刚上线"。搭车 GetAll 摘要 diff；服务端不填值时恒 0，
  * 自然无事件，零误报。
  */

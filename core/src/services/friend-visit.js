@@ -331,7 +331,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
   const ripeAtMs = Number(inspectResult.ripeAt) || 0;
 
-  // 好友实时在场信号（2026-09-22 调研，qqfarm-sdk 逆向 field 6/17）：进门
+  // 好友实时在场信号（2026-09-22 调研，外部参考仓库逆向 field 6/17）：进门
   // 回包自带"好友此刻在不在农场"与最后上线时刻。at_home=true 是唯一真·
   // 实时在线信号，直接进活跃表收紧巡田节奏；值语义未定前原样记 detail。
   try {

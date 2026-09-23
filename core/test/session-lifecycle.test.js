@@ -718,7 +718,10 @@ test('每日安全 Agent 固定审计活动和通用接口钓鱼风险', () => {
   assert.match(prompt, /下游刷新穿透上游/);
   assert.match(prompt, /timer\/interval\/cron\/sleep\/重试循环/);
   assert.match(prompt, /多账号同步突发/);
-  assert.match(prompt, /只运行现有定向不变量回归，不重复通读/);
+  // bf961a2 把第 2 条改写为 12 链触发规则，断言同步为新措辞（链表 + 定向回归）
+  assert.match(prompt, /主逻辑共 12 条不变量链/);
+  assert.match(prompt, /L7 施肥 HOT 状态机（fertilizer-watch）：同茬证据条件、趋势停止确认 60 秒、硬上限 10 分钟/);
+  assert.match(prompt, /只跑现有定向回归，不重复通读/);
 });
 
 test('飞书进化通知摘要列出提交说明、文件和增删行数', () => {

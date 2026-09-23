@@ -75,7 +75,7 @@ message BasicInfo {
     // map<int64, ShareInfo> share_infos = 12;
     int32 authorized_status = 13;
     bool disable_nudge = 14;
-    // 最后上线时刻（qqfarm-sdk 逆向 field 17；服务端是否填值待验证）
+    // 最后上线时刻（外部参考仓库逆向 field 17；服务端是否填值待验证）
     int64 last_online = 17;
 }
 
@@ -125,7 +125,7 @@ message BasicNotify {
 }
 
 // ============ 批量查询用户基础信息（在线感知 trigger，2026-09-22）============
-// qqfarm-sdk 实证：请求 field 1 为 unpacked varints（每个 gid 一个 tag，
+// 外部参考仓库实证：请求 field 1 为 unpacked varints（每个 gid 一个 tag，
 // 不是 packed——proto3 默认 packed 会触发 1020001 网络繁忙）；回包 field 1
 // repeated BasicInfo。
 // BasicInfo.last_online(17) 在线时不下发、离线时=离线时刻（秒级 epoch，

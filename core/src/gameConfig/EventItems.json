@@ -219,5 +219,24 @@
     "rarity_color": "D1A21E",
     "desc": "活动期间收获，可以获得萌宠元气糕；出售可以获得金豆豆。",
     "evidence": "client-config-evidence ItemInfo/Plant 快照：植物 1128004 黄金·比熊棉花糖 fruit 204009；与 104 段黄金规律同族交叉核对"
+  },
+  {
+    "id": 21625,
+    "name": "枸杞种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_1625",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的枸杞。",
+    "evidence": "client-config-evidence ItemInfo 快照 21625 逐字；Plant 1021625 seed_id=21625/fruit 41625 交叉；2026-09-23 Bag 实际出现 21625 与 41625（bag_unclassified_item 当日复盘登记，见 docs/HANDOFF.md 2026-09-23 巡检）"
+  },
+  {
+    "id": 1041625,
+    "name": "黄金·枸杞",
+    "type": 17,
+    "asset_name": "gold/Crop_1625",
+    "sells": "1005:6",
+    "evidence": "client-config-evidence ItemInfo 快照 1041625（type 17、gold/Crop_1625、sells 1005:6）；Plant 1121625 黄金·枸杞 fruit 1041625 交叉；与 1045995/1040516/1049004 黄金变异同族同模式"
   }
 ]
