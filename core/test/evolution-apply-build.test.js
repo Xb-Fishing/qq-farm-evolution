@@ -34,6 +34,10 @@ function fixture(t) {
  mkdir -p "$output"
  echo 'approved UI' > "$output/index.html"
  `, { mode: 0o700 });
+  // 构建节点解析（2026-09-23 c9a2261）会在 NODE_BIN_DIR 的 node 不满足 vite 7
+  // （>= 20.19）时改用本机 nvm 目录，那会让真 npm 覆盖上面的 mock npm。fixture
+  // 提供一个通过版本检查的假 node，把 BUILD_NODE_DIR 固定在 mock bin 上。
+  fs.writeFileSync(path.join(bin, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '-q']); git(['config', 'user.name', 'Fixture']);
   git(['config', 'user.email', ['fixture', 'users.noreply.github.com'].join('@')]);

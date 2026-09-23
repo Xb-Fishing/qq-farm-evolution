@@ -319,6 +319,11 @@ const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'eviden
   { key: 'charity-authorization-warning', title: '公益平台授权与账号对接', description: '专属 UI 应说明参与前需由用户在官方客户端确认授权。', kind: 'warning', pattern: /参与本活动需同意.*公益平台/ },
   { key: 'charity-automation-warning', title: '活动禁止自动方式参与', description: '专属 UI 与后端都不得提供自动领取、捐赠或刷奖入口。', kind: 'warning', pattern: /机器人软件、蜘蛛软件、爬虫软件、刷奖软件|任何自动方式/ },
   { key: 'limited-warning', title: '限时道具与活动结束提示', description: '专属 UI 应把失效、出售或活动结束后的保留规则放在醒目提示区。', kind: 'warning', pattern: /限时活动道具|活动结束后|不会因活动结束/ },
+  { key: 'wish-daily', title: '秋祈良愿：每日祈愿领奖', description: '已接入流程卡；每日祈愿与领取状态当前快照未提供，只读展示、不接入写命令。', kind: 'gameplay', pattern: /在活动主界面祈愿|祈愿可领取当日好运奖励/ },
+  { key: 'wish-rewards', title: '秋祈良愿：限定种子与装扮奖励', description: '已接入奖励内容卡；2 种限定种子的道具 ID、图片与占地无下发证据，不改 EventPlants，待活动开放后补齐。', kind: 'gameplay', pattern: /限定种子、烟花互动道具和盆栽装扮/ },
+  { key: 'wish-storage', title: '秋祈良愿：错过存储与邮件补发', description: '已接入 5 日存储与邮件补发提示；存储天数与补发状态待官方字段证据。', kind: 'gameplay', pattern: /存储5日奖励|通过邮件补发/ },
+  { key: 'share-daily', title: '快乐不独享：快乐值每日三途径', description: '已接入每日领取 / 每日首次分享 / 好友快乐包链接三张流程卡；次数状态待官方字段证据。', kind: 'gameplay', pattern: /每日在活动主界面领取.*每日首次从活动主界面分享|点击好友分享的快乐包链接/ },
+  { key: 'share-tier', title: '快乐不独享：快乐值档位奖励', description: '已接入档位奖励卡；快乐值进度与奖励道具 ID 无快照证据，未知不按 0 处理。', kind: 'gameplay', pattern: /拿到一定快乐值可领取档位奖励/ },
 ]
 
 function activityRuleInsights(group: ActivityGroup): ActivityRuleInsight[] {
@@ -348,6 +353,10 @@ function activityNodeLabel(node: ActivityGroup) {
     return '幸运星游记商城'
   if (node.id === 2026090901)
     return '公益小红花玩法节点'
+  if (node.id === 2026092401)
+    return '秋祈良愿玩法节点'
+  if (node.id === 2026092501)
+    return '快乐不独享玩法节点'
   if (node.type === 15)
     return '核心玩法节点'
   if (node.type === 16)
@@ -364,6 +373,10 @@ function activityNodeDescription(node: ActivityGroup) {
     return 'field 102 展示商品价格与状态码；说明与玩法节点的金额、锦囊数量和掉落描述存在差异。'
   if (node.id === 2026090901)
     return '活动说明已确认每日任务/分享、种植收获、爱心值捐赠和三类奖励；field 116 仍只作不透明诊断，不能据此推测写操作。'
+  if (node.id === 2026092401)
+    return '活动说明已确认每日祈愿、限定种子/烟花/盆栽奖励、5 日存储与邮件补发；field 119 未声明语义，只作形状诊断。'
+  if (node.id === 2026092501)
+    return '活动说明已确认快乐值三途径与档位奖励；field 120 未声明语义，只作形状诊断；分享类玩法不模拟、不代领。'
   if (node.type === 15)
     return '活动核心玩法配置节点；具体玩法名称优先按活动说明识别，协议字段仍需只读快照或官方证据确认。'
   if (node.type === 16)

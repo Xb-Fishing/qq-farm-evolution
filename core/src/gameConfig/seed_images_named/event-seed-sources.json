@@ -46,6 +46,27 @@
       "file": "25995_Crop_5995_Seed.png",
       "assetPath": "model/v4/Crop_5995_Seed/spriteFrame",
       "sha256": "1c8527e0fc6be7f7bcb18737d83048e8e0efeaedd9d724c49371c95190fa9a64"
+    },
+    {
+      "id": 21625,
+      "name": "枸杞种子",
+      "file": "21625_Crop_1625_Seed.png",
+      "assetPath": "model/v4/Crop_1625_Seed/spriteFrame",
+      "sha256": "2529bf48f61c830a859bd501f19fa292b69a7fbb1fd4ce566b9c9842ff86552a"
+    },
+    {
+      "id": 41625,
+      "name": "枸杞",
+      "file": "41625_Crop_1625_Seed.png",
+      "assetPath": "model/v4/Crop_1625_Seed/spriteFrame",
+      "sha256": "2529bf48f61c830a859bd501f19fa292b69a7fbb1fd4ce566b9c9842ff86552a"
+    },
+    {
+      "id": 1041625,
+      "name": "黄金·枸杞",
+      "file": "1041625_gold_Crop_1625_Seed.png",
+      "assetPath": "model/v4/gold/Crop_1625_Seed/spriteFrame",
+      "sha256": "58eb7c288e2f8b57237cb2c586c053e1cb7e62392773c0bc9fd89179803d71be"
     }
   ],
   "phaseEntries": [

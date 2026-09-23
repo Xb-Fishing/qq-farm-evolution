@@ -1892,3 +1892,49 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - **附带修复（bf961a2 遗留回归）**：全量首轮 660/661，唯一失败为 session-lifecycle「每日安全 Agent 固定审计…」——bf961a2 把安全 Prompt 第 2 条改写为 12 链触发规则后，测试仍断言旧措辞「只运行现有定向不变量回归」（在干净 HEAD 上复现 36/37，与本轮无关）。已把断言对齐新措辞（12 链表存在 + L7 链描述 +「只跑现有定向回归，不重复通读」），session-lifecycle 37/37。
 - 验证：bag-seed-recognition 9/9；种子目录审计 21→20；`getItemById(21625)`=枸杞种子、`getPlantBySeedId(21625)`=枸杞 size 1、41625 合成命名枸杞、1041625 黄金·枸杞、`getGenericFallbackItemIds()` 仍为空；`node --test --test-concurrency=1 test/*.test.js`（Node 20）全量 **661/661 通过**。
 - 回滚 `git revert <本轮提交>`：枸杞回到未识别清单（bag_unclassified_item 重新报警）、注释恢复真实仓库名（不建议）、断言回退后会重新报 bf961a2 的措辞漂移；不影响任何收益链。本轮 Agent 不重启 Bot、不推送远端。
+
+## 活动进化巡检（2026-09-23，秋祈良愿/快乐不独享只读端到端接入 + 枸杞图标闭环）
+
+### 最近 24h 日志与基线审计（10e/6b 硬门）
+
+- 审计窗口约 2026-09-22 17:40 ~ 2026-09-23 17:39 UTC，4127 条结构化日志、解析失败 0；「请求超时」「发送失败」「治理器拦截」「收获/偷菜失败」「seedId=0」「bag_unclassified」「空图」「cooldown/熔断」全部 **0**。核心收益链全绿：到点保护收获 **72/72**、哨兵抢收 **42/42**、偷好友菜 **6/6**。`result:"error"` 全量聚合仅 1 条 = daily_share 解码失败（既有待证项）。种植 2 条 `fallback_ready/fallback_start` 是背包用尽转第二策略的正常状态标记，非失败。被踢 3 次（12:01/13:15/15:09）均为已知真人顶号/未知原因路径，13:15/15:09 已由 09-23 安全巡检记录。种子目录审计 20 条与 09-23 基线完全一致。
+- **seedRecognition 报 21625 seed_icon_missing**：昨日已登记枸杞名称/植物映射但无专属图。本轮按 10g 顺序闭环（见下），`getGenericFallbackItemIds()` 保持为空。
+
+### 本次改动一：两组新活动只读端到端接入（2026-09-24 开放）
+
+**在线证据**：List 下发两组根活动——`2026092400/2026092401` 秋祈良愿（WishSignMainUI，9/24–10/7，type 21 子节点 status=20）、`2026092500/2026092501` 快乐不独享（HappySharePanel，9/24–10/12，type 24）。两组均 `enabled=false` 未开放；protocolShape 显示 ActivityNode 未声明字段 `1.2.119`（秋祈良愿，wire2 4B 含两个 varint）与 `1.2.120`（快乐不独享，wire2 83B 嵌套子消息）。
+
+- **`core/src/services/season-wish-activities.js`（新）**：两组活动的说明驱动归一化。秋祈良愿从说明提取 4 个玩法指南（每日祈愿领奖 / 限定种子·烟花·盆栽奖励 / 5 日存储 / 邮件补发）+ 签文趣味提示；快乐不独享提取 4 个（每日领取 / 每日首次分享 / 好友快乐包链接 / 档位奖励稚萌熊熊）。无说明时返回空指南，不按 type/UID/字段形状编造玩法。field 119/120 只保留形状诊断（opaqueReadOnlyFields），不解释业务语义。
+- **`activity.js`**：新增 `getSeasonRuleActivity()` 入口（照 getBearActivity 模式：List 确认根节点下发 → 空 UID GetGroup → 归一化 → 只读日志 `wish_activity_read`/`happy_share_activity_read`），导出 `getWishActivity`/`getHappyShareActivity` 与四个 `*_ACTIVITY_ID` 常量（含子节点，known 集合收集后不再报未知候选）。两组活动当前无已知道具 ID，不做背包读取——奖励道具 ID 待活动开放后的下发证据。
+- **`admin-season-activity-routes.js`（新）**：`GET /api/activity/wish` + `GET /api/activity/happy-share`，走共享 60s 活动读缓存（成功/失败均缓存、并发合并），注册进 `admin-activity-routes.js`。
+- **`data-provider.js`/`worker.js`**：活动段各 +2 行转发/case（getWishActivity/getHappyShareActivity）；`worker.js` 改动严格限于活动管理读取 switch，未触碰收菜/偷菜/施肥/调度/登录/设备段。
+- **前端**：`SeasonRuleActivityPanel.vue`（新，两组共用说明驱动只读面板——状态行、玩法卡、提示、折叠诊断）；`activity.ts` store 新增 `SeasonRuleActivityData` 类型与两组状态/请求代次（账号切换旧响应不回填）；`Activity.vue` 挂两张新卡；`AdminActivityUpdatePanel.vue` 新增 wish-daily/wish-rewards/wish-storage/share-daily/share-tier 五个说明识别检查项与两个子节点命名（秋祈良愿玩法节点/快乐不独享玩法节点）。
+- **写操作边界**：两组活动均无官方客户端可达路径与自然成功样本双证据 → 零写命令、零自动开关、零每日例行、零 Operate 调用；「每日首次分享」「点击好友链接」属官方社交传播玩法，Bot 不模拟分享、不伪造点击。秋祈良愿「2 种限定种子」无道具 ID/图片/植物/占地证据 → 不改 EventPlants.json，活动开放后按下发/背包/土地证据补齐并核对 size。
+
+### 本次改动二：枸杞图标缺口闭环（硬门 10g ② 路径）
+
+- 上轮 seedRecognition 报 21625 seed_icon_missing。ItemInfo 快照 icon_res 为 null（①无果）；`fetch:official-icons` 无抓包 URL 证据（零网络请求）；**②路径闭环**：发现 public-reference-1 的 `illustrated-fruit-sources.json`（同源 fork 的官方资产取证清单，09-10 b492fdb 引入）含枸杞三图的官方 CDN URL+assetPath+sha256。从官方 CDN 直连下载（21625/41625 共用 `model/v4/Crop_1625_Seed/spriteFrame`、1041625 用 `gold/Crop_1625_Seed`），**sha256 与清单记录完全匹配**（2529bf48…/58eb7c28…），PNG 规格 100×100 与现有种子图一致，像素分析确认红绿浆果系（普通）与金色系（黄金变体，与 1045995 同族）。
+- 落盘：`21625_Crop_1625_Seed.png`、`41625_Crop_1625_Seed.png`、`1041625_gold_Crop_1625_Seed.png` 三张 PNG **留在工作区严禁 git add（待人工审阅提交）**；`event-seed-sources.json` 已登记三条目（只记 id/file/assetPath/sha256，不记 URL——沿既有惯例）。本机索引已生效（`getSeedImageBySeedId(21625)` 返回路径）；远端克隆在 PNG 人工提交前优雅降级显示名称，与 1040516 等空图道具行为一致。
+- 注意：seed/fruit 共用同一 spriteFrame 是官方事实（21625 与 41625 同图同 sha256），非顶替。
+
+### 本次改动三：evolution-apply-build 测试 fixture 对齐（预存失败修复）
+
+- 全量首轮 668 测试 2 失败（evolution-apply-build），与本轮活动域改动零交集：c9a2261（同日运维修复）把构建 Node 解析改为「NODE_BIN_DIR 的 node 不满足 vite 7 时探测 nvm v20/v22」，而测试 fixture 的 mock bin 里没有 `node` 可执行文件 → 本机探测到真 nvm → 真 npm 覆盖 mock npm → trace 断言失败。修复 = fixture 补一个通过版本检查的假 node（`exit 0`），把 BUILD_NODE_DIR 固定在 mock bin。生产语义不变（生产路径 activity-evolver 传入的 Bot node 18 目录仍会正确触发 nvm 探测）。同类先例：09-23 bf961a2 断言对齐。
+
+### 公开对照（增量，6 组查询全部成功，按 updated 倒序）
+
+- 四个固定参考全部无新增提交（public-reference-1@343d9463、-2@3e7640b9、-3@be7db5f0、-4@1bc45d3e，与 09-23 sources.json 记录一致）。新候选：一个仅 README 更新的镜像类仓库（无实质内容）；public-reference-3 同 owner 的另一关联仓库有三个实质提交（自动夺宝接 friend API / 掉线后用存储 Code 重试 / timer stall 归因），分别命中「好友交互未开放」「断线重连免扫码禁区（2026-09-14 用户裁定）」「本机无此问题证据」，**均不移植**。真实仓库/SHA 已记 ignored sources.json（公开文件按别名硬门不写真实 owner/repo）。本轮无可靠借鉴。
+
+### 踩坑与注意点
+
+- **新活动 9/24 才开放（enabled=false/status=0，type 21 子节点 status=20 语义未知）**：面板状态显示「未开始」；开放后 enabled/status 变化、details 可能出现新结构（奖池/记录/进度），下轮活动 Agent 必须用新快照复核玩法状态与道具 ID，再决定是否补背包读取/EventPlants——本轮登记的 missingEvidence 已写明这些边界。
+- **field 119/120 不可当语义证据**：119/120 都不在 ActivityNode 已声明字段（101/102/105/110/112/113）中；120 在 OperateReply 中是 star_record_claim，但这里路径是 `1.2.x`（ActivityNode），两者无关，不能混用。
+- **同源 fork 的资产取证清单是 10g ② 的高效证据源**：`illustrated-fruit-sources.json`（公开参考项目 1）记录了图鉴果实的官方 CDN URL+sha256，配合官方 CDN 直连下载与 sha256 校验即可闭环，不需要 miniapp settings.json。后续图鉴类图标缺口优先查此清单（还有 pet-diary-sources.json 的 sourceVersion 可判断其配置版本新旧）。
+- `npm run build` 前必须先 `export PATH=<node20>/bin:$PATH`；单独跑 eslint/vue-tsc 的命令同样要带 PATH 前置（本轮 eslint 又踩了一次 Node 18 `Invalid regular expression flags`）。
+- store 的 eslint --fix 会重排 return 对象换行（antfu/consistent-list-newline），fix 后要重跑 vue-tsc 确认类型不变。
+
+### 验证与回滚
+
+- 验证：`season-wish-activities` 定向 **7/7**（说明→指南、空说明不编造、List 缺根不发详情、空 UID 读取、路由缓存接线、常量注册）；相邻活动域 31/31；`node --test --test-concurrency=1 test/*.test.js`（Node 20 v20.20.2）全量 **668/668 通过**；web `npm run build`（vue-tsc -b + vite build）通过；改动文件 ESLint **0 error**（AdminActivityUpdatePanel 等保留既有 143 条格式 warning）；种子目录审计 20 条不变；`getGenericFallbackItemIds()` 为空；枸杞三图索引生效。
+- 本轮未修改收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；`worker.js` 改动仅在活动管理读取 switch。未新增自动开关、每日例行、写命令或 Operate 调用。
+- 回滚 `git revert <本轮提交>`：移除两组新活动只读卡片与路由（List 下次扫描会重新把四个 ID 报为未知候选）、恢复 apply-build 测试预存失败、event-seed-sources 去掉枸杞三条目（工作区 PNG 不受影响，仍待人工提交）。**三张枸杞 PNG 留在工作区待人工审阅 git add（本轮绝对未加入提交）**；人工提交后下轮可确认 seed_icon_missing 消除。本轮 Agent 不重启 Bot、不推送远端。

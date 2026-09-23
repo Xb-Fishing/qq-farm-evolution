@@ -191,6 +191,8 @@ function createDataProvider(deps) {
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
         getBearActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getBearActivity'),
+        getWishActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getWishActivity'),
+        getHappyShareActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getHappyShareActivity'),
         operatePetDiary: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operatePetDiary', action, input),
 
         // ========== Illustrated ==========

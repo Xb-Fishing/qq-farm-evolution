@@ -17,6 +17,7 @@ const { getBag, getBagItems } = require('./warehouse');
 
 const activityLogger = createModuleLogger('activity');
 const bearActivity = require('./season-bear-activity');
+const seasonWishActivities = require('./season-wish-activities');
 // 历史活动写方法只保留解析结构上下文；即使以后被误接线，也必须在发包前失败。
 const RETIRED_ACTIVITY_WRITES_DISABLED = true;
 
@@ -904,6 +905,39 @@ async function getBearActivity(options = {}) {
     inventoryAvailable: activity.inventoryAvailable,
   });
   return activity;
+}
+
+// 秋祈良愿与快乐不独享（2026-09-24 开放）：说明驱动的只读接入。
+// 两组活动当前均无官方成功操作样本，不做背包读取（没有已知道具 ID 可查），
+// 奖励道具 ID/图片待活动开放后的下发证据再补。
+async function getSeasonRuleActivity(kind, options = {}) {
+  const definition = kind === 'wish'
+    ? { rootId: seasonWishActivities.WISH_ACTIVITY_ID, name: '秋祈良愿', reader: seasonWishActivities.normalizeWishActivity, event: 'wish_activity_read' }
+    : { rootId: seasonWishActivities.HAPPY_SHARE_ACTIVITY_ID, name: '快乐不独享', reader: seasonWishActivities.normalizeHappyShareActivity, event: 'happy_share_activity_read' };
+  const listReader = options.getActivityDiscoveryList || getActivityDiscoveryList;
+  const snapshotReader = options.getActivityGroupSnapshot || getActivityGroupSnapshot;
+  const activities = await listReader();
+  if (!(activities || []).some(node => toNum(node.id) === definition.rootId && toNum(node.parentId) === 0)) {
+    throw new Error(`${definition.name}未由当前 ActivityService.List 下发，停止读取活动详情`);
+  }
+  const snapshot = await snapshotReader(definition.rootId, '');
+  if (toNum(snapshot?.id) !== definition.rootId) {
+    throw new Error(`${definition.name}活动组不匹配，停止读取`);
+  }
+  const activity = definition.reader(snapshot, options);
+  activityLogger.info(`${definition.name}只读状态刷新`, {
+    event: definition.event, activityId: definition.rootId,
+    gameplayCount: activity.gameplayGuides.length,
+  });
+  return activity;
+}
+
+function getWishActivity(options = {}) {
+  return getSeasonRuleActivity('wish', options);
+}
+
+function getHappyShareActivity(options = {}) {
+  return getSeasonRuleActivity('happyShare', options);
 }
 
 /**
@@ -3331,7 +3365,10 @@ void [
 
 module.exports = {
   ...bearActivity,
+  ...seasonWishActivities,
   getBearActivity,
+  getWishActivity,
+  getHappyShareActivity,
   NANGUA_ACTIVITY_UID,
   HELU_ACTIVITY_UID,
   STAR_ACTIVITY_UID,

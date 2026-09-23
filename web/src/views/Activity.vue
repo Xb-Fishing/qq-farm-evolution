@@ -2,6 +2,7 @@
 import { storeToRefs } from 'pinia'
 import { onMounted, ref, watch } from 'vue'
 import BearActivityPanel from '@/components/activity/BearActivityPanel.vue'
+import SeasonRuleActivityPanel from '@/components/activity/SeasonRuleActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
 import EvolutionAgentSettings from '@/components/admin/EvolutionAgentSettings.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -18,13 +19,19 @@ const toast = useToastStore()
 const userStore = useUserStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { bearActivity, bearLoading, bearError, bearOperating } = storeToRefs(activityStore)
+const { wishActivity, wishLoading, wishError } = storeToRefs(activityStore)
+const { happyShareActivity, happyShareLoading, happyShareError } = storeToRefs(activityStore)
 const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
 
 async function refreshAll() {
   if (currentAccountId.value) {
-    await activityStore.fetchBearActivity(String(currentAccountId.value))
+    await Promise.all([
+      activityStore.fetchBearActivity(String(currentAccountId.value)),
+      activityStore.fetchWishActivity(String(currentAccountId.value)),
+      activityStore.fetchHappyShareActivity(String(currentAccountId.value)),
+    ])
   }
 }
 
@@ -109,6 +116,24 @@ onMounted(refreshAll)
         {{ bearError }}
       </div>
       <BearActivityPanel v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
+      <div v-if="wishError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+        {{ wishError }}
+      </div>
+      <SeasonRuleActivityPanel
+        :activity="wishActivity" :loading="wishLoading"
+        heading="秋祈良愿 · 每日祈愿"
+        subtitle="每日祈愿领好运奖励 · 限定种子 / 烟花 / 盆栽 · 错过存储 5 日 · 邮件补发"
+        @refresh="currentAccountId && activityStore.fetchWishActivity(String(currentAccountId))"
+      />
+      <div v-if="happyShareError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+        {{ happyShareError }}
+      </div>
+      <SeasonRuleActivityPanel
+        :activity="happyShareActivity" :loading="happyShareLoading"
+        heading="快乐不独享 · 快乐值"
+        subtitle="每日领取 / 每日首次分享 / 好友快乐包链接 · 档位奖励（稚萌熊熊）"
+        @refresh="currentAccountId && activityStore.fetchHappyShareActivity(String(currentAccountId))"
+      />
     </template>
 
     <Teleport to="body">
