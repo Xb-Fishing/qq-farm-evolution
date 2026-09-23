@@ -8,6 +8,7 @@ const {
   getGenericFallbackItemIds,
   getItemById,
   getItemImageById,
+  getPlantBySeedId,
   isSeedItem,
 } = require('../src/config/gameConfig');
 
@@ -176,6 +177,25 @@ test('黄金变异物品按 104 段规律登记,挑战书按双源证据登记',
   // 待护送宝藏（2026-09-14 Bag 出现 + ItemInfo 快照闭环）：非种子，只读展示。
   assert.equal(getItemById(1030)?.name, '待护送宝藏');
   assert.equal(isSeedItem(1030), false);
+});
+
+test('枸杞 2026-09-23 Bag 出现,按快照+Plant+Bag 三方证据登记', () => {
+  // 种子进运行时种子索引（type 5），背包优先种植可识别
+  assert.equal(getItemById(21625)?.name, '枸杞种子');
+  assert.equal(isSeedItem(21625), true);
+  // 植物映射：seed→plant→fruit 双向闭环（快照 Plant 1021625 逐字段）
+  const plant = getPlantBySeedId(21625);
+  assert.equal(plant?.name, '枸杞');
+  assert.equal(plant?.size, 1);
+  assert.equal(plant?.fruit?.id, 41625);
+  assert.equal(plant?.mutant_effect_plant, '5:1121625:1');
+  // 果实由 EventPlants 合成条目命名（同 40516 狗尾草惯例，不进 EventItems）
+  assert.equal(getItemById(41625)?.name, '枸杞');
+  // 黄金变体果实（Plant 1121625 fruit 1041625 + ItemInfo type 17 双源）
+  assert.equal(getItemById(1041625)?.name, '黄金·枸杞');
+  assert.equal(isSeedItem(1041625), false);
+  // 变异展示植物 seed_id 为空,不污染种子索引
+  assert.equal(getPlantBySeedId(0), undefined);
 });
 
 test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 刷屏', () => {
