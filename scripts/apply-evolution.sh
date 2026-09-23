@@ -14,7 +14,7 @@ node_meets_vite() {
 }
 BUILD_NODE_DIR="$NODE_BIN_DIR"
 if ! node_meets_vite "$BUILD_NODE_DIR/node"; then
-  for cand in "$HOME"/.nvm/versions/node/v2[02].*; do
+  for cand in "$HOME"/.nvm/versions/node/v2[02].*/bin; do
     [[ -x "$cand/node" ]] || continue
     if node_meets_vite "$cand/node"; then BUILD_NODE_DIR="$(cd -- "$cand" && pwd)"; break; fi
   done
