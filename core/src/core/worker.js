@@ -1469,6 +1469,10 @@ function onFriendLandsChanged(info) {
     try {
         // LandsNotify 只包含发生变化的地块，必须与既有地块基线合并。
         inspectFriendLands(hostGid, '', lands, Date.now(), { partial: true });
+        // 推送即活跃（2026-09-23 实验确认通道存活）：好友农场有动作的毫秒级
+        // 证据——进活跃表后巡田自动收紧到 45-75s，施肥证据则直接进 HOT。
+        require('../services/friend-activity').recordActivity(hostGid, Date.now(), 'lands_push',
+            `${lands.length} lands changed`);
         armStealWake();
     } catch { }
 }
