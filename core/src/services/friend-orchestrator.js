@@ -109,10 +109,11 @@ const WATCHLIST_POLL_TICK_MS = 3_000;
 // 普通重点巡田只负责更新成熟墙钟/施肥基线，不关心对方日常收菜和重种。
 // 未知或无作物保持 5-8 分钟；已知进入 122 分钟观察范围收紧到 45-75 秒。
 // 真正发现施肥趋势后由 fertilizer-watch 独立切换到秒级 HOT。
-// 2026-09-22 用户定标"对好友上线极其敏感"：常态档从 5-8 分钟压到 90-150s
-// （约 30 次 Enter/小时/好友）。进观察窗后 45-75s，确认在线后 1s 快档。
-const WATCHLIST_POLL_IDLE_MIN_MS = 90_000;
-const WATCHLIST_POLL_IDLE_MAX_MS = 150_000;
+// 2026-09-23 驻留推送通道实测存活（150-250ms 级到达）：在线/施肥发现交给
+// LandsNotify 推送（lands_push 证据自动收紧到 45-75s），常态巡田只负责
+// 成熟墙钟刷新与驻留状态续期，降回 10-15 分钟。
+const WATCHLIST_POLL_IDLE_MIN_MS = 10 * 60_000;
+const WATCHLIST_POLL_IDLE_MAX_MS = 15 * 60_000;
 const WATCHLIST_POLL_WINDOW_MIN_MS = 45_000;
 const WATCHLIST_POLL_WINDOW_MAX_MS = 75_000;
 // 好友在线快档（at_home 命中）：1 秒内感知农场变化
