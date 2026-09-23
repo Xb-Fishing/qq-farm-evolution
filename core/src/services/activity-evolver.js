@@ -1092,8 +1092,20 @@ ${incrementalContext || buildIncrementalReviewContext({}, 'safety')}
 
 【任务】
 1. 按增量检查点逐条审计新证据，列出发现的风险（有数据支撑，不臆测）；每天必须轻量核对活动与其他协议模块的可达调用清单，是否出现未下发 ID 枚举、未知接口试探、单一证据接入写操作、已结束活动旧路由仍可达、下游刷新穿透上游或错误诱导重试。
-1a. 日志是每日安全巡检的首要输入：先读 daily-feedback-summary.json 与最近24小时 daily-feedback 流水，按匿名 trace 关联点击、请求结果、耗时、部分失败/中断；查看失败是否有行为测试覆盖，无返回/仅accepted不能当成功。记录没有执行证据的路径并补隔离测试。再读取最近 24 小时 bot.log、combined-*.log 和 error-*.log，按 event/module/result 聚合请求失败、治理拦截、账号断线、收获/种植/偷菜失败、施肥 HOT 触发及空图/裸 ID；每个异常必须定位到代码和阈值，已知成熟/抢收与施肥误触发要分开判断。
-2. **逻辑 bug 审查（增量必做）**：两条固定不变量链——①自己农场「成熟→唤醒→收获」（worker.js + farming-orchestrator.js）；②好友收益链「推送→在线判定→巡田档位→施肥 HOT→PREARM 抢收」（utils/network.js 的 LandsNotify 分支、services/friend-activity.js、friend-orchestrator.js、friend-visit.js、fertilizer-watch.js）。任一链相关文件自上次已审提交后变更、或新日志出现对应异常（成熟未收/调度异常/好友在线未识别/施肥趋势未触发/推送到达但巡田未收紧/抢收失败），必须深读该链整条闭环；否则只运行现有定向不变量回归，不重复通读。档位语义（2026-09-23 定标）：在线档（1s）必须先于成熟窗口判断，动作断流 10 秒放缓，施肥 HOT 趋势停止确认 60 秒——回归时验证这三条不被破坏。有明确日志或可复现证据的 bug 必须修复；拿不准只记 HANDOFF。
+1a. 日志是每日安全巡检的首要输入：先读 daily-feedback-summary.json 与最近24小时 daily-feedback 流水，按匿名 trace 关联点击、请求结果、耗时、部分失败/中断；查看失败是否有行为测试覆盖，无返回/仅accepted不能当成功。记录没有执行证据的路径并补隔离测试。再读取最近 24 小时 bot.log、combined-*.log 和 error-*.log，按 event/module/result 聚合请求失败、治理拦截、账号断线、收获/种植/偷菜失败、施肥 HOT 触发及空图/裸 ID；每个异常必须定位到代码和阈值。症状→链号对照：成熟未收/收获失败→L1；空地滞留/枯死→L2；施肥异常→L3；推送到达但巡田未收紧/在线未识别→L4；巡田间隔与档位不符→L5；巡查风暴/帮忙超限→L6；施肥趋势未触发或提前冷却→L7；偷菜失败/重复偷→L8；抢收慢/错过→L9；治理拦截/到期自旋→L10；重登风暴/凭据丢失→L11；固定间隔无抖动→L12。命中哪条就深读哪条链（见第 2 条链表）。
+2. **逻辑 bug 审查（增量必做）**：主逻辑共 12 条不变量链。**触发规则：某链的文件自上次已审提交后变更、或日志出现该链症状（见 1a 的症状→链号对照）时，必须深读该链整条闭环；否则只跑现有定向回归，不重复通读。** 有明确日志或可复现证据的 bug 必须修复；拿不准只记 HANDOFF。
+   - L1 自家成熟收获链（worker.js + farming-orchestrator.js）：成熟墙钟到点必收、单在飞收获请求 | 症状：成熟未收、重复收获、收获风暴
+   - L2 自家种植养护链（planting-service + farm.js + farm-land-analyzer）：收后必种、空地不滞留、干/草/虫到点处理 | 症状：空地过夜、枯死、养护缺失
+   - L3 自家施肥链（farm-fertilizer）：按策略模式与 land_types 过滤、多季补肥语义 | 症状：误施/漏施/重复施、收种边界误报催熟
+   - L4 好友在场感知链（utils/network.js 的 LandsNotify 分支 + friend-activity.js）：推送→证据→档位；证据时刻单调不回退；断流 10 秒放缓 | 症状：推送到达但档位未变、在线未识别、离线不放缓
+   - L5 重点监控巡田链（friend-orchestrator 的 watchlistPoll*）：档位阶梯 在线1s/活跃与观察窗45-75s/常态10-15min，**在线档先于成熟窗口判断**；驻留重点好友不发 Leave；进门期间成熟立即重访 | 症状：nextDelayMs 与档位不符、推送后未拉近、过期墙钟占住调度
+   - L6 非重点巡查链（friend-orchestrator 的 checkFriends + friend-visit 的 visitFriend）：帮/偷一轮合并、巡查预算、帮忙经验上限即停、狗缓存按日 | 症状：请求风暴、漏巡查、帮忙超限
+   - L7 施肥 HOT 状态机（fertilizer-watch）：同茬证据条件、趋势停止确认 60 秒、硬上限 10 分钟、HOT→PREARM 桥含 90 秒刚熟宽限 | 症状：趋势未触发、提前冷却、催熟到已熟漏检
+   - L8 偷菜执行链（friend-visit + friend-operation-limits）：CheckCanOperate 前置、批量失败逐地回退、偷后出售、due 清理偷到/被抢都清 | 症状：偷菜失败无回退、重复偷、旧 due 自旋
+   - L9 抢收哨兵链（worker.js 哨兵/PREARM）：预进门驻留、到点毫秒出手、竞速宽限 | 症状：抢收慢、错过到点
+   - L10 调度预算链（steal-schedule + request-governor）：全局最小 due 合并、90 秒过期宽限、治理预算、自家收获预留 | 症状：治理拦截激增、到期自旋、预算饿死
+   - L11 凭据登录链（wx-login-adapter + auto-code-refresh + wx-login/native-protocol）：滚动 token 立即落库、40188 不停在线号不高频重试、ws_400 恢复、踢号退避 | 症状：高频重登、凭据丢失、掉线不恢复
+   - L12 行为防封链（utils/behavior.js + ace-service）：一切间隔带抖动、ACE 固定节奏、安静时段 | 症状：固定间隔、无随机的节奏
 3. 能安全修的按最小改动修（例：某调用每轮重复可缓存、某间隔无随机可加抖动、某轮询可加每日上限）。偷菜出手时机 80-300ms、HOT 盯梢节奏、PREARM 抢收是核心收益链，只许加预算保护不许放慢。
 4. 不能安全修的在 docs/HANDOFF.md 记「风险待处理」条目，说明风险与不修的理由。
 5. 只有实际修改代码时才同步更新 docs/HANDOFF.md（沿用现有格式，写明本次巡检发现与改动、如何回滚）。
