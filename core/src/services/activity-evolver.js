@@ -1637,7 +1637,16 @@ function applyEvolution() {
   if (state.status !== 'pending_apply') {
     return { ok: false, error: `当前没有待应用的进化（状态：${state.status}）` };
   }
-  if (!state.commit || gitHead() !== state.commit || worktreeChanges()) {
+  // 2026-09-23 反复"待应用提交已变化"根因：维护会话在进化待应用提交之上叠新提交
+  // 是正常节奏（修复/功能都会进），只要待应用提交仍是 HEAD 祖先（内容已包含），
+  // 就允许部署当前 HEAD；逐字相等反而永远撞墙。已跟踪文件改动仍然阻断。
+  const headNow = gitHead();
+  let auditedIncluded = false;
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow], { cwd: REPO_ROOT, stdio: 'ignore' });
+    auditedIncluded = true;
+  } catch { /* 不是祖先或命令失败 */ }
+  if (!state.commit || !headNow || !auditedIncluded || worktreeChanges()) {
     return { ok: false, error: '待应用提交或工作区已变化，请先核对，当前未部署任何改动' };
   }
   if (!fs.existsSync(APPLY_SCRIPT)) {
@@ -1662,7 +1671,7 @@ function applyEvolution() {
     cwd: REPO_ROOT,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FARM_TMUX_TARGET: tmuxTarget, FARM_NODE_BIN_DIR: path.dirname(process.execPath), FARM_EVOLUTION_COMMIT: state.commit },
+    env: { ...process.env, FARM_TMUX_TARGET: tmuxTarget, FARM_NODE_BIN_DIR: path.dirname(process.execPath), FARM_EVOLUTION_COMMIT: headNow },
   });
   child.once('error', error => {
     const failed = readState();
