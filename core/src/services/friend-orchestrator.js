@@ -151,11 +151,23 @@ function nextWatchlistPollDelayMs(remainMs, options = {}) {
   const randomDelay = typeof options.randomDelay === 'function'
     ? options.randomDelay
     : gaussianInt;
+  // 2026-09-23 事故修复（用户定标）：在线/活跃档位必须先于一切成熟窗口判断。
+  // 旧顺序把 onlineNow/activityEvidence 排在"作物离成熟>122 分钟"分支之后，
+  // 导致好友正在地里施肥时（作物离熟还远），巡田仍按 10-15 分钟慢档走——
+  // 推送拉近的进门能看到当下，但后续节奏完全跟不上。
+  // 在线=1s 盯（好友在农场 or 10 秒内有动作推送）；活跃=45-75s（30 分钟窗）；
+  // 动作断流 10 秒/离场后自动逐级放缓，与成熟远近无关。
+  if (options.onlineNow) {
+    return randomDelay(WATCHLIST_POLL_ONLINE_MIN_MS, WATCHLIST_POLL_ONLINE_MAX_MS);
+  }
   if (remain <= 0) {
     return randomDelay(WATCHLIST_POLL_IDLE_MIN_MS, WATCHLIST_POLL_IDLE_MAX_MS);
   }
+  if (options.activityEvidence) {
+    return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
+  }
   if (remain > wakeBeforeMs) {
-    // 不能让窗口外已经挂好的 5-8 分钟定时器睡过观察窗口入口。
+    // 不能让窗口外已经挂好的慢档定时器睡过观察窗口入口。
     return Math.max(
       WATCHLIST_POLL_TICK_MS,
       Math.min(
@@ -166,20 +178,6 @@ function nextWatchlistPollDelayMs(remainMs, options = {}) {
   }
   if (remain <= DUE_PREARM_WATCHLIST_MS) {
     // PREARM 已独立按成熟墙钟触发，无需继续进门确认日常状态。
-    return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
-  }
-  // 好友此刻在自己农场里（at_home 实时信号，2026-09-22 实测成立）：秒级
-  // 快档盯梢——在线的好友随时施肥/收菜，1 秒内感知变化。好友离开后 at_home
-  // 证据 90 秒不刷新自动衰减，回落到下面的普通节奏。
-  // ponytail: 持续在线则持续 1s 进门，量级=每分钟 60 次 Enter；通信预算
-  // 治理器是硬闸，若被拦 result.entered=false 也不会误判离线。
-  if (options.onlineNow) {
-    return randomDelay(WATCHLIST_POLL_ONLINE_MIN_MS, WATCHLIST_POLL_ONLINE_MAX_MS);
-  }
-  // 好友活跃证据命中（社交道具/隐时钟，2026-09-22）：该好友 30 分钟内
-  // 有动作，窗口外基线档临时收紧到 45-75s——比 HOT 秒级保守，但比 5-8
-  // 分钟快一个数量级，覆盖"刚活跃→可能继续施肥"的窗口。
-  if (options.activityEvidence) {
     return randomDelay(WATCHLIST_POLL_WINDOW_MIN_MS, WATCHLIST_POLL_WINDOW_MAX_MS);
   }
   // 不错过成熟前 60 秒的 PREARM 武装点；其余时间保持单目标抖动基线刷新。

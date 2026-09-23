@@ -127,8 +127,9 @@ test('every friend harvest entry point renews contention grace at the API bounda
 });
 
 test('priority baseline polling tightens only inside the observation window without opening governor watch mode', () => {
-  assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MIN_MS = 5 \* 60_000/);
-  assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MAX_MS = 8 \* 60_000/);
+  // 2026-09-23：常态档降为 10-15 分钟（推送承担发现），在线/活跃档先于窗口判断
+  assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MIN_MS = 10 \* 60_000/);
+  assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MAX_MS = 15 \* 60_000/);
   assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MIN_MS = 45_000/);
   assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MAX_MS = 75_000/);
   assert.doesNotMatch(friendSrc, /setWatchMode\(/);
@@ -140,7 +141,7 @@ test('priority polling wakes at the observation boundary and stays within the ti
   const wakeBeforeMs = 122 * 60_000;
   const chooseMax = (_min, max) => max;
 
-  assert.equal(nextWatchlistPollDelayMs(0, { wakeBeforeMs, randomDelay: chooseMax }), 8 * 60_000);
+  assert.equal(nextWatchlistPollDelayMs(0, { wakeBeforeMs, randomDelay: chooseMax }), 15 * 60_000);
   assert.equal(
     nextWatchlistPollDelayMs(wakeBeforeMs + 20_000, { wakeBeforeMs, randomDelay: chooseMax }),
     20_000,

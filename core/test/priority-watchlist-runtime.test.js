@@ -220,12 +220,17 @@ test('truly-empty friend farm still falls back to idle cadence', async t => {
 
 // 好友在线快档（2026-09-22 at_home 实测）：onlineNow 命中时巡田间隔 1 秒内，
 // 观察窗/慢档语义不变
-test('online tier polls sub-second while friend is at home', t => {
+test('online tier polls sub-second while friend is at home, regardless of ripeness', t => {
     const f = fixture(t);
+    // 2026-09-23 档位顺序修复：在线档先于一切成熟窗口判断（含窗口外/无作物）
     const delay = f.context.nextWatchlistPollDelayMs(30 * 60_000, { onlineNow: true });
-    assert.ok(delay >= 700 && delay <= 1_000, `online tier delay=${delay}`);
+    assert.ok(delay >= 700 && delay <= 1_000, `in-window online=${delay}`);
+    const farOut = f.context.nextWatchlistPollDelayMs(5 * 3600_000, { onlineNow: true });
+    assert.ok(farOut >= 700 && farOut <= 1_000, `窗口外在线仍是 1s 档（farOut=${farOut}）`);
     const idle = f.context.nextWatchlistPollDelayMs(0, { onlineNow: true });
-    assert.ok(idle >= 300_000, `remain=0 仍走慢档（idle=${idle}）`);
+    assert.ok(idle >= 700 && idle <= 1_000, `无作物但在线仍 1s（idle=${idle}）`);
+    const activity = f.context.nextWatchlistPollDelayMs(5 * 3600_000, { activityEvidence: true });
+    assert.ok(activity >= 45_000 && activity <= 75_000, `窗口外活跃 45-75s（activity=${activity}）`);
     const normal = f.context.nextWatchlistPollDelayMs(30 * 60_000, { onlineNow: false });
-    assert.ok(normal >= 45_000, `离线回落 45-75s（normal=${normal}）`);
+    assert.ok(normal >= 45_000, `离线回落（normal=${normal}）`);
 });

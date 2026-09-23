@@ -205,11 +205,19 @@ function notePresenceFromBatch(gid, lastOnlineSec, now = Date.now()) {
   return null;
 }
 
-/** 在线信号是否新鲜（at_home 或批量在场任一命中，供秒级快档判定）。 */
-function isFriendOnlineRecently(gid, now = Date.now(), windowMs = AT_HOME_FRESH_MS) {
+/**
+ * 在线信号是否新鲜（供 1s 快档判定）。2026-09-23 用户定标：动作/在场断流
+ * 10 秒即视为离场放缓——窗口从 90s 收紧，且 lands_push（好友农场变化推送）
+ * 也是在线源：好友不需要"进农场场景"（at_home），只要有动作就算在线。
+ * at_home 在 1s 巡访中每秒刷新，所以人在农场时会持续保持快档。
+ */
+const ONLINE_SIGNAL_FRESH_MS = 10 * 1000;
+const ONLINE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online']);
+
+function isFriendOnlineRecently(gid, now = Date.now(), windowMs = ONLINE_SIGNAL_FRESH_MS) {
   const evidence = activityEvidence.get(toNum(gid));
   if (!evidence) return false;
-  if (evidence.source !== 'at_home' && evidence.source !== 'presence_online') return false;
+  if (!ONLINE_SOURCES.has(evidence.source)) return false;
   return now - evidence.at <= windowMs;
 }
 
