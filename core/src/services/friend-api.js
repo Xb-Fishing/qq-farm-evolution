@@ -719,22 +719,8 @@ async function batchGetBasicInfo(gids) {
     payload
   );
   const reply = types.BatchBasicInfoReply.decode(body);
-  if (!batchBasicInfoDumped) {
-    batchBasicInfoDumped = true;
-    try {
-      const fields = decodeProtoFields(body)
-        .map(f => `${f.no}/${f.wire}:${f.length != null ? f.length + 'B' : f.value}`)
-        .slice(0, 10).join(' ');
-      log('好友', `BatchGetBasicInfo 裸回包: [${fields}] users=${(reply.users || []).length}`, {
-        module: 'friend', event: 'batch_basic_info_dump',
-      });
-    } catch { /* 诊断失败静默 */ }
-  }
   return Array.isArray(reply.users) ? reply.users : [];
 }
-let batchBasicInfoDumped = false;
-function resetBatchDumpForVariant() { batchBasicInfoDumped = false; }
-resetBatchDumpForVariant();
 
 /**
  * 单查询用户基础信息（在线感知 trigger 的单 gid 变体）：请求 {1: gid}，
@@ -751,20 +737,8 @@ async function briefGetBasicInfo(gid) {
     'GetBriefInfo',
     payload
   );
-  if (!briefDumped) {
-    briefDumped = true;
-    try {
-      const fields = decodeProtoFields(body)
-        .map(f => `${f.no}/${f.wire}:${f.length != null ? f.length + 'B' : f.value}`)
-        .slice(0, 12).join(' ');
-      log('好友', `GetBriefInfo 裸回包: [${fields}]`, {
-        module: 'friend', event: 'brief_info_dump', friendGid: id,
-      });
-    } catch { /* 诊断失败静默 */ }
-  }
   return types.BasicInfo.decode(body);
 }
-let briefDumped = false;
 
 async function enterFriendFarm(gid) {
   const payload = types.VisitEnterRequest.encode(
