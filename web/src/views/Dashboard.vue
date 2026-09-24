@@ -7,6 +7,7 @@ import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import { useAccountStore } from '@/stores/account'
+import AccountModal from '@/components/AccountModal.vue'
 import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
@@ -25,6 +26,31 @@ const {
   currentStatusReady,
 } = storeToRefs(statusStore)
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
+const reloginBusy = ref(false)
+const showReloginModal = ref(false)
+const toast = useToastStore()
+
+async function reloginFromHome() {
+  const account = accountStore.currentAccount
+  if (!account || reloginBusy.value)
+    return
+  reloginBusy.value = true
+  try {
+    // 先试直接登录（refreshtoken 刷凭据，无需扫码）；失败自动弹扫码
+    const result = await accountStore.reloginAccount(account.id)
+    if (result.ok) {
+      toast.success('直接登录成功（免扫码）')
+      return
+    }
+    showReloginModal.value = true
+  }
+  catch {
+    showReloginModal.value = true
+  }
+  finally {
+    reloginBusy.value = false
+  }
+}
 const { dashboardItems } = storeToRefs(bagStore)
 
 const logContainer = ref<HTMLElement | null>(null)
@@ -803,8 +829,19 @@ useIntervalFn(updateCountdowns, 1000)
             <div class="i-fas-user-circle" />
             账号
           </div>
-          <div class="rounded-lg bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-            Lv.{{ status?.status?.level || 0 }}
+          <div class="flex items-center gap-2">
+            <div class="rounded-lg bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              Lv.{{ status?.status?.level || 0 }}
+            </div>
+            <button
+              v-if="currentAccount?.platform === 'wx'"
+              class="rounded bg-emerald-500 px-2 py-1 text-xs text-white transition hover:bg-emerald-600 disabled:opacity-50"
+              :disabled="reloginBusy"
+              title="先走免扫码直接登录，失败自动弹扫码"
+              @click="reloginFromHome"
+            >
+              {{ reloginBusy ? '登录中…' : '重新登录' }}
+            </button>
           </div>
         </div>
         <div class="mb-1 truncate text-xl font-bold" :title="displayName">
@@ -1207,4 +1244,12 @@ useIntervalFn(updateCountdowns, 1000)
       </div>
     </div>
   </div>
+
+  <AccountModal
+    :show="showReloginModal"
+    :edit-data="currentAccount"
+    initial-tab="wx"
+    @close="showReloginModal = false"
+    @saved="showReloginModal = false"
+  />
 </template>
