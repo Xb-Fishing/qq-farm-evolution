@@ -11,6 +11,8 @@ import { parseManualLoginInput } from '@/utils/gateway-url'
 const props = defineProps<{
   show: boolean
   editData?: any
+  /** 打开时直接切到的标签（如首页重新登录弹扫码时传 'wx'） */
+  initialTab?: string
 }>()
 
 const emit = defineEmits(['close', 'saved'])
@@ -409,6 +411,9 @@ function close() {
 
 watch(() => props.show, (newVal) => {
   if (newVal) {
+    activeTab.value = (['wx', 'capture', 'manual'] as const).includes(props.initialTab as any)
+      ? (props.initialTab as 'wx' | 'capture' | 'manual')
+      : 'manual'
     errorMessage.value = ''
     captureError.value = ''
     captureCopiedField.value = ''
