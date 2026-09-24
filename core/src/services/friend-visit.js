@@ -548,6 +548,66 @@ async function visitFriend(friend, tally, myGid, accountId) {
  * Enter 驻留（Worker armSentinelPreEnter）：复用其 Enter 回复省一次往返，
  * 不再重复发 Enter；Leave 仍走正常路径。
  */
+// ===== 推送直达偷菜（fast-lane，2026-09-24 方案C）=====
+// 只为对抗"好友在线施肥催熟秒收"的竞速：推送自带变化地块状态，成熟且还站着
+// 的地块直接发 Harvest（协议自包含，无需 Enter/CheckCanOperate——qqfarm-sdk
+// 与 liyangpengs 双实证）。仅重点好友 + 好友在线（10 秒内有动作/at_home）时
+// 启用；失败忽略（多半已被主人收走）。自然成熟的常规偷收仍走 PREARM 布防。
+
+const fastLaneInFlight = new Map(); // gid -> Promise
+const fastLaneRecent = new Map(); // gid -> Map<landId, at>（防推送回声重复开火）
+
+function fastLaneRipeLandIds(lands) {
+  const serverSec = Math.floor(Date.now() / 1000);
+  const ids = [];
+  for (const land of Array.isArray(lands) ? lands : []) {
+    const plant = land && land.plant;
+    const phases = plant && plant.phases;
+    const landId = toNum(land && land.id);
+    if (!landId || !Array.isArray(phases) || phases.length === 0) continue;
+    const last = phases[phases.length - 1];
+    const begin = toNum(last && (last.begin_time != null ? last.begin_time : last.beginTime));
+    // 已成熟（最后阶段开始时刻已过）且植株还在 = 可偷窗口
+    if (begin > 0 && begin <= serverSec) ids.push(landId);
+  }
+  return ids;
+}
+
+async function fastLaneSteal(gid, lands) {
+  const id = toNum(gid);
+  if (!id || !isPriorityGid(id)) return;
+  // 在线闸门（用户定标）：离线时失败率高、也无施肥竞速意义
+  if (!friendActivity.isFriendOnlineRecently(id)) return;
+  const ripeIds = fastLaneRipeLandIds(lands);
+  if (ripeIds.length === 0) return;
+  // 防重复：3 秒内已开火过的地块不再发（我们自己偷完的推送回声会被这里挡住）
+  const recent = fastLaneRecent.get(id) || new Map();
+  const now = Date.now();
+  for (const [landId, at] of recent) if (now - at > 3_000) recent.delete(landId);
+  const targets = ripeIds.filter(landId => !recent.has(landId));
+  if (targets.length === 0) return;
+  targets.forEach(landId => recent.set(landId, now));
+  fastLaneRecent.set(id, recent);
+
+  // 串行化：同好友同一时刻只 1 个在途 Harvest，后到的地块并进下一次
+  const prev = fastLaneInFlight.get(id) || Promise.resolve();
+  const run = prev.catch(() => undefined).then(async () => {
+    try {
+      await stealHarvest(id, targets);
+      recordOperation('steal', targets.length);
+      log('好友', `[重点] 快车道偷菜成功：${targets.length} 块（推送直达，未进门）`, {
+        module: 'friend', event: '偷好友菜', friendGid: id, priority: true,
+        actions: [`偷${targets.length}`], mode: 'fast_lane', result: 'ok',
+      });
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
+        `快车道偷取 ${targets.length} 块（推送直达）`);
+      void sellAllFruits().catch(() => {});
+    } catch { /* 已被主人收走等预期失败，静默 */ }
+  });
+  fastLaneInFlight.set(id, run);
+  void run.catch(() => {}).then(() => { if (fastLaneInFlight.get(id) === run) fastLaneInFlight.delete(id); });
+}
+
 // 驻留实验（2026-09-22）：重点好友进门后不 Leave——验证服务器是否向"驻留在
 // 农场里的访客"推送该农场的变化（催熟/收菜的毫秒级真·trigger 通道）。
 // 实验结论出来前只对重点好友生效；非重点好友行为不变。
@@ -846,6 +906,8 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
 
 // ===== Exports =====
 module.exports = {
+  fastLaneSteal,
+  fastLaneRipeLandIdsForTests: fastLaneRipeLandIds,
   runBatchWithFallback,
   doFriendOperation,
   visitFriend,

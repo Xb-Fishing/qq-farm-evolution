@@ -1992,3 +1992,7 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - 每轮有代码改动时，审查阶段必须跑 skill「进化产出代码自检清单」（core/docs/skills/agent-authored-code-checklist.md）逐条核对新增渲染点/状态逻辑。
 - **外部 RAG 维护是每轮的正式产出**：本轮踩过的坑、新的检索模式、验证手法必须回写 skills 索引或 client-config-evidence/sources.json（ignored），下轮开始先读索引。RAG 不回写 = 本轮没闭环。
 - 出现与已登记模式相同的新 bug 视为审计失败（清单已给而未执行），需在 HANDOFF 记原因。
+
+## 推送直达偷菜 fast-lane（2026-09-24 方案C，用户批准：仅重点好友+仅在线）
+
+对抗"好友在线施肥催熟秒收"的竞速（此前实测 56 秒只抢到 3/24 块——轮询形态出手周期 2-3s 拼不过 1s/块的手速）。worker 推送处理里：重点好友 + isFriendOnlineRecently（10 秒窗口）双闸门通过时，推送中"已成熟且还站着"的地块直接 PlantService.Harvest（协议自包含无需 Enter/CheckCanOperate，qqfarm-sdk 与 liyangpengs 双实证；is_all:true 沿用现有 stealHarvest 实现），同好友串行去重、3 秒地块防回声、失败静默。自然成熟的常规偷收不变（PREARM 布防），1 秒档扫地保留兜底。若线上观察到 Harvest 失败率异常，收紧闸门（缩短在线窗口或加 CheckCanOperate 预检并行）。
