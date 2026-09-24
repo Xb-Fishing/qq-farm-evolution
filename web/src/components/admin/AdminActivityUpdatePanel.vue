@@ -129,6 +129,7 @@ const forceEvolving = ref(false)
 const safetyRunning = ref(false)
 const applying = ref(false)
 const syncingHead = ref(false)
+const togglingEvolution = ref(false)
 const testingNotify = ref(false)
 const instructionDraft = ref('')
 const instructionSaving = ref(false)
@@ -524,6 +525,25 @@ async function reviseEvolution() {
   }
 }
 
+async function toggleEvolutionEnabled() {
+  togglingEvolution.value = true
+  error.value = ''
+  try {
+    const next = evolve.value?.evolutionEnabled === false
+    const { data } = await api.post('/api/activity/update/evolution-enabled', { enabled: next })
+    if (!data.ok)
+      throw new Error(data.error || '切换失败')
+    syncEvolveState(data.evolve)
+    toast.success(next ? '自进化已开启' : '自进化已关闭（手动触发仍可用）')
+  }
+  catch (err: any) {
+    error.value = err?.response?.data?.error || err.message || '切换失败'
+  }
+  finally {
+    togglingEvolution.value = false
+  }
+}
+
 async function syncEvolutionHead() {
   syncingHead.value = true
   error.value = ''
@@ -787,6 +807,17 @@ onUnmounted(() => evolutionStore.stopPolling())
           @click="syncEvolutionHead"
         >
           {{ syncingHead ? '同步中…' : '同步 HEAD' }}
+        </button>
+        <button
+          class="ml-2 rounded px-3 py-1.5 text-xs transition disabled:opacity-50"
+          :class="evolve?.evolutionEnabled === false
+            ? 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400'
+            : 'bg-emerald-500 text-white hover:bg-emerald-600'"
+          :disabled="togglingEvolution"
+          :title="evolve?.evolutionEnabled === false ? '自动进化已关闭，点击开启' : '每日自动进化运行中，点击关闭（手动触发不受影响）'"
+          @click="toggleEvolutionEnabled"
+        >
+          {{ togglingEvolution ? '切换中…' : (evolve?.evolutionEnabled === false ? '自进化：关' : '自进化：开') }}
         </button>
       </div>
     </div>
