@@ -1476,6 +1476,10 @@ function onFriendLandsChanged(info) {
         // 推送即出手窗口（2026-09-23 用户定标）：不等 1s 档 tick，直接把该好友
         // 的巡田拉近到 ~300ms 后——推送→进门→偷 的端到端压到 1 秒内。
         require('../services/friend').pullWatchlistPollToNow(hostGid, 300);
+        // 快车道（方案C，2026-09-24）：重点好友在线时，推送里的成熟地块直接开火，
+        // 不等巡田循环——与 1 秒档扫地双保险
+        const { fastLaneSteal } = require('../services/friend-visit');
+        fastLaneSteal(hostGid, lands);
         armStealWake();
     } catch { }
 }
