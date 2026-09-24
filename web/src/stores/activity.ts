@@ -608,11 +608,14 @@ export const useActivityStore = defineStore('activity', () => {
   const happyShareActivity = ref<SeasonRuleActivityData | null>(null)
   const happyShareLoading = ref(false)
   const happyShareError = ref('')
-  let seasonRuleRequestId = 0
+  // 按活动独立的请求序号：祈愿/快乐不独享并发刷新时，共享计数器会作废先发出的一方
+  // 并让它的 loading 永远不清（2026-09-24 面板"一直刷新"事故）
+  const seasonRuleRequestIds: Record<'wish' | 'happyShare', number> = { wish: 0, happyShare: 0 }
 
   function clearActivityData() {
     ++bearRequestId
-    ++seasonRuleRequestId
+    ++seasonRuleRequestIds.wish
+    ++seasonRuleRequestIds.happyShare
     bearActivity.value = null
     bearLoading.value = false
     bearError.value = ''
@@ -670,7 +673,9 @@ export const useActivityStore = defineStore('activity', () => {
     if (!accountId)
       return
     const requestedId = String(accountId)
-    const requestId = ++seasonRuleRequestId
+    const kindKey = (kind === 'happyShare' ? 'happyShare' : 'wish') as 'wish' | 'happyShare'
+    seasonRuleRequestIds[kindKey] = (seasonRuleRequestIds[kindKey] || 0) + 1
+    const requestId = seasonRuleRequestIds[kindKey]
     const isWish = kind === 'wish'
     const loading = isWish ? wishLoading : happyShareLoading
     const errorRef = isWish ? wishError : happyShareError
@@ -681,7 +686,7 @@ export const useActivityStore = defineStore('activity', () => {
       const { data } = await api.get(isWish ? '/api/activity/wish' : '/api/activity/happy-share', {
         headers: { 'x-account-id': accountId },
       })
-      if (requestId !== seasonRuleRequestId || !isCurrentAccount(requestedId))
+      if (requestId !== seasonRuleRequestIds[kindKey] || !isCurrentAccount(requestedId))
         return data
       dataRef.value = data.ok ? data.activity || null : null
       if (!data.ok)
@@ -690,14 +695,14 @@ export const useActivityStore = defineStore('activity', () => {
     }
     catch (err: any) {
       const error = err.message || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
-      if (requestId === seasonRuleRequestId && isCurrentAccount(requestedId)) {
+      if (requestId === (seasonRuleRequestIds[kind] ?? -2) && isCurrentAccount(requestedId)) {
         dataRef.value = null
         errorRef.value = error
       }
       return { ok: false, error }
     }
     finally {
-      if (requestId === seasonRuleRequestId)
+      if (requestId === (seasonRuleRequestIds[kind] ?? -3))
         loading.value = false
     }
   }
