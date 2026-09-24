@@ -1095,7 +1095,7 @@ ${incrementalContext || buildIncrementalReviewContext({}, 'safety')}
 
 【任务】
 1. 按增量检查点逐条审计新证据，列出发现的风险（有数据支撑，不臆测）；每天必须轻量核对活动与其他协议模块的可达调用清单，是否出现未下发 ID 枚举、未知接口试探、单一证据接入写操作、已结束活动旧路由仍可达、下游刷新穿透上游或错误诱导重试。
-0. **Git 卫生硬门（用户 2026-09-24 常驻机制）**：①内网地址/代理/端口不得写入任何受跟踪文件（代码中通用 RFC1918 网段常量除外）；②core/docs/skills/ 与 CLAUDE.md 是本机私有沉淀，**永不提交**——git 中的经验记录只允许 docs/HANDOFF.md；新用户必须能从零开始，不继承个人 skill 与总结；③每次 git add 后、提交前必须 git status 核对没有把排除文件带入，带入则 git rm --cached 后再提交。
+0. **Git 卫生硬门（用户 2026-09-24 常驻机制）**：①内网地址/代理/端口/带用户名的机器绝对路径不得写入任何受跟踪文件（通用 RFC1918 网段常量除外；脚本用 BASH_SOURCE 自定位仓库根，JS 用 __dirname/env 推导）；②core/docs/skills/ 与 CLAUDE.md 是本机私有沉淀，**永不提交**——git 中的经验记录只允许 docs/HANDOFF.md；新用户必须能从零开始，不继承个人 skill 与总结；③每次 git add 后、提交前必须 git status 核对没有把排除文件带入，带入则 git rm --cached 后再提交。
 1a-pre. **沉淀审计（用户 2026-09-24 常驻机制）**：读取自上次已审提交以来的维护提交（非进化产出），凡修复了模式类 bug 的提交，核对 core/docs/skills/ 与 docs/HANDOFF.md 是否已有对应沉淀；缺失就本轮补登记（算正式产出）。维护会话忘了沉淀时，进化侧兜底，不让知识断链。
 1a. 日志是每日安全巡检的首要输入：先读 daily-feedback-summary.json 与最近24小时 daily-feedback 流水，按匿名 trace 关联点击、请求结果、耗时、部分失败/中断；查看失败是否有行为测试覆盖，无返回/仅accepted不能当成功。记录没有执行证据的路径并补隔离测试。再读取最近 24 小时 bot.log、combined-*.log 和 error-*.log，按 event/module/result 聚合请求失败、治理拦截、账号断线、收获/种植/偷菜失败、施肥 HOT 触发及空图/裸 ID；每个异常必须定位到代码和阈值。症状→链号对照：成熟未收/收获失败→L1；空地滞留/枯死→L2；施肥异常→L3；推送到达但巡田未收紧/在线未识别→L4；巡田间隔与档位不符→L5；巡查风暴/帮忙超限→L6；施肥趋势未触发或提前冷却→L7；偷菜失败/重复偷→L8；抢收慢/错过→L9；治理拦截/到期自旋→L10；重登风暴/凭据丢失→L11；固定间隔无抖动→L12。命中哪条就深读哪条链（见第 2 条链表）。
 2. **逻辑 bug 审查（增量必做）**：主逻辑共 12 条不变量链。**触发规则：某链的文件自上次已审提交后变更、或日志出现该链症状（见 1a 的症状→链号对照）时，必须深读该链整条闭环；否则只跑现有定向回归，不重复通读。** 有明确日志或可复现证据的 bug 必须修复；拿不准只记 HANDOFF。
@@ -1186,6 +1186,21 @@ function launchEvolution(task, payload = {}) {
     current.status = 'idle';
     current.summary = '隐私阻断自愈：HEAD 已与 origin/main 对齐，恢复正常调度';
     writeState(current);
+  }
+  // push_failed 启动自愈（2026-09-24 事故）：隐私闸门的运行态词表可能瞬时命中
+  // （复扫即干净），重试任务又会随重启丢失——启动时若待推提交仍是 HEAD 就地
+  // 重推一次，成功则回到 pending_apply 供面板应用，失败保持原状等下轮进化。
+  if (current.status === 'push_failed' && current.commit && gitHead() === current.commit
+      && trackedMain && trackedMain !== gitHead()) {
+    void ensureHeadPushed(current.commit, '', current.collaboration).then((result) => {
+      const latest = readState();
+      if (latest.status !== 'push_failed' || latest.commit !== current.commit) return;
+      if (result.ok) {
+        latest.status = 'pending_apply';
+        latest.summary = `推送自愈成功：${current.commit.slice(0, 8)} 已上 GitHub，待确认应用`;
+        writeState(latest);
+      }
+    });
   }
   if (BLOCKING_STATUSES.has(current.status)) {
     return {
