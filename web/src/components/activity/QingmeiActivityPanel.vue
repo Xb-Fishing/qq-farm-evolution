@@ -101,7 +101,7 @@ function formatTime(value?: number) {
                 </span>
               </div>
               <div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                当前{{ activity?.material?.itemName || '青梅' }} {{ materialCount.toLocaleString() }}
+                当前{{ activity?.material?.itemName || '青梅' }} {{ Number(materialCount || 0).toLocaleString() }}
               </div>
             </div>
           </div>

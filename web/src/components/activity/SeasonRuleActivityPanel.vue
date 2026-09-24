@@ -182,7 +182,7 @@ function manualLabelsFor(guide: { key: string }) {
               </h4>
             </div>
             <p class="mt-2 text-lg font-bold">
-              {{ item.inventoryCount === null ? '数量待确认' : item.inventoryCount.toLocaleString() }}
+              {{ item.inventoryCount == null ? '数量待确认' : Number(item.inventoryCount).toLocaleString() }}
             </p>
             <p class="mt-1 text-xs text-gray-500">
               {{ item.desc }}
