@@ -319,11 +319,11 @@ const ACTIVITY_RULE_INSIGHT_DEFINITIONS: Array<Omit<ActivityRuleInsight, 'eviden
   { key: 'charity-authorization-warning', title: '公益平台授权与账号对接', description: '专属 UI 应说明参与前需由用户在官方客户端确认授权。', kind: 'warning', pattern: /参与本活动需同意.*公益平台/ },
   { key: 'charity-automation-warning', title: '活动禁止自动方式参与', description: '专属 UI 与后端都不得提供自动领取、捐赠或刷奖入口。', kind: 'warning', pattern: /机器人软件、蜘蛛软件、爬虫软件、刷奖软件|任何自动方式/ },
   { key: 'limited-warning', title: '限时道具与活动结束提示', description: '专属 UI 应把失效、出售或活动结束后的保留规则放在醒目提示区。', kind: 'warning', pattern: /限时活动道具|活动结束后|不会因活动结束/ },
-  { key: 'wish-daily', title: '秋祈良愿：每日祈愿领奖', description: '已接入流程卡；每日祈愿与领取状态当前快照未提供，只读展示、不接入写命令。', kind: 'gameplay', pattern: /在活动主界面祈愿|祈愿可领取当日好运奖励/ },
-  { key: 'wish-rewards', title: '秋祈良愿：限定种子与装扮奖励', description: '已接入奖励内容卡；2 种限定种子的道具 ID、图片与占地无下发证据，不改 EventPlants，待活动开放后补齐。', kind: 'gameplay', pattern: /限定种子、烟花互动道具和盆栽装扮/ },
+  { key: 'wish-daily', title: '秋祈良愿：每日祈愿领奖', description: '已接入流程卡与面板手动操作（祈愿 cmd51 / 领取 cmd52，官方编码器重构证据）；不接自动任务。', kind: 'gameplay', pattern: /在活动主界面祈愿|祈愿可领取当日好运奖励/ },
+  { key: 'wish-rewards', title: '秋祈良愿：限定种子与装扮奖励', description: '已接入奖励内容卡；烟花互动道具已确认为烟花桶 6001（库存随背包读取），2 种限定种子的道具 ID、图片与占地无下发证据，不改 EventPlants。', kind: 'gameplay', pattern: /限定种子、烟花互动道具和盆栽装扮/ },
   { key: 'wish-storage', title: '秋祈良愿：错过存储与邮件补发', description: '已接入 5 日存储与邮件补发提示；存储天数与补发状态待官方字段证据。', kind: 'gameplay', pattern: /存储5日奖励|通过邮件补发/ },
-  { key: 'share-daily', title: '快乐不独享：快乐值每日三途径', description: '已接入每日领取 / 每日首次分享 / 好友快乐包链接三张流程卡；次数状态待官方字段证据。', kind: 'gameplay', pattern: /每日在活动主界面领取.*每日首次从活动主界面分享|点击好友分享的快乐包链接/ },
-  { key: 'share-tier', title: '快乐不独享：快乐值档位奖励', description: '已接入档位奖励卡；快乐值进度与奖励道具 ID 无快照证据，未知不按 0 处理。', kind: 'gameplay', pattern: /拿到一定快乐值可领取档位奖励/ },
+  { key: 'share-daily', title: '快乐不独享：快乐值每日三途径', description: '已接入每日领取（cmd73 面板手动操作）与档位领奖（cmd70）；分享与好友链接属官方社交玩法，不开放面板触发。', kind: 'gameplay', pattern: /每日在活动主界面领取.*每日首次从活动主界面分享|点击好友分享的快乐包链接/ },
+  { key: 'share-tier', title: '快乐不独享：快乐值档位奖励', description: '已接入档位奖励卡与领取入口；档位进度随快照 field 120 展示，奖励道具名称按已登记配置显示。', kind: 'gameplay', pattern: /拿到一定快乐值可领取档位奖励/ },
 ]
 
 function activityRuleInsights(group: ActivityGroup): ActivityRuleInsight[] {

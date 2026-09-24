@@ -477,6 +477,26 @@ export interface HeluActivityData {
   }
 }
 
+export interface WishOperateState {
+  remainingCount: number
+  activityDay: number
+  pending: null | {
+    chooseId: number
+    textId: number
+    dayId: number
+    rewards: Array<{ itemId: number, itemName: string, itemCount: number, image: string }>
+  }
+}
+
+export interface ShareOperateState {
+  scoreItemId: number
+  currentScore: number
+  dailyReward: number
+  firstShareReward: number
+  daily: { claimedCount: number, claimLimit: number, rewardClaimed: boolean, firstShareAwarded: boolean }
+  milestones: Array<{ id: number, threshold: number, state: number, rewards: Array<{ itemId: number, itemName: string, itemCount: number, image: string }> }>
+}
+
 export interface SeasonRuleActivityData {
   activityId: number
   title: string
@@ -501,6 +521,17 @@ export interface SeasonRuleActivityData {
     operationSupported: false
     statusAvailable: false
   }>
+  operateState?: WishOperateState | ShareOperateState | null
+  choices?: Array<{ id: number, name: string }>
+  resources?: Array<{
+    key: string
+    itemId: number | null
+    name: string
+    itemTypeLabel: string
+    desc: string
+    inventoryCount: number | null
+  }>
+  inventoryAvailable?: boolean
   notices: string[]
   ruleSections: Array<{ index: number, line: string }>
   subActivities: Array<{
@@ -679,6 +710,29 @@ export const useActivityStore = defineStore('activity', () => {
     return fetchSeasonRuleActivity('happyShare', accountId)
   }
 
+  // 秋祈良愿 / 快乐不独享手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
+  const seasonWishOperating = ref('')
+  async function operateSeasonWish(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    if (!accountId || seasonWishOperating.value)
+      return { ok: false, error: '操作进行中' }
+    seasonWishOperating.value = action
+    try {
+      const { data } = await api.post('/api/activity/season-wish/operate', {
+        action,
+        input,
+      }, {
+        headers: { 'x-account-id': accountId },
+      })
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败' }
+    }
+    finally {
+      seasonWishOperating.value = ''
+    }
+  }
+
   // 萌宠手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
   const bearOperating = ref('')
   async function operateBearPet(accountId: string, action: string, input: Record<string, unknown> = {}) {
@@ -718,5 +772,7 @@ export const useActivityStore = defineStore('activity', () => {
     happyShareLoading,
     happyShareError,
     fetchHappyShareActivity,
+    seasonWishOperating,
+    operateSeasonWish,
   }
 })

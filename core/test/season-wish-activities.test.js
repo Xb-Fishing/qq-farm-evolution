@@ -13,6 +13,15 @@ const WISH_SNAPSHOT = {
   children: [{
     id: 2026092401, parentId: 2026092400, type: 21, title: '秋祈良愿',
     startTime: 1790179200, endTime: 1791388799, visible: true, enabled: false, status: 20,
+    details: {
+      wishSign: {
+        remainingCount: 1, activityDay: 1,
+        pending: {
+          chooseId: 2, textId: 7, dayId: 1,
+          rewards: [{ itemId: 6001, itemCount: 20, count: 20, itemName: '烟花桶', image: '' }],
+        },
+      },
+    },
     payload: {
       uid: 'WishSignMainUI',
       tips: {
@@ -69,7 +78,7 @@ const SHARE_SNAPSHOT = {
   },
 };
 
-test('秋祈良愿说明转换为四个玩法指南，全部只读、未开始状态不伪造', () => {
+test('秋祈良愿说明转换为四个玩法指南，手动操作已具备编码证据', () => {
   const activity = normalizeWishActivity(WISH_SNAPSHOT, { nowSeconds: 1790000000 });
   assert.deepEqual(activity.gameplayGuides.map(item => item.key), ['daily', 'rewards', 'storage', 'mail']);
   assert.ok(activity.gameplayGuides.every(item => item.operationSupported === false && item.statusAvailable === false));
@@ -78,14 +87,25 @@ test('秋祈良愿说明转换为四个玩法指南，全部只读、未开始�
   assert.equal(activity.clientUiUid, 'WishSignMainUI');
   assert.equal(activity.uid, '');
   assert.equal(activity.uidConfirmed, false);
-  assert.equal(activity.writeOperationsSupported, false);
-  assert.deepEqual(activity.protocol.opaqueReadOnlyFields, [119]);
+  assert.equal(activity.writeOperationsSupported, true);
+  assert.equal(activity.readOnly, false);
+  assert.deepEqual(activity.protocol.declaredReadOnlyFields, [119]);
+  assert.deepEqual(activity.protocol.opaqueReadOnlyFields, []);
   assert.equal(activity.subActivities[0].protobufField, 119);
   assert.equal(activity.subActivities[0].protocolObserved, true);
-  // 未声明字段只保留形状诊断：1.2.1.4 不属于 field 119，不进入观测清单。
+  // 只保留 field 119 形状诊断：1.2.1.4 不属于 field 119，不进入观测清单。
   assert.ok(activity.protocol.observedShape.every(entry => entry.path.startsWith('1.2.119')));
   assert.match(activity.notices.join(' '), /签文仅作趣味参考/);
   assert.ok(activity.missingEvidence.some(item => /不改 EventPlants/.test(item)));
+  assert.ok(activity.missingEvidence.some(item => /cmd 51/.test(item) && /手动操作/.test(item)));
+  // 烟花桶（6001）资源行 + 六种签文选择 + 祈愿状态透传
+  assert.equal(activity.resources[0].itemId, 6001);
+  assert.equal(activity.resources[0].name, '烟花桶');
+  assert.deepEqual(activity.choices.map(item => item.name), ['财运', '感情', '前程', '生活', '农耕', '人际']);
+  assert.equal(activity.operateState.remainingCount, 1);
+  assert.equal(activity.operateState.activityDay, 1);
+  assert.equal(activity.operateState.pending.chooseId, 2);
+  assert.equal(activity.operateState.pending.rewards[0].itemId, 6001);
 });
 
 test('快乐不独享说明转换为三途径与档位指南，分享玩法不模拟', () => {
@@ -93,9 +113,13 @@ test('快乐不独享说明转换为三途径与档位指南，分享玩法不�
   assert.deepEqual(activity.gameplayGuides.map(item => item.key), ['daily-claim', 'daily-share', 'friend-link', 'tier-rewards']);
   assert.ok(activity.gameplayGuides.every(item => item.operationSupported === false));
   assert.equal(activity.clientUiUid, 'HappySharePanel');
-  assert.deepEqual(activity.protocol.opaqueReadOnlyFields, [120]);
+  assert.equal(activity.writeOperationsSupported, true);
+  assert.deepEqual(activity.protocol.declaredReadOnlyFields, [120]);
+  assert.deepEqual(activity.protocol.opaqueReadOnlyFields, []);
   assert.equal(activity.subActivities[0].protocolObserved, true);
   assert.ok(activity.missingEvidence.some(item => /不模拟分享/.test(item)));
+  assert.ok(activity.missingEvidence.some(item => /分享操作不开放/.test(item)));
+  assert.ok(activity.missingEvidence.some(item => /cmd 73/.test(item) && /cmd 70/.test(item)));
   assert.deepEqual(activity.notices, []);
 });
 
@@ -106,8 +130,8 @@ test('两组活动没有说明时不按 type、UID 或字段形状编造玩法',
   assert.deepEqual(wish.notices, []);
   assert.deepEqual(share.gameplayGuides, []);
   assert.equal(wish.subActivities[0].protocolObserved, false);
-  assert.equal(wish.writeOperationsSupported, false);
-  assert.equal(share.writeOperationsSupported, false);
+  assert.equal(wish.writeOperationsSupported, true);
+  assert.equal(share.writeOperationsSupported, true);
 });
 
 test('读取仅信 List 下发的根节点：缺根不发详情请求，快照不匹配立即停止', async () => {

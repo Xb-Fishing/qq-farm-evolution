@@ -21,6 +21,7 @@ const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { bearActivity, bearLoading, bearError, bearOperating } = storeToRefs(activityStore)
 const { wishActivity, wishLoading, wishError } = storeToRefs(activityStore)
 const { happyShareActivity, happyShareLoading, happyShareError } = storeToRefs(activityStore)
+const { seasonWishOperating } = storeToRefs(activityStore)
 const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
@@ -50,6 +51,37 @@ async function operateBear(action: string, input: Record<string, unknown> = {}) 
     const rewardCount = result.rewards?.length || 0
     toast.success(`操作成功${rewardCount ? `，获得 ${rewardCount} 项奖励` : ''}`)
     await refreshBear()
+  }
+  else {
+    toast.error(result?.error || '操作失败')
+  }
+}
+
+async function refreshWish() {
+  if (!currentAccountId.value)
+    return
+  const result = await activityStore.fetchWishActivity(String(currentAccountId.value))
+  result?.ok ? toast.success('秋祈良愿只读状态已刷新') : toast.error(result?.error || '秋祈良愿刷新失败')
+}
+
+async function refreshHappyShare() {
+  if (!currentAccountId.value)
+    return
+  const result = await activityStore.fetchHappyShareActivity(String(currentAccountId.value))
+  result?.ok ? toast.success('快乐不独享只读状态已刷新') : toast.error(result?.error || '快乐不独享刷新失败')
+}
+
+// 秋祈良愿 / 快乐不独享手动操作：成功后刷新对应只读状态
+async function operateSeasonWish(action: string, input: Record<string, unknown> = {}) {
+  if (!currentAccountId.value || seasonWishOperating.value)
+    return
+  const result = await activityStore.operateSeasonWish(String(currentAccountId.value), action, input)
+  if (result?.ok) {
+    const rewardText = result.rewards?.length
+      ? `，获得 ${result.rewards.map((r: { itemName: string, itemCount: number }) => `${r.itemName}×${r.itemCount}`).join('、')}`
+      : (result.grantedScore ? `，快乐值 +${result.grantedScore}` : '')
+    toast.success(`操作成功${rewardText}`)
+    await Promise.all([refreshWish(), refreshHappyShare()])
   }
   else {
     toast.error(result?.error || '操作失败')
@@ -120,19 +152,19 @@ onMounted(refreshAll)
         {{ wishError }}
       </div>
       <SeasonRuleActivityPanel
-        :activity="wishActivity" :loading="wishLoading"
+        :activity="wishActivity" :loading="wishLoading" :kind="'wish'" :operating="seasonWishOperating"
         heading="秋祈良愿 · 每日祈愿"
         subtitle="每日祈愿领好运奖励 · 限定种子 / 烟花 / 盆栽 · 错过存储 5 日 · 邮件补发"
-        @refresh="currentAccountId && activityStore.fetchWishActivity(String(currentAccountId))"
+        @refresh="refreshWish" @operate="operateSeasonWish"
       />
       <div v-if="happyShareError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ happyShareError }}
       </div>
       <SeasonRuleActivityPanel
-        :activity="happyShareActivity" :loading="happyShareLoading"
+        :activity="happyShareActivity" :loading="happyShareLoading" :kind="'happyShare'" :operating="seasonWishOperating"
         heading="快乐不独享 · 快乐值"
         subtitle="每日领取 / 每日首次分享 / 好友快乐包链接 · 档位奖励（稚萌熊熊）"
-        @refresh="currentAccountId && activityStore.fetchHappyShareActivity(String(currentAccountId))"
+        @refresh="refreshHappyShare" @operate="operateSeasonWish"
       />
     </template>
 

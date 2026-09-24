@@ -1938,3 +1938,42 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - 验证：`season-wish-activities` 定向 **7/7**（说明→指南、空说明不编造、List 缺根不发详情、空 UID 读取、路由缓存接线、常量注册）；相邻活动域 31/31；`node --test --test-concurrency=1 test/*.test.js`（Node 20 v20.20.2）全量 **668/668 通过**；web `npm run build`（vue-tsc -b + vite build）通过；改动文件 ESLint **0 error**（AdminActivityUpdatePanel 等保留既有 143 条格式 warning）；种子目录审计 20 条不变；`getGenericFallbackItemIds()` 为空；枸杞三图索引生效。
 - 本轮未修改收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；`worker.js` 改动仅在活动管理读取 switch。未新增自动开关、每日例行、写命令或 Operate 调用。
 - 回滚 `git revert <本轮提交>`：移除两组新活动只读卡片与路由（List 下次扫描会重新把四个 ID 报为未知候选）、恢复 apply-build 测试预存失败、event-seed-sources 去掉枸杞三条目（工作区 PNG 不受影响，仍待人工提交）。**三张枸杞 PNG 留在工作区待人工审阅 git add（本轮绝对未加入提交）**；人工提交后下轮可确认 seed_icon_missing 消除。本轮 Agent 不重启 Bot、不推送远端。
+
+## 活动进化巡检（2026-09-24，秋祈良愿/快乐不独享手动操作接入 + 烟花桶 6001 登记）
+
+### 最近 24h 日志审计（6b/10e 硬门）
+
+- 审计窗口约 2026-09-23 06:00 ~ 09-24 06:00 UTC，3923 条结构化日志；「请求超时」「发送失败」「治理器拦截」「cooldown/熔断」「seedId=0」「空图」「收获/种植/偷菜失败」全部 **0**。核心收益链全绿：到点保护收获 **72/72**、哨兵抢收 **42/42**、偷好友菜 **6/6**、priority_poll_health 608 全 ok。`result=error` 全量聚合仅 1 条 = daily_share 解码失败（既有待证项）。被踢 2 次均为已知真人顶号/授权路径。
+- `bag_unclassified`：21625/41625 的报警全部发生在昨日枸杞登记生效前的旧进程（主进程多次重启复位去重签名属设计边界）；今日 04:51 起新清单只剩 **6001**。
+- 反馈 `not_ready` ×24（wish/happy-share/bear 各 8）：账号离线时用户打开活动页的并发单次读取（04:31/04:38/04:58 三簇，同秒三接口并发、无定时器轮询），"账号未运行"业务拒绝是正确行为，非回归。萌宠 operate rejected ×11 与 apply unknown ×3 属已知 reason 分类未决项。
+
+### 本次改动一：6001 烟花桶当日闭环（硬门 10/10g）
+
+- 秋祈良愿开放首日 Bag 出现 6001（04:51/04:56，两 worker 各首报一次）。按 10g 顺序第①步查 client-config-evidence/ItemInfo 快照直接命中：**6001 = 烟花桶**（type 23、icon_res `gui/texture/icon/icon_weather_goldenWood/spriteFrame`、desc"使用后在农场放置烟花筒…放置可获得30经验"），与活动说明"烟花互动道具"及开放时间三方吻合。`EventItems.json` 照 5005 先例登记（名称/类型/desc/icon_res 逐字），`isSeedItem(6001)=false`、`getGenericFallbackItemIds()` 保持为空。
+- 专属图标：`fetch:official-icons` 无抓包 URL 证据（零网络请求）；参考仓库 132 条资产清单无 goldenWood——记待证（需 miniapp settings.json 或抓包会话），不伪造。注意对方最新客户端把 6001 名为"烟花·玉兔望月"（本机快照是 09-11 版），以本机快照"烟花桶"为准，下次快照更新时核对。
+
+### 本次改动二：两组活动面板手动操作接入（两级写操作第①级 + 硬门 4 禁止"待确认"终态）
+
+**证据链（skill activity-operate-confirmation 首次全流程实战）**：并行子 agent 检索 GitHub（7 组仓库搜索 + 8 组代码搜索全成功）全网唯一命中 **public-reference-1 @0ba48a1/9982736（2026-09-24 当天提交）**：秋祈良愿/快乐不独享的完整官方编码器重构实现（其协议恢复文档声明字段号经官方生成代码 create/encode sentinel 探测 + HAR 明文响应标签交叉验证，与已批准移植的 pet-diary 同源同级）。交叉验证：活动时间窗（1790179200~1791388799 / 1791820799）与本仓库 List 快照完全一致；秋祈良愿子节点 enabled=true status=20 已开放、Bag 出现烟花桶。四条请求编码在本仓库 proto 下**字节级复现官方 hex**（测试固化断言）。
+
+- **proto**（activitypb.proto）：OperateRequest 选择器 `wish_sign_draw=151/wish_sign_claim=152/share_reward_claim_milestones=154/share_reward_claim_daily=157`；ActivityNode 声明 `wish_sign=119`（ActivityBodyWishSign: remaining_count/activity_day/pending）与 `share_reward=120`（ActivityBodyShareReward: 快乐值/每日状态/档位）；OperateReply 对应 Rsp。
+- **`season-wish-operate.js`（新）**：手动操作服务，白名单 wishDraw(51)/wishClaim(52)/shareDaily(73)/shareMilestones(70)。每次操作前 List 确认根下发 → 空 UID GetGroup 重读状态做服务端前置校验（祈愿次数/pending 匹配/每日已领/档位 state===2 且分数达标），与官方客户端一致防本地过期重复请求；失败不自动重试；业务码 WISH_SIGN_*/HAPPY_SHARE_*/SEASON_WISH_*。
+- **三层接线**：worker.js `operateSeasonWish` case + data-provider 转发 + `admin-season-wish-operate-routes.js`（照 pet-diary 路由：成功清 60s 只读缓存、业务拒绝 400+code、传输失败 502）。错误元数据跨 Worker 传递正则扩展四前缀（worker.js + worker-manager.js 同步，非捕获组）。
+- **归一化**：activity.js 快照 details 新增 wishSign/shareReward 标准化；season-wish-activities.js 透传 operateState/choices/resources，readOnly=false writeOperationsSupported=true，missingEvidence 更新为"已按官方编码器重构证据接入手动操作"；wish 背包读取接 6001（库存展示，失败保持未知）。
+- **前端**：SeasonRuleActivityPanel 加 kind prop 与"玩法手动操作"区（祈愿 prompt 选签 1-6/领取祈愿奖励/每日领取/领取档位奖励 + 实时状态行 + 档位列表）、道具库存区（烟花桶）、玩法卡"操作协议待确认"禁用按钮替换为三类准确提示（已开放→指向顶部操作区 / 分享类→不开放原因 / 系统 automatic→无需操作）；store 加 operateSeasonWish + seasonWishOperating；AdminActivityUpdatePanel 五个检查项描述对齐新状态。
+- **分享（cmd 69）明确不开放**：面板按钮无法完成官方分享的用户流程（拉起 QQ 转发），直接发命令等于伪造分享状态骗奖励，且响应含敏感分享密钥（share_key/share_open_id）；这是语义边界不是证据缺口，与 S3 夺宝（好友目标选择）同类。烟花使用走 ItemService.Use（非 Operate），已有背包通用使用能力，未做活动专属入口。
+
+### 踩坑与注意点
+
+- **List 不下发活动体详情**：field 119/120 只在 GetGroup 回包。操作服务前置校验必须 List（确认根下发）→ GetGroup（读活动体），第一版只读 List 导致拿不到 wish_sign 状态（测试立即抓住）。
+- **protobufjs 空 sub-message 会编码 tag+len0**：daily/milestones 官方请求体是 8 字节（仅 id+cmd，无选择器字段）——请求对象不能带 `share_reward_claim_daily: {}`，否则多 3 字节偏离官方编码。祈愿/领取带 choose_id 的 14 字节编码与官方 hex 完全一致。
+- **烟花桶名称差异**：对方最新客户端名"烟花·玉兔望月"vs 本机 09-11 快照"烟花桶"——以本机快照为准，外部名仅记 HANDOFF 待下次快照核对（不能把外部名直接覆盖本机证据）。
+- session-lifecycle 一条断言 /bot 自己试调成功不算证据/ 在 43b5d69（两级写操作策略改写）后已预存失败——按 09-23 bf961a2 先例对齐为新表述三条断言（试调不单独证明安全 + 写操作分两级 + 公开实现交叉验证）。
+- web 构建 PATH 坑再验证：`nvm use 20` 后 vite 仍可能从 PATH 解析到 Node 18（crypto.hash 报错），必须显式 `export PATH=<node20>/bin:$PATH`。
+
+### 验证与回滚
+
+- 新增 `season-wish-operate.test.js` 2 条：四条官方 hex 字节级断言 + 白名单锁定（shareShare 不在）+ 全部前置校验拒绝路径（零 Operate）+ 成功链（List/GetGroup/Operate 各恰好一次、奖励名称含"烟花桶"）+ List 缺根零后续请求。season-wish-activities 7 条更新为手动操作已具备状态；bag-seed-recognition 补 6001 断言。
+- `node --test --test-concurrency=1 test/*.test.js`（Node 20 v20.20.2）全量 **670/670 通过**；web `npm run build`（vue-tsc + vite）通过；后端改动文件 ESLint **0 error**；前端改动文件 0 error（AdminActivityUpdatePanel 保留 2 条 HEAD 预存 error 与 143 条既有格式 warning，不为 lint 扩大差异）。
+- 本轮未修改收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；`worker.js` 改动仅活动管理读取 switch + 活动错误码正则两处。未新增自动开关、每日例行；写操作只走面板手动路径（两级策略第①级）。
+- 回滚 `git revert <本轮提交>`：恢复两组活动只读卡片与"操作协议待确认"占位、6001 回到未识别清单、四前缀错误码回退为 PET_DIARY 单前缀（萌宠操作不受影响）；不得借此回滚 43b5d69 的两级写操作策略本身。应用或回滚只能在既有 `farm:0.0` 窗格完成；本轮 Agent 不重启 Bot、不推送远端。
