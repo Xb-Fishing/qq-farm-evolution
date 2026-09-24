@@ -1817,11 +1817,30 @@ function scheduleDailyEvolution() {
   scheduler.setTimeoutTask('daily_evolution', delay, () => {
     const dateKey = getLocalDateKey();
     try {
+      // 总开关（用户 2026-09-24 需求）：关闭后跳过自动进化；面板手动触发不受限。
+      const state = readState();
+      if (state.evolutionEnabled === false) {
+        state.lastAutomaticSkipAt = Date.now();
+        state.summary = '自进化已关闭：跳过本轮自动进化（手动触发仍可用）';
+        writeState(state);
+        return;
+      }
       attemptDailyEvolution(dateKey);
     } finally {
       scheduleDailyEvolution();
     }
   });
+}
+
+/** 面板开关：是否启用自动自进化（安全巡检+活动进化的每日自动轮）。 */
+function setEvolutionEnabled(enabled) {
+  const state = readState();
+  state.evolutionEnabled = enabled !== false;
+  state.summary = state.evolutionEnabled
+    ? '自进化已开启：每日窗口（北京 00:00-01:00）自动巡检'
+    : '自进化已关闭：跳过自动进化，面板手动触发仍可用';
+  writeState(state);
+  return { ok: true, enabled: state.evolutionEnabled };
 }
 
 async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') {
@@ -2267,6 +2286,7 @@ async function reviseEvolution(value) {
 }
 
 module.exports = {
+  setEvolutionEnabled,
   syncEvolutionHead,
   startActivityEvolver,
   getEvolveState,

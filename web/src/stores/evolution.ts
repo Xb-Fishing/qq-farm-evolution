@@ -21,6 +21,8 @@ export interface EvolutionCollaboration {
 
 export interface EvolutionState {
   status?: string
+  /** 自进化总开关：false=跳过每日自动进化（手动触发不受限） */
+  evolutionEnabled?: boolean
   summary?: string
   commit?: string
   lastRunAt?: number

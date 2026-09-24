@@ -245,6 +245,12 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     }
   });
 
+  // 自进化总开关：关闭后跳过每日自动进化（面板手动触发仍可用）
+  app.post('/api/activity/update/evolution-enabled', requireAdminToken, (req, res) => {
+    const result = activityEvolver.setEvolutionEnabled(req.body?.enabled !== false);
+    res.json({ ok: true, ...result, evolve: activityEvolver.getEvolveState() });
+  });
+
   // 面板手动同步待应用提交到当前 HEAD（本地推进后 web 不知道导致无法应用的自助修复）
   app.post('/api/activity/update/sync-head', requireAdminToken, (req, res) => {
     const result = activityEvolver.syncEvolutionHead();
