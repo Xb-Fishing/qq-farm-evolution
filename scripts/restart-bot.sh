@@ -3,7 +3,8 @@
 # 当前目录与手工 C-c 时序。在 farm 会话 pane 内运行：杀旧→等端口释放→绝对路径启动。
 set -u
 
-REPO_ROOT="/data/vepfs/users/xianbao01.hou/qq-farm-bot"
+# 隐私硬门：禁止把机器绝对路径写回仓库——从脚本自身位置推导仓库根。
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "[restart] 1/3 停旧进程"
 pkill -f "node client.js" 2>/dev/null
