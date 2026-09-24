@@ -210,3 +210,21 @@ test('isFriendOnlineRecently covers lands_push with 10s window', () => {
   activity.recordActivity(22, now, 'summary_drift', 'x');
   assert.equal(activity.isFriendOnlineRecently(22, now), false);
 });
+
+// 快车道成熟判定（方案C 2026-09-24）：最后阶段开始时刻已过 = 可偷窗口
+test('fastLaneRipeLandIds picks only ripe-standing lands from pushes', () => {
+  const fv = require('../src/services/friend-visit');
+  const now = Math.floor(Date.now() / 1000);
+  const lands = [
+    // 已成熟还站着 → 可偷
+    { id: 1, plant: { id: 100, phases: [{ begin_time: now - 600 }, { begin_time: now - 10 }] } },
+    // 还在长（成熟时刻未来）→ 不可偷
+    { id: 2, plant: { id: 100, phases: [{ begin_time: now - 600 }, { begin_time: now + 500 }] } },
+    // 已被收走（无植株）→ 不可偷
+    { id: 3, plant: null },
+    // 无地块号 → 忽略
+    { plant: { id: 100, phases: [{ begin_time: now - 10 }] } },
+  ];
+  const fvSrc = fv.fastLaneRipeLandIdsForTests || fv.fastLaneRipeLandIds;
+  assert.deepStrictEqual(fvSrc(lands), [1]);
+});
