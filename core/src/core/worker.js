@@ -1497,9 +1497,10 @@ const FRIEND_PANEL_ENTRY_METHODS = new Set([
 // 萌宠手动操作的业务错误元数据（2026-09-20 跨 Worker 丢失修复）：
 // pet-diary-operate 抛出的业务拒绝带 business 标记 + 固定 code，旧管理通道
 // 只回传 error 字符串导致下游一律按 502 服务故障处理。此处只收集严格布尔
-// 标记与限定格式的固定业务码（PET_DIARY_ 前缀），不序列化整个 Error、堆栈、
+// 标记与限定格式的固定业务码（PET_DIARY_/WISH_SIGN_/HAPPY_SHARE_/SEASON_WISH_
+// 前缀，2026-09-24 扩展季节活动手动操作），不序列化整个 Error、堆栈、
 // cause 或任意附加属性，也不扩大到其他业务错误。
-const PET_DIARY_ERROR_CODE_RE = /^PET_DIARY_[A-Z0-9_]{1,48}$/;
+const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH)_[A-Z0-9_]{1,48}$/;
 
 function collectPetDiaryErrorMeta(err) {
     if (!err || err.business !== true) return null;
@@ -1802,6 +1803,11 @@ async function handleApiCall(msg) {
                 const { getBag } = require('../services/warehouse');
                 const { getBagItems } = require('../services/warehouse');
                 result = await runManualPetDiaryAction(args[0], args[1], { getBag, getBagItems });
+                break;
+            }
+            case 'operateSeasonWish': {
+                const { runManualSeasonWishAction } = require('../services/season-wish-operate');
+                result = await runManualSeasonWishAction(args[0], args[1]);
                 break;
             }
             case 'getIllustratedList': {

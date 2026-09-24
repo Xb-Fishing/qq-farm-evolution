@@ -58,6 +58,14 @@ message QixiGiftParams {
     int32 gift_id = 2;
 }
 
+// 秋祈良愿 / 快乐不独享（2026-09-24 开放）：命令字与字段号来自官方编码器重构
+// （公开参考项目 1 @0ba48a1 只读对照移植，其 wish-share-20260924-protocol.md 声明
+// 字段号经官方生成代码 create/encode sentinel 探测并由回复标签交叉验证）。
+message WishSignDrawReq { int32 choose_id = 1; }
+message WishSignClaimReq { int32 choose_id = 1; }
+message ShareRewardClaimDailyReq {}
+message ShareRewardClaimMilestonesReq {}
+
 message OperateRequest {
     int64 id = 1;
     int64 cmd = 2;
@@ -70,6 +78,10 @@ message OperateRequest {
     QingmeiWineBrewParams qingmei_wine_brew = 113;
     QingmeiWineSellParams qingmei_wine_sell = 114;
     QixiGiftParams qixi_gift = 124;
+    WishSignDrawReq wish_sign_draw = 151;
+    WishSignClaimReq wish_sign_claim = 152;
+    ShareRewardClaimMilestonesReq share_reward_claim_milestones = 154;
+    ShareRewardClaimDailyReq share_reward_claim_daily = 157;
 }
 
 message RandomShopItem {
@@ -203,6 +215,44 @@ message QixiGiftInfo {
     QixiGiftRule rule = 4;
 }
 
+// 秋祈良愿活动体（ActivityNode 字段 119，官方 ActivityData.wish_sign）
+message WishSignPending {
+    int32 choose_id = 1;
+    int32 text_id = 2;
+    int32 day_id = 3;
+    repeated corepb.Item rewards = 4;
+}
+message ActivityBodyWishSign {
+    int32 remaining_count = 1;
+    int32 activity_day = 2;
+    WishSignPending pending = 3;
+}
+
+// 快乐不独享活动体（ActivityNode 字段 120，官方 ActivityData.share_reward）
+message ShareRewardDailyView {
+    int32 claimed_count = 1;
+    bool first_share_awarded = 2;
+    bool daily_reward_claimed = 3;
+    int32 claim_limit = 4;
+}
+message ShareRewardPoolView { int32 claimed_count = 1; int32 claim_limit = 2; }
+message ShareRewardMilestoneView {
+    int32 tier_id = 1;
+    int32 threshold = 2;
+    repeated corepb.Item rewards = 3;
+    int32 state = 4;
+}
+message ShareRewardSummary {
+    int64 score_item_id = 1;
+    int32 current_score = 2;
+    ShareRewardDailyView daily = 3;
+    ShareRewardPoolView my_pool = 4;
+    repeated ShareRewardMilestoneView milestones = 5;
+    int32 daily_reward = 6;
+    int32 first_share_reward = 7;
+}
+message ActivityBodyShareReward { ShareRewardSummary summary = 1; }
+
 message ActivityNode {
     ActivityInfo activity = 1;
     repeated ActivityNode children = 2;
@@ -212,6 +262,8 @@ message ActivityNode {
     StarRecordInfo star_record = 110;
     QixiBridgeInfo qixi_bridge = 112;
     QixiGiftInfo qixi_gift = 113;
+    ActivityBodyWishSign wish_sign = 119;
+    ActivityBodyShareReward share_reward = 120;
 }
 
 message ListReply {
@@ -249,6 +301,21 @@ message StarRecordClaimResult {
     repeated corepb.Item rewards = 2;
 }
 
+message WishSignDrawRsp {
+    int32 text_id = 1;
+    int32 day_id = 2;
+    repeated corepb.Item rewards = 3;
+}
+message WishSignClaimRsp { repeated corepb.Item awards = 1; }
+message ShareRewardClaimMilestonesRsp {
+    repeated int32 claimed_tier_ids = 1;
+    repeated corepb.Item rewards = 2;
+}
+message ShareRewardClaimDailyRsp {
+    repeated corepb.Item rewards = 1;
+    int32 granted_score = 2;
+}
+
 message OperateReply {
     int64 id = 1;
     int32 cmd = 2;
@@ -260,4 +327,8 @@ message OperateReply {
     QingmeiClaimResult qingmei_claim = 104;
     StarRecordClaimResult star_record_claim = 120;
     corepb.Item qixi_gift_result = 125;
+    WishSignDrawRsp wish_sign_draw = 151;
+    WishSignClaimRsp wish_sign_claim = 152;
+    ShareRewardClaimMilestonesRsp share_reward_claim_milestones = 154;
+    ShareRewardClaimDailyRsp share_reward_claim_daily = 157;
 }

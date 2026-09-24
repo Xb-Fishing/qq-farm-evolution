@@ -269,6 +269,40 @@ function normalizeDiscoveryActivity(node) {
       rewardPool: safeDrawInfo.rewardPool.slice(0, 80),
     };
   }
+  if (node?.wish_sign) {
+    const pending = node.wish_sign.pending || null;
+    details.wishSign = {
+      remainingCount: toNum(node.wish_sign.remaining_count),
+      activityDay: toNum(node.wish_sign.activity_day),
+      pending: pending ? {
+        chooseId: toNum(pending.choose_id),
+        textId: toNum(pending.text_id),
+        dayId: toNum(pending.day_id),
+        rewards: (pending.rewards || []).slice(0, 20).map(normalizeCoreItem),
+      } : null,
+    };
+  }
+  if (node?.share_reward?.summary) {
+    const summary = node.share_reward.summary;
+    details.shareReward = {
+      scoreItemId: toNum(summary.score_item_id),
+      currentScore: toNum(summary.current_score),
+      dailyReward: toNum(summary.daily_reward),
+      firstShareReward: toNum(summary.first_share_reward),
+      daily: {
+        claimedCount: toNum(summary.daily?.claimed_count),
+        claimLimit: toNum(summary.daily?.claim_limit),
+        rewardClaimed: summary.daily?.daily_reward_claimed === true,
+        firstShareAwarded: summary.daily?.first_share_awarded === true,
+      },
+      milestones: (summary.milestones || []).slice(0, 30).map(tier => ({
+        id: toNum(tier.tier_id),
+        threshold: toNum(tier.threshold),
+        state: toNum(tier.state),
+        rewards: (tier.rewards || []).slice(0, 20).map(normalizeCoreItem),
+      })),
+    };
+  }
 
   return {
     id: toNum(raw.id),
@@ -908,14 +942,15 @@ async function getBearActivity(options = {}) {
 }
 
 // 秋祈良愿与快乐不独享（2026-09-24 开放）：说明驱动的只读接入。
-// 两组活动当前均无官方成功操作样本，不做背包读取（没有已知道具 ID 可查），
-// 奖励道具 ID/图片待活动开放后的下发证据再补。
+// 秋祈良愿开放首日 Bag 证据确认烟花互动道具为 6001（烟花桶），读取其库存；
+// 快乐不独享仍无已知道具 ID，不做背包读取。两组活动均无官方成功操作样本。
 async function getSeasonRuleActivity(kind, options = {}) {
   const definition = kind === 'wish'
-    ? { rootId: seasonWishActivities.WISH_ACTIVITY_ID, name: '秋祈良愿', reader: seasonWishActivities.normalizeWishActivity, event: 'wish_activity_read' }
-    : { rootId: seasonWishActivities.HAPPY_SHARE_ACTIVITY_ID, name: '快乐不独享', reader: seasonWishActivities.normalizeHappyShareActivity, event: 'happy_share_activity_read' };
+    ? { rootId: seasonWishActivities.WISH_ACTIVITY_ID, name: '秋祈良愿', reader: seasonWishActivities.normalizeWishActivity, event: 'wish_activity_read', bagItemIds: [seasonWishActivities.WISH_FIREWORK_ITEM_ID] }
+    : { rootId: seasonWishActivities.HAPPY_SHARE_ACTIVITY_ID, name: '快乐不独享', reader: seasonWishActivities.normalizeHappyShareActivity, event: 'happy_share_activity_read', bagItemIds: [] };
   const listReader = options.getActivityDiscoveryList || getActivityDiscoveryList;
   const snapshotReader = options.getActivityGroupSnapshot || getActivityGroupSnapshot;
+  const inventoryReader = options.getBagItemCounts || getBagItemCounts;
   const activities = await listReader();
   if (!(activities || []).some(node => toNum(node.id) === definition.rootId && toNum(node.parentId) === 0)) {
     throw new Error(`${definition.name}未由当前 ActivityService.List 下发，停止读取活动详情`);
@@ -924,7 +959,16 @@ async function getSeasonRuleActivity(kind, options = {}) {
   if (toNum(snapshot?.id) !== definition.rootId) {
     throw new Error(`${definition.name}活动组不匹配，停止读取`);
   }
-  const activity = definition.reader(snapshot, options);
+  let counts = new Map();
+  let inventoryAvailable = false;
+  if (definition.bagItemIds.length) {
+    try {
+      const inventory = await inventoryReader([...new Set(definition.bagItemIds)]);
+      counts = inventory.counts instanceof Map ? inventory.counts : new Map();
+      inventoryAvailable = inventory.available === true;
+    } catch { /* 背包失败仍展示活动说明，数量保持未知，不循环重试。 */ }
+  }
+  const activity = definition.reader(snapshot, { ...options, counts, inventoryAvailable });
   activityLogger.info(`${definition.name}只读状态刷新`, {
     event: definition.event, activityId: definition.rootId,
     gameplayCount: activity.gameplayGuides.length,
@@ -3411,6 +3455,8 @@ module.exports = {
   HELU_EXCHANGE_CMD,
   HELU_DRAW_CMD,
   getActivityGroup,
+  listActivityGroups,
+  normalizeCoreItem,
   getActivityDiscoveryList,
   getActivityGroupSnapshot,
   normalizeDiscoveryActivity,

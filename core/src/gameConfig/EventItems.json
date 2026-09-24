@@ -1,54 +1,71 @@
 [
   {
+    "id": 1027,
+    "name": "雷电徽章",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_weatherBottle_lightningBadge/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "活动特殊货币，通过雨落成诗产出，可解锁气象研究节点，活动结束后可出售为金币。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 1028,
+    "name": "萌宠元气糕",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s3_petCost/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "萌宠成长日记活动专属道具，是比熊犬最爱的食物；收获活动稀有作物时掉落；活动结束后可出售为金币。",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
     "id": 1029,
     "name": "幸运星"
   },
   {
-    "id": 201010,
-    "name": "比熊乐园小屋"
-  },
-  {
-    "id": 207010,
-    "name": "比熊乐园街道"
-  },
-  {
-    "id": 205009,
-    "name": "比熊乐园狗窝"
-  },
-  {
-    "id": 202009,
-    "name": "比熊乐园木牌"
-  },
-  {
-    "id": 206009,
-    "name": "比熊乐园仓库"
-  },
-  {
-    "id": 203010,
-    "name": "比熊乐园栅栏"
-  },
-  {
-    "id": 208010,
-    "name": "比熊乐园围栏"
+    "id": 1030,
+    "name": "待护送宝藏",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s3_map/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "寻宝时获得，比熊犬将其护送回家后可获得宝藏奖励。",
+    "evidence": "Bag 出现 1030 与 client-config-evidence ItemInfo 快照（type 19、activity 2026090101）交叉核对；见 docs/HANDOFF.md 2026-09-14 巡检"
   },
   {
     "id": 2161,
     "name": "比熊乐园头像框"
   },
   {
-    "id": 401005,
-    "name": "比熊乐园铭牌"
+    "id": 5001,
+    "name": "天气采集瓶",
+    "evidence": "雨落成诗 2026070301 field 102 兑换商店解码（activity.js WEATHER_BOTTLE_ITEM_ID，物品5001 金豆豆200）；活动 2026-09-08 结束后留存背包"
   },
   {
-    "id": 29004,
-    "name": "泡泡棉花糖种子",
-    "type": 5,
-    "interaction_type": "plant",
-    "asset_name": "Crop_9004",
-    "rarity": 4,
-    "rarity_color": "D1A21E",
-    "desc": "种植后，可以收获一定数量的泡泡棉花糖。",
+    "id": 5002,
+    "name": "雷雨召唤瓶",
+    "evidence": "雨落成诗 2026070303 field 105 抽奖奖池解码（activity.js WEATHER_DRAW_REWARD_ITEM_ID）"
+  },
+  {
+    "id": 5005,
+    "name": "青蛙使坏瓶",
+    "type": 23,
+    "icon_res": "gui/texture/icon/icon_weatherBottle_5/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "雨落成诗活动道具，在好友农场放出一只捣乱的小青蛙，可得30经验。",
     "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 6001,
+    "name": "烟花桶",
+    "type": 23,
+    "icon_res": "gui/texture/icon/icon_weather_goldenWood/spriteFrame",
+    "rarity": 2,
+    "rarity_color": "A8C1F4",
+    "desc": "使用后在农场放置烟花筒，或在好友农场放置烟花筒，仅限烟花筒存在的农场主才可以燃放，放置可获得30经验",
+    "evidence": "秋祈良愿(2026092400)开放首日 Bag 出现 6001 与 client-config-evidence ItemInfo 快照(type 23、放置烟花道具)及活动说明烟花互动道具三方交叉核对；见 docs/HANDOFF.md 2026-09-24 巡检"
   },
   {
     "id": 20516,
@@ -84,14 +101,15 @@
     "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
-    "id": 5001,
-    "name": "天气采集瓶",
-    "evidence": "雨落成诗 2026070301 field 102 兑换商店解码（activity.js WEATHER_BOTTLE_ITEM_ID，物品5001 金豆豆200）；活动 2026-09-08 结束后留存背包"
-  },
-  {
-    "id": 5002,
-    "name": "雷雨召唤瓶",
-    "evidence": "雨落成诗 2026070303 field 105 抽奖奖池解码（activity.js WEATHER_DRAW_REWARD_ITEM_ID）"
+    "id": 21625,
+    "name": "枸杞种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_1625",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的枸杞。",
+    "evidence": "client-config-evidence ItemInfo 快照 21625 逐字；Plant 1021625 seed_id=21625/fruit 41625 交叉；2026-09-23 Bag 实际出现 21625 与 41625（bag_unclassified_item 当日复盘登记，见 docs/HANDOFF.md 2026-09-23 巡检）"
   },
   {
     "id": 25995,
@@ -105,68 +123,15 @@
     "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
   },
   {
-    "id": 1027,
-    "name": "雷电徽章",
-    "type": 19,
-    "icon_res": "gui/texture/icon/icon_weatherBottle_lightningBadge/spriteFrame",
-    "rarity": 3,
-    "rarity_color": "B09DED",
-    "desc": "活动特殊货币，通过雨落成诗产出，可解锁气象研究节点，活动结束后可出售为金币。",
-    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
-  },
-  {
-    "id": 1028,
-    "name": "萌宠元气糕",
-    "type": 19,
-    "icon_res": "gui/texture/icon/icon_s3_petCost/spriteFrame",
-    "rarity": 3,
-    "rarity_color": "B09DED",
-    "desc": "萌宠成长日记活动专属道具，是比熊犬最爱的食物；收获活动稀有作物时掉落；活动结束后可出售为金币。",
-    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
-  },
-  {
-    "id": 5005,
-    "name": "青蛙使坏瓶",
-    "type": 23,
-    "icon_res": "gui/texture/icon/icon_weatherBottle_5/spriteFrame",
-    "rarity": 3,
-    "rarity_color": "B09DED",
-    "desc": "雨落成诗活动道具，在好友农场放出一只捣乱的小青蛙，可得30经验。",
-    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
-  },
-  {
-    "id": 101604,
-    "name": "公益小红花结算礼包",
-    "type": 11,
-    "icon_res": "gui/texture/icon/pack_redFlower/spriteFrame",
+    "id": 29004,
+    "name": "泡泡棉花糖种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_9004",
     "rarity": 4,
     "rarity_color": "D1A21E",
-    "desc": "公益小红花活动结算礼包，打开后，可获得化肥礼包*20、金豆豆*200、点券*300",
+    "desc": "种植后，可以收获一定数量的泡泡棉花糖。",
     "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
-  },
-  {
-    "id": 1045995,
-    "name": "黄金·芦苇",
-    "type": 17,
-    "asset_name": "gold/Crop_5995",
-    "sells": "1005:6",
-    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot"
-  },
-  {
-    "id": 1040516,
-    "name": "黄金·狗尾草",
-    "type": 17,
-    "asset_name": "gold/Crop_516",
-    "sells": "1005:6",
-    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律（1045995 黄金·芦苇 同族）+ 当前仓库正在收获狗尾草"
-  },
-  {
-    "id": 1049004,
-    "name": "黄金·泡泡棉花糖",
-    "type": 17,
-    "asset_name": "gold/Crop_9004",
-    "sells": "1005:6",
-    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律 + 当前仓库正在收获泡泡棉花糖"
   },
   {
     "id": 80101,
@@ -187,14 +152,26 @@
     "evidence": "client-config-evidence ItemInfo 快照 + pet-diary ActivityPetTreasureHuntChalleng 表（价值 300）交叉核对"
   },
   {
-    "id": 1030,
-    "name": "待护送宝藏",
-    "type": 19,
-    "icon_res": "gui/texture/icon/icon_s3_map/spriteFrame",
-    "rarity": 3,
-    "rarity_color": "B09DED",
-    "desc": "寻宝时获得，比熊犬将其护送回家后可获得宝藏奖励。",
-    "evidence": "Bag 出现 1030 与 client-config-evidence ItemInfo 快照（type 19、activity 2026090101）交叉核对；见 docs/HANDOFF.md 2026-09-14 巡检"
+    "id": 101604,
+    "name": "公益小红花结算礼包",
+    "type": 11,
+    "icon_res": "gui/texture/icon/pack_redFlower/spriteFrame",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "公益小红花活动结算礼包，打开后，可获得化肥礼包*20、金豆豆*200、点券*300",
+    "evidence": "客户端配置快照交叉核对；见 docs/HANDOFF.md 种子识别证据纠错"
+  },
+  {
+    "id": 201010,
+    "name": "比熊乐园小屋"
+  },
+  {
+    "id": 202009,
+    "name": "比熊乐园木牌"
+  },
+  {
+    "id": 203010,
+    "name": "比熊乐园栅栏"
   },
   {
     "id": 204008,
@@ -221,15 +198,32 @@
     "evidence": "client-config-evidence ItemInfo/Plant 快照：植物 1128004 黄金·比熊棉花糖 fruit 204009；与 104 段黄金规律同族交叉核对"
   },
   {
-    "id": 21625,
-    "name": "枸杞种子",
-    "type": 5,
-    "interaction_type": "plant",
-    "asset_name": "Crop_1625",
-    "rarity": 3,
-    "rarity_color": "B09DED",
-    "desc": "种植后，可以收获一定数量的枸杞。",
-    "evidence": "client-config-evidence ItemInfo 快照 21625 逐字；Plant 1021625 seed_id=21625/fruit 41625 交叉；2026-09-23 Bag 实际出现 21625 与 41625（bag_unclassified_item 当日复盘登记，见 docs/HANDOFF.md 2026-09-23 巡检）"
+    "id": 205009,
+    "name": "比熊乐园狗窝"
+  },
+  {
+    "id": 206009,
+    "name": "比熊乐园仓库"
+  },
+  {
+    "id": 207010,
+    "name": "比熊乐园街道"
+  },
+  {
+    "id": 208010,
+    "name": "比熊乐园围栏"
+  },
+  {
+    "id": 401005,
+    "name": "比熊乐园铭牌"
+  },
+  {
+    "id": 1040516,
+    "name": "黄金·狗尾草",
+    "type": 17,
+    "asset_name": "gold/Crop_516",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律（1045995 黄金·芦苇 同族）+ 当前仓库正在收获狗尾草"
   },
   {
     "id": 1041625,
@@ -238,5 +232,21 @@
     "asset_name": "gold/Crop_1625",
     "sells": "1005:6",
     "evidence": "client-config-evidence ItemInfo 快照 1041625（type 17、gold/Crop_1625、sells 1005:6）；Plant 1121625 黄金·枸杞 fruit 1041625 交叉；与 1045995/1040516/1049004 黄金变异同族同模式"
+  },
+  {
+    "id": 1045995,
+    "name": "黄金·芦苇",
+    "type": 17,
+    "asset_name": "gold/Crop_5995",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot"
+  },
+  {
+    "id": 1049004,
+    "name": "黄金·泡泡棉花糖",
+    "type": 17,
+    "asset_name": "gold/Crop_9004",
+    "sells": "1005:6",
+    "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律 + 当前仓库正在收获泡泡棉花糖"
   }
 ]
