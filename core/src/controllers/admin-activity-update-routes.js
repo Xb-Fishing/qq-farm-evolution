@@ -245,6 +245,12 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     }
   });
 
+  // 面板手动同步待应用提交到当前 HEAD（本地推进后 web 不知道导致无法应用的自助修复）
+  app.post('/api/activity/update/sync-head', requireAdminToken, (req, res) => {
+    const result = activityEvolver.syncEvolutionHead();
+    res.json({ ok: result.ok, ...result, evolve: activityEvolver.getEvolveState() });
+  });
+
   app.post('/api/activity/update/apply', requireAdminToken, (req, res) => {
     const result = activityEvolver.applyEvolution();
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
