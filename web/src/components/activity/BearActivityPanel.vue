@@ -160,7 +160,7 @@ function runAction(action: ManualAction) {
               </h4>
             </div>
             <p class="mt-2 text-lg font-bold">
-              {{ item.count === null ? '数量待确认' : item.count.toLocaleString() }}
+              {{ item.count == null ? '数量待确认' : Number(item.count).toLocaleString() }}
             </p>
             <p class="mt-1 text-xs text-gray-500">
               {{ item.purpose }}
@@ -234,10 +234,10 @@ function runAction(action: ManualAction) {
                   </div>
                 </td>
                 <td class="p-2">
-                  {{ item.price.toLocaleString() }} {{ item.currencyName }}
+                  {{ Number(item.price || 0).toLocaleString() }} {{ item.currencyName }}
                 </td>
                 <td class="p-2">
-                  {{ item.inventoryCount === null ? '未知' : item.inventoryCount.toLocaleString() }}
+                  {{ item.inventoryCount == null ? '未知' : Number(item.inventoryCount).toLocaleString() }}
                 </td>
                 <td class="p-2">
                   {{ item.owned ? '已拥有' : '未标记拥有' }}<small class="block text-gray-400">{{ item.statusLabel }}</small>
