@@ -1636,6 +1636,31 @@ function readLatestReport() {
   }
 }
 
+/**
+ * 面板手动同步 HEAD（用户 2026-09-24 需求）：本地推进提交后面板状态还挂着旧
+ * 待应用提交、apply 因版本校验失败时，一键把待应用提交重指向当前 HEAD。
+ * 仅当旧提交是 HEAD 祖先（内容已包含）时允许——历史改写/分叉需人工核对。
+ */
+function syncEvolutionHead() {
+  const state = readState();
+  const head = gitHead();
+  if (!head) return { ok: false, error: '无法读取当前 HEAD' };
+  if (!['pending_apply', 'privacy_blocked_local', 'push_failed'].includes(state.status)) {
+    return { ok: false, error: `当前状态（${state.status}）不需要同步` };
+  }
+  if (state.commit) {
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', state.commit, head], { cwd: REPO_ROOT, stdio: 'ignore' });
+    } catch {
+      return { ok: false, error: '待应用提交不是当前 HEAD 的祖先（历史被改写或分叉），请先人工核对' };
+    }
+  }
+  state.commit = head;
+  state.summary = `待应用提交已同步到当前 HEAD（${head.slice(0, 8)}），可重新应用`;
+  writeState(state);
+  return { ok: true, commit: head };
+}
+
 /** 半自动应用：仅当有待确认的进化提交时，脱离重启 bot。 */
 function applyEvolution() {
   const state = readState();
@@ -2242,6 +2267,7 @@ async function reviseEvolution(value) {
 }
 
 module.exports = {
+  syncEvolutionHead,
   startActivityEvolver,
   getEvolveState,
   checkAndMaybeEvolve,

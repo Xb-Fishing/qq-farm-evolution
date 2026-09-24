@@ -128,6 +128,7 @@ const evolving = ref(false)
 const forceEvolving = ref(false)
 const safetyRunning = ref(false)
 const applying = ref(false)
+const syncingHead = ref(false)
 const testingNotify = ref(false)
 const instructionDraft = ref('')
 const instructionSaving = ref(false)
@@ -523,6 +524,24 @@ async function reviseEvolution() {
   }
 }
 
+async function syncEvolutionHead() {
+  syncingHead.value = true
+  error.value = ''
+  try {
+    const { data } = await api.post('/api/activity/update/sync-head')
+    if (!data.ok)
+      throw new Error(data.error || '同步失败')
+    syncEvolveState(data.evolve)
+    toast.success(`待应用提交已同步到当前 HEAD（${String(data.commit || '').slice(0, 8)}）`)
+  }
+  catch (err: any) {
+    error.value = err?.response?.data?.error || err.message || '同步失败'
+  }
+  finally {
+    syncingHead.value = false
+  }
+}
+
 async function applyEvolve() {
   applying.value = true
   error.value = ''
@@ -760,6 +779,14 @@ onUnmounted(() => evolutionStore.stopPolling())
           @click="applyEvolve"
         >
           {{ applying ? '正在重启…' : '应用进化（重启生效）' }}
+        </button>
+        <button
+          class="ml-2 rounded bg-slate-200 px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-300 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+          :disabled="syncingHead || !['pending_apply', 'privacy_blocked_local', 'push_failed'].includes(evolve?.status || '')"
+          title="本地已推进提交但面板还挂着旧待应用提交时，把待应用提交重指向当前 HEAD（要求旧提交是 HEAD 祖先）"
+          @click="syncEvolutionHead"
+        >
+          {{ syncingHead ? '同步中…' : '同步 HEAD' }}
         </button>
       </div>
     </div>
