@@ -1977,3 +1977,18 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - `node --test --test-concurrency=1 test/*.test.js`（Node 20 v20.20.2）全量 **670/670 通过**；web `npm run build`（vue-tsc + vite）通过；后端改动文件 ESLint **0 error**；前端改动文件 0 error（AdminActivityUpdatePanel 保留 2 条 HEAD 预存 error 与 143 条既有格式 warning，不为 lint 扩大差异）。
 - 本轮未修改收菜/偷菜/重点 HOT/PREARM、请求治理、登录保活、设备串、TSDK/ACE、好友/盯梢调度；`worker.js` 改动仅活动管理读取 switch + 活动错误码正则两处。未新增自动开关、每日例行；写操作只走面板手动路径（两级策略第①级）。
 - 回滚 `git revert <本轮提交>`：恢复两组活动只读卡片与"操作协议待确认"占位、6001 回到未识别清单、四前缀错误码回退为 PET_DIARY 单前缀（萌宠操作不受影响）；不得借此回滚 43b5d69 的两级写操作策略本身。应用或回滚只能在既有 `farm:0.0` 窗格完成；本轮 Agent 不重启 Bot、不推送远端。
+
+## 进化产出的前端/状态逻辑 bug 模式（2026-09-24 维护会话登记，自进化必须防范）
+
+用户定调：**解决 bug 就是自进化需要的能力**。活动 Agent 已落地两轮真实功能（面板手动操作接入），但连续产出了两类本可避免的运行时 bug，维护会话修了两次。以后每轮进化的代码审查必须对照本节 + skill「进化产出代码自检清单」，外部 RAG/sources 与 skills 必须每轮回写，否则同类问题会一直复发。
+
+### 已发生的两类模式
+
+1. **空值不安全渲染**（2026-09-24 应用错误 toLocaleString）：活动接口缺省字段是 `undefined`，`=== null` 挡不住 → `.toLocaleString()` 渲染即崩。修法与规范见 skill 清单第 1 条（`== null` + `Number()` 包裹）。
+2. **共享状态计数器毁掉并发请求**（2026-09-24 祈愿面板永远转圈）：两个活动的 fetch 共用一个递增 requestId，页面并发拉取时后发的自增作废先发的响应与 finally 清理 → loading 永不清、数据永不落地。修法：**按 key 独立计数器**（`Record<'a'|'b', number>`），或任何"共享可变状态 + 并发"设计必须逐一审。规范见 skill 清单第 2 条。
+
+### 对自进化的硬要求（用户 2026-09-24 指示）
+
+- 每轮有代码改动时，审查阶段必须跑 skill「进化产出代码自检清单」（core/docs/skills/agent-authored-code-checklist.md）逐条核对新增渲染点/状态逻辑。
+- **外部 RAG 维护是每轮的正式产出**：本轮踩过的坑、新的检索模式、验证手法必须回写 skills 索引或 client-config-evidence/sources.json（ignored），下轮开始先读索引。RAG 不回写 = 本轮没闭环。
+- 出现与已登记模式相同的新 bug 视为审计失败（清单已给而未执行），需在 HANDOFF 记原因。
