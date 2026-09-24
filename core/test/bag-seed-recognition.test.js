@@ -177,6 +177,10 @@ test('黄金变异物品按 104 段规律登记,挑战书按双源证据登记',
   // 待护送宝藏（2026-09-14 Bag 出现 + ItemInfo 快照闭环）：非种子，只读展示。
   assert.equal(getItemById(1030)?.name, '待护送宝藏');
   assert.equal(isSeedItem(1030), false);
+  // 烟花桶（2026-09-24 秋祈良愿开放首日 Bag 出现 + ItemInfo 快照 + 活动说明三方闭环）：
+  // type 23 使用型道具，非种子；祈愿奖励的烟花互动道具。
+  assert.equal(getItemById(6001)?.name, '烟花桶');
+  assert.equal(isSeedItem(6001), false);
 });
 
 test('枸杞 2026-09-23 Bag 出现,按快照+Plant+Bag 三方证据登记', () => {

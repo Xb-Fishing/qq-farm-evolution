@@ -1,6 +1,7 @@
 const { registerAdminBearActivityRoutes } = require('./admin-bear-activity-routes');
 const { registerAdminSeasonActivityRoutes } = require('./admin-season-activity-routes');
 const { registerAdminPetDiaryOperateRoutes } = require('./admin-pet-diary-operate-routes');
+const { registerAdminSeasonWishOperateRoutes } = require('./admin-season-wish-operate-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 const { createActivityReadCache } = require('./activity-read-cache');
 
@@ -25,6 +26,7 @@ function registerAdminActivityRoutes({
   registerAdminBearActivityRoutes(routeContext);
   registerAdminSeasonActivityRoutes(routeContext);
   registerAdminPetDiaryOperateRoutes(routeContext);
+  registerAdminSeasonWishOperateRoutes(routeContext);
   registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken });
 }
 
