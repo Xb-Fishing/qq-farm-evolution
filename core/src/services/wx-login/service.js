@@ -94,7 +94,19 @@ function attachRotatedCredentials(error, refreshToken, accessToken, lifetime = {
     credentialError.credentialExpiresAt = Number(lifetime.credentialExpiresAt) || 0;
     credentialError.credentialExpiresIn = Number(lifetime.credentialExpiresIn) || 0;
     credentialError.refreshTokenRotated = lifetime.refreshTokenRotated === true;
+    credentialError.tokenRefreshSucceeded = true;
     return credentialError;
+}
+function credentialResponseError(stage, data) {
+    const rawCode = data.code;
+    const code = (typeof rawCode === "number" || (typeof rawCode === "string" && /^-?\d+$/.test(rawCode)))
+        && Number.isSafeInteger(Number(rawCode)) ? Number(rawCode) : null;
+    // Keep only a stage and numeric status. Upstream messages may echo credentials.
+    const reason = code === 40188 ? "invalid scope" : "credential response rejected";
+    const error = new Error(`WeChat ${stage} failed: code=${code ?? "unknown"} ${reason}`);
+    error.wxStage = stage;
+    error.wxCode = code;
+    return error;
 }
 class WxLoginService {
     async createQrSession() {
@@ -188,8 +200,7 @@ class WxLoginService {
         const data = asRecord(JSON.parse(response.body.toString("utf8")));
         const loginBuffer = data.code === 0 ? pickLoginBuffer(data) : "";
         if (typeof loginBuffer !== "string" || !loginBuffer) {
-            if (Number(data.code) === 40188) throw new Error("微信授权范围已失效，需要重新扫码授权");
-            throw new Error(`WeChat login buffer response is invalid (code=${Number.isInteger(data.code) ? data.code : "unknown"})`);
+            throw credentialResponseError("login_buffer", data);
         }
         session.cookies.clear();
         session.openid = openid;
@@ -249,8 +260,8 @@ class WxLoginService {
                 "Ual-Access-Timestamp": timestamp,
                 "Ual-Access-Nonce": nonce,
                 "Ual-Access-Signature": signature,
-                // 应用宝在长时间运行后会按 Cookie 校验授权范围；只放 body
-                // 中的 refreshToken 会在跨日/重启后的续期返回 40188。
+                // 显式携带当前账号凭据，避免依赖仅存在于扫码进程的 Cookie。
+                // 是否缺少授权范围必须按响应判断，不能由 Cookie 有无推断。
                 "Cookie": `openid=${session.openid}; accesstoken=${session.accesstoken || ""}; refreshtoken=${session.refreshtoken}`
             }
         });
@@ -258,7 +269,7 @@ class WxLoginService {
             throw new Error(`Unable to refresh WeChat token (HTTP ${response.status})`);
         const data = asRecord(JSON.parse(response.body.toString("utf8")));
         if (data.code !== 0)
-            throw new Error(`WeChat token refresh failed: code=${String(data.code)} msg=${String(data.msg)}`);
+            throw credentialResponseError("refresh_token", data);
         const info = asRecord(data.user_info || data.userInfo || asRecord(data.data).user_info || asRecord(data.data).userInfo);
         const accessToken = String(info.access_token || info.accessToken || info.accesstoken || "");
         const refreshToken = String(info.refresh_token || info.refreshToken || info.refreshtoken || session.refreshtoken);
@@ -287,7 +298,7 @@ class WxLoginService {
             const lbData = asRecord(JSON.parse(lbResp.body.toString("utf8")));
             const loginBuffer = lbData.code === 0 ? pickLoginBuffer(lbData) : "";
             if (typeof loginBuffer !== "string" || !loginBuffer) {
-                throw new Error(`WeChat login buffer refresh failed: code=${String(lbData.code ?? "unknown")} msg=${String(lbData.msg || "invalid response")}`);
+                throw credentialResponseError("login_buffer", lbData);
             }
             session.loginBuffer = loginBuffer;
             return {
@@ -300,11 +311,13 @@ class WxLoginService {
             };
         }
         catch (error) {
-            throw attachRotatedCredentials(error, refreshToken, accessToken, {
+            const credentialError = attachRotatedCredentials(error, refreshToken, accessToken, {
                 credentialExpiresAt,
                 credentialExpiresIn: expiresIn,
                 refreshTokenRotated,
             });
+            credentialError.wxStage = "login_buffer";
+            throw credentialError;
         }
     }
     destroy(session) {
