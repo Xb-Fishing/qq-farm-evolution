@@ -20,7 +20,10 @@ function createActivityReadCache(options = {}) {
     if (inFlight.has(cacheKey)) {
       return { value: await inFlight.get(cacheKey), upstreamCached: true };
     }
-    const pending = Promise.resolve().then(loader);
+    // loader 必须收到 cacheKey：调用方有两种写法（传 key 用参数 / 内联闭包），
+    // 早期 `then(loader)` 以无参调用，参数风格的 loader 拿到 undefined →
+    // resolveAccountId('') → 误报「账号未运行」（2026-09-25 活动面板事故）。
+    const pending = Promise.resolve().then(() => loader(cacheKey));
     inFlight.set(cacheKey, pending);
     try {
       const value = await pending;
@@ -43,9 +46,13 @@ function createActivityReadCache(options = {}) {
 
   function clear(key) {
     const cacheKey = String(key);
-    values.delete(cacheKey);
-    failures.delete(cacheKey);
-    inFlight.delete(cacheKey);
+    // 键格式是 `route:accountId`；调用方手动操作后传裸 accountId 清全部面板。
+    const suffix = `:${cacheKey}`;
+    for (const store of [values, failures, inFlight]) {
+      for (const k of store.keys()) {
+        if (k === cacheKey || k.endsWith(suffix)) store.delete(k);
+      }
+    }
   }
 
   return { read, clear };

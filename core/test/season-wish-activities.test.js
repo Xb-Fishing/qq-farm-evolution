@@ -211,7 +211,8 @@ test('管理只读路由按账号走缓存读取，两个活动共用注册器�
   const shareRes = respond();
   await handlerFor('/api/activity/happy-share')({ accountId: 'a1' }, shareRes);
   assert.equal(shareRes.state.body.activity.activityId, HAPPY_SHARE_ACTIVITY_ID);
-  assert.deepEqual(reads, ['a1', 'a1']);
+  // 2026-09-25 修复后缓存键带路由前缀，防止三组活动互串数据/失败
+  assert.deepEqual(reads, ['/api/activity/wish:a1', '/api/activity/happy-share:a1']);
 });
 
 test('活动常量已导出注册，known 集合收集后不再作为未知候选', () => {

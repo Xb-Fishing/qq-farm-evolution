@@ -28,7 +28,10 @@ function registerAdminSeasonActivityRoutes({
       try {
         if (!requireConnectedAccount(res, provider, accountId, `获取${label}失败: 账号未运行`))
           return;
-        const result = await activityReader.read(accountId, read);
+        // 缓存键必须带路由：三组活动共用一个 reader，只按账号缓存会互相
+        // 回填（一个失败全部「账号未运行」，一个成功把数据串到别的面板）。
+        // loader 用路由闭包里的裸 accountId，不能把复合缓存键透传给 provider。
+        const result = await activityReader.read(`${path}:${accountId}`, () => read(accountId));
         res.json({
           ok: true,
           activity: result.value,

@@ -10,6 +10,7 @@ const props = defineProps<{
   pageSize: number
   blacklistGidSet: Set<number>
   watchlistGidSet: Set<number>
+  autoBadGidSet: Set<number>
   knownFriendGidSet: Set<number>
   expandedFriends: Set<string>
   friendLands: Record<string, any[]>
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   (e: 'operate', friendId: string, type: FriendActionType, event: Event): void
   (e: 'toggleBlacklist', friend: any, event: Event): void
   (e: 'toggleWatchlist', friend: any, event: Event): void
+  (e: 'toggleAutoBad', friend: any, event: Event): void
   (e: 'removeKnownFriendGid', friend: any, event: Event): void
   (e: 'friendAvatarError', friend: any): void
 }>()
@@ -85,6 +87,7 @@ function formatActiveAgo(atMs: number) {
               {{ formatActiveAgo(friend.activeAt) }}活跃
             </span>
             <span v-if="watchlistGidSet.has(Number(friend.gid))" class="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400">重点监控</span>
+            <span v-if="autoBadGidSet.has(Number(friend.gid))" class="rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">在线捣乱</span>
             <span v-if="Number(friend?.dogId) === 90021" class="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-400">护主犬</span>
           </div>
           <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
@@ -157,6 +160,17 @@ function formatActiveAgo(atMs: number) {
         >
           <span :class="watchlistGidSet.has(Number(friend.gid)) ? 'i-carbon-star-filled' : 'i-carbon-star'" />
           {{ watchlistGidSet.has(Number(friend.gid)) ? ' 已重点' : ' 重点监控' }}
+        </button>
+        <button
+          class="rounded px-3 py-2 text-sm transition"
+          :class="autoBadGidSet.has(Number(friend.gid))
+            ? 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50'
+            : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700/50 dark:text-gray-400 dark:hover:bg-gray-700'"
+          :title="autoBadGidSet.has(Number(friend.gid)) ? '取消在线自动捣乱' : '检测到该好友上线时自动捣乱一次：随机地块随机数量放虫+放草'"
+          @click="emit('toggleAutoBad', friend, $event)"
+        >
+          <span :class="autoBadGidSet.has(Number(friend.gid)) ? 'i-carbon-misuse-alt' : 'i-carbon-misuse'" />
+          {{ autoBadGidSet.has(Number(friend.gid)) ? ' 已自动捣乱' : ' 在线捣乱' }}
         </button>
         <button
           class="rounded px-3 py-2 text-sm transition"
