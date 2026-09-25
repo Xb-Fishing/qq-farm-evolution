@@ -339,6 +339,7 @@ const DEFAULT_ACCOUNT_CONFIG = {
     knownFriendGids: [],
     friendBlacklist: [],
     watchlistFriendGids: [],
+    autoBadFriendGids: [],
     plantBlacklist: DEFAULT_PLANT_BLACKLIST,
     stealDelaySeconds: 1,
     plantOrderRandom: true,
@@ -522,6 +523,7 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
 
     const friendBlacklist = Array.isArray(config.friendBlacklist) ? config.friendBlacklist : [];
     const watchlistFriendGids = Array.isArray(config.watchlistFriendGids) ? config.watchlistFriendGids : [];
+    const autoBadFriendGids = Array.isArray(config.autoBadFriendGids) ? config.autoBadFriendGids : [];
     const knownFriendGids = normalizeKnownFriendGids(config.knownFriendGids);
     const plantBlacklist = Array.isArray(config.plantBlacklist) ? config.plantBlacklist : [];
 
@@ -538,6 +540,7 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
         knownFriendGids,
         friendBlacklist: friendBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
         watchlistFriendGids: watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0),
+        autoBadFriendGids: autoBadFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0),
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(config.plantingStrategy || ''))
             ? String(config.plantingStrategy) : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
         preferredSeedId: Math.max(0, Number.parseInt(config.preferredSeedId, 10) || 0),
@@ -695,6 +698,11 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
     // 重点监控
     if (Array.isArray(input.watchlistFriendGids)) {
         cfg.watchlistFriendGids = input.watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+
+    // 在线自动捣乱（放虫/放草）
+    if (Array.isArray(input.autoBadFriendGids)) {
+        cfg.autoBadFriendGids = input.autoBadFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
     }
 
     // 已知好友
@@ -1149,6 +1157,7 @@ function getConfigSnapshot(accountId) {
         knownFriendGids: [...cfg.knownFriendGids || []],
         friendBlacklist: [...cfg.friendBlacklist || []],
         watchlistFriendGids: [...cfg.watchlistFriendGids || []],
+        autoBadFriendGids: [...cfg.autoBadFriendGids || []],
         plantBlacklist: [...cfg.plantBlacklist || []],
         stealDelaySeconds: Math.max(0, Math.min(60, Number(cfg.stealDelaySeconds) || 1)),
         plantOrderRandom: !!cfg.plantOrderRandom,
@@ -1225,6 +1234,9 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     }
     if (Array.isArray(patch.watchlistFriendGids)) {
         cfg.watchlistFriendGids = patch.watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+    if (Array.isArray(patch.autoBadFriendGids)) {
+        cfg.autoBadFriendGids = patch.autoBadFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
     }
     if (patch.knownFriendGids !== undefined) {
         cfg.knownFriendGids = normalizeKnownFriendGids(patch.knownFriendGids, cfg.knownFriendGids);
@@ -1412,6 +1424,19 @@ function setWatchlistFriendGids(accountId, gids) {
         ? gids.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
     setAccountConfigSnapshot(accountId, cfg);
     return [...cfg.watchlistFriendGids];
+}
+
+function getAutoBadFriendGids(accountId) {
+    return [...getAccountConfigSnapshot(accountId).autoBadFriendGids || []];
+}
+
+function setAutoBadFriendGids(accountId, gids) {
+    const base = getAccountConfigSnapshot(accountId);
+    const cfg = normalizeAccountConfig(base, accountFallbackConfig);
+    cfg.autoBadFriendGids = Array.isArray(gids)
+        ? gids.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
+    setAccountConfigSnapshot(accountId, cfg);
+    return [...cfg.autoBadFriendGids];
 }
 
 function getStealDelaySeconds(accountId) {
@@ -2046,6 +2071,8 @@ module.exports = {
     addFriendToBlacklist,
     getWatchlistFriendGids,
     setWatchlistFriendGids,
+    getAutoBadFriendGids,
+    setAutoBadFriendGids,
     getStealDelaySeconds,
     getPlantOrderRandom,
     getPlantDelaySeconds,

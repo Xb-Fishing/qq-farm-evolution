@@ -52,6 +52,9 @@ function createRuntimeState(deps) {
             friendQuietHours: store.getFriendQuietHours(accountId),
             friendBlacklist: store.getFriendBlacklist(accountId),
             watchlistFriendGids: store.getWatchlistFriendGids(accountId),
+            autoBadFriendGids: store.getAutoBadFriendGids
+                ? store.getAutoBadFriendGids(accountId)
+                : [],
             plantBlacklist: store.getPlantBlacklist(accountId),
             knownFriendGids: store.getKnownFriendGids(accountId),
             bagSeedPriority: store.getBagSeedPriority(accountId),

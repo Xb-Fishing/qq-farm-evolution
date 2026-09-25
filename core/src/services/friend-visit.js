@@ -787,8 +787,8 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
 
   if (!checkExpLimit) setCanGetHelpExp(true);
 
-  // Skip if exp limit reached and no guard dog
-  if (checkExpLimit && !getCanGetHelpExp() && !hasGuardDog) {
+  // Skip if exp limit reached and no guard dog（在线自动捣乱目标不受帮助经验上限牵连）
+  if (checkExpLimit && !getCanGetHelpExp() && !hasGuardDog && !friend.autoBadOnline) {
     return { acted: false, entered: false };
   }
 
@@ -898,6 +898,47 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
       friendGid: gid,
       actions: actionLogs,
     });
+  }
+
+  // ---- 在线自动捣乱（面板 per-friend 开关）：好友在线时随机放虫/放草 ----
+  // 目标由巡查循环按「名单 + 在线证据」选出并打上 autoBadOnline 标记；
+  // 每次 1-3 块随机地块，总量仍受服务端每日限额与 bot 侧 BAD_DAILY_LIMIT 约束。
+  if (friend.autoBadOnline && getBadRemainingTimes() > 0) {
+    const pickRandomLands = (list, cap) => {
+      const shuffled = [...list].sort(() => Math.random() - 0.5);
+      const n = Math.min(cap, shuffled.length, 1 + Math.floor(Math.random() * 3));
+      return shuffled.slice(0, Math.max(1, n));
+    };
+    try {
+      if (analysis.canPutBug.length > 0
+        && (await checkCanOperateRemote(gid, PUT_BUG_OPERATION_ID)).canOperate) {
+        const remainingBug = Math.min(
+          getRemainingTimes(PUT_BUG_OPERATION_ID, BAD_DAILY_LIMIT),
+          getBadRemainingTimes()
+        );
+        const targets = pickRandomLands(analysis.canPutBug, remainingBug);
+        const result = await putInsectsDetailed(gid, targets);
+        if (result.ok > 0) {
+          actionLogs.push(`放虫${result.ok}`);
+          tally.putBug += result.ok;
+        }
+        await randomDelay(500, 1500);
+      }
+      if (analysis.canPutWeed.length > 0
+        && (await checkCanOperateRemote(gid, PUT_WEED_OPERATION_ID)).canOperate) {
+        const remainingWeed = Math.min(
+          getRemainingTimes(PUT_WEED_OPERATION_ID, BAD_DAILY_LIMIT),
+          getBadRemainingTimes()
+        );
+        const targets = pickRandomLands(analysis.canPutWeed, remainingWeed);
+        const result = await putWeedsDetailed(gid, targets);
+        if (result.ok > 0) {
+          actionLogs.push(`放草${result.ok}`);
+          tally.putWeed += result.ok;
+        }
+        await randomDelay(500, 1500);
+      }
+    } catch { /* 捣乱失败按单次静默，不影响帮助结果 */ }
   }
 
   await leaveFriendFarm(gid);

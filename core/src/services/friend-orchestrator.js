@@ -3,6 +3,7 @@ const {
   isAutomationOn,
   getFriendBlacklist,
   getWatchlistFriendGids,
+  getAutoBadFriendGids,
   getAutoAcceptFriendMinLevel,
   getKnownFriendGids,
   applyConfigSnapshot,
@@ -106,6 +107,10 @@ const watchlistPollRipeAt = new Map();
 const watchlistNames = new Map();
 let watchlistPollLoopArmed = false;
 const WATCHLIST_POLL_TICK_MS = 3_000;
+// 在线自动捣乱：一次上线只捣乱一次；离线超过该间隙后再次上线才重新触发
+// （协议只能看到"有动作"，安静超时后恢复动作视作新一次上线）。
+const AUTO_BAD_SESSION_GAP_MS = 3 * 60_000;
+const autoBadSessionState = new Map(); // gid -> { done, lastOnlineAt }
 // 普通重点巡田只负责更新成熟墙钟/施肥基线，不关心对方日常收菜和重种。
 // 未知或无作物保持 5-8 分钟；已知进入 122 分钟观察范围收紧到 45-75 秒。
 // 真正发现施肥趋势后由 fertilizer-watch 独立切换到秒级 HOT。
@@ -515,6 +520,7 @@ async function checkFriends(options = {}) {
 
     const blacklist = new Set(getFriendBlacklist(accountId));
     const watchlistSet = new Set(getWatchlistFriendGids(accountId));
+    const autoBadSet = new Set((getAutoBadFriendGids(accountId) || []).map(toNum));
     const dogInfoCache = readFriendDogInfoCache(accountId);
     const guardDogGidSet = dogInfoCache
       ? new Set(Object.keys(dogInfoCache).map(Number))
@@ -594,6 +600,36 @@ async function checkFriends(options = {}) {
             hasGuardDog,
           });
         }
+      }
+    }
+
+    // 在线自动捣乱：名单内好友上线时补进巡查目标（哪怕没有帮助需求），
+    // 一次上线只触发一次；实际放虫/放草的数量与地块在 visitFriendForHelp 内随机。
+    if (doHelp) {
+      const autoBadNow = Date.now();
+      for (const friend of rawFriends) {
+        const gid = toNum(friend.gid);
+        if (!autoBadSet.has(gid) || gid === userState.gid || blacklist.has(gid)) continue;
+        const state = autoBadSessionState.get(gid) || { done: false, lastOnlineAt: 0 };
+        if (friendActivity.isFriendOnlineRecently(gid)) {
+          state.lastOnlineAt = autoBadNow;
+          if (!state.done) {
+            state.done = true;
+            helpTargets.push({
+              gid,
+              name: friend.remark || friend.name || `GID:${gid}`,
+              dryNum: 0,
+              weedNum: 0,
+              insectNum: 0,
+              dogId: 0,
+              hasGuardDog: false,
+              autoBadOnline: true,
+            });
+          }
+        } else if (autoBadNow - state.lastOnlineAt > AUTO_BAD_SESSION_GAP_MS) {
+          state.done = false;
+        }
+        autoBadSessionState.set(gid, state);
       }
     }
 
