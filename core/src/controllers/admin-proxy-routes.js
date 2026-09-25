@@ -70,6 +70,15 @@ function registerAdminProxyRoutes({ app, logger }) {
             accountId: payload.accountId,
           });
         }
+        if (data?.Success === false) {
+          const message = String(data.Message || "");
+          const reason = /40188|授权范围|invalid scope/i.test(message) ? "authorization_invalid"
+            : /过期|会话无效|session.*expired/i.test(message) ? "session_expired"
+              : /timeout|超时|无法连接|网络/i.test(message) ? "transport"
+                : /callback|授权兑换/i.test(message) ? "oauth_callback"
+                  : /buffer/i.test(message) ? "credential_exchange" : "unknown";
+          logger.warn?.("微信登录阶段未完成", { event: "wx_login_stage_failure", phase: action, reason });
+        }
         return res.json(data);
       }
 
