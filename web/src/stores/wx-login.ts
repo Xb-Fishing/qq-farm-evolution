@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useUserStore } from './user'
 
+// Confirmed native sessions outlive the unconfirmed QR refresh interval.
+const CONFIRMED_SESSION_TTL_MS = 300_000
+
 export interface WxLoginConfig {
   enabled: boolean
   apiBase: string
@@ -77,12 +80,26 @@ export const useWxLoginStore = defineStore('wx-login', () => {
   const status = ref<'idle' | 'qr_loading' | 'qr_ready' | 'scanning' | 'confirming' | 'code_loading' | 'success' | 'error'>('idle')
   const statusMessage = ref('')
   const errorMessage = ref('')
+  const farmCodeRetryable = ref(false)
+  function canRetryFarmCode() {
+    return farmCodeRetryable.value && status.value === 'error' && !isLoading.value
+      && !!wxid.value && !!uuid.value && !!qrCreatedAt.value && Date.now() - qrCreatedAt.value < CONFIRMED_SESSION_TTL_MS
+  }
 
   // 获取二维码接口地址
   const qrEndpoint = 'LoginGetQRCar'
 
+  let generation = 0
+  const requests = new Set<AbortController>()
+
   // 重置登录状态
   function resetState() {
+    generation++
+    farmCodeRetryable.value = false
+    for (const controller of requests)
+      controller.abort()
+    requests.clear()
+    isLoading.value = false
     qrCode.value = null
     qrCreatedAt.value = 0
     uuid.value = ''
@@ -113,23 +130,40 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     return headers
   }
 
+  async function requestJson(url: string, init: RequestInit, timeoutMs: number) {
+    const controller = new AbortController()
+    requests.add(controller)
+    const timer = setTimeout(() => controller.abort(new Error('请求超时，请重试')), timeoutMs)
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal })
+      const result = await response.json()
+      if (!response.ok)
+        throw Object.assign(new Error(result?.Message || result?.msg || result?.error || `请求失败（${response.status}）`), { definitive: result?.definitive === true })
+      return result
+    }
+    finally {
+      clearTimeout(timer)
+      requests.delete(controller)
+    }
+  }
+
   async function requestProxy(body: Record<string, any>) {
-    const response = await fetch('/api/proxy', {
+    return requestJson('/api/proxy', {
       method: 'POST',
       headers: buildProxyHeaders(),
       body: JSON.stringify(body),
-    })
-    return response.json()
+    }, body.action === 'getqr' ? 90_000 : 120_000)
   }
 
   async function requestPublicApi(path: string, init?: RequestInit) {
     const base = String(config.value.apiBase || defaultConfig.apiBase).replace(/\/+$/, '')
-    const response = await fetch(`${base}${path}`, init)
-    return response.json()
+    return requestJson(`${base}${path}`, init || {}, path.includes(qrEndpoint) ? 90_000 : 120_000)
   }
 
   // 获取二维码
   async function getQRCode(): Promise<boolean> {
+    resetState()
+    const requestGeneration = generation
     isLoading.value = true
     status.value = 'qr_loading'
     statusMessage.value = '正在获取二维码...'
@@ -140,7 +174,10 @@ export const useWxLoginStore = defineStore('wx-login', () => {
 
       if (useProxyMode.value) {
         const result = await requestProxy({ action: 'getqr' })
-        if (result.code === 0 && result.data) {
+        if (result.Success !== undefined) {
+          data = result
+        }
+        else if (result.code === 0 && result.data) {
           data = {
             Success: true,
             Data: {
@@ -148,9 +185,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
               QrBase64: result.data.QrBase64 || result.data.qrBase64,
             },
           }
-        }
-        else if (result.Success !== undefined) {
-          data = result
         }
         else {
           data = { Success: false, Message: result.msg || '获取二维码失败' }
@@ -164,6 +198,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
         })
       }
 
+      if (requestGeneration !== generation)
+        return false
       if (data.Success && data.Data) {
         uuid.value = data.Data.Uuid
         qrCode.value = data.Data.QrBase64 || data.Data.qrBase64 || ''
@@ -180,13 +216,16 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       }
     }
     catch (e: any) {
+      if (requestGeneration !== generation)
+        return false
       status.value = 'error'
       qrCreatedAt.value = 0
       errorMessage.value = `请求失败: ${e.message}`
       return false
     }
     finally {
-      isLoading.value = false
+      if (requestGeneration === generation)
+        isLoading.value = false
     }
   }
 
@@ -196,6 +235,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       return { success: false }
     }
 
+    const requestGeneration = generation
     status.value = 'scanning'
     statusMessage.value = '正在检查登录状态...'
 
@@ -213,7 +253,10 @@ export const useWxLoginStore = defineStore('wx-login', () => {
         const nickname = resultData.nickname || resultData.Nickname || resultData.nickName || resultData.NickName || '微信用户'
         const avatar = resultData.avatar || resultData.Avatar || resultData.avatarUrl || resultData.AvatarUrl || resultData.headImgUrl || resultData.HeadImgUrl || ''
 
-        if (result.code === 0 && wxid) {
+        if (result.Success !== undefined) {
+          data = result
+        }
+        else if (result.code === 0 && wxid) {
           // 真正登录成功（有wxid）
           data = {
             Success: true,
@@ -236,9 +279,6 @@ export const useWxLoginStore = defineStore('wx-login', () => {
             },
           }
         }
-        else if (result.Success !== undefined) {
-          data = result
-        }
         else {
           data = { Success: false, Message: result.msg || '登录检查失败' }
         }
@@ -249,6 +289,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
         })
       }
 
+      if (requestGeneration !== generation)
+        return { success: false }
       const acctResp = data?.Data?.acctSectResp || data?.Data?.AcctSectResp
       const userName = acctResp?.userName || acctResp?.UserName
       const nickName = acctResp?.nickName || acctResp?.NickName || '微信用户'
@@ -273,6 +315,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       }
     }
     catch (e: any) {
+      if (requestGeneration !== generation)
+        return { success: false }
       status.value = 'error'
       errorMessage.value = `请求失败: ${e.message}`
       return { success: false }
@@ -286,7 +330,9 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       return { success: false }
     }
 
+    const requestGeneration = generation
     isLoading.value = true
+    farmCodeRetryable.value = false
     status.value = 'code_loading'
     statusMessage.value = '正在获取QQ农场Code...'
     errorMessage.value = ''
@@ -301,7 +347,10 @@ export const useWxLoginStore = defineStore('wx-login', () => {
           sessionId: uuid.value,
         })
         const resultData = result.data || result.Data || {}
-        if (result.code === 0 && resultData) {
+        if (result.Success !== undefined) {
+          data = result
+        }
+        else if (result.code === 0 && resultData) {
           data = {
             Success: true,
             Data: {
@@ -309,11 +358,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
             },
           }
         }
-        else if (result.Success !== undefined) {
-          data = result
-        }
         else {
-          data = { Success: false, Message: result.msg || '获取Code失败' }
+          data = { Success: false, Message: result.msg || '获取Code失败', definitive: result.definitive }
         }
       }
       else {
@@ -327,6 +373,8 @@ export const useWxLoginStore = defineStore('wx-login', () => {
         })
       }
 
+      if (requestGeneration !== generation)
+        return { success: false }
       if (data.Success && data.Data && data.Data.code) {
         status.value = 'success'
         statusMessage.value = '已获取QQ农场Code'
@@ -335,17 +383,22 @@ export const useWxLoginStore = defineStore('wx-login', () => {
       else {
         const errMsg = data.Data?.jsapiBaseresponse?.errmsg || data.Message || '获取Code失败'
         status.value = 'error'
-        errorMessage.value = errMsg
+        farmCodeRetryable.value = data.definitive !== true
+        errorMessage.value = data.definitive === true ? `${errMsg}，请刷新二维码重新授权` : errMsg
         return { success: false }
       }
     }
     catch (e: any) {
+      if (requestGeneration !== generation)
+        return { success: false }
       status.value = 'error'
-      errorMessage.value = `请求失败: ${e.message}`
+      farmCodeRetryable.value = e.definitive !== true
+      errorMessage.value = `请求失败: ${e.message}${e.definitive === true ? '，请刷新二维码重新授权' : ''}`
       return { success: false }
     }
     finally {
-      isLoading.value = false
+      if (requestGeneration === generation)
+        isLoading.value = false
     }
   }
 
@@ -366,6 +419,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     getQRCode,
     checkLogin,
     getFarmCode,
+    canRetryFarmCode,
     loadConfigFromServer,
   }
 })

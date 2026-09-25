@@ -136,7 +136,14 @@ function collectRuntimePrivacyTerms(options = {}) {
     }
   } catch {}
   for (const reference of references) {
-    if (typeof reference === 'string' && /^[a-z\d][a-z\d-]{0,38}\/[\w.-]{1,100}$/i.test(reference)) addPrivacyTerm(terms, reference);
+    if (typeof reference === 'string' && /^[a-z\d][a-z\d-]{0,38}\/[\w.-]{1,100}$/i.test(reference)) {
+      addPrivacyTerm(terms, reference);
+      const owner = reference.split('/')[0];
+      if (owner.length >= 8) {
+        addPrivacyTerm(terms, owner);
+        addPrivacyTerm(terms, owner.toLowerCase());
+      }
+    }
   }
   for (const term of collectLocalPrivacyTerms({ ...options, dataDir, privateConfig })) terms.add(term);
   return terms;

@@ -271,6 +271,11 @@ function createDataProvider(deps) {
             };
         },
 
+        invalidateAccountCredentialTasks: (ref) => {
+            const id = resolveAccountId(ref);
+            if (id && typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(id);
+        },
+
         saveAutoCodeRefresh: async (ref, config) => {
             const id = resolveAccountId(ref);
             if (!id) throw new Error('Missing x-account-id');

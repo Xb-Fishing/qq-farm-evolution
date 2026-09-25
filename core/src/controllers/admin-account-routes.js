@@ -310,7 +310,28 @@ function registerAdminAccountRoutes({
       }
 
       if (!isUpdate && currentUser) nextAccount.username = currentUser.username;
-      const data = addOrUpdateAccount(nextAccount);
+      const wxLoginAdapter = require("../services/wx-login-adapter");
+      const saveAccount = () => {
+        if (body.wxSessionId && body.wxid && currentUser) {
+          const latest = wxLoginAdapter.peekPendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
+          if (!latest) throw new Error("微信扫码会话无效或已过期，请重新扫码");
+          Object.assign(nextAccount, {
+            loginBuffer: latest.loginBuffer, refreshtoken: latest.refreshtoken, accesstoken: latest.accesstoken,
+            wxCredentialExpiresAt: latest.wxCredentialExpiresAt, wxCredentialExpiresIn: latest.wxCredentialExpiresIn,
+            wxRefreshTokenObservedAt: latest.wxRefreshTokenObservedAt, wxCredentialLastSuccessAt: latest.wxCredentialLastSuccessAt,
+          });
+        }
+        const saved = addOrUpdateAccount(nextAccount);
+        if (isUpdate && body.wxSessionId && typeof provider.invalidateAccountCredentialTasks === "function") {
+          // Fence old async completions before the credential lock is released.
+          provider.invalidateAccountCredentialTasks(nextAccount.id);
+        }
+        return saved;
+      };
+      // Saving new scan credentials must serialize with old in-flight renewal.
+      const data = isUpdate
+        ? await wxLoginAdapter.withAccountCredentialLock(nextAccount.wxid || '', nextAccount.id, saveAccount)
+        : saveAccount();
       const clientVersionUpdated = syncGatewayClientVersion(gateway, store, updateRuntimeConfig);
       if (body.wxSessionId && body.wxid && currentUser) {
         const wxLoginAdapter = require("../services/wx-login-adapter");
@@ -360,6 +381,16 @@ function registerAdminAccountRoutes({
         }
       } else if (wasRunning && !onlyRenaming) {
         provider.restartAccount(nextAccount.id);
+      } else if (!wasRunning && body.wxSessionId && nextAccount.platform === "wx") {
+        // A successful rescan of an offline account is a login request, not just a save.
+        if (typeof provider.saveAutoCodeRefresh === "function") {
+          await provider.saveAutoCodeRefresh(nextAccount.id, { enabled: true, intervalMinutes: 60 });
+          autoRefreshEnabled = true;
+        }
+        startQueued = true;
+        Promise.resolve().then(() => provider.startAccount(nextAccount.id)).catch(() => {
+          if (provider.addAccountLog) provider.addAccountLog("start_failed", "新扫码授权已保存，账号启动失败，请查看登录状态", nextAccount.id, "");
+        });
       }
 
       // 使用 provider 的脱敏结果，避免把微信滚动凭证返回浏览器。

@@ -67,7 +67,9 @@ watch(() => loginPageConfig.value.logoUrl, () => {
         <div class="custom-scrollbar min-h-0 flex flex-1 flex-col overflow-y-auto p-3 pb-[calc(1rem+env(safe-area-inset-bottom))] md:p-6 sm:p-4 md:pb-6 sm:pb-[calc(1rem+env(safe-area-inset-bottom))]">
           <RouterView v-slot="{ Component, route }">
             <Transition name="slide-fade" mode="out-in">
-              <component :is="Component" :key="route.path" />
+              <div :key="route.path" class="min-w-0 flex-1">
+                <component :is="Component" />
+              </div>
             </Transition>
           </RouterView>
         </div>

@@ -418,7 +418,14 @@ async function issueFarmCode(openid, options = {}) {
                             ...buildCredentialMetadata(rotatedError, account, false),
                         });
                     }
-                    return { Success: false, Message: `获取 Code 失败: ${humanizeWxCodeError(rotatedError.message)}（自动续期失败，请重新扫码登录）` };
+                    if (sessionEntry) {
+                        if (rotatedError.refreshtoken) sessionEntry.refreshtoken = rotatedError.refreshtoken;
+                        if (rotatedError.accesstoken) sessionEntry.accesstoken = rotatedError.accesstoken;
+                        if (rotatedError.credentialExpiresAt) sessionEntry.credentialExpiresAt = rotatedError.credentialExpiresAt;
+                        if (rotatedError.credentialExpiresIn) sessionEntry.credentialExpiresIn = rotatedError.credentialExpiresIn;
+                    }
+                    const definitive = isDefinitiveWxCredentialError(rotatedError.message);
+                    return { Success: false, definitive, Message: `获取 Code 失败: ${humanizeWxCodeError(rotatedError.message)}${definitive ? '（授权已失效，请重新扫码登录）' : '（暂时续期失败，请稍后重试）'}` };
                 }
             }
             else {

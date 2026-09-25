@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -47,6 +47,15 @@ interface CaptureFlowState {
 const activeTab = ref<'wx' | 'capture' | 'manual'>('manual')
 const loading = ref(false)
 const wxChecking = ref(false)
+let modalGeneration = 0
+let ownsWxSession = false
+let confirmedWxLogin: null | { result: { wxid: string, nickname?: string, avatar?: string }, sessionId: string, target: { id: any, name: string } | null, generation: number } = null
+function resetWxSession() {
+  confirmedWxLogin = null
+  if (ownsWxSession)
+    wxLoginStore.resetState()
+  ownsWxSession = false
+}
 const errorMessage = ref('')
 const wxAccountName = ref('')
 const captureEnabled = ref(false)
@@ -118,7 +127,7 @@ const captureNextStep = computed(() => {
 })
 
 const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
-  if (activeTab.value !== 'wx' || wxLoginStore.isLoading || wxChecking.value)
+  if (!props.show || activeTab.value !== 'wx' || wxLoginStore.isLoading || wxChecking.value)
     return
   if (shouldRefreshWxQr()) {
     await loadWxQRCode()
@@ -127,38 +136,74 @@ const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
   if (wxLoginStore.status !== 'qr_ready' && wxLoginStore.status !== 'confirming')
     return
 
+  const requestGeneration = modalGeneration
+  const sessionId = wxLoginStore.uuid
+  const target = props.editData ? { id: props.editData.id, name: props.editData.name } : null
+  const isCurrent = () => requestGeneration === modalGeneration && props.show && activeTab.value === 'wx'
+    && sessionId === wxLoginStore.uuid && target?.id === props.editData?.id
   wxChecking.value = true
   try {
     const result = await wxLoginStore.checkLogin()
+    if (!isCurrent())
+      return
     if (result.success && result.wxid) {
       stopWxCheck()
-      const codeResult = await wxLoginStore.getFarmCode(result.wxid)
-      if (codeResult.success && codeResult.code) {
-        const name = wxAccountName.value.trim() || result.nickname || `微信账号${Date.now()}`
-        if (wxLoginStore.config.autoAddAccount) {
-          await addAccount({
-            id: props.editData?.id,
-            name: props.editData ? (props.editData.name || name) : name,
-            code: codeResult.code,
-            platform: 'wx',
-            loginType: 'wx_qr',
-            wxid: result.wxid,
-            avatar: result.avatar,
-            wxSessionId: wxLoginStore.uuid,
-          })
-        }
-        else {
-          form.code = codeResult.code
-          form.platform = 'wx'
-          activeTab.value = 'manual'
-        }
-      }
+      confirmedWxLogin = { result: { ...result, wxid: result.wxid }, sessionId, target, generation: requestGeneration }
+      await completeWxLogin(confirmedWxLogin)
     }
   }
   finally {
-    wxChecking.value = false
+    if (requestGeneration === modalGeneration)
+      wxChecking.value = false
   }
 }, 2000, { immediate: false })
+
+function isCurrentWxLogin(context: NonNullable<typeof confirmedWxLogin>) {
+  return context.generation === modalGeneration && props.show && activeTab.value === 'wx'
+    && context.sessionId === wxLoginStore.uuid && context.result.wxid === wxLoginStore.wxid
+    && context.target?.id === props.editData?.id
+}
+
+async function completeWxLogin(context: NonNullable<typeof confirmedWxLogin>) {
+  if (!isCurrentWxLogin(context))
+    return
+  const { result, sessionId, target, generation } = context
+  const codeResult = await wxLoginStore.getFarmCode(result.wxid)
+  if (!isCurrentWxLogin(context) || !codeResult.success || !codeResult.code)
+    return
+  const name = wxAccountName.value.trim() || result.nickname || `微信账号${Date.now()}`
+  if (wxLoginStore.config.autoAddAccount) {
+    await addAccount({
+      id: target?.id,
+      name: target ? (target.name || name) : name,
+      code: codeResult.code,
+      platform: 'wx',
+      loginType: 'wx_qr',
+      wxid: result.wxid,
+      avatar: result.avatar,
+      wxSessionId: sessionId,
+    }, generation)
+  }
+  else {
+    form.code = codeResult.code
+    form.platform = 'wx'
+    activeTab.value = 'manual'
+  }
+}
+
+async function retryWxCode() {
+  const context = confirmedWxLogin
+  if (!context || !isCurrentWxLogin(context) || wxChecking.value || !wxLoginStore.canRetryFarmCode())
+    return
+  wxChecking.value = true
+  try {
+    await completeWxLogin(context)
+  }
+  finally {
+    if (context.generation === modalGeneration)
+      wxChecking.value = false
+  }
+}
 
 const { pause: stopCaptureCheck, resume: startCaptureCheck } = useIntervalFn(async () => {
   if (activeTab.value !== 'capture' || !captureFlow.value || captureCompleting.value || captureChecking.value)
@@ -304,20 +349,25 @@ function shouldRefreshWxQr() {
 }
 
 async function loadWxQRCode() {
-  if (activeTab.value !== 'wx' || wxLoginStore.isLoading)
+  if (!props.show || activeTab.value !== 'wx' || wxLoginStore.isLoading)
     return
+  const requestGeneration = ++modalGeneration
+  wxChecking.value = false
   stopWxCheck()
-  wxLoginStore.resetState()
+  resetWxSession()
+  ownsWxSession = true
   const success = await wxLoginStore.getQRCode()
-  if (success)
+  if (success && requestGeneration === modalGeneration && props.show && activeTab.value === 'wx')
     startWxCheck()
 }
 
-async function addAccount(data: any) {
+async function addAccount(data: any, requestGeneration = modalGeneration) {
   loading.value = true
   errorMessage.value = ''
   try {
     const res = await api.post('/api/accounts', data)
+    if (requestGeneration !== modalGeneration || !props.show)
+      return
     if (res.data.ok) {
       emit('saved')
       close()
@@ -327,10 +377,12 @@ async function addAccount(data: any) {
     }
   }
   catch (e: any) {
-    errorMessage.value = `保存失败: ${e.response?.data?.error || e.message}`
+    if (requestGeneration === modalGeneration && props.show)
+      errorMessage.value = `保存失败: ${e.response?.data?.error || e.message}`
   }
   finally {
-    loading.value = false
+    if (requestGeneration === modalGeneration)
+      loading.value = false
   }
 }
 
@@ -401,15 +453,20 @@ const wxQrImageSrc = computed(() => {
 })
 
 function close() {
+  modalGeneration++
+  wxChecking.value = false
   stopWxCheck()
   stopCaptureCheck()
   void cancelCaptureSession()
-  wxLoginStore.resetState()
+  resetWxSession()
   showCaptureHelp.value = false
   emit('close')
 }
 
 watch(() => props.show, (newVal) => {
+  modalGeneration++
+  wxChecking.value = false
+  loading.value = false
   if (newVal) {
     activeTab.value = (['wx', 'capture', 'manual'] as const).includes(props.initialTab as any)
       ? (props.initialTab as 'wx' | 'capture' | 'manual')
@@ -422,14 +479,12 @@ watch(() => props.show, (newVal) => {
     captureHelpMode.value = localStorage.getItem(CAPTURE_SUCCESS_STORAGE_KEY) === '1' ? 'daily' : 'first'
     void loadCaptureConfig()
     if (props.editData) {
-      activeTab.value = 'manual'
       form.name = props.editData.name || ''
       form.code = props.editData.code || ''
       form.platform = props.editData.platform || 'qq'
       wxAccountName.value = props.editData.name || ''
     }
     else {
-      activeTab.value = 'manual'
       form.name = ''
       form.code = ''
       form.platform = 'qq'
@@ -440,15 +495,26 @@ watch(() => props.show, (newVal) => {
     stopWxCheck()
     stopCaptureCheck()
     void cancelCaptureSession()
-    wxLoginStore.resetState()
+    resetWxSession()
   }
-})
+}, { immediate: true })
 
-watch(activeTab, (tab) => {
-  if (tab === 'wx')
-    loadWxQRCode()
+watch([() => props.show, activeTab], ([show, tab]) => {
+  modalGeneration++
+  wxChecking.value = false
+  loading.value = false
+  stopWxCheck()
+  resetWxSession()
+  if (show && tab === 'wx')
+    void loadWxQRCode()
   if (tab !== 'capture')
     void cancelCaptureSession()
+}, { immediate: true })
+
+onUnmounted(() => {
+  modalGeneration++
+  stopWxCheck()
+  resetWxSession()
 })
 </script>
 
@@ -543,6 +609,9 @@ watch(activeTab, (tab) => {
               {{ wxLoginStore.errorMessage }}
             </p>
 
+            <BaseButton v-if="wxLoginStore.canRetryFarmCode()" variant="primary" size="sm" :disabled="wxChecking" @click="retryWxCode">
+              重试获取 Code
+            </BaseButton>
             <BaseButton variant="secondary" size="sm" :loading="wxLoginStore.isLoading" @click="loadWxQRCode">
               {{ wxLoginStore.qrCode ? '刷新二维码' : '获取二维码' }}
             </BaseButton>
