@@ -183,5 +183,6 @@ test('privately configured and discovered reference identities cannot enter publ
   for (const name of ['sample-fixed/qq-farm', 'sample-old/qq-farm', 'sample-new/qq-farm']) {
     assert.ok(scanTextForPrivacy(name, { runtimeTerms }).some(f => f.rule === 'runtime-personal-data'));
   }
+  assert.ok(scanTextForPrivacy('source author sample-fixed', { runtimeTerms }).some(f => f.rule === 'runtime-personal-data'));
   assert.equal(scanTextForPrivacy('core/src/services/friend-orchestrator.js:100 @ abcdef1234', { runtimeTerms }).length, 0);
 });

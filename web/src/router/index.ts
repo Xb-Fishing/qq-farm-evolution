@@ -2,6 +2,7 @@ import { useStorage } from '@vueuse/core'
 import axios from 'axios'
 import NProgress from 'nprogress'
 import { createRouter, createWebHistory } from 'vue-router'
+import { clearRouteChunkRetry, recoverRouteChunk } from './chunk-recovery'
 import { menuRoutes } from './menu'
 import 'nprogress/nprogress.css'
 
@@ -106,8 +107,24 @@ router.beforeEach(async (to) => {
   return true
 })
 
-router.afterEach(() => {
+router.onError((error, to) => {
   NProgress.done()
+  try {
+    recoverRouteChunk(error, router.resolve(to).href, window.sessionStorage, path => window.location.replace(path))
+  }
+  catch {
+    // Browsers can deny access to sessionStorage itself.
+  }
+})
+
+router.afterEach((_to, _from, failure) => {
+  NProgress.done()
+  if (!failure) {
+    try {
+      clearRouteChunkRetry(window.sessionStorage)
+    }
+    catch {}
+  }
 })
 
 export default router

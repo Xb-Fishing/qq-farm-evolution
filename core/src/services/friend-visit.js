@@ -551,7 +551,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
 // ===== 推送直达偷菜（fast-lane，2026-09-24 方案C）=====
 // 只为对抗"好友在线施肥催熟秒收"的竞速：推送自带变化地块状态，成熟且还站着
 // 的地块直接发 Harvest（协议自包含，无需 Enter/CheckCanOperate——qqfarm-sdk
-// 与 liyangpengs 双实证）。仅重点好友 + 好友在线（10 秒内有动作/at_home）时
+// 与 既有公开参考证据 双实证）。仅重点好友 + 好友在线（10 秒内有动作/at_home）时
 // 启用；失败忽略（多半已被主人收走）。自然成熟的常规偷收仍走 PREARM 布防。
 
 const fastLaneInFlight = new Map(); // gid -> Promise

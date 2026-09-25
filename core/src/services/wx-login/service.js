@@ -146,19 +146,34 @@ class WxLoginService {
         throw new Error("Unrecognized WeChat QR polling response");
     }
     async confirm(session) {
-        if (!session.oauthCode)
-            throw new Error("Waiting for scan authorization");
-        const params = new URLSearchParams({ login_type: "WX", code: session.oauthCode, state: "web" });
-        const callback = await request(`${CALLBACK_URL}?${params}`, session.cookies);
-        if (callback.status < 200 || callback.status >= 400)
-            throw new Error(`WeChat authorization callback failed (HTTP ${callback.status})`);
-        const openid = requiredCookie(session.cookies, "openid");
-        const accessToken = requiredCookie(session.cookies, "accesstoken");
-        // refreshtoken 可选（部分环境不回传）；存在则用于 loginBuffer 保活刷新
-        const refreshToken = session.cookies.get("refreshtoken") || "";
-        const loginType = session.cookies.get("logintype") || "WX";
-        const expiresIn = positiveSeconds(session.cookies.get("expires_in"));
-        const credentialExpiresAt = Date.now() + expiresIn * 1000;
+        if (session.loginBuffer && session.openid)
+            return { openid: session.openid, loginBuffer: session.loginBuffer };
+        if (!session.oauthCallbackComplete) {
+            if (!session.oauthCode)
+                throw new Error("Waiting for scan authorization");
+            // OAuth code is single-use: resume a failed buffer exchange from cookies,
+            // never replay an already consumed authorization callback.
+            if (session.oauthCallbackAttempted)
+                throw new Error("扫码授权兑换未完成，请重新获取二维码");
+            session.oauthCallbackAttempted = true;
+            const params = new URLSearchParams({ login_type: "WX", code: session.oauthCode, state: "web" });
+            const callback = await request(`${CALLBACK_URL}?${params}`, session.cookies);
+            if (callback.status < 200 || callback.status >= 400)
+                throw new Error(`WeChat authorization callback failed (HTTP ${callback.status})`);
+            session.openid = requiredCookie(session.cookies, "openid");
+            session.accesstoken = requiredCookie(session.cookies, "accesstoken");
+            session.refreshtoken = session.cookies.get("refreshtoken") || "";
+            session.loginType = session.cookies.get("logintype") || "WX";
+            session.credentialExpiresIn = positiveSeconds(session.cookies.get("expires_in"));
+            session.credentialExpiresAt = Date.now() + session.credentialExpiresIn * 1000;
+            session.oauthCallbackComplete = true;
+        }
+        const openid = session.openid;
+        const accessToken = session.accesstoken;
+        const refreshToken = session.refreshtoken || "";
+        const loginType = session.loginType || "WX";
+        const expiresIn = session.credentialExpiresIn;
+        const credentialExpiresAt = session.credentialExpiresAt;
         const payload = JSON.stringify({ extInfo: { listS: { unionid: { value: [openid] }, user_id: { value: [openid] }, access_token: { value: [accessToken] } }, listI: { user_type: { value: [0] } } } });
         const timestamp = String(Date.now());
         const nonce = String(node_crypto_1.default.randomInt(1e3, 1e4));
@@ -172,8 +187,10 @@ class WxLoginService {
             throw new Error(`Unable to obtain WeChat login buffer (HTTP ${response.status})`);
         const data = asRecord(JSON.parse(response.body.toString("utf8")));
         const loginBuffer = data.code === 0 ? pickLoginBuffer(data) : "";
-        if (typeof loginBuffer !== "string" || !loginBuffer)
-            throw new Error("WeChat login buffer response is invalid");
+        if (typeof loginBuffer !== "string" || !loginBuffer) {
+            if (Number(data.code) === 40188) throw new Error("微信授权范围已失效，需要重新扫码授权");
+            throw new Error(`WeChat login buffer response is invalid (code=${Number.isInteger(data.code) ? data.code : "unknown"})`);
+        }
         session.cookies.clear();
         session.openid = openid;
         session.accesstoken = accessToken;
@@ -204,7 +221,7 @@ class WxLoginService {
                 "Ual-Access-Signature": signature,
                 "Ual-Access-Timestamp": timestamp
             }
-        });
+        }, 4000);
         if (response.status < 200 || response.status >= 300)
             throw new Error(`Unable to fetch WeChat user info (HTTP ${response.status})`);
         return asRecord(JSON.parse(response.body.toString("utf8")));
@@ -293,6 +310,8 @@ class WxLoginService {
     destroy(session) {
         session.cookies.clear();
         session.oauthCode = void 0;
+        session.oauthCallbackComplete = false;
+        session.oauthCallbackAttempted = false;
         session.openid = void 0;
         session.accesstoken = void 0;
         session.refreshtoken = void 0;
