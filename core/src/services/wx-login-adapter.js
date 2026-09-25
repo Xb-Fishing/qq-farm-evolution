@@ -40,7 +40,7 @@ function errorMessage(error) {
 }
 function isDefinitiveWxCredentialError(raw) {
     const message = String(raw || '').toLowerCase();
-    if (message.includes('40188') && message.includes('invalid scope'))
+    if (/\b40188\b/.test(message))
         return true;
     // 上游会把 40188 翻译成“微信授权范围已失效”，此时文本中不一定
     // 保留 token/refresh 关键词，仍应按不可恢复的 OAuth 授权失效处理。
@@ -48,10 +48,27 @@ function isDefinitiveWxCredentialError(raw) {
         return true;
     if (message.includes('40030') || message.includes('42007'))
         return true;
-    if (message.includes('refreshtoken') && (message.includes('-109') || message.includes('empty token')))
+    if (/refresh[ _-]?token/.test(message) && (message.includes('-109') || message.includes('empty token')))
         return true;
-    return (message.includes('refresh') || message.includes('token') || message.includes('凭证'))
-        && (message.includes('expired') || message.includes('invalid') || message.includes('过期') || message.includes('失效'));
+    return /(?:invalid|expired)\s+(?:refresh[ _-]*)?(?:token|credential)\b/.test(message)
+        || /(?:refresh[ _-]*)?(?:token|credential)\s+(?:is\s+)?(?:expired|invalid)\b/.test(message)
+        || /凭证已?(?:过期|失效)/.test(message);
+}
+function credentialFailureDiagnostic(error) {
+    const source = asRecord(error);
+    const stage = ['oauth_callback', 'refresh_token', 'login_buffer', 'issue_code'].includes(source.wxStage)
+        ? source.wxStage : 'unknown';
+    return { stage, code: Number.isInteger(source.wxCode) ? source.wxCode : null,
+        tokenRefreshSucceeded: source.tokenRefreshSucceeded === true };
+}
+function persistCredentialFields(accountId, updates) {
+    try {
+        if (typeof addOrUpdateAccount !== 'function') throw new Error('store unavailable');
+        addOrUpdateAccount({ id: accountId, ...updates });
+    } catch {
+        // Storage errors can contain local paths or serialized secrets.
+        throw new Error('微信凭据保存失败，请检查本机存储后重试');
+    }
 }
 function shouldRefreshWxCredentialForCodeError(raw) {
     const message = String(raw || '').toLowerCase();
@@ -393,6 +410,11 @@ async function issueFarmCode(openid, options = {}) {
                     refreshtoken = refreshed.refreshtoken;
                     accesstoken = refreshed.accesstoken || accesstoken;
                     credentialMetadata = buildCredentialMetadata(refreshed, account || sessionEntry || {}, true);
+                    // Token rotation has already happened upstream. Persist the complete
+                    // checkpoint before the independent Code exchange can fail.
+                    if (account) persistCredentialFields(account.id, {
+                        loginBuffer, refreshtoken, accesstoken, ...credentialMetadata,
+                    });
                     // 编辑重扫随后会保存账号；同步会话中的滚动凭证，避免保存步骤回滚为刷新前的 token。
                     if (sessionEntry) {
                         sessionEntry.loginBuffer = loginBuffer;
@@ -404,15 +426,22 @@ async function issueFarmCode(openid, options = {}) {
                             sessionEntry.refreshTokenObservedAt = Date.now();
                         sessionEntry.credentialLastSuccessAt = Date.now();
                     }
-                    code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
+                    try {
+                        code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
+                    } catch (error) {
+                        const codeError = asRotatedCredentialError(error);
+                        codeError.wxStage = 'issue_code';
+                        codeError.tokenRefreshSucceeded = true;
+                        throw codeError;
+                    }
                 }
                 catch (refreshError) {
                     const rotatedError = asRotatedCredentialError(refreshError);
+                    logger.warn('wx code credential stage failed', credentialFailureDiagnostic(rotatedError));
                     // token 刷新成功后凭证已滚动；即使换 loginBuffer 失败，也必须保存新 token。
                     if (account && (rotatedError.refreshtoken || rotatedError.accesstoken)
                         && typeof addOrUpdateAccount === 'function') {
-                        addOrUpdateAccount({
-                            id: account.id,
+                        persistCredentialFields(account.id, {
                             ...(rotatedError.refreshtoken ? { refreshtoken: rotatedError.refreshtoken } : {}),
                             ...(rotatedError.accesstoken ? { accesstoken: rotatedError.accesstoken } : {}),
                             ...buildCredentialMetadata(rotatedError, account, false),
@@ -429,6 +458,9 @@ async function issueFarmCode(openid, options = {}) {
                 }
             }
             else {
+                logger.warn('wx code exchange failed', {
+                    ...credentialFailureDiagnostic(issueError), stage: 'issue_code',
+                });
                 return { Success: false, Message: `获取 Code 失败: ${humanizeWxCodeError(msg)}` };
             }
         }
@@ -450,19 +482,13 @@ async function issueFarmCode(openid, options = {}) {
             if (entryAvatar && entryAvatar !== account.avatar)
                 updates.avatar = entryAvatar;
             if (Object.keys(updates).length > 0) {
-                try {
-                    if (typeof addOrUpdateAccount === 'function') {
-                        addOrUpdateAccount({ id: account.id, ...updates });
-                    }
-                }
-                catch (error) {
-                    logger.warn('persist account fields failed', { openid, error: errorMessage(error) });
-                }
+                persistCredentialFields(account.id, updates);
             }
         }
         return { Success: true, Data: { code } };
     }
     catch (error) {
+        logger.warn('wx code request failed', credentialFailureDiagnostic(error));
         return { Success: false, Message: `获取 Code 失败: ${humanizeWxCodeError(errorMessage(error))}` };
     }
 }
@@ -562,7 +588,7 @@ async function keepWxCredentialAlive(acc) {
                 });
             }
             const message = humanizeWxCodeError(rotatedError.message);
-            logger.warn('keepWxCredentialAlive failed', { accountId: account.id, error: message });
+            logger.warn('keepWxCredentialAlive failed', credentialFailureDiagnostic(rotatedError));
             return {
                 Success: false,
                 Message: message,
