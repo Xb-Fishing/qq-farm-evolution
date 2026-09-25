@@ -23,6 +23,7 @@ export const useFriendStore = defineStore('friend', () => {
   const friendLandsLoading = ref<Record<string, boolean>>({})
   const blacklist = ref<BlacklistItem[]>([])
   const watchlist = ref<BlacklistItem[]>([])
+  const autoBadList = ref<BlacklistItem[]>([])
   const interactRecords = ref<any[]>([])
   const interactLoading = ref(false)
   const interactError = ref('')
@@ -39,6 +40,7 @@ export const useFriendStore = defineStore('friend', () => {
     friendLandsLoading.value = {}
     blacklist.value = []
     watchlist.value = []
+    autoBadList.value = []
     interactRecords.value = []
     interactError.value = ''
     knownFriendGids.value = []
@@ -256,6 +258,35 @@ export const useFriendStore = defineStore('friend', () => {
     }
   }
 
+  // 在线自动捣乱名单：好友上线时随机放虫/放草（每次上线一次）
+  async function fetchAutoBad(accountId: string) {
+    if (!accountId)
+      return
+    const requestedId = String(accountId)
+    try {
+      const res = await api.get('/api/friend-auto-bad', {
+        headers: { 'x-account-id': accountId },
+      })
+      if (!isCurrentAccount(requestedId))
+        return
+      if (res.data.ok) {
+        autoBadList.value = res.data.data || []
+      }
+    }
+    catch { /* 名单拉取失败不阻塞好友页 */ }
+  }
+
+  async function toggleAutoBad(accountId: string, gid: number) {
+    if (!accountId || !gid)
+      return
+    const res = await api.post('/api/friend-auto-bad/toggle', { gid }, {
+      headers: { 'x-account-id': accountId },
+    })
+    if (res.data.ok) {
+      autoBadList.value = res.data.data || []
+    }
+  }
+
   async function fetchFriendLands(accountId: string, friendId: string) {
     if (!accountId || !friendId)
       return
@@ -408,6 +439,7 @@ export const useFriendStore = defineStore('friend', () => {
     friendLandsLoading,
     blacklist,
     watchlist,
+  autoBadList,
     interactRecords,
     interactLoading,
     interactError,
@@ -424,6 +456,8 @@ export const useFriendStore = defineStore('friend', () => {
     toggleBlacklist,
     fetchWatchlist,
     toggleWatchlist,
+    fetchAutoBad,
+    toggleAutoBad,
     fetchInteractRecords,
     fetchFriendLands,
     operate,

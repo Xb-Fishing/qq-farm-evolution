@@ -30,6 +30,7 @@ const {
   friendLandsLoading,
   blacklist,
   watchlist,
+  autoBadList,
   interactRecords,
   interactLoading,
   interactError,
@@ -90,6 +91,7 @@ const knownFriendGidSet = computed(() => new Set(knownFriendGids.value.map(Numbe
 const friendGidSet = computed(() => new Set(friends.value.map(f => Number(f.gid))))
 const blacklistGidSet = computed(() => new Set(blacklist.value.map(item => Number(item.gid))))
 const watchlistGidSet = computed(() => new Set(watchlist.value.map(item => Number(item.gid))))
+const autoBadGidSet = computed(() => new Set(autoBadList.value.map(item => Number(item.gid))))
 
 const filteredKnownFriendGids = computed(() => {
   const keyword = gidSearchKeyword.value.trim().toLowerCase()
@@ -250,6 +252,7 @@ async function loadData() {
       friendStore.fetchFriends(currentAccountId.value)
       friendStore.fetchBlacklist(currentAccountId.value)
       friendStore.fetchWatchlist(currentAccountId.value)
+      friendStore.fetchAutoBad(currentAccountId.value)
       friendStore.fetchInteractRecords(currentAccountId.value)
       if (isQqAccount.value) {
         friendStore.fetchKnownFriendSettings(currentAccountId.value)
@@ -396,6 +399,13 @@ async function handleToggleWatchlist(friend: any, e: Event) {
   if (!currentAccountId.value)
     return
   await friendStore.toggleWatchlist(currentAccountId.value, Number(friend.gid))
+}
+
+async function handleToggleAutoBad(friend: any, e: Event) {
+  e.stopPropagation()
+  if (!currentAccountId.value)
+    return
+  await friendStore.toggleAutoBad(currentAccountId.value, Number(friend.gid))
 }
 
 function getFriendStatusText(friend: any) {
@@ -789,6 +799,7 @@ async function handleBatchAddKnownFriendGids() {
             :page-size="pageSize"
             :blacklist-gid-set="blacklistGidSet"
             :watchlist-gid-set="watchlistGidSet"
+            :auto-bad-gid-set="autoBadGidSet"
             :known-friend-gid-set="knownFriendGidSet"
             :expanded-friends="expandedFriends"
             :friend-lands="friendLands"
@@ -805,6 +816,7 @@ async function handleBatchAddKnownFriendGids() {
             @operate="handleOp"
             @toggle-blacklist="handleToggleBlacklist"
             @toggle-watchlist="handleToggleWatchlist"
+            @toggle-auto-bad="handleToggleAutoBad"
             @remove-known-friend-gid="handleRemoveKnownFriendGid"
             @friend-avatar-error="handleFriendAvatarError"
           />

@@ -291,6 +291,50 @@ function registerAdminFriendRoutes({
     });
   });
 
+  // 在线自动捣乱：好友上线（活跃证据）时巡查顺带随机放虫/放草，名单独立于重点监控
+  app.get("/api/friend-auto-bad", async (req, res) => {
+    const accountId = getAccountOrRespond(req, res, access);
+    if (!accountId) return;
+
+    const list = store.getAutoBadFriendGids
+      ? store.getAutoBadFriendGids(accountId)
+      : [];
+    const metaByGid = await getFriendMetaByGid(provider, accountId);
+    res.json({
+      ok: true,
+      data: formatFriendBlacklist(list, metaByGid),
+    });
+  });
+
+  app.post("/api/friend-auto-bad/toggle", async (req, res) => {
+    const accountId = getAccountOrRespond(req, res, access);
+    if (!accountId) return;
+
+    const gid = Number((req.body || {}).gid);
+    if (!gid) {
+      return res.status(400).json({ ok: false, error: "Missing gid" });
+    }
+
+    const list = store.getAutoBadFriendGids
+      ? store.getAutoBadFriendGids(accountId)
+      : [];
+    const next = list.includes(gid)
+      ? list.filter((item) => item !== gid)
+      : [...list, gid];
+    const saved = store.setAutoBadFriendGids
+      ? store.setAutoBadFriendGids(accountId, next)
+      : next;
+    if (provider && typeof provider.broadcastConfig === "function") {
+      provider.broadcastConfig(accountId);
+    }
+
+    const metaByGid = await getFriendMetaByGid(provider, accountId);
+    res.json({
+      ok: true,
+      data: formatFriendBlacklist(saved, metaByGid),
+    });
+  });
+
   app.get("/api/friend-known-gids", (req, res) => {
     const accountId = getAccountOrRespond(req, res, access);
     if (!accountId) return;

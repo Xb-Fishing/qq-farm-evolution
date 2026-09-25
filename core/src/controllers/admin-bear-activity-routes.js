@@ -26,8 +26,9 @@ function registerAdminBearActivityRoutes({
     try {
       if (!requireConnectedAccount(res, provider, accountId, '获取S3 萌宠失败: 账号未运行'))
         return;
+      // 缓存键带路由名，与 season 两组活动隔离（同一账号下三组面板互不串数据）。
       const result = await activityReader.read(
-        accountId,
+        `/api/activity/bear:${accountId}`,
         () => provider.getBearActivity(accountId),
       );
       res.json({

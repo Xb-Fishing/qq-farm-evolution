@@ -2105,3 +2105,11 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - Claude Code 只读核对公开官方说明，现有扫码 scope 组合符合 PC 小程序授权要求。公开材料不足以确认本次 40188 的触发原因、刷新后的权限保留策略或权限有效期；不得把合成的“刷新成功后 buffer 拒绝”测试写成线上实证。令牌续期与小程序授权范围不同，无法据现有证据承诺永久免扫码，亦不通过猜测增加 scope 或高频请求。
 - 验证：新增适配层四项行为回归、服务层两项阶段与脱敏回归；协调进程在隔离旧基线独立运行当前四项适配层测试，4/4 因行为断言失败，无导入或环境错误。当前全量后端 707/707 通过；前端类型检查、隔离构建及改动文件 ESLint 通过。本次检查另确认 17:13 UTC 新凭据保存后约十秒出现真实游戏登录成功；它证明当前授权可以进入游戏，尚不能证明跨日持续续期，未标记相关反馈全部解决。
 - 本轮不修改协议、设备身份、游戏调度或页面角色选择；保留现有在线连接不受保活失败主动打断的规则。回滚仅撤销本轮源码与测试差异，不恢复旧凭据。继续通过既有运行窗格部署。
+
+## 活动读缓存接线修复与好友在线自动捣乱（2026-09-25，维护会话）
+
+- **活动面板「账号未运行」根因（两连坑，同文件）**：`activity-read-cache` 以无参调用 loader（`then(loader)`），`admin-season-activity-routes` 的参数风格 `read: (accountId) => provider.getX(accountId)` 拿到 undefined（形参遮蔽路由作用域同名变量）→ `resolveAccountId('')` → `workers['']` 不存在 → 同步 reject 账号未运行；且缓存键只按 accountId，三组活动共用一个 reader，一个失败 60s 内全部报错、一个成功会把数据串到别的面板。修复：缓存把 key 传给 loader、键改为 `路由:accountId`、`clear` 支持裸 accountId 后缀匹配清除。回归 `activity-read-cache-loader-arg.test.js` 断言参数风格 loader 收到 key 且两路由各自真实读取。
+- **排查方法沉淀**：毫秒级返回的错误必是同步 reject 或命中失败缓存（真上游慢会消耗 timeout 时长）；静态分析打结时用一次性 appendFileSync 布点 reject 点与路由 catch（accountId 实值 + workers keys + stack），重启复现一次即定位，用完删净。完整 skill 见本机 `core/docs/skills/cache-loader-contract.md`（不进 git）。
+- **好友在线自动捣乱开关（新功能）**：好友页每个好友新增「在线捣乱」按钮（紫色列）。名单 `autoBadFriendGids` 按账号持久化（与重点监控同构），路由 `GET/POST /api/friend-auto-bad(/toggle)`，切换即 broadcastConfig 让 Worker 生效。巡查循环检测到名单内好友上线（10 秒在线证据）时补进巡查目标（无帮助需求也进门），**一次上线只触发一次**（离线超 3 分钟再上线才重新触发）；实际放虫/放草在 `visitFriendForHelp` 内随机选地块、随机 1-3 块，受服务端每日限额与 bot 侧 BAD_DAILY_LIMIT 约束，帮助经验上限不拦截捣乱目标。回归 `friend-auto-bad.test.js` 覆盖存取往返、config_sync 合并、路由切换与广播。
+- **重点在线快档（700-1000ms 轮询）保留不删**：用户确认现有「重点好友上线即偷」（推送直达 fast-lane + PREARM）已够用，明确不动。
+- 验证：全量后端 708/708 通过；前端构建通过并部署；线上 toggle 往返与三个活动端点返回真实数据均已确认。
