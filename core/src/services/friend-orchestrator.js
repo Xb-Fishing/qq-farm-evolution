@@ -3,7 +3,6 @@ const {
   isAutomationOn,
   getFriendBlacklist,
   getWatchlistFriendGids,
-  getAutoBadFriendGids,
   getAutoAcceptFriendMinLevel,
   getKnownFriendGids,
   applyConfigSnapshot,
@@ -34,7 +33,7 @@ const {
 const { getBreakerState } = require('./request-governor');
 const friendActivity = require('./friend-activity');
 const { isFriendActiveRecently: isFriendActiveEvidence } = friendActivity;
-const { isFriendAtHomeRecently: isFriendAtHome, isFriendOnlineRecently: isFriendOnlineEvidence } = friendActivity;
+const { isFriendOnlineRecently: isFriendOnlineEvidence } = friendActivity;
 const { recordEvent } = require('./daily-events');
 const { getInteractRecords } = require('./interact');
 const {
@@ -81,6 +80,9 @@ const {
 
 // ===== State =====
 let isCheckingFriends = false;
+// watchlist 巡田单次进门在途标志：与 checkFriends/在线捣乱调度互斥用
+// （三者都会对好友发 Enter，同时出发会把两个农场的会话串起来）
+let watchlistVisitInFlight = false;
 let friendLoopRunning = false;
 let externalSchedulerMode = false;
 const friendScheduler = createScheduler('friend');
@@ -107,10 +109,6 @@ const watchlistPollRipeAt = new Map();
 const watchlistNames = new Map();
 let watchlistPollLoopArmed = false;
 const WATCHLIST_POLL_TICK_MS = 3_000;
-// 在线自动捣乱：一次上线只捣乱一次；离线超过该间隙后再次上线才重新触发
-// （协议只能看到"有动作"，安静超时后恢复动作视作新一次上线）。
-const AUTO_BAD_SESSION_GAP_MS = 3 * 60_000;
-const autoBadSessionState = new Map(); // gid -> { done, lastOnlineAt }
 // 普通重点巡田只负责更新成熟墙钟/施肥基线，不关心对方日常收菜和重种。
 // 未知或无作物保持 5-8 分钟；已知进入 122 分钟观察范围收紧到 45-75 秒。
 // 真正发现施肥趋势后由 fertilizer-watch 独立切换到秒级 HOT。
@@ -462,7 +460,10 @@ async function checkFriends(options = {}) {
 
   const shouldRun = doHelp || doSteal || doBad;
 
+  // 与在线捣乱调度互斥：对方在途进门时全量巡查让出（防同时 Enter 串农场）。
+  // 惰性 require 规避循环依赖，但不吞异常——函数缺失必须当场暴露。
   if (isCheckingFriends || !userState.gid || !shouldRun) return false;
+  if (require('./friend-auto-bad').isAutoBadRunning()) return false;
   // 静默时段不再挡偷菜；帮助/捣乱在时段内直接歇着
   if (inFriendQuietHours() && !doSteal) return false;
 
@@ -520,7 +521,6 @@ async function checkFriends(options = {}) {
 
     const blacklist = new Set(getFriendBlacklist(accountId));
     const watchlistSet = new Set(getWatchlistFriendGids(accountId));
-    const autoBadSet = new Set((getAutoBadFriendGids(accountId) || []).map(toNum));
     const dogInfoCache = readFriendDogInfoCache(accountId);
     const guardDogGidSet = dogInfoCache
       ? new Set(Object.keys(dogInfoCache).map(Number))
@@ -600,36 +600,6 @@ async function checkFriends(options = {}) {
             hasGuardDog,
           });
         }
-      }
-    }
-
-    // 在线自动捣乱：名单内好友上线时补进巡查目标（哪怕没有帮助需求），
-    // 一次上线只触发一次；实际放虫/放草的数量与地块在 visitFriendForHelp 内随机。
-    if (doHelp) {
-      const autoBadNow = Date.now();
-      for (const friend of rawFriends) {
-        const gid = toNum(friend.gid);
-        if (!autoBadSet.has(gid) || gid === userState.gid || blacklist.has(gid)) continue;
-        const state = autoBadSessionState.get(gid) || { done: false, lastOnlineAt: 0 };
-        if (friendActivity.isFriendOnlineRecently(gid)) {
-          state.lastOnlineAt = autoBadNow;
-          if (!state.done) {
-            state.done = true;
-            helpTargets.push({
-              gid,
-              name: friend.remark || friend.name || `GID:${gid}`,
-              dryNum: 0,
-              weedNum: 0,
-              insectNum: 0,
-              dogId: 0,
-              hasGuardDog: false,
-              autoBadOnline: true,
-            });
-          }
-        } else if (autoBadNow - state.lastOnlineAt > AUTO_BAD_SESSION_GAP_MS) {
-          state.done = false;
-        }
-        autoBadSessionState.set(gid, state);
       }
     }
 
@@ -845,6 +815,10 @@ function startFriendCheckLoop(opts = {}) {
   // Listen for friend application events
   networkEvents.on('friendApplicationReceived', onFriendApplicationReceived);
 
+  // 在线自动捣乱独立调度（显式名单驱动，不受 doHelp/帮助经验上限牵连），
+    // 与好友巡查同生命周期启动/停止
+  require('./friend-auto-bad').startAutoBadLoop();
+
   if (!externalSchedulerMode) {
     // Start after a 2-minute delay
     const initialDelay = 2 * 60 * 1000;
@@ -869,6 +843,7 @@ function stopFriendCheckLoop() {
   externalSchedulerMode = false;
   dogInfoBootstrapAttempted = false;
   dogInfoBootstrapReadyAt = 0;
+  require('./friend-auto-bad').stopAutoBadLoop();
   watchlistPollLoopArmed = false;
   watchlistPollNextAt.clear();
   clearAllInvalidKnownFriendGidCooldown();
@@ -1184,6 +1159,14 @@ function isCheckingFriendsRunning() {
   return isCheckingFriends;
 }
 
+/**
+ * 好友进门类任务是否在途（checkFriends 全量巡查或 watchlist 巡田单访）。
+ * 供 friend-auto-bad 调度互斥：任一在途时不得再对好友 Enter。
+ */
+function isFriendVisitBusy() {
+  return isCheckingFriends || watchlistVisitInFlight;
+}
+
 // ===== Sync friends from external GID list =====
 
 async function syncFriendsFromGids(gids) {
@@ -1382,7 +1365,7 @@ function ensureWatchlistPollLoop() {
   friendScheduler.setTimeoutTask('watchlist_poll', watchlistPollTickDelayMs(), () => watchlistPollTick());
   // 批量在场感知暂停启用（2026-09-22 实测：wx 端 BatchGetBasicInfo 回空包、
   // GetBriefInfo 直接报错；代码保留，QQ 平台验证通过后恢复）。
-  // ensurePresencePollLoop();
+  // _ensurePresencePollLoop();
 }
 
 // ===== 批量在场感知（精确 trigger，2026-09-22 调研落地）=====
@@ -1394,7 +1377,9 @@ const PRESENCE_POLL_MS = 10_000;
 let presencePollArmed = false;
 let presenceBaselineLogged = false;
 
-function ensurePresencePollLoop() {
+// 未挂入调度（QQ 平台验证后恢复调用点），保留调研逻辑故不删除。
+// eslint-disable-next-line no-unused-vars
+function _ensurePresencePollLoop() {
   if (presencePollArmed) return;
   presencePollArmed = true;
   friendScheduler.setTimeoutTask('presence_poll', PRESENCE_POLL_MS, () => presencePollTick());
@@ -1480,8 +1465,9 @@ async function watchlistPollTick() {
       friendScheduler.setTimeoutTask('watchlist_poll', 30_000, () => watchlistPollTick());
       return;
     }
-    // 不跟抢收/全量巡查抢通道
-    if (isCheckingFriends || stealIsDue() || stealIsImminent(1200)
+    // 不跟抢收/全量巡查/在线捣乱调度抢通道（互斥：同时 Enter 会串农场）
+    if (isCheckingFriends || require('./friend-auto-bad').isAutoBadRunning()
+        || stealIsDue() || stealIsImminent(1200)
         || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) {
       friendScheduler.setTimeoutTask('watchlist_poll', watchlistPollTickDelayMs(), () => watchlistPollTick());
       return;
@@ -1499,9 +1485,12 @@ async function watchlistPollTick() {
       const name = watchlistNames.get(gid) || `GID:${gid}`;
       const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
       let result = null;
+      watchlistVisitInFlight = true;
       try {
         result = await visitFriendForSteal({ gid, name }, tally, userState.gid, accountId);
-      } catch { }
+      } catch { } finally {
+        watchlistVisitInFlight = false;
+      }
       if (tally.steal > 0) {
         try { await sellAllFruits(); } catch { }
       }
@@ -1751,6 +1740,8 @@ module.exports = {
   runBadOnceOnStartup,
   isHelpExpLimitReached,
   isCheckingFriendsRunning,
+  isFriendVisitBusy,
+  isFriendBadPaused,
   clearFriendsListCache,
   syncFriendsFromGids,
   getNextStealMatureInMs,

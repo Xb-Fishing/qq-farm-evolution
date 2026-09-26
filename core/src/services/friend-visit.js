@@ -320,6 +320,19 @@ async function visitFriend(friend, tally, myGid, accountId) {
     return { acted: false, entered: false };
   }
 
+  // 好友实时在场信号（2026-09-22 调研，外部参考仓库逆向 field 6/17）：进门
+  // 回包自带"好友此刻在不在农场"与最后上线时刻，统一走 friend-activity
+  // 的 noteEnterPresence（at_home / last_online 进活跃表）。
+  // 2026-09-26 验收修复：必须在空地块早退之前——所有进门路径（含空土地）
+  // 都先记录 presence 再返回。
+  try {
+    const presence = friendActivity.noteEnterPresence(gid, enterReply);
+    if (presence.onlineEdge) {
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+        `好友上线：${name || `GID:${gid}`}`);
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
+
   const lands = enterReply.lands || [];
   if (lands.length === 0) {
     inspectFriendLands(gid, name, []);
@@ -330,27 +343,6 @@ async function visitFriend(friend, tally, myGid, accountId) {
 
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
   const ripeAtMs = Number(inspectResult.ripeAt) || 0;
-
-  // 好友实时在场信号（2026-09-22 调研，外部参考仓库逆向 field 6/17）：进门
-  // 回包自带"好友此刻在不在农场"与最后上线时刻。at_home=true 是唯一真·
-  // 实时在线信号，直接进活跃表收紧巡田节奏；值语义未定前原样记 detail。
-  try {
-    if (enterReply.at_home) {
-      friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
-      // 上线上升沿 → 今日事件（持续在线只记一次）
-      if (friendActivity.noteAtHomeEdge(gid, true)) {
-        recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-          `好友上线：${name || `GID:${gid}`}`);
-      }
-    } else {
-      friendActivity.noteAtHomeEdge(gid, false);
-    }
-    const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
-    if (lastOnlineSec > 0) {
-      const atMs = lastOnlineSec > 1e12 ? lastOnlineSec : lastOnlineSec * 1000;
-      friendActivity.recordActivity(gid, Math.min(atMs, Date.now()), 'last_online', String(lastOnlineSec));
-    }
-  } catch { /* 证据记录失败不影响进门主流程 */ }
 
   const plantBlacklist = getPlantBlacklist(accountId);
   const analysis = analyzeFriendLands(lands, myGid, name, { plantBlacklist });
@@ -647,6 +639,16 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     }
   }
 
+  // 好友实时在场信号（同 visitFriend）：统一走 noteEnterPresence。
+  // 2026-09-26 验收修复：空地块早退之前记录，所有进门路径不漏。
+  try {
+    const presence = friendActivity.noteEnterPresence(gid, enterReply);
+    if (presence.onlineEdge) {
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+        `好友上线：${name || `GID:${gid}`}`);
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
+
   const lands = enterReply.lands || [];
   if (lands.length === 0) {
     inspectFriendLands(gid, name, []);
@@ -657,25 +659,6 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
   const ripeAtMs = Number(inspectResult.ripeAt) || 0;
-
-  // 好友实时在场信号（同 visitFriend）：at_home / last_online 进活跃表
-  try {
-    if (enterReply.at_home) {
-      friendActivity.recordActivity(gid, Date.now(), 'at_home', 'host in farm');
-      // 上线上升沿 → 今日事件（持续在线只记一次）
-      if (friendActivity.noteAtHomeEdge(gid, true)) {
-        recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-          `好友上线：${name || `GID:${gid}`}`);
-      }
-    } else {
-      friendActivity.noteAtHomeEdge(gid, false);
-    }
-    const lastOnlineSec = toNum(enterReply.basic && enterReply.basic.last_online);
-    if (lastOnlineSec > 0) {
-      const atMs = lastOnlineSec > 1e12 ? lastOnlineSec : lastOnlineSec * 1000;
-      friendActivity.recordActivity(gid, Math.min(atMs, Date.now()), 'last_online', String(lastOnlineSec));
-    }
-  } catch { /* 证据记录失败不影响进门主流程 */ }
 
   const plantBlacklist = getPlantBlacklist(accountId);
   const analysis = analyzeFriendLands(lands, myGid, name, { plantBlacklist });
@@ -787,8 +770,8 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
 
   if (!checkExpLimit) setCanGetHelpExp(true);
 
-  // Skip if exp limit reached and no guard dog（在线自动捣乱目标不受帮助经验上限牵连）
-  if (checkExpLimit && !getCanGetHelpExp() && !hasGuardDog && !friend.autoBadOnline) {
+  // Skip if exp limit reached and no guard dog
+  if (checkExpLimit && !getCanGetHelpExp() && !hasGuardDog) {
     return { acted: false, entered: false };
   }
 
@@ -810,6 +793,16 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
     });
     return { acted: false, entered: false };
   }
+
+  // 帮助进门也产出在场证据（与其他进门路径共用 noteEnterPresence，
+  // 在线证据生产/消费口径与面板 online 定义一致）
+  try {
+    const presence = friendActivity.noteEnterPresence(gid, enterReply);
+    if (presence.onlineEdge) {
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+        `好友上线：${name || `GID:${gid}`}`);
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
 
   const lands = enterReply.lands || [];
   if (lands.length === 0) {
@@ -900,49 +893,209 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
     });
   }
 
-  // ---- 在线自动捣乱（面板 per-friend 开关）：好友在线时随机放虫/放草 ----
-  // 目标由巡查循环按「名单 + 在线证据」选出并打上 autoBadOnline 标记；
-  // 每次 1-3 块随机地块，总量仍受服务端每日限额与 bot 侧 BAD_DAILY_LIMIT 约束。
-  if (friend.autoBadOnline && getBadRemainingTimes() > 0) {
-    const pickRandomLands = (list, cap) => {
-      const shuffled = [...list].sort(() => Math.random() - 0.5);
-      const n = Math.min(cap, shuffled.length, 1 + Math.floor(Math.random() * 3));
-      return shuffled.slice(0, Math.max(1, n));
-    };
-    try {
-      if (analysis.canPutBug.length > 0
-        && (await checkCanOperateRemote(gid, PUT_BUG_OPERATION_ID)).canOperate) {
-        const remainingBug = Math.min(
-          getRemainingTimes(PUT_BUG_OPERATION_ID, BAD_DAILY_LIMIT),
-          getBadRemainingTimes()
-        );
-        const targets = pickRandomLands(analysis.canPutBug, remainingBug);
-        const result = await putInsectsDetailed(gid, targets);
-        if (result.ok > 0) {
-          actionLogs.push(`放虫${result.ok}`);
-          tally.putBug += result.ok;
-        }
-        await randomDelay(500, 1500);
-      }
-      if (analysis.canPutWeed.length > 0
-        && (await checkCanOperateRemote(gid, PUT_WEED_OPERATION_ID)).canOperate) {
-        const remainingWeed = Math.min(
-          getRemainingTimes(PUT_WEED_OPERATION_ID, BAD_DAILY_LIMIT),
-          getBadRemainingTimes()
-        );
-        const targets = pickRandomLands(analysis.canPutWeed, remainingWeed);
-        const result = await putWeedsDetailed(gid, targets);
-        if (result.ok > 0) {
-          actionLogs.push(`放草${result.ok}`);
-          tally.putWeed += result.ok;
-        }
-        await randomDelay(500, 1500);
-      }
-    } catch { /* 捣乱失败按单次静默，不影响帮助结果 */ }
-  }
-
   await leaveFriendFarm(gid);
   return { acted: actionLogs.length > 0, entered: true, ripeAtMs };
+}
+
+// ===== 在线自动捣乱（面板 per-friend 开关，friend-auto-bad 调度调用）=====
+
+/**
+ * 随机选 1-3 块可放地块。cap<=0 或无地块时返回空数组——零额度绝不
+ * slice 一块（旧实现的 Math.max(1, n) 会在额度为 0 时仍发一次请求）。
+ */
+function pickRandomLands(list, cap) {
+  const shuffled = [...(Array.isArray(list) ? list : [])].sort(() => Math.random() - 0.5);
+  const n = Math.min(Number(cap) || 0, shuffled.length, 1 + Math.floor(Math.random() * 3));
+  return n > 0 ? shuffled.slice(0, n) : [];
+}
+
+/**
+ * 对在线好友随机放虫/放草。虫与草相互独立：一方无可放地块/额度/失败
+ * 不阻断另一方；总每日额度为 0 时零请求直接返回。
+ * impl.guard（可选）在每种写动作前复查：返回 false 立即停止剩余写
+ * （暂停/移出名单/让步/代际失效），reasons 记 <kind>_aborted。
+ * 返回 { bug, weed, reasons, aborted }（固定原因码，供日志与调度退避归因）。
+ * impl 仅供 core/test 注入网络替身，生产留空走真实协议。
+ */
+async function placeAutoBadItems(gid, analysis, tally, impl = {}) {
+  const checkCanOperate = impl.checkCanOperate || checkCanOperateRemote;
+  const putInsects = impl.putInsects || putInsectsDetailed;
+  const putWeeds = impl.putWeeds || putWeedsDetailed;
+  const badRemaining = impl.badRemaining || getBadRemainingTimes;
+  const remainingFor = impl.remainingFor || ((opId, limit) => getRemainingTimes(opId, limit));
+  const guard = impl.guard || null;
+  const result = { bug: 0, weed: 0, reasons: [], aborted: false };
+
+  if (badRemaining() <= 0) {
+    result.reasons.push('cap_zero');
+    return result;
+  }
+
+  const place = async (kind, list, opId, putFn, tallyKey) => {
+    // 写动作前复查（2026-09-26 验收）：进门是异步的，进门期间守卫可能翻转
+    if (guard && !guard()) {
+      result.aborted = true;
+      result.reasons.push(`${kind}_aborted`);
+      return;
+    }
+    const remaining = Math.min(remainingFor(opId, BAD_DAILY_LIMIT), badRemaining());
+    if (remaining <= 0) {
+      result.reasons.push(`${kind}_cap_zero`);
+      return;
+    }
+    if (!Array.isArray(list) || list.length === 0) {
+      result.reasons.push(`no_${kind}_plots`);
+      return;
+    }
+    // 单项 check+put 独立 try：虫的远程检查抛错不得跳过草，也不得让
+    // 调用方失去 Leave 机会；错误只记固定原因码
+    try {
+      const canOp = await checkCanOperate(gid, opId);
+      if (!canOp || !canOp.canOperate) {
+        result.reasons.push(`${kind}_denied`);
+        return;
+      }
+      // 远程 check 是异步的：等待期间暂停/stop/移出名单必须零写——
+      // check 完成后、紧贴 put 前再查一次 guard
+      if (guard && !guard()) {
+        result.aborted = true;
+        result.reasons.push(`${kind}_aborted`);
+        return;
+      }
+      const targets = pickRandomLands(list, remaining);
+      if (targets.length === 0) {
+        result.reasons.push(`no_${kind}_targets`);
+        return;
+      }
+      try {
+        const put = await putFn(gid, targets);
+        if (put && put.ok > 0) {
+          result[kind] += put.ok;
+          tally[tallyKey] += put.ok;
+        } else {
+          result.reasons.push(`${kind}_rejected`);
+        }
+      } catch {
+        result.reasons.push(`${kind}_error`);
+      }
+    } catch {
+      result.reasons.push(`${kind}_error`);
+    }
+    await randomDelay(500, 1500);
+  };
+
+  await place('bug', analysis && analysis.canPutBug, PUT_BUG_OPERATION_ID, putInsects, 'putBug');
+  await place('weed', analysis && analysis.canPutWeed, PUT_WEED_OPERATION_ID, putWeeds, 'putWeed');
+
+  log('好友', `在线自动捣乱 → 放虫${result.bug}/放草${result.weed}${result.reasons.length ? `（${result.reasons.join(',')}）` : ''}`, {
+    module: 'friend',
+    event: '在线自动捣乱',
+    result: result.bug + result.weed > 0 ? 'ok' : 'zero',
+    friendGid: gid,
+    putBug: result.bug,
+    putWeed: result.weed,
+    reasons: result.reasons,
+  });
+  return result;
+}
+
+/**
+ * 在线捣乱专用进门：Enter 回包本身就是在线探测（at_home / last_online，
+ * noteEnterPresence 统一入表），在线且未完成会话时才放虫/放草。
+ * 调度方（friend-auto-bad）负责名单、守卫、会话与退避。
+ * options.guard（可选）在进门后与每种写动作前复查（placeAutoBadItems
+ * 内逐项执行）：返回 false 时停止剩余写并带 aborted=true 返回。
+ * 返回 { entered, online, bug, weed, reason, aborted, offlineSinceMs }；
+ * reason 为固定原因码；offlineSinceMs=at_home=false 且服务端下发
+ * last_online 时的离线时刻（墙钟 ms，0=未知）。
+ * impl 仅供 core/test 注入网络替身（enter/leave/analyze/place），
+ * 生产留空走真实协议。
+ */
+async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
+  const { gid, name } = friend;
+  const allowPlace = options.allowPlace !== false;
+  const guard = options.guard || null;
+  const impl = options.impl || {};
+
+  const enter = impl.enter || enterFriendFarm;
+  const leave = impl.leave || leaveFriendFarm;
+
+  let enterReply;
+  try {
+    enterReply = await enter(gid);
+  } catch (err) {
+    const handled = handleFriendEnterError(gid, name, err);
+    if (handled.handled) {
+      if (handled.kind === 'blacklist') unwatchFriend(gid);
+      return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed' };
+    }
+    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+      module: 'friend',
+      event: '进入农场',
+      result: 'error',
+      friendName: name,
+      friendGid: gid,
+    });
+    return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed' };
+  }
+
+  // 进门即记录 presence（含空地块早退路径），Enter 回包同时是离线探测
+  let atHomeNow = false;
+  let offlineSinceMs = 0;
+  try {
+    const presence = friendActivity.noteEnterPresence(gid, enterReply);
+    atHomeNow = presence.atHome;
+    offlineSinceMs = atHomeNow ? 0 : presence.lastOnlineMs;
+    if (presence.onlineEdge) {
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
+        `好友上线：${name || `GID:${gid}`}`);
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
+  // 在线判定：本次进门 at_home，或 10 秒窗口内的已证实在线证据
+  // （at_home/lands_push/presence_online，与快档/面板同口径）
+  const online = atHomeNow || friendActivity.isFriendOnlineRecently(gid);
+
+  // 进门是异步的：进门后先复查守卫（暂停/移出名单/让步/代际失效），
+  // 失败直接离开，不再做任何写动作
+  if (guard && !guard()) {
+    await leave(gid);
+    return { entered: true, online, bug: 0, weed: 0, reason: 'aborted', aborted: true, offlineSinceMs };
+  }
+
+  const lands = enterReply.lands || [];
+  if (!online || !allowPlace || lands.length === 0) {
+    if (lands.length === 0) inspectFriendLands(gid, name, []);
+    await leave(gid);
+    return {
+      entered: true,
+      online,
+      bug: 0,
+      weed: 0,
+      reason: !online ? 'not_online' : (!allowPlace ? 'session_done' : 'no_lands'),
+      offlineSinceMs,
+    };
+  }
+
+  inspectFriendLands(gid, name, lands);
+  const analysis = (impl.analyze || analyzeFriendLands)(lands, myGid, name, {});
+  // 进入成功后 Leave 用 finally 保证：放虫/放草任何异常都不许跳过离开
+  let placed = { bug: 0, weed: 0, reasons: [], aborted: false };
+  try {
+    placed = await placeAutoBadItems(gid, analysis, tally, { guard, ...(impl.place || {}) });
+  } catch {
+    placed = { bug: 0, weed: 0, reasons: ['place_error'], aborted: false };
+  } finally {
+    await leave(gid);
+  }
+  return {
+    entered: true,
+    online: true,
+    bug: placed.bug,
+    weed: placed.weed,
+    reason: placed.reasons.join(',') || null,
+    aborted: placed.aborted,
+    offlineSinceMs,
+  };
 }
 
 // ===== Exports =====
@@ -954,4 +1107,6 @@ module.exports = {
   visitFriend,
   visitFriendForSteal,
   visitFriendForHelp,
+  visitFriendForAutoBad,
+  placeAutoBadItems,
 };

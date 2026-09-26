@@ -382,7 +382,7 @@ async function getActivityDiscoveryList() {
   return flattenDiscoveryActivities(reply?.groups).sort((a, b) => b.id - a.id);
 }
 
-async function getActivityGroupSnapshot(activityId, uid = '') {
+async function getActivityGroupSnapshot(activityId, uid = '', options = {}) {
   // 调用方只允许传入 ActivityService.List 已下发的根活动；这里读取该根的正常详情。
   // 明确业务响应不触发普通异常降速，网络超时/断线仍照常计入。
   const reply = await getActivityGroup(activityId, uid, { discoveryProbe: true });
@@ -396,6 +396,11 @@ async function getActivityGroupSnapshot(activityId, uid = '') {
   if (drawInfo) {
     const { _hasFreeRemaining, _hasPaidRemaining, ...safeDrawInfo } = drawInfo;
     fallbackDetails.draw = safeDrawInfo;
+  }
+  // 原始回包绝不进入返回值（本快照会经 Worker 管理通道 / API 直接外发、扫描器持久化）；
+  // 需要二次解码的服务内调用方（萌宠一键领取资格）通过 onRawBody 私有回调就地消费。
+  if (typeof options?.onRawBody === 'function') {
+    options.onRawBody(reply?.__rawBody ? Buffer.from(reply.__rawBody) : null);
   }
   return {
     ...snapshot,
@@ -910,7 +915,20 @@ async function getBearActivity(options = {}) {
   if (!(activities || []).some(node => toNum(node.id) === bearActivity.BEAR_ACTIVITY_ID && toNum(node.parentId) === 0)) {
     throw new Error('S3 萌宠未由当前 ActivityService.List 下发，停止读取活动详情');
   }
-  const snapshot = await snapshotReader(bearActivity.BEAR_ACTIVITY_ID, '');
+  let claimEligibility = { available: false, reason: 'S3 萌宠实时领取状态未知' };
+  const snapshot = await snapshotReader(bearActivity.BEAR_ACTIVITY_ID, '', {
+    // 一键领取资格：萌宠专用解码器在快照读取处就地消费原始回包（零额外请求），
+    // 原始字节不落到快照对象上；解码失败保持未知，前端跳过不试写。
+    onRawBody: (rawBody) => {
+      try {
+        if (rawBody) {
+          claimEligibility = bearActivity.summarizeBearClaimEligibility(
+            types.PetDiaryGetGroupReply.decode(rawBody),
+          );
+        }
+      } catch { /* 缺少可靠资格时前端只跳过并显示原因，不试写 */ }
+    },
+  });
   if (toNum(snapshot?.id) !== bearActivity.BEAR_ACTIVITY_ID) {
     throw new Error('S3 萌宠活动组不匹配，停止读取');
   }
@@ -933,6 +951,8 @@ async function getBearActivity(options = {}) {
   const activity = bearActivity.normalizeBearActivity(snapshot, {
     ...options, counts: inventory.counts, inventoryAvailable: inventory.available,
   });
+  // 一键领取资格已在快照读取回调里就地解码（见上方 onRawBody）；这里只挂到展示对象。
+  activity.claimEligibility = claimEligibility;
   activityLogger.info('S3 萌宠只读状态刷新', {
     event: 'bear_activity_read', activityId: bearActivity.BEAR_ACTIVITY_ID,
     gameplayCount: activity.gameplayGuides.length, exchangeItemCount: activity.exchangeShop.length,

@@ -793,6 +793,16 @@ function getBagSeedsFromItems(items) {
       unclassifiedItemIds: unclassifiedIds,
       addedItemIds: added,
     });
+    // 新增未识别 ID 同步进自动进化待办收件箱：自动进化每天只在固定窗口跑一轮，
+    // 当日出现的新活动种子/道具靠这里进入待办，不会被“扫描 up-to-date”假清零。
+    // 只有真正出现新 ID（added 非空）才上报；同签名重复 tick 与纯消失不刷次数。
+    if (added.length > 0) {
+      try {
+        require('./evolution-issue-inbox').recordRuntimeIssue('bag_unclassified', 'warn');
+      } catch {
+        // 收件箱写失败不影响背包识别主链路
+      }
+    }
   }
   if (unclassifiedIds.length === 0 && lastUnclassifiedSignature) {
     // 全部补齐后复位，未来再出现新未识别物品可重新报告

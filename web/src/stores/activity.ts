@@ -593,6 +593,22 @@ export interface BearActivityData {
   protocol: { declaredReadOnlyFields: number[], opaqueReadOnlyFields: number[] }
   ruleSections: Array<{ sourceId: number, key: string, title: string, lines: string[] }>
   missingEvidence: string[]
+  /** 一键领取资格汇总（服务端 GetGroup 同条回包推导；未知时前端跳过不试写） */
+  claimEligibility?: {
+    available: boolean
+    reason?: string
+    stories?: number[]
+    dogClaimable?: boolean
+    compensationCount?: number
+    seedsClaimable?: boolean
+  } | null
+}
+
+export interface ClaimAllItemResult {
+  key: string
+  label: string
+  status: 'success' | 'failed' | 'skipped'
+  detail: string
 }
 
 export const useActivityStore = defineStore('activity', () => {
@@ -612,10 +628,33 @@ export const useActivityStore = defineStore('activity', () => {
   // 并让它的 loading 永远不清（2026-09-24 面板"一直刷新"事故）
   const seasonRuleRequestIds: Record<'wish' | 'happyShare', number> = { wish: 0, happyShare: 0 }
 
+  // 秋祈良愿 / 快乐不独享手动操作（写操作仅由面板按钮或一键领取触发；成功后由调用方重新拉取只读状态）
+  const seasonWishOperating = ref('')
+  // 单项操作代次：取消/切账号/新一轮开始后，旧 response 的 finally 不得清掉新代次的 busy
+  let seasonWishOperateSeq = 0
+  // 一键领取运行态：与单项操作互斥（运行中拒绝单项，单项进行中拒绝一键）
+  const claimAllRunning = ref(false)
+  const claimAllStep = ref('')
+  const claimAllResults = ref<ClaimAllItemResult[]>([])
+  let claimAllRunId = 0
+  // 萌宠手动操作（写操作仅由面板按钮或一键领取触发；成功后由调用方重新拉取只读状态）
+  const bearOperating = ref('')
+  let bearOperateSeq = 0
+
   function clearActivityData() {
     ++bearRequestId
     ++seasonRuleRequestIds.wish
     ++seasonRuleRequestIds.happyShare
+    // 账号切换：取消一键领取（停止后续请求），旧账号结果不展示给新账号；
+    // 同时作废在飞单项操作代次，旧 response 的 finally 不得清掉新账号的 busy 状态
+    ++claimAllRunId
+    claimAllRunning.value = false
+    claimAllStep.value = ''
+    claimAllResults.value = []
+    ++seasonWishOperateSeq
+    ++bearOperateSeq
+    seasonWishOperating.value = ''
+    bearOperating.value = ''
     bearActivity.value = null
     bearLoading.value = false
     bearError.value = ''
@@ -715,11 +754,9 @@ export const useActivityStore = defineStore('activity', () => {
     return fetchSeasonRuleActivity('happyShare', accountId)
   }
 
-  // 秋祈良愿 / 快乐不独享手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
-  const seasonWishOperating = ref('')
-  async function operateSeasonWish(accountId: string, action: string, input: Record<string, unknown> = {}) {
-    if (!accountId || seasonWishOperating.value)
-      return { ok: false, error: '操作进行中' }
+  // 实际发请求的内部入口（公共入口多一层一键互斥；runner 串行调用这里）
+  async function performSeasonWishOperate(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    const opSeq = ++seasonWishOperateSeq
     seasonWishOperating.value = action
     try {
       const { data } = await api.post('/api/activity/season-wish/operate', {
@@ -731,18 +768,22 @@ export const useActivityStore = defineStore('activity', () => {
       return data
     }
     catch (err: any) {
-      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败' }
+      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败', status: err?.response?.status, code: err?.response?.data?.code }
     }
     finally {
-      seasonWishOperating.value = ''
+      if (opSeq === seasonWishOperateSeq)
+        seasonWishOperating.value = ''
     }
   }
 
-  // 萌宠手动操作（写操作仅由面板按钮触发；成功后由调用方重新拉取只读状态）
-  const bearOperating = ref('')
-  async function operateBearPet(accountId: string, action: string, input: Record<string, unknown> = {}) {
-    if (!accountId || bearOperating.value)
+  async function operateSeasonWish(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    if (!accountId || seasonWishOperating.value || claimAllRunning.value)
       return { ok: false, error: '操作进行中' }
+    return performSeasonWishOperate(accountId, action, input)
+  }
+
+  async function performBearPetOperate(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    const opSeq = ++bearOperateSeq
     bearOperating.value = action
     try {
       const { data } = await api.post('/api/activity/pet-diary/operate', {
@@ -754,11 +795,256 @@ export const useActivityStore = defineStore('activity', () => {
       return data
     }
     catch (err: any) {
-      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败' }
+      return { ok: false, error: err?.response?.data?.error || err.message || '操作失败', status: err?.response?.status, code: err?.response?.data?.code }
     }
     finally {
-      bearOperating.value = ''
+      if (opSeq === bearOperateSeq)
+        bearOperating.value = ''
     }
+  }
+
+  async function operateBearPet(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    if (!accountId || bearOperating.value || claimAllRunning.value)
+      return { ok: false, error: '操作进行中' }
+    return performBearPetOperate(accountId, action, input)
+  }
+
+  // ===== 一键领取（编排层）：只复用上方已证实的手动写入口，不新增协议/命令 =====
+  // 开始时先重读三组只读状态生成本轮计划（不依赖任意旧页面状态漏掉可领奖励），
+  // 每一项写入仍由后端 List+GetGroup 资格闸门实时校验后才放行；任一读取失败/
+  // 缺字段/活动未下发则该活动显式跳过、零写。绝不自动抽签/购买/分享/夺宝/消耗道具。
+  function rewardText(rewards: unknown): string {
+    if (!Array.isArray(rewards) || !rewards.length)
+      return ''
+    return rewards.filter(Boolean).map((item: any) => {
+      const name = String(item?.itemName || item?.name || '道具')
+      const count = item?.itemCount ?? item?.count
+      return count == null ? name : `${name}×${Number(count)}`
+    }).join('、')
+  }
+
+  function shareOperateStateOf(activity: SeasonRuleActivityData | null): ShareOperateState | null {
+    const state = activity?.operateState
+    return state && 'currentScore' in state ? state as ShareOperateState : null
+  }
+
+  /** 取消进行中的一键领取（账号切换/页面卸载）：停止后续请求，旧响应不回填。 */
+  function cancelClaimAll() {
+    ++claimAllRunId
+    claimAllRunning.value = false
+    claimAllStep.value = ''
+  }
+
+  // 写前资格校验业务码白名单：与 pet-diary-operate / season-wish-operate 两个服务在
+  // 发出 Operate 写请求「之前」的 fail 调用点一一对应（一键只发 seeds/compensation/
+  // claimDog/story/wishClaim/shareDaily/shareMilestones，白名单只收这些动作的资格码）。
+  // 只有白名单内的 400 才能按「未写入跳过」归因；未知 code、REPLY_MISMATCH（写后）、
+  // 无 code 的 400、其他错误一律视为结果未知，记失败不自动重试。
+  const PRECONDITION_SKIP_CODES = new Set([
+    // pet-diary-operate：List/GetGroup 重读后的写前校验
+    'PET_DIARY_UNAVAILABLE',
+    'PET_DIARY_INACTIVE',
+    'PET_DIARY_NO_STATE',
+    'PET_DIARY_ALREADY',
+    'PET_DIARY_INVALID_STATE',
+    'PET_DIARY_INVALID_INPUT',
+    // season-wish-operate：同上写前校验
+    'SEASON_WISH_UNAVAILABLE',
+    'WISH_SIGN_NO_PENDING',
+    'HAPPY_SHARE_INACTIVE',
+    'HAPPY_SHARE_NO_STATE',
+    'HAPPY_SHARE_CLAIMED',
+    'HAPPY_SHARE_NO_CLAIMABLE',
+  ])
+
+  async function runClaimAll(accountIdRaw: string) {
+    const accountId = String(accountIdRaw || '')
+    if (!accountId)
+      return { ok: false, error: '未选择账号', failedCount: 0, successCount: 0, skippedCount: 0 }
+    if (claimAllRunning.value || seasonWishOperating.value || bearOperating.value)
+      return { ok: false, error: '操作进行中，请稍后再试', failedCount: 0, successCount: 0, skippedCount: 0 }
+    const runId = ++claimAllRunId
+    const alive = () => runId === claimAllRunId && isCurrentAccount(accountId)
+    claimAllRunning.value = true
+    claimAllStep.value = '准备'
+    claimAllResults.value = []
+    const push = (item: ClaimAllItemResult) => {
+      if (alive())
+        claimAllResults.value.push(item)
+    }
+
+    // 单项写入：成功记奖励；400 且带写前资格校验业务码=未发生写，按跳过归因；
+    // 其余一切失败（无 code 的 400、写后 REPLY_MISMATCH、502、网络）=结果未知，记失败且不自动重试。
+    const step = async (key: string, label: string, kind: 'bear' | 'wish', action: string, input: Record<string, unknown>) => {
+      claimAllStep.value = label
+      const result = kind === 'bear'
+        ? await performBearPetOperate(accountId, action, input)
+        : await performSeasonWishOperate(accountId, action, input)
+      if (!alive())
+        return
+      const code = String((result as any)?.code || '')
+      if (result?.ok) {
+        const rewards = rewardText((result as any).rewards)
+        push({ key, label, status: 'success', detail: rewards ? `获得 ${rewards}` : '已领取' })
+      }
+      else if ((result as any)?.status === 400 && code && PRECONDITION_SKIP_CODES.has(code)) {
+        push({ key, label, status: 'skipped', detail: `服务端资格校验未通过（未写入）：${String((result as any).error || '')}` })
+      }
+      else {
+        push({ key, label, status: 'failed', detail: `${String((result as any)?.error || '操作失败')}（结果未知，不自动重试，请稍后刷新确认）` })
+      }
+    }
+
+    const skip = (key: string, label: string, detail: string) =>
+      push({ key, label, status: 'skipped', detail })
+
+    try {
+      // 0) 本轮资格先重读：写计划只认本轮服务端只读状态（服务端 ≤60s 读缓存），
+      // 不依赖任意旧页面状态漏掉可领奖励。任一读取失败/活动未下发：该活动显式跳过、零写。
+      claimAllStep.value = '读取活动资格'
+      const [bearFresh, wishFresh, shareFresh] = await Promise.all([
+        fetchBearActivity(accountId),
+        fetchWishActivity(accountId),
+        fetchHappyShareActivity(accountId),
+      ])
+      if (!alive())
+        return finishRun(runId)
+
+      // 1) S3 萌宠四类免费领取：资格只认服务端推导的 claimEligibility，未知即跳过不试写
+      const bear = (bearFresh as any)?.ok ? (bearFresh as any).activity || null : null
+      const eligibility = bear?.claimEligibility
+      if (!(bearFresh as any)?.ok) {
+        skip('bear', 'S3 萌宠', `活动状态读取失败（${String((bearFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
+      }
+      else if (!eligibility) {
+        skip('bear', 'S3 萌宠', '快照缺少实时领取资格，跳过（不试写）')
+      }
+      else if (eligibility.available !== true) {
+        skip('bear', 'S3 萌宠', `${String(eligibility.reason || '当前不可领取')}，跳过`)
+      }
+      else {
+        if (eligibility.seedsClaimable === true)
+          await step('bear:seeds', 'S3 种子礼包', 'bear', 'seeds', {})
+        if (!alive())
+          return finishRun(runId)
+        if (Number(eligibility.compensationCount || 0) > 0)
+          await step('bear:compensation', 'S3 夺宝补偿', 'bear', 'compensation', {})
+        if (!alive())
+          return finishRun(runId)
+        if (eligibility.dogClaimable === true)
+          await step('bear:claimDog', 'S3 永久比熊', 'bear', 'claimDog', {})
+        for (const order of (eligibility.stories || [])) {
+          if (!alive())
+            return finishRun(runId)
+          await step(`bear:story:${order}`, `S3 手记 #${Number(order)}`, 'bear', 'story', { order: Number(order) })
+        }
+      }
+
+      // 2) 秋祈良愿：只领取已抽出的待领签文（不自动抽签）
+      if (alive()) {
+        const wish = (wishFresh as any)?.ok ? (wishFresh as any).activity || null : null
+        const wishState = wish?.operateState && 'remainingCount' in wish.operateState
+          ? wish.operateState as WishOperateState
+          : null
+        if (!(wishFresh as any)?.ok)
+          skip('wish', '秋祈良愿', `活动状态读取失败（${String((wishFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
+        else if (!wishState)
+          skip('wish', '秋祈良愿', '服务端未下发祈愿状态，跳过（不试写）')
+        else if (wishState.pending)
+          await step('wish:claim', '秋祈良愿待领签文', 'wish', 'wishClaim', { chooseId: Number(wishState.pending.chooseId) })
+        else
+          skip('wish', '秋祈良愿', '没有待领取的祈愿奖励（已抽出才领取，不自动抽签）')
+      }
+
+      // 3) 快乐不独享：每日领取 → 重读状态（成功后路由已清只读缓存）→ 档位
+      //    每日领取依赖的刷新失败时不得以旧 state 判档位：记跳过、不试写、不自动重试。
+      const shareData = (shareFresh as any)?.ok ? (shareFresh as any).activity || null : null
+      let shareState = shareOperateStateOf(shareData)
+      if (alive()) {
+        if (!(shareFresh as any)?.ok)
+          skip('share', '快乐不独享', `活动状态读取失败（${String((shareFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
+        else if (!shareState)
+          skip('share', '快乐不独享', '服务端未下发快乐值状态，跳过（不试写）')
+      }
+      let stateForMilestones: ShareOperateState | null = shareState
+      if (alive() && shareState) {
+        if (shareState.daily && shareState.daily.rewardClaimed === false) {
+          await step('share:daily', '快乐值每日领取', 'wish', 'shareDaily', {})
+          if (!alive())
+            return finishRun(runId)
+          // 每日领取会加快乐值，可能解锁新档位：必须以刷新后的服务端状态重算，不用旧缓存
+          claimAllStep.value = '刷新快乐值状态'
+          const fresh = await fetchHappyShareActivity(accountId)
+          if (!alive())
+            return finishRun(runId)
+          const nextState = fresh?.ok === true ? shareOperateStateOf((fresh as any).activity || null) : null
+          if (!nextState) {
+            stateForMilestones = null
+            skip('share:milestones', '快乐值档位奖励', fresh?.ok === true
+              ? '每日领取后服务端未下发快乐值状态，跳过档位领取（不试写）'
+              : `每日领取后状态刷新失败（${String(fresh?.error || '未知错误')}），档位不以旧状态继续（结果未知，不自动重试，请稍后刷新确认）`)
+          }
+          else {
+            shareState = nextState
+            stateForMilestones = nextState
+          }
+        }
+        if (stateForMilestones) {
+          const score = Number(stateForMilestones.currentScore || 0)
+          const claimable = (stateForMilestones.milestones || []).some(tier =>
+            Number(tier?.state) === 2 && score >= Number(tier?.threshold))
+          if (!alive())
+            return finishRun(runId)
+          if (claimable)
+            await step('share:milestones', '快乐值档位奖励', 'wish', 'shareMilestones', {})
+          else if (stateForMilestones.daily)
+            skip('share:milestones', '快乐值档位奖励', '当前没有可领取的快乐值档位')
+        }
+      }
+
+      // 4) 收尾：尽力刷新三个只读状态；刷新失败不丢已领结果，只追加提示。
+      //    fetch 内部 catch 后永远 fulfilled（返回 {ok:false}），所以要同时检查
+      //    rejected 与 fulfilled.value.ok === false，不能只看 rejected。
+      if (alive()) {
+        claimAllStep.value = '刷新活动状态'
+        const refreshed = await Promise.allSettled([
+          fetchBearActivity(accountId),
+          fetchWishActivity(accountId),
+          fetchHappyShareActivity(accountId),
+        ])
+        if (alive() && refreshed.some(item => item.status === 'rejected'
+          || (item.status === 'fulfilled' && item.value && (item.value as any).ok === false))) {
+          skip('refresh', '刷新活动状态', '部分活动状态刷新失败，已领取结果以上方为准')
+        }
+      }
+      return finishRun(runId)
+    }
+    catch (err: any) {
+      // 整体意外异常：释放当前轮 busy 并保留已产生的结果，结果未知不自动重试。
+      // 只比对代次（不调 alive：异常源可能正是账号状态读取本身）；已取消的旧轮不追加。
+      if (runId === claimAllRunId) {
+        claimAllResults.value.push({
+          key: 'runner',
+          label: '一键领取',
+          status: 'failed',
+          detail: `${String(err?.message || err || '编排异常')}（本轮已中止并释放，已领取结果保留；请稍后刷新确认）`,
+        })
+      }
+      return finishRun(runId)
+    }
+  }
+
+  function finishRun(runId: number) {
+    if (runId !== claimAllRunId)
+      return { ok: false, error: '已取消', failedCount: 0, successCount: 0, skippedCount: 0 }
+    claimAllRunning.value = false
+    claimAllStep.value = ''
+    const results = claimAllResults.value
+    const successCount = results.filter(item => item.status === 'success').length
+    const failedCount = results.filter(item => item.status === 'failed').length
+    const skippedCount = results.filter(item => item.status === 'skipped').length
+    const summary = `一键领取完成：成功 ${successCount} 项、失败 ${failedCount} 项、跳过 ${skippedCount} 项`
+    return { ok: failedCount === 0, error: failedCount ? summary : '', summary, successCount, failedCount, skippedCount }
   }
 
   return {
@@ -779,5 +1065,10 @@ export const useActivityStore = defineStore('activity', () => {
     fetchHappyShareActivity,
     seasonWishOperating,
     operateSeasonWish,
+    claimAllRunning,
+    claimAllStep,
+    claimAllResults,
+    runClaimAll,
+    cancelClaimAll,
   }
 })
