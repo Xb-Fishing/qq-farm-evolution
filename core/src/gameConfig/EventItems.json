@@ -267,5 +267,13 @@
     "asset_name": "gold/Crop_6030",
     "sells": "1005:6",
     "evidence": "公开镜像客户端配置快照 1046030（type 17、gold/Crop_6030、sells 1005:6）；Plant 1126030 黄金·月下美人 fruit 1046030 交叉；2026-09-26 Bag 实际出现；与 1041625/1045995 黄金变异同族同模式"
+  },
+  {
+    "id": 5006,
+    "name": "乌云使坏瓶",
+    "type": 23,
+    "desc": "雨落成诗活动道具，在好友作物上放出一朵乌云，可得30经验。",
+    "icon_res": "gui/texture/icon/icon_weatherBottle_6/spriteFrame",
+    "evidence": "Bag 实际出现 5006（bag_unclassified_item 复盘）+ client-config-evidence ItemInfo 快照（type 23、icon_weatherBottle_6、desc 逐字）交叉核对；与已登记 5005 青蛙使坏瓶同族同模式；见 docs/HANDOFF.md 2026-09-26 巡检"
   }
 ]

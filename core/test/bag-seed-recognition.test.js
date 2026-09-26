@@ -339,3 +339,148 @@ test('bag_unclassified 签名变化同步进运行时待办,同签名不风暴',
     if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
   }
 });
+
+test('乌云使坏瓶 5006 按快照登记,非种子只读展示且不新增使用/出售能力', async () => {
+  const utilsPath = require.resolve('../src/utils/utils');
+  const networkPath = require.resolve('../src/utils/network');
+  const protoPath = require.resolve('../src/utils/proto');
+  const warehousePath = require.resolve('../src/services/warehouse');
+  const previous = new Map([utilsPath, networkPath, protoPath, warehousePath]
+    .map(path => [path, require.cache[path]]));
+  const logs = [];
+  // 模拟 Bag 回包：5006 出现两堆（验证数量合并）+ 金币 + 已登记种子
+  const bagReply = {
+    item_bag: {
+      items: [
+        { id: 5006, count: 2 },
+        { id: 5006, count: 3 },
+        { id: 1001, count: 9999 },
+        { id: 21625, count: 4 },
+      ],
+    },
+  };
+  const utilsMod = require('../src/utils/utils');
+  require.cache[utilsPath] = mockModule(utilsPath, {
+    ...utilsMod,
+    log: (tag, message, meta) => logs.push({ tag, message, meta }),
+    logWarn: () => {},
+  });
+  require.cache[networkPath] = mockModule(networkPath, {
+    sendMsgAsync: async () => ({ body: Buffer.alloc(0) }),
+    networkEvents: { emit: () => {} },
+    getUserState: () => ({}),
+  });
+  require.cache[protoPath] = mockModule(protoPath, {
+    types: {
+      BagRequest: {
+        create: value => value,
+        encode: () => ({ finish: () => Buffer.alloc(0) }),
+      },
+      BagReply: { decode: () => bagReply },
+    },
+  });
+  delete require.cache[warehousePath];
+  try {
+    const { getBagDetail } = require('../src/services/warehouse');
+    const detail = await getBagDetail();
+    const entry = detail.items.find(item => item.id === 5006);
+    assert.ok(entry, '5006 must appear in bag detail');
+    assert.equal(entry.name, '乌云使坏瓶');
+    assert.equal(entry.category, 'item');
+    assert.equal(entry.itemType, 23);
+    assert.equal(entry.count, 5, 'stacked entries must merge counts');
+    assert.equal(entry.usable, false, 'registration adds no use capability');
+    assert.equal(entry.sellable, false, 'registration adds no sell capability');
+    assert.equal(entry.interactionType, '');
+    assert.equal(entry.image, '', 'dedicated icon stays an explicit gap, no substitute image');
+    // 审计：5006 已登记不再产生缺口
+    assert.equal(detail.seedRecognition.issues.filter(i => i.itemId === 5006).length, 0);
+    // 日志：全部已登记物品，不得再报 bag_unclassified_item
+    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 0);
+  } finally {
+    delete require.cache[warehousePath];
+    for (const [path, entry] of previous) {
+      if (entry === undefined) delete require.cache[path];
+      else require.cache[path] = entry;
+    }
+  }
+});
+
+test('5006 登记后不再进未识别清单与运行时待办,混入未知物品仍上报且同签名不重复', () => {
+  const utilsPath = require.resolve('../src/utils/utils');
+  const warehousePath = require.resolve('../src/services/warehouse');
+  const inboxPath = require.resolve('../src/services/evolution-issue-inbox');
+  const previousUtils = require.cache[utilsPath];
+  const previousWarehouse = require.cache[warehousePath];
+  const previousInbox = require.cache[inboxPath];
+  const logs = [];
+  const recorded = [];
+  const utilsMod = require('../src/utils/utils');
+  require.cache[utilsPath] = mockModule(utilsPath, {
+    ...utilsMod,
+    log: (tag, message, meta) => logs.push({ tag, message, meta }),
+    logWarn: () => {},
+  });
+  require.cache[inboxPath] = mockModule(inboxPath, {
+    recordRuntimeIssue: (type, level) => {
+      recorded.push({ type, level });
+      return true;
+    },
+  });
+  delete require.cache[warehousePath];
+  try {
+    const { getBagSeedsFromItems: getSeeds } = require('../src/services/warehouse');
+    const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
+    // 仅 5006：已登记非种子，零日志零待办
+    getSeeds([{ id: 5006, count: 7 }]);
+    assert.equal(logs.length, 0, 'registered 5006 must not log unclassified');
+    assert.equal(recorded.length, 0, 'registered 5006 must not enter the issue inbox');
+    // 同一输入混入已登记种子 + 合成未知物品
+    const mixed = [
+      { id: 5006, count: 7 },
+      { id: 21625, count: 4 },
+      { id: 4299995, count: 1 },
+    ];
+    const seeds = getSeeds(mixed);
+    assert.deepEqual(seeds.map(seed => [seed.seedId, seed.name, seed.count]), [
+      [21625, '枸杞种子', 4],
+    ]);
+    const unclassified = logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item');
+    assert.equal(unclassified.length, 1, 'synthetic unknown must still be reported');
+    assert.deepEqual(unclassified[0].meta.unclassifiedItemIds, [4299995]);
+    assert.equal(recorded.length, 1);
+    assert.deepEqual(recorded[0], { type: 'bag_unclassified', level: 'warn' });
+    // 同签名不重复
+    getSeeds(mixed);
+    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 1,
+      'same signature must not log again');
+    assert.equal(recorded.length, 1, 'same signature must not storm the inbox');
+    // 审计消费同一输入：5006 无缺口，合成未知仍报 unclassified_item
+    const audit = auditBagSeedCoverage(mixed, seeds);
+    assert.ok(audit.issues.some(i => i.itemId === 4299995 && i.kind === 'unclassified_item'));
+    assert.equal(audit.issues.filter(i => i.itemId === 5006).length, 0);
+  } finally {
+    delete require.cache[warehousePath];
+    if (previousUtils === undefined) delete require.cache[utilsPath];
+    else require.cache[utilsPath] = previousUtils;
+    if (previousInbox === undefined) delete require.cache[inboxPath];
+    else require.cache[inboxPath] = previousInbox;
+    if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
+  }
+});
+
+test('5006 不影响既有种子映射与通用回退集合', () => {
+  // 5006 非种子：无植物映射、不进种子索引、不进通用回退
+  assert.equal(getPlantBySeedId(5006), undefined);
+  assert.equal(isSeedItem(5006), false);
+  assert.ok(!getGenericFallbackItemIds().includes(5006),
+    'type-23 item must not enter the seed generic fallback gap set');
+  assert.equal(getItemById(5006)?.name, '乌云使坏瓶');
+  // 既有映射保持正确
+  assert.equal(getItemById(20516)?.name, '狗尾草种子');
+  assert.equal(getPlantBySeedId(20516)?.name, '狗尾草');
+  assert.equal(getPlantBySeedId(25995)?.name, '芦苇');
+  assert.equal(getPlantBySeedId(29004)?.size, 2, '泡泡棉花糖必须保持 2x2');
+  assert.equal(getItemById(26030)?.name, '月下美人种子');
+  assert.equal(getPlantBySeedId(26030)?.name, '月下美人');
+});
