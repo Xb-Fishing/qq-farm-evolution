@@ -328,6 +328,18 @@ function diagEntryBlock(now, fallbackReason) {
   diagLog(gid, 'guard', fallbackReason || entryBlockReason() || 'entry_blocked');
 }
 
+/** 跨日恢复统一入口（tick 与在线证据入口共用）：到新游戏日先清闸门
+ * （内部走 checkDailyReset 清额度缓存）再丢弃旧日未 done 会话（done 去重
+ * 保留，旧日待执行证据不重放）。证据入口必须先做本清理再接受新证据——
+ * 否则迟到的恢复 tick 会把刚建的新日会话当旧会话一起清掉（丢事件）。 */
+function resumeAndDropStaleIfNewDay() {
+  if (!deps.quota.resumeIfNewDay()) return false;
+  for (const [gid, session] of autoBadSessions) {
+    if (!session.done) autoBadSessions.delete(gid);
+  }
+  return true;
+}
+
 async function tickBodyInner(gen) {
   const now = deps.now();
   const gids = deps.gids();
@@ -343,13 +355,9 @@ async function tickBodyInner(gen) {
   if (!myGid || !deps.connected()) { diagEntryBlock(now, myGid ? 'disconnected' : 'no_account'); return; }
   // 按游戏日额度闸门：到日界先让 checkDailyReset 清缓存再清闸门；当日暂停
   // 期间零请求，等下一游戏日的新在线证据
-  if (deps.quota.resumeIfNewDay()) {
-    // 跨日恢复：旧日的待执行会话/旧在线证据不重放（23:59:59 的证据到
-    // 00:00 不得出手），done 会话保留原去重语义；新日等新 online 事件
-    for (const [gid, session] of autoBadSessions) {
-      if (!session.done) autoBadSessions.delete(gid);
-    }
-  }
+  // 跨日恢复：旧日的待执行会话/旧在线证据不重放（23:59:59 的证据到
+  // 00:00 不得出手），done 会话保留原去重语义；新日等新 online 事件
+  resumeAndDropStaleIfNewDay();
   if (deps.quota.activePause()) { diagEntryBlock(now, 'quota_day'); return; }
   // 共同守卫：全局暂停、免打扰、静默时段、与 checkFriends/watchlist 互斥、
   // 抢收/自收让步
@@ -509,6 +517,9 @@ async function tick() {
 function handleOnlineEvidence(gid, at, source) {
   if (!armed) return;
   if (deps.quota.activePause()) return; // 当日额度暂停：不建会话、不排短 timer
+  // 新日已到但恢复 timer 未跑：先做跨日清理（清闸门/丢旧日会话）再收新证据，
+  // 否则随后的恢复 tick 会把刚建的新日会话一并清掉（丢事件）
+  resumeAndDropStaleIfNewDay();
   const id = toNum(gid);
   if (!id || !deps.gids().includes(id)) return; // 仅名单目标（全好友证据照收，动作只看名单）
   diagLog(id, 'evidence', String(source || 'unknown')); // 已选目标证据接收（节流）
