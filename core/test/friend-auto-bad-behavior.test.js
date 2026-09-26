@@ -22,6 +22,22 @@ async function waitFor(predicate, timeoutMs, label) {
   throw new Error(`waitFor 超时: ${label}`);
 }
 
+// 额度日闸门替身（真实持久化语义由 friend-auto-bad-quota.test.js 覆盖）：
+// 每次 stub 新建，用例间零磁盘、零泄漏
+function makeFakeQuota() {
+  let gate = null;
+  return {
+    activePause: () => gate,
+    resumeDelayMs: () => (gate ? 3_600_000 : 0),
+    pause: reason => {
+      if (gate) return null;
+      gate = { dayKey: 'test-day', reason, resumeAt: Date.now() + 3_600_000 };
+      return gate;
+    },
+    resumeIfNewDay: () => (gate ? (gate = null, true) : false),
+  };
+}
+
 function stub(overrides = {}) {
   const base = {
     now: () => fakeNow,
@@ -29,6 +45,7 @@ function stub(overrides = {}) {
     myGid: () => 1,
     connected: () => true,
     badRemaining: () => 50,
+    quota: makeFakeQuota(),
     badPaused: () => false,
     checking: () => false,
     paused: () => false,
@@ -628,7 +645,7 @@ test('friend_activity_evidence 文案：用运行时昵称，无 [重点] 前缀
     assert.ok(messages[1].msg.includes('GID:502'), '未知回退 GID');
     assert.ok(!messages[1].msg.includes('[重点]'));
     // 字段白名单：无原始包/凭据
-    const allowed = new Set(['module', 'event', 'friendGid', 'source', 'at', 'tag']);
+    const allowed = new Set(['module', 'event', 'accountId', 'friendGid', 'source', 'at', 'tag']);
     for (const m of messages) {
       for (const key of Object.keys(m.meta)) assert.ok(allowed.has(key), `白名单外字段 ${key}`);
     }
@@ -698,7 +715,7 @@ function makeImpl({ bugDenied = false, bugResult = { ok: 2 }, weedResult = { ok:
     calls,
     badRemaining: () => 50,
     remainingFor: () => 50,
-    checkCanOperate: async (gid, opId) => { calls.check.push(opId); return { canOperate: opId !== 10005 || !bugDenied }; },
+    checkCanOperate: async (gid, opId) => { calls.check.push(opId); return { canOperate: opId !== 10004 || !bugDenied }; },
     putInsects: async () => { calls.putBug += 1; if (bugThrows) throw new Error('bug down'); return bugResult; },
     putWeeds: async () => { calls.putWeed += 1; return weedResult; },
   };
@@ -716,7 +733,7 @@ test('总额度为 0：零请求，固定原因 cap_zero', async () => {
 
 test('单项额度为 0：该项零请求零 slice，另一项照常', async () => {
   const impl = makeImpl();
-  impl.remainingFor = (opId) => (opId === 10005 ? 0 : 50); // 虫额度 0
+  impl.remainingFor = (opId) => (opId === 10004 ? 0 : 50); // 虫额度 0
   const tally = { putBug: 0, putWeed: 0 };
   const result = await placeAutoBadItems(303, analysis, tally, impl);
   assert.equal(result.weed, 1, '草不受虫额度影响');
@@ -749,7 +766,7 @@ test('无地块：零请求，固定原因', async () => {
 test('虫远程检查抛错：固定原因码、不阻断草', async () => {
   const impl = makeImpl();
   impl.checkCanOperate = async (gid, opId) => {
-    if (opId === 10005) throw new Error('bug check down');
+    if (opId === 10004) throw new Error('bug check down');
     return { canOperate: true };
   };
   const tally = { putBug: 0, putWeed: 0 };
@@ -786,7 +803,7 @@ test('远程 check 完成后、put 前重查 guard：等待期间暂停 → 零�
   let guardOk = true;
   let releaseBugCheck;
   const impl = makeImpl();
-  impl.checkCanOperate = (gid, opId) => (opId === 10005
+  impl.checkCanOperate = (gid, opId) => (opId === 10004
     ? new Promise(resolve => { releaseBugCheck = () => resolve({ canOperate: true }); })
     : async () => ({ canOperate: true }));
   impl.putInsects = async () => { throw new Error('must not put bug'); };

@@ -21,7 +21,8 @@
     "fetch:official-icons": "node scripts/fetch-official-icons.js",
     "inspect:tsdk": "node scripts/inspect-tsdk-update.js",
     "capture:start": "node capture-server.js",
-    "lint": "eslint . --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
