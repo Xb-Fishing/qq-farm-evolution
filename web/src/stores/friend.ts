@@ -17,7 +17,9 @@ export interface KnownFriendSettings {
 
 // 已证实在线信号源（与 core/src/services/friend-activity.js 的 ONLINE_SOURCES 对齐），
 // 只有这些源的 friend_activity_evidence 日志能实时点亮好友在线标记。
-const ONLINE_EVIDENCE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online'])
+// lands_push 已剔除：LandsNotify 推送只有地块变化与 host_gid，可由他人放虫/
+// 放草/偷菜触发，农场变化 ≠ 主人上线（2026-09-26 协议审查）。
+const ONLINE_EVIDENCE_SOURCES = new Set(['at_home', 'presence_online'])
 // 实时证据有效期：超过即撤销在线标记，回落到 30 秒快照兜底。
 const ONLINE_EVIDENCE_TTL_MS = 10_000
 

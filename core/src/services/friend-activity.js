@@ -23,9 +23,14 @@ const activityEvidence = new Map();
 // 等非在线源按 now 覆盖，若在线判定共用活跃表，后到的"好友刚活跃"证据会把
 // 3 秒前的 at_home 在线信号顶掉。在线层只收已证实在线源，永不被非在线源覆盖。
 const onlineEvidence = new Map();
-const ONLINE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online']);
+// 已证实在线源只认 at_home（进门回包在场位）与 presence_online（批量在场
+// 感知，轮询保持禁用，只消费既有回包）。lands_push（LandsNotify 推送）
+// 2026-09-26 协议审查剔除：proto 只有 lands 与 host_gid，无操作者/主人
+// 在线字段，且可由被放虫/放草/偷菜触发——农场变化 ≠ 主人上线，
+// 保留为普通活跃/地块变化证据（收菜快通道语义不变）。
+const ONLINE_SOURCES = new Set(['at_home', 'presence_online']);
 // 同毫秒多源并发（进门回包与推送同拍）时保留更可靠的在线源
-const ONLINE_SOURCE_PRIORITY = { at_home: 3, lands_push: 2, presence_online: 1 };
+const ONLINE_SOURCE_PRIORITY = { at_home: 3, presence_online: 1 };
 // 在线证据订阅（调度方事件唤醒用）：只推已证实在线源，返回取消函数。
 const onlineEvidenceListeners = new Set();
 function notifyOnlineEvidence(gid, at, source) {
@@ -39,7 +44,53 @@ function notifyOnlineEvidence(gid, at, source) {
     }
   }
 }
-// 证据保留窗口：超过后视为陈旧，不再算"最近活跃"。
+// ===== 运行时好友昵称只读名册（2026-09-26 用户定标）=====
+// 复用已成功获取的数据建立：好友列表回包（friend-api.recordRosterReply 惰性
+// 喂入 remark>name）与进门回包 EnterReply.basic.name（noteEnterPresence 喂入）。
+// 只读内存表，绝不为补名另查游戏 API。未知回退 GID 由调用方处理。
+const friendNames = new Map();
+function noteFriendName(gid, name) {
+  const id = toNum(gid);
+  const value = String(name || '').trim().slice(0, 60);
+  if (!id || !value) return;
+  // 后到覆盖：改名即时生效；更新时重排保持 LRU 淘汰语义
+  if (friendNames.has(id)) friendNames.delete(id);
+  else if (friendNames.size >= MAX_TRACKED_GIDS) {
+    friendNames.delete(friendNames.keys().next().value); // 有界：淘汰最旧
+  }
+  friendNames.set(id, value);
+}
+function getCachedFriendName(gid) {
+  return friendNames.get(toNum(gid)) || '';
+}
+// GID 占位识别（2026-09-26 主审 7）：入参 name 经常已是 `GID:123` 占位且
+// truthy——不能因为占位非空就放弃刚取得的真昵称
+const GID_PLACEHOLDER_RE = /^GID:\d+$/;
+/** 展示名解析：真名优先；占位/空回退运行时昵称，仍无则 GID。 */
+function resolveFriendDisplayName(gid, name) {
+  const raw = String(name || '').trim();
+  if (raw && !GID_PLACEHOLDER_RE.test(raw)) return raw;
+  const id = toNum(gid);
+  return getCachedFriendName(id) || raw || `GID:${id}`;
+}
+
+// 被动在场观测订阅（2026-09-26 纯内存，零新增 RPC）：既有进门回包经
+// noteEnterPresence 分发 { atHomeDecoded, atHome, lastOnlineMs }；缺
+// at_home 字段时 atHomeDecoded=false，消费方不得当明确离场。
+const presenceListeners = new Set();
+function notifyPresenceObservation(gid, at, payload) {
+  for (const listener of presenceListeners) {
+    try {
+      listener(gid, at, payload);
+    } catch {
+      // 固定原因码：私有错误内容不进用户日志
+      log('好友', '在场观测订阅回调异常', {
+        module: 'friend', event: 'presence_listener_error', result: 'error',
+        reason: 'listener_error',
+      });
+    }
+  }
+}
 const EVIDENCE_RETENTION_MS = 30 * 60_000;
 // 一次倒计时重置至少要延长多久才算"主人动过"（过滤小抖动/时钟校准）。
 const IMPLICIT_CLOCK_JUMP_MIN_MS = 5 * 60_000;
@@ -83,7 +134,9 @@ function recordActivity(gid, at, source, detail = '') {
     if (oldestKey != null) activityEvidence.delete(oldestKey);
   }
   activityEvidence.set(id, { at: atMs, source, detail: String(detail || '').slice(0, 120) });
-  log('好友', `[重点] GID 活跃证据更新（${source}）`, {
+  // 运行时昵称（2026-09-26 用户定标）：证据适用于全好友，删除 [重点] 误导
+  // 前缀；有缓存昵称用昵称，未知回退 GID，绝不为补名另查游戏 API
+  log('好友', `好友活跃证据更新 ${getCachedFriendName(id) || `GID:${id}`}（${source}）`, {
     module: 'friend',
     event: 'friend_activity_evidence',
     friendGid: id,
@@ -250,9 +303,9 @@ function notePresenceFromBatch(gid, lastOnlineSec, now = Date.now()) {
 
 /**
  * 在线信号是否新鲜（供 1s 快档/在线捣乱调度判定）。2026-09-23 用户定标：
- * 动作/在场断流 10 秒即视为离场放缓；lands_push（好友农场变化推送）也是
- * 在线源。2026-09-26 起读独立在线层（只收已证实在线源），非在线活跃证据
- * 覆盖活跃表不再影响在线判定。
+ * 动作/在场断流 10 秒即视为离场放缓。2026-09-26 起读独立在线层（只收
+ * 已证实在线源 at_home/presence_online；lands_push 只是地块变化证据，
+ * 不再算在线源），非在线活跃证据覆盖活跃表不影响在线判定。
  */
 const ONLINE_SIGNAL_FRESH_MS = 10 * 1000;
 
@@ -267,6 +320,13 @@ function onOnlineEvidence(listener) {
   if (typeof listener !== 'function') return () => { };
   onlineEvidenceListeners.add(listener);
   return () => onlineEvidenceListeners.delete(listener);
+}
+
+/** 订阅被动在场观测（既有进门回包，零新增 RPC）。返回取消函数。 */
+function onPresenceObservation(listener) {
+  if (typeof listener !== 'function') return () => { };
+  presenceListeners.add(listener);
+  return () => presenceListeners.delete(listener);
 }
 
 /** 单个好友的最新活跃证据（面板展示用）。 */
@@ -313,6 +373,8 @@ function noteEnterPresence(gid, enterReply, now = Date.now()) {
   const id = toNum(gid);
   if (!id) return { atHome: false, onlineEdge: false, lastOnlineMs: 0 };
   const atHome = !!(enterReply && enterReply.at_home);
+  // 回包里真的下发了 at_home 字段才算解码（protobuf 缺省 false 不当明确 false）
+  const atHomeDecoded = Object.prototype.hasOwnProperty.call(enterReply || {}, 'at_home');
   let onlineEdge = false;
   if (atHome) {
     onlineEdge = noteAtHomeEdge(id, true);
@@ -321,6 +383,8 @@ function noteEnterPresence(gid, enterReply, now = Date.now()) {
   }
   let lastOnlineMs = 0;
   try {
+    // 进门回包自带好友昵称（BasicInfo.name）：喂运行时名册（零新增请求）
+    noteFriendName(id, enterReply && enterReply.basic && enterReply.basic.name);
     if (atHome) {
       recordActivity(id, now, 'at_home', 'host in farm');
     } else {
@@ -331,6 +395,8 @@ function noteEnterPresence(gid, enterReply, now = Date.now()) {
       }
     }
   } catch { /* 证据记录失败不影响进门主流程 */ }
+  // 被动在场观测分发（纯内存）：消费方自行过滤 atHomeDecoded=false
+  notifyPresenceObservation(id, now, { atHomeDecoded, atHome, lastOnlineMs });
   return { atHome, onlineEdge, lastOnlineMs };
 }
 
@@ -341,6 +407,8 @@ function resetForTest() {
   lastLoginBaselines.clear();
   atHomeStates.clear();
   presenceStates.clear();
+  friendNames.clear();
+  presenceListeners.clear();
 }
 
 module.exports = {
@@ -355,6 +423,10 @@ module.exports = {
   isFriendAtHomeRecently,
   isFriendOnlineRecently,
   onOnlineEvidence,
+  onPresenceObservation,
+  noteFriendName,
+  getCachedFriendName,
+  resolveFriendDisplayName,
   noteAtHomeEdge,
   noteEnterPresence,
   notePresenceFromBatch,

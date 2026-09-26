@@ -5,7 +5,7 @@
 // { accountId, time, tag, msg, isWarn, meta: { module, event, friendGid, source, at } }))，
 // 但 Friends.vue 只靠 30 秒快照刷新，页面在线标记明显迟到。
 // 本文件用真实 friend store + 真实 Friends.vue script setup 验证：
-// 1) 可靠在线源证据（at_home/lands_push/presence_online）到达立即点亮好友 online；
+// 1) 可靠在线源证据（at_home/presence_online，2026-09-26 起 lands_push 剔除）到达立即点亮好友 online；
 // 2) 异账号 / 非在线源 / 过期(>10s) / 未来时刻 / 无效 gid / 其它 event 零变化；
 // 3) 10 秒过期撤销在线标记；
 // 4) fetchFriends 晚响应不覆盖更新的实时证据；代次保护下旧 finally 不清新请求 loading；
@@ -95,7 +95,7 @@ test('store: evidence older than 10s revokes online mark; clearFriendData wipes 
     const h = storeHarness();
     const now = Date.now();
     h.store.friends = [{ gid: 1001, name: 'a' }];
-    assert.equal(h.store.applyOnlineEvidenceLog(evidenceLog('account-a', 1001, 'lands_push', now), now), true);
+    assert.equal(h.store.applyOnlineEvidenceLog(evidenceLog('account-a', 1001, 'at_home', now), now), true);
     h.store.expireOnlineEvidence(now + 10_001);
     assert.equal(h.store.friends[0].online, false);
     assert.deepEqual(h.store.onlineEvidence, {});
@@ -285,7 +285,7 @@ test('page: direct online-evidence channel lights friend even when log is not sh
         assert.equal(h.friendStore.friends[1].online, undefined, '非在线证据事件零效果');
         // 卸载退订：同一通道再分发不再被消费
         h.app.unmount();
-        h.dispatchOnlineEvidence(evidenceLog('account-a', 2002, 'lands_push', Date.now()));
+        h.dispatchOnlineEvidence(evidenceLog('account-a', 2002, 'at_home', Date.now()));
         await vue.nextTick();
         assert.equal(Object.keys(h.friendStore.onlineEvidence).includes('2002'), false, 'unmount 退订后不再消费');
     }
