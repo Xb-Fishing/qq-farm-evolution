@@ -41,7 +41,8 @@ const {
   gaussianInt,
 } = require('../utils/behavior');
 const { inFriendQuietHours } = require('./friend-api');
-const { getBadRemainingTimes } = require('./friend-operation-limits');
+const { getBadRemainingTimes, getRemainingTimes, PUT_BUG_OPERATION_ID, PUT_WEED_OPERATION_ID, BAD_DAILY_LIMIT } = require('./friend-operation-limits');
+const autoBadQuota = require('./friend-auto-bad-quota');
 const friendActivity = require('./friend-activity');
 const { visitFriendForAutoBad } = require('./friend-visit');
 const { createScheduler } = require('./scheduler');
@@ -68,6 +69,74 @@ const OFFLINE_RESUME_MS = 3 * 60_000;
 const WAKE_DELAY_MS = 300;
 // 真实派发错峰：相邻两次 Enter 至少间隔（多目标同拍有证据不突发）
 const DISPATCH_GAP_MS = 2_000;
+
+// ===== 诊断日志（只读，不改任何守卫/排程/配额真值）=====
+// 目标：有在线证据却无捣乱效果时能准确定位到关卡（evidence/dispatch/guard/result）。
+// 节流：gid+stage+reason 进程内去重，重复状态最多 5min 一次；dispatch 与真实
+// result 是实际动作，每动作一条。字段白名单：accountId/friendGid/friendName/
+// stage/reason/数值元数据——零原始包/凭据/错误原文。
+const DIAG_THROTTLE_MS = 5 * 60_000;
+const DIAG_MAX_KEYS = 500;
+const diagLastAt = new Map();
+function diagAccountId() {
+  return process.env.FARM_ACCOUNT_ID || '';
+}
+/** 诊断打点。throttle=false（dispatch/result）每动作一条，其余同状态 5min 一次。 */
+function diagLog(gid, stage, reason, { throttle = true, extra = {} } = {}) {
+  const key = `${diagAccountId()}|${gid}|${stage}|${reason}`;
+  const now = deps.now();
+  if (throttle) {
+    const last = diagLastAt.get(key) || 0;
+    if (now - last < DIAG_THROTTLE_MS) return;
+  }
+  if (!diagLastAt.has(key) && diagLastAt.size >= DIAG_MAX_KEYS) {
+    // 有界：按插入序淘汰最旧（诊断去重键，非数据，粗淘汰足够）
+    diagLastAt.delete(diagLastAt.keys().next().value);
+  }
+  diagLastAt.set(key, now);
+  const friendName = gid ? (deps.friendName(gid) || `GID:${gid}`) : '';
+  log('好友', `在线自动捣乱诊断 ${stage}/${reason} ${friendName}`, {
+    module: 'friend',
+    event: throttle ? 'auto_bad_blocked' : 'auto_bad_decision',
+    accountId: diagAccountId(),
+    ...(gid ? { friendGid: gid, friendName } : {}),
+    stage,
+    reason,
+    ...extra,
+  });
+}
+/** 目标删除/stop 时清诊断缓存键（防长期占用有界容量）。 */
+function diagDeleteTarget(gid) {
+  const prefix = `${diagAccountId()}|${gid}|`;
+  for (const key of diagLastAt.keys()) {
+    if (key.startsWith(prefix)) diagLastAt.delete(key);
+  }
+}
+// visit 结果固定原因码白名单（friend-visit placeAutoBadItems/visitFriendForAutoBad）：
+// 只透传既有固定码，防止服务端/异常原文借 result.reason 进日志
+const RESULT_REASON_RE = /^(?:enter_failed|aborted|not_online|session_done|no_lands|place_error|cap_zero|(?:bug|weed)_(?:aborted|cap_zero|denied|rejected|error)|no_(?:bug|weed)_(?:plots|targets))$/;
+function sanitizeResultReason(reason) {
+  if (typeof reason !== 'string' || !reason) return '';
+  return reason.split(',').filter(part => RESULT_REASON_RE.test(part)).join(',');
+}
+// makeGuard 首个拒绝原因（与原守卫同序同语义，只加归因不改变判定）
+function guardRejectReason(gid, gen) {
+  if (gen !== generation) return 'stale_generation';
+  if (!deps.connected()) return 'disconnected';
+  if (!deps.online(gid)) return 'stale_evidence';
+  if (deps.badPaused()) return 'bad_paused';
+  if (deps.paused()) return 'paused';
+  if (deps.quietHours()) return 'quiet';
+  if (!(deps.badRemaining() > 0)) return 'cap';
+  if (deps.stealDue()) return 'steal_due';
+  if (deps.stealImminent()) return 'steal_imminent';
+  if (deps.harvestDue()) return 'harvest_due';
+  if (deps.harvestImminent()) return 'harvest_imminent';
+  if (!deps.gids().includes(gid)) return 'removed';
+  if (gid === deps.myGid()) return 'self';
+  if (deps.blacklist().has(gid)) return 'blacklist';
+  return null;
+}
 
 const scheduler = createScheduler('friend-auto-bad');
 let armed = false;
@@ -97,6 +166,12 @@ const deps = {
   myGid: () => getUserState().gid,
   connected: () => isConnected(),
   badRemaining: () => getBadRemainingTimes(),
+  bugRemaining: () => getRemainingTimes(PUT_BUG_OPERATION_ID, BAD_DAILY_LIMIT),
+  weedRemaining: () => getRemainingTimes(PUT_WEED_OPERATION_ID, BAD_DAILY_LIMIT),
+  // 读额度前让现有 checkDailyReset 按游戏日更新缓存（防次日仍读昨日缓存）；
+  // 零 RPC，只清本地 operationLimits
+  quotaRefreshDay: () => require('./friend-operation-limits').checkDailyReset(),
+  quota: autoBadQuota,
   badPaused: () => require('./friend-orchestrator').isFriendBadPaused(),
   // 与 checkFriends/watchlist 巡田互斥：任一在途即让出（防同时 Enter 串农场）
   checking: () => require('./friend-orchestrator').isFriendVisitBusy(),
@@ -115,6 +190,43 @@ const deps = {
 
 function backoffMs(failCount) {
   return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (Math.max(0, failCount) - 1));
+}
+
+// ===== 按游戏日额度暂停（用户定标：额度不足则停到第二天）=====
+/**
+ * 可信额度耗尽判定：总额度 0，或虫+草两个单项均 0（仅一项 0 不停）。
+ * 先让 checkDailyReset 按游戏日更新缓存再读。canOperate=false / 网络失败 /
+ * 超时 / 无地可放 / 1001046 不在此列——它们不改变额度缓存，不会误停。
+ */
+function quotaExhaustionReason() {
+  deps.quotaRefreshDay();
+  if (!(deps.badRemaining() > 0)) return 'total_zero';
+  if (deps.bugRemaining() <= 0 && deps.weedRemaining() <= 0) return 'both_items_zero';
+  return null;
+}
+
+/** 进入当日暂停：幂等（已暂停不打日志），持久化 + 一条明确日志，不手动通知。
+ * 进入即取消旧短 wake、排一个恢复到日界的本地 timer（覆盖式，不走只提前合并）。 */
+function enterQuotaDayPause(reason) {
+  const pause = deps.quota.pause(reason);
+  if (!pause) return;
+  const delay = Math.max(1_000, quotaResumeDelayMs());
+  scheduleQuotaResume(delay);
+  log('好友', `今日捣乱额度已耗尽，下一游戏日恢复（${pause.dayKey} 日界）`, {
+    module: 'friend',
+    event: 'auto_bad_quota_paused',
+    accountId: diagAccountId(),
+    reason,
+    resumeAt: pause.resumeAt,
+  });
+  diagLog(0, 'quota', 'day_paused', { throttle: false, extra: { reason, resumeAt: pause.resumeAt } });
+}
+
+/** 闸门在效力中时的统一排程延迟：按服务器钟计算的剩余毫秒（本机钟可能
+ * 有偏差，不得用 resumeAt - 本机 now），单一恢复到日界的本地 timer。 */
+function quotaResumeDelayMs() {
+  const delay = deps.quota.resumeDelayMs();
+  return Number.isFinite(delay) && delay > 0 ? Math.floor(delay) : 0;
 }
 
 function getSession(gid) {
@@ -160,16 +272,15 @@ function tickDelayMs(now) {
  * connected 与新鲜在线证据也纳入：进门/远程 check 可能延迟超过 10s
  * 在线窗口，写前必须复验证据未过期。 */
 function makeGuard(gid, gen) {
-  return () => gen === generation
-    && deps.connected()
-    && deps.online(gid)
-    && !deps.badPaused() && !deps.paused() && !deps.quietHours()
-    && deps.badRemaining() > 0
-    && !deps.stealDue() && !deps.stealImminent()
-    && !deps.harvestDue() && !deps.harvestImminent()
-    && deps.gids().includes(gid)
-    && gid !== deps.myGid()
-    && !deps.blacklist().has(gid);
+  return () => {
+    const reason = guardRejectReason(gid, gen);
+    if (reason) {
+      // 守卫首个拒绝按相同节流归因（中途翻转至少在 result 的 aborted 里可见）
+      diagLog(gid, 'guard', reason);
+      return false;
+    }
+    return true;
+  };
 }
 
 /** 单次调度体（无定时器副作用），tick 与测试共用。gen 用于栅栏检查。
@@ -189,22 +300,66 @@ async function runTickBody(gen = generation) {
   }
 }
 
+/** 入口/共同守卫被挡时的诊断归因目标：第一个"已到期未完成"的会话目标。
+ * 只读内存态；无有效已选目标则不报（不得每空 tick 刷全表）。 */
+function firstDueCandidate(now) {
+  for (const [gid, session] of autoBadSessions.entries()) {
+    if (!session.done && session.nextAt <= now) return gid;
+  }
+  return 0;
+}
+/** 入口共同守卫首个拒绝原因（与原判定顺序一致）。 */
+function entryBlockReason() {
+  if (!deps.connected()) return 'disconnected';
+  if (deps.paused()) return 'paused';
+  if (deps.quietHours()) return 'quiet';
+  if (deps.checking()) return 'checking';
+  if (deps.stealDue()) return 'steal_due';
+  if (deps.stealImminent()) return 'steal_imminent';
+  if (deps.harvestDue()) return 'harvest_due';
+  if (deps.harvestImminent()) return 'harvest_imminent';
+  if (deps.badPaused()) return 'bad_paused';
+  if (deps.badRemaining() <= 0) return 'cap';
+  return null;
+}
+function diagEntryBlock(now, fallbackReason) {
+  const gid = firstDueCandidate(now);
+  if (!gid) return;
+  diagLog(gid, 'guard', fallbackReason || entryBlockReason() || 'entry_blocked');
+}
+
 async function tickBodyInner(gen) {
   const now = deps.now();
   const gids = deps.gids();
   // 配置收缩：清理已移除目标的会话状态
   for (const gid of [...autoBadSessions.keys()]) {
-    if (!gids.includes(gid)) autoBadSessions.delete(gid);
+    if (!gids.includes(gid)) {
+      diagLog(gid, 'guard', 'removed');
+      diagDeleteTarget(gid);
+      autoBadSessions.delete(gid);
+    }
   }
   const myGid = deps.myGid();
-  if (!myGid || !deps.connected()) return;
+  if (!myGid || !deps.connected()) { diagEntryBlock(now, myGid ? 'disconnected' : 'no_account'); return; }
+  // 按游戏日额度闸门：到日界先让 checkDailyReset 清缓存再清闸门；当日暂停
+  // 期间零请求，等下一游戏日的新在线证据
+  if (deps.quota.resumeIfNewDay()) {
+    // 跨日恢复：旧日的待执行会话/旧在线证据不重放（23:59:59 的证据到
+    // 00:00 不得出手），done 会话保留原去重语义；新日等新 online 事件
+    for (const [gid, session] of autoBadSessions) {
+      if (!session.done) autoBadSessions.delete(gid);
+    }
+  }
+  if (deps.quota.activePause()) { diagEntryBlock(now, 'quota_day'); return; }
   // 共同守卫：全局暂停、免打扰、静默时段、与 checkFriends/watchlist 互斥、
   // 抢收/自收让步
-  if (deps.paused() || deps.quietHours()) return;
-  if (deps.checking()) return;
-  if (deps.stealDue() || deps.stealImminent() || deps.harvestDue() || deps.harvestImminent()) return;
-  // 写侧条件：捣乱暂停、名单为空、额度耗尽 → 零请求（无观察层兜底）
-  if (gids.length === 0 || deps.badPaused() || deps.badRemaining() <= 0) return;
+  if (deps.paused() || deps.quietHours()) { diagEntryBlock(now); return; }
+  if (deps.checking()) { diagEntryBlock(now); return; }
+  if (deps.stealDue() || deps.stealImminent() || deps.harvestDue() || deps.harvestImminent()) { diagEntryBlock(now); return; }
+  // 写侧条件：捣乱暂停、名单为空 → 零请求；额度耗尽走按日暂停闸门
+  if (gids.length === 0 || deps.badPaused()) { diagEntryBlock(now); return; }
+  const quotaReason = quotaExhaustionReason();
+  if (quotaReason) { diagEntryBlock(now, 'cap'); enterQuotaDayPause(quotaReason); return; }
   await runActionPass(gen, now, gids, myGid, deps.blacklist());
 }
 
@@ -214,33 +369,70 @@ async function runActionPass(gen, now, gids, myGid, blacklist) {
   const ordered = gids.filter(g => g > actionCursorGid).concat(gids.filter(g => g <= actionCursorGid));
   for (const gid of ordered) {
     if (gen !== generation) return; // stop/restart 栅栏：旧代不得继续写
-    if (gid === myGid || blacklist.has(gid)) continue;
+    if (deps.quota.activePause()) return; // 当日额度暂停：剩余目标零派发
+    if (gid === myGid || blacklist.has(gid)) {
+      if (autoBadSessions.has(gid)) diagLog(gid, 'guard', gid === myGid ? 'self' : 'blacklist');
+      continue;
+    }
     const session = autoBadSessions.get(gid);
-    if (!session) continue; // 无会话 = 从未有在线证据：绝不主动进门
-    if (session.done) continue; // 已完成会话不重放（等被动离场确证复位）
-    if (session.nextAt > now) continue;
+    if (!session) continue; // 无会话 = 从未有在线证据：绝不主动进门（也不打点，防全表刷屏）
+    if (session.done) { diagLog(gid, 'session', 'done'); continue; } // 已完成会话不重放（等被动离场确证复位）
+    if (session.nextAt > now) {
+      diagLog(gid, 'session', 'backoff', { extra: { remainingMs: Math.max(0, session.nextAt - now) } });
+      continue;
+    }
     // 发起前复验新鲜证据（10s 窗口）与整体守卫：进门/远程 check 可能延迟
     // 超窗口；其它目标不得沿用 tick 入口的旧守卫快照
-    if (!deps.online(gid)) continue;
-    if (!deps.connected() || deps.paused() || deps.quietHours() || deps.checking()) return;
+    if (!deps.online(gid)) { diagLog(gid, 'guard', 'stale_evidence'); continue; }
+    if (!deps.connected() || deps.paused() || deps.quietHours() || deps.checking()) {
+      diagEntryBlock(now);
+      return;
+    }
     // 抢收/自己收获让步：不消耗机会，下轮再试
-    if (deps.stealDue() || deps.harvestImminent()) break;
+    if (deps.stealDue() || deps.harvestImminent()) {
+      diagLog(gid, 'guard', deps.stealDue() ? 'steal_due' : 'harvest_imminent');
+      break;
+    }
     // 真实派发错峰（有界）：相邻 Enter 至少间隔 DISPATCH_GAP_MS，
     // 多目标同拍有证据也不突发
-    if (lastDispatchAt && now - lastDispatchAt < DISPATCH_GAP_MS) break;
+    if (lastDispatchAt && now - lastDispatchAt < DISPATCH_GAP_MS) { diagLog(gid, 'guard', 'dispatch_gap'); break; }
 
     const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
     actionCursorGid = gid; // 派发后游标推进到本目标，下轮从后继开始
     lastDispatchAt = now;
     const label = deps.friendName(gid) || `GID:${gid}`;
+    diagLog(gid, 'dispatch', 'dispatch', { throttle: false }); // 实际动作一条
     const result = await deps.visit({ gid, name: label }, tally, myGid,
       { allowPlace: true, guard: makeGuard(gid, gen) });
     const visitedAt = deps.now();
+    // 真实结果归因：result 保留真实返回（entered/online/bug/weed/aborted），
+    // 单项失败原因码仅白名单透传——禁止无依据报成功
+    const placed = (result.bug || 0) + (result.weed || 0);
+    const resultReason = placed > 0 ? 'done'
+      : result.aborted ? 'aborted'
+        : !result.entered ? 'enter_failed'
+          : !result.online ? 'not_online' : 'zero_placed';
+    const detail = sanitizeResultReason(result.reason);
+    diagLog(gid, 'result', resultReason, {
+      throttle: false,
+      extra: {
+        entered: !!result.entered,
+        online: !!result.online,
+        bug: toNum(result.bug),
+        weed: toNum(result.weed),
+        ...(result.aborted ? { aborted: true } : {}),
+        ...(placed > 0 && result.aborted ? { partial: true } : {}),
+        ...(detail ? { reasonDetail: detail } : {}),
+      },
+    });
     if (gen !== generation) return; // 停止/重启后旧结果作废，不写状态
+    // 实际动作把额度用完（visit 回包 operation_limits 已更新本地缓存）：
+    // 随后进入当日暂停；日志只在进入时打一次
+    const postQuota = quotaExhaustionReason();
+    if (postQuota) enterQuotaDayPause(postQuota);
 
     // 先结算真实成功：守卫中途翻转（aborted）不得丢掉已放成的虫/草，
     // 已成功 ≥1 即完成本会话，恢复后绝不重放
-    const placed = (result.bug || 0) + (result.weed || 0);
     if (placed > 0) {
       session.done = true;
       session.doneAt = visitedAt;
@@ -301,7 +493,9 @@ async function tick() {
     });
   } finally {
     if (armed && gen === generation) {
-      schedulePoll(tickDelayMs(deps.now()));
+      // 当日额度暂停：只剩一个恢复到日界的本地 timer（证据事件不得拉回短间隔）
+      const quotaDelay = quotaResumeDelayMs();
+      schedulePoll(quotaDelay > 0 ? quotaDelay : tickDelayMs(deps.now()));
     }
   }
 }
@@ -312,10 +506,12 @@ async function tick() {
  * 未到）的目标拉近被 pullByEvidence 的下界挡住，新证据不能穿透退避。
  * done 会话不拉近（不重放），但在线证据否定"离场观测"，清 offlineObservedAt。
  */
-function handleOnlineEvidence(gid) {
+function handleOnlineEvidence(gid, at, source) {
   if (!armed) return;
+  if (deps.quota.activePause()) return; // 当日额度暂停：不建会话、不排短 timer
   const id = toNum(gid);
   if (!id || !deps.gids().includes(id)) return; // 仅名单目标（全好友证据照收，动作只看名单）
+  diagLog(id, 'evidence', String(source || 'unknown')); // 已选目标证据接收（节流）
   const session = getSession(id);
   session.offlineObservedAt = 0; // 在线证据否定离场观测
   if (session.done) return; // done 只更新离场观测，不反复空唤醒
@@ -337,6 +533,17 @@ function schedulePoll(delayMs) {
   scheduler.clear('auto_bad_poll');
   scheduler.setTimeoutTask('auto_bad_poll', at - now, () => {
     pollTimerAt = 0; // 回调运行即清真实 pending 标记
+    tick();
+  });
+}
+
+/** 日暂停专用：覆盖式排到日界（取消一切更早的短 wake，不被事件拉回）。 */
+function scheduleQuotaResume(delayMs) {
+  const now = deps.now();
+  pollTimerAt = now + Math.max(0, delayMs);
+  scheduler.clear('auto_bad_poll');
+  scheduler.setTimeoutTask('auto_bad_poll', pollTimerAt - now, () => {
+    pollTimerAt = 0;
     tick();
   });
 }
@@ -404,13 +611,20 @@ function startAutoBadLoop() {
   if (armed) return;
   armed = true;
   generation += 1;
+  log('好友', '在线自动捣乱调度启动', {
+    module: 'friend',
+    event: 'auto_bad_lifecycle',
+    accountId: diagAccountId(),
+    armed: true,
+    selectedCount: deps.gids().length, // 只数量，不输出名单内容
+  });
   if (!unsubscribeOnlineEvidence) {
     unsubscribeOnlineEvidence = friendActivity.onOnlineEvidence(handleOnlineEvidence);
   }
   if (!unsubscribePresence) {
     unsubscribePresence = friendActivity.onPresenceObservation(handlePresenceObservation);
   }
-  schedulePoll(TICK_MS);
+  schedulePoll(quotaResumeDelayMs() || TICK_MS); // 当日额度暂停：直接排到日界
 }
 
 function stopAutoBadLoop() {
@@ -421,9 +635,11 @@ function stopAutoBadLoop() {
   generation += 1;
   armed = false;
   autoBadSessions.clear();
+  diagLastAt.clear(); // 诊断节流缓存随会话态一起清（stop 后重启动目标首报可见）
   actionCursorGid = 0;
   lastDispatchAt = 0;
   pollTimerAt = 0;
+  // 额度日闸门（autoBadQuota）不清：stop 当日不忘记已确认的额度耗尽
   if (unsubscribeOnlineEvidence) {
     unsubscribeOnlineEvidence();
     unsubscribeOnlineEvidence = null;
@@ -447,6 +663,8 @@ module.exports = {
   // 强制下一拍到期（仅测试：模拟证据把处理拉到秒级的短间隔离线观测）
   __setNextAtForTests: (gid, at) => { const s = autoBadSessions.get(toNum(gid)); if (s) s.nextAt = at; },
   __depsForTests: deps,
+  // 当前统一排程目标时刻（仅测试：断言日暂停只剩日界 timer）
+  __pollAtForTests: () => pollTimerAt,
   // 常量暴露给测试断言边界
   BACKOFF_BASE_MS,
   BACKOFF_MAX_MS,

@@ -139,6 +139,8 @@ function recordActivity(gid, at, source, detail = '') {
   log('好友', `好友活跃证据更新 ${getCachedFriendName(id) || `GID:${id}`}（${source}）`, {
     module: 'friend',
     event: 'friend_activity_evidence',
+    // accountId 关联元数据（只标识账户，不改在线源/判定）
+    accountId: process.env.FARM_ACCOUNT_ID || '',
     friendGid: id,
     source,
     at: atMs,

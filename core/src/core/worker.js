@@ -1431,6 +1431,7 @@ async function stopBot() {
     stopDailyRoutineTimer();
     cleanupTaskSystem();
     workerScheduler.clearAll();
+    try { require('../services/friend-self-echo').stop(); } catch { }
     stopNetwork('账号停止');
 
     const ws = getWs();
@@ -1467,19 +1468,38 @@ function onFriendLandsChanged(info) {
     const lands = info && info.lands;
     if (!hostGid || !Array.isArray(lands) || lands.length === 0) return;
     try {
+        // 自回声识别（2026-09-26）：自己写操作（放虫/放草/偷/帮忙回包）触发的
+        // 推送不算好友外部活跃。判定保守：必须有本次写 ticket + 写前基线，
+        // 且完整 LandInfo 语义差异全部落在该操作允许变化的字段内；不确定一律
+        // 照常触发。仅历史 owner 含自己 gid 绝不构成回声证据。
+        // tracker 异常 fail-open：按全外部处理，绝不因识别器故障丢真推送。
+        let externalLands = lands;
+        try {
+            const selfEcho = require('../services/friend-self-echo');
+            const selfGid = toNum((getUserState() || {}).gid);
+            const verdict = selfEcho.classifyPushLands(hostGid, lands, selfGid);
+            // 无论是否回声，推送都是"已接收的最新土地状态"，作为后续基线。
+            selfEcho.recordLandsBaseline(hostGid, lands);
+            externalLands = verdict.externalLands;
+        } catch { /* fail-open：externalLands 保持全量 lands */ }
         // LandsNotify 只包含发生变化的地块，必须与既有地块基线合并。
         inspectFriendLands(hostGid, '', lands, Date.now(), { partial: true });
+        if (externalLands.length === 0) {
+            // 纯自回声：缓存照常合并，但不进入外部触发链（活跃表/巡田拉近/
+            // 快车道/唤醒重排）。
+            return;
+        }
         // 推送即活跃（2026-09-23 实验确认通道存活）：好友农场有动作的毫秒级
         // 证据——进活跃表后巡田自动收紧到 45-75s，施肥证据则直接进 HOT。
         require('../services/friend-activity').recordActivity(hostGid, Date.now(), 'lands_push',
-            `${lands.length} lands changed`);
+            `${externalLands.length} lands changed`);
         // 推送即出手窗口（2026-09-23 用户定标）：不等 1s 档 tick，直接把该好友
         // 的巡田拉近到 ~300ms 后——推送→进门→偷 的端到端压到 1 秒内。
         require('../services/friend').pullWatchlistPollToNow(hostGid, 300);
         // 快车道（方案C，2026-09-24）：重点好友在线时，推送里的成熟地块直接开火，
-        // 不等巡田循环——与 1 秒档扫地双保险
+        // 不等巡田循环——与 1 秒档扫地双保险。混合通知只把非回声地块交给快车道。
         const { fastLaneSteal } = require('../services/friend-visit');
-        fastLaneSteal(hostGid, lands);
+        fastLaneSteal(hostGid, externalLands);
         armStealWake();
     } catch { }
 }
@@ -2110,3 +2130,7 @@ function syncStatus() {
         sendToMaster({ type: 'status_sync', data: stats });
     }
 }
+
+// 仅测试用：好友推送分支的消费者接线可直接驱动（生产入口仍是
+// networkEvents 的 friendLandsChanged 事件，见 startNetwork 注册处）。
+module.exports = { onFriendLandsChanged };

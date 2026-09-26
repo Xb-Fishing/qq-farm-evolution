@@ -810,6 +810,14 @@ async function enterFriendFarm(gid) {
     reply.__briefDogInfo = dogInfo;
   }
 
+  // 自回声识别基线（2026-09-26）：Enter 回包是"已经发生的完整土地语义"，
+  // 作为后续写操作差异比较的写前基线。不改请求/回包语义，纯内存登记。
+  if (Array.isArray(reply.lands) && reply.lands.length > 0) {
+    try {
+      require('./friend-self-echo').recordLandsBaseline(toNum(gid), reply.lands);
+    } catch { /* 基线登记失败不影响进场 */ }
+  }
+
   return reply;
 }
 

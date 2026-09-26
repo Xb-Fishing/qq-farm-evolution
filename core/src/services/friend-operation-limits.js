@@ -11,21 +11,27 @@ let canGetHelpExp = true;
 let helpAutoDisabledByLimit = false;
 let localBadOperationCount = 0;
 
-const PUT_BUG_OPERATION_ID = 10005;
-const PUT_WEED_OPERATION_ID = 10006;
+// 捣乱操作 ID（2026-09-26 修正，证据存 ignored tmp/mischief-operation-id-proof.json）：
+// 10003 = 放草/放虫共用的每日 shared 额度（PutWeeds 与 PutInsects 均消耗它），
+//         服务器侧 day_times 即当日已用捣乱总数；
+// 10004 = 放虫单项计数（仅 PutInsects 回报），只作单项剩余判断，不并入总额。
+// 10005/10006/10007 = 帮好友除草/除虫/浇水，属帮助计数，不进捣乱预算。
+const BAD_SHARED_OPERATION_ID = 10003;
+const PUT_BUG_OPERATION_ID = 10004;
+const PUT_WEED_OPERATION_ID = 10003;
 const GOLDEN_BUG_OPERATION_ID = 10015;
 const BAD_DAILY_LIMIT = 100;
 
 // ===== Operation type names =====
 const OP_NAMES = {
-  '10001': '帮好友浇水',
-  '10002': '帮好友除草',
-  '10003': '帮好友除虫',
-  '10004': '偷取好友作物',
-  '10005': '给好友放虫',
-  '10006': '给好友放草',
-  '10007': '帮好友复活',
-  '10008': '好友帮忙浇水',
+  '10001': '操作 #10001',
+  '10002': '操作 #10002',
+  '10003': '捣乱共享额度（放虫/放草）',
+  '10004': '给好友放虫',
+  '10005': '帮好友除草',
+  '10006': '帮好友除虫',
+  '10007': '帮好友浇水',
+  '10008': '操作 #10008',
   '10015': '给好友放黄金虫',
 };
 
@@ -159,14 +165,19 @@ function getOperationDayTimes(operationId) {
 }
 
 function getBadOperationUsedCount() {
-  const serverUsed =
-    getOperationDayTimes(PUT_BUG_OPERATION_ID) +
-    getOperationDayTimes(PUT_WEED_OPERATION_ID);
-  return Math.max(serverUsed, localBadOperationCount);
+  // 10003 是放草/放虫共用 shared 额度，服务器 day_times 已含两类捣乱总数；
+  // 10004 只是虫子单项计数，SUM 会双算放虫。本机计数只在服务器数据缺失/
+  // 滞后时兜底，取 max 而非相加。
+  const sharedUsed = getOperationDayTimes(BAD_SHARED_OPERATION_ID);
+  return Math.min(BAD_DAILY_LIMIT, Math.max(sharedUsed, localBadOperationCount));
 }
 
 function getBadRemainingTimes() {
-  return Math.max(0, BAD_DAILY_LIMIT - getBadOperationUsedCount());
+  // 服务端 shared(10003) 可能设比 bot cap 更小的 day_times_limit：
+  // 取 bot 总剩余与 shared 剩余的较小值，避免分项仍有余额时误判可继续。
+  const botRemaining = BAD_DAILY_LIMIT - getBadOperationUsedCount();
+  const sharedRemaining = getRemainingTimes(BAD_SHARED_OPERATION_ID, BAD_DAILY_LIMIT);
+  return Math.max(0, Math.min(botRemaining, sharedRemaining));
 }
 
 function canOperateBad() {
@@ -213,6 +224,24 @@ function getHelpAutoDisabledByLimit() {
 // ===== Friend operation RPC calls =====
 
 /**
+ * 自回声 ticket 包裹（2026-09-26）：写请求发出前登记 pending，成功回包用
+ * 逐地块返回状态确认，失败/超时立即撤销。不改 RPC 次序/参数；空回包
+ * land 在 confirmWrite 内部视为无证据撤销，不会抑制任何后续推送。
+ */
+async function withSelfEchoTicket(op, gid, landIds, rpc) {
+  const selfEcho = require('./friend-self-echo');
+  const ticket = selfEcho.registerPendingWrite(op, gid, landIds);
+  try {
+    const reply = await rpc();
+    selfEcho.confirmWrite(ticket, reply && reply.land);
+    return reply;
+  } catch (err) {
+    selfEcho.revokeWrite(ticket);
+    throw err;
+  }
+}
+
+/**
  * Help water a friend's lands.
  * If `checkExpLimit` is true, sleeps 200ms after the call and checks if exp increased
  * to determine if the help exp limit is reached.
@@ -225,12 +254,14 @@ async function helpWater(gid, landIds, checkExpLimit = false) {
       host_gid: toLong(gid),
     })
   ).finish();
-  const { body } = await sendMsgAsync(
-    'gamepb.plantpb.PlantService',
-    'WaterLand',
-    payload
-  );
-  const reply = types.WaterLandReply.decode(body);
+  const reply = await withSelfEchoTicket('WaterLand', gid, landIds, async () => {
+    const { body } = await sendMsgAsync(
+      'gamepb.plantpb.PlantService',
+      'WaterLand',
+      payload
+    );
+    return types.WaterLandReply.decode(body);
+  });
   updateOperationLimits(reply.operation_limits);
 
   if (checkExpLimit) {
@@ -253,12 +284,14 @@ async function helpWeed(gid, landIds, checkExpLimit = false) {
       host_gid: toLong(gid),
     })
   ).finish();
-  const { body } = await sendMsgAsync(
-    'gamepb.plantpb.PlantService',
-    'WeedOut',
-    payload
-  );
-  const reply = types.WeedOutReply.decode(body);
+  const reply = await withSelfEchoTicket('WeedOut', gid, landIds, async () => {
+    const { body } = await sendMsgAsync(
+      'gamepb.plantpb.PlantService',
+      'WeedOut',
+      payload
+    );
+    return types.WeedOutReply.decode(body);
+  });
   updateOperationLimits(reply.operation_limits);
 
   if (checkExpLimit) {
@@ -281,12 +314,14 @@ async function helpInsecticide(gid, landIds, checkExpLimit = false) {
       host_gid: toLong(gid),
     })
   ).finish();
-  const { body } = await sendMsgAsync(
-    'gamepb.plantpb.PlantService',
-    'Insecticide',
-    payload
-  );
-  const reply = types.InsecticideReply.decode(body);
+  const reply = await withSelfEchoTicket('Insecticide', gid, landIds, async () => {
+    const { body } = await sendMsgAsync(
+      'gamepb.plantpb.PlantService',
+      'Insecticide',
+      payload
+    );
+    return types.InsecticideReply.decode(body);
+  });
   updateOperationLimits(reply.operation_limits);
 
   if (checkExpLimit) {
@@ -313,12 +348,14 @@ async function stealHarvest(gid, landIds) {
       is_all: true,
     })
   ).finish();
-  const { body } = await sendMsgAsync(
-    'gamepb.plantpb.PlantService',
-    'Harvest',
-    payload
-  );
-  const reply = types.HarvestReply.decode(body);
+  const reply = await withSelfEchoTicket('Harvest', gid, landIds, async () => {
+    const { body } = await sendMsgAsync(
+      'gamepb.plantpb.PlantService',
+      'Harvest',
+      payload
+    );
+    return types.HarvestReply.decode(body);
+  });
   updateOperationLimits(reply.operation_limits);
   return reply;
 }
@@ -339,12 +376,14 @@ async function putPlantItems(gid, landIds, RequestType, ReplyType, rpcMethod) {
           host_gid: toLong(gid),
         })
       ).finish();
-      const { body } = await sendMsgAsync(
-        'gamepb.plantpb.PlantService',
-        rpcMethod,
-        payload
-      );
-      const reply = ReplyType.decode(body);
+      const reply = await withSelfEchoTicket(rpcMethod, gid, [landId], async () => {
+        const { body } = await sendMsgAsync(
+          'gamepb.plantpb.PlantService',
+          rpcMethod,
+          payload
+        );
+        return ReplyType.decode(body);
+      });
       updateOperationLimits(reply.operation_limits);
       ok++;
     } catch (err) {
@@ -387,12 +426,14 @@ async function putPlantItemsDetailed(gid, landIds, RequestType, ReplyType, rpcMe
           host_gid: toLong(gid),
         })
       ).finish();
-      const { body } = await sendMsgAsync(
-        'gamepb.plantpb.PlantService',
-        rpcMethod,
-        payload
-      );
-      const reply = ReplyType.decode(body);
+      const reply = await withSelfEchoTicket(rpcMethod, gid, [landId], async () => {
+        const { body } = await sendMsgAsync(
+          'gamepb.plantpb.PlantService',
+          rpcMethod,
+          payload
+        );
+        return ReplyType.decode(body);
+      });
       updateOperationLimits(reply.operation_limits);
       ok++;
     } catch (err) {
@@ -448,6 +489,7 @@ async function putWeedsDetailed(gid, landIds) {
 // ===== Exports =====
 module.exports = {
   OP_NAMES,
+  BAD_SHARED_OPERATION_ID,
   PUT_BUG_OPERATION_ID,
   PUT_WEED_OPERATION_ID,
   GOLDEN_BUG_OPERATION_ID,
@@ -461,6 +503,7 @@ module.exports = {
   canOperateBad,
   getRemainingTimes,
   getBadRemainingTimes,
+  getBadOperationUsedCount,
   getOperationLimits,
   getCanGetHelpExp,
   setCanGetHelpExp,
