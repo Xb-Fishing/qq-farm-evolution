@@ -24,6 +24,9 @@ const ISSUE_DEFINITIONS = Object.freeze({
   reconnect_failed: { severity: 'warn', label: '账号网络重连多次失败' },
   code_refresh_failed: { severity: 'error', label: '登录凭据无法生成新的游戏 Code' },
   credential_keepalive_failed: { severity: 'warn', label: '微信长凭据滚动保活失败' },
+  // 背包出现本地索引未登记物品（新活动种子/道具）：日志签名变化时上报。
+  // 自动进化每天只在固定窗口跑一轮，当日新增未识别 ID 靠这里进待办，不被假清零。
+  bag_unclassified: { severity: 'warn', label: '背包出现本地索引未登记的物品（新活动种子/道具待登记）' },
 });
 
 function normalizeIssue(value) {

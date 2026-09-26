@@ -30,13 +30,20 @@ function fixture(t, options = {}) {
     let time = 1_800_000_000_000;
     t.mock.method(Date, 'now', () => time);
     const flags = { pause: false, own: false, stealDue: false, stealImminent: false,
-        slowdown: false, budgetDenied: false, returnRemain: 0, ...options };
+        slowdown: false, budgetDenied: false, returnRemain: 0, autoBadRunning: false, ...options };
     let gids = [9];
+    // 显式依赖 seam：生产函数体惰性 require 的 friend-auto-bad 只在此注入，
+    // 其他任何 require 都是测试装配错误，必须当场暴露。
+    const autoBadModule = { isAutoBadRunning: () => flags.autoBadRunning };
     const transport = [];
     const logs = [];
     let leaves = 0;
     const context = {
         Date, Set, Map, Number, Math, Array,
+        require: name => {
+            assert.equal(name, './friend-auto-bad', 'watchlistPollTick 只允许依赖 friend-auto-bad');
+            return autoBadModule;
+        },
         process: { env: { FARM_ACCOUNT_ID: 'fixture-account' } },
         ...watch, ...clocks, toNum, toLong: Number,
         getWatchlistFriendGids: () => gids,
@@ -53,6 +60,8 @@ function fixture(t, options = {}) {
         logWarn: () => {},
         watchlistPollLoopArmed: true, isCheckingFriends: false,
         watchlistPollNextAt: new Map(), watchlistPollRipeAt: new Map(),
+        // 生产模块级状态：单访在途互斥标志（isFriendVisitBusy 读它）
+        watchlistVisitInFlight: false,
         watchlistNames: new Map([[9, 'fixture-friend']]), watchlistWindowAnnounced: new Map(),
         friendSummaryDueByGid: new Map(),
         lastRipeRefreshAt: 0, nextFriendStealDueAtMs: 0, nextWatchlistStealDueAtMs: 0,
@@ -175,6 +184,32 @@ test('pause, own maturity and due/imminent stealing prevent baseline transport w
     await f.tick();
     assert.equal(f.transport.length, 1, 'not-yet-due tick does not perform another visit');
     assert.equal(f.health().length, 1);
+});
+
+// 2026-09-25 在线捣乱互斥：autoBadRunning 期间巡田零进门、零健康记录；
+// 释放后恢复原基线行为；真实单访期间 watchlistVisitInFlight 必须为 true
+// （isFriendVisitBusy 读它反向互斥 friend-auto-bad 的调度）。
+test('auto-bad running keeps watchlist tick from entering or faking health; flag releases baseline', async t => {
+    const f = fixture(t);
+    f.flags.autoBadRunning = true;
+    await f.tick();
+    assert.equal(f.transport.length, 0, '互斥期间零进门');
+    assert.equal(f.health().length, 0, '互斥期间不得记虚假健康成功');
+    assert.equal(f.context.watchlistVisitInFlight, false, '未进门不得虚标在途');
+    f.flags.autoBadRunning = false;
+    await f.tick();
+    assert.equal(f.transport.length, 1, '互斥释放后恢复基线进门');
+    assert.equal(f.health().length, 1);
+    assert.equal(f.health()[0].result, 'ok');
+});
+
+test('watchlist visit marks watchlistVisitInFlight for the whole enter (isFriendVisitBusy wiring)', async t => {
+    const f = fixture(t);
+    let observedDuringVisit = null;
+    f.flags.onLeave = () => { observedDuringVisit = f.context.watchlistVisitInFlight; };
+    await f.tick();
+    assert.equal(observedDuringVisit, true, '进门执行期间生产互斥标志必须为 true');
+    assert.equal(f.context.watchlistVisitInFlight, false, '结束后必须释放');
 });
 
 test('first successful window discovery reports its actual next mode with only anonymous health fields', async t => {

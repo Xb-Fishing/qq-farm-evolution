@@ -248,5 +248,24 @@
     "asset_name": "gold/Crop_9004",
     "sells": "1005:6",
     "evidence": "Bag field 100 structure + reviewed client ItemInfo/Plant snapshot；104 段黄金变异规律 + 当前仓库正在收获泡泡棉花糖"
+  },
+  {
+    "id": 26030,
+    "name": "月下美人种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_6030",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的月下美人。",
+    "evidence": "公开镜像客户端配置快照 26030 逐字（type 5、Crop_6030、level 41）+ Plant 1026030 seed_id=26030/fruit 46030 交叉 + 2026-09-25/26 Bag 实际出现 26030/46030/1046030（bag_unclassified_item 复盘登记；官方 Plant 表 size null=无占地证据，按客户端默认登记 size 1）"
+  },
+  {
+    "id": 1046030,
+    "name": "黄金·月下美人",
+    "type": 17,
+    "asset_name": "gold/Crop_6030",
+    "sells": "1005:6",
+    "evidence": "公开镜像客户端配置快照 1046030（type 17、gold/Crop_6030、sells 1005:6）；Plant 1126030 黄金·月下美人 fruit 1046030 交叉；2026-09-26 Bag 实际出现；与 1041625/1045995 黄金变异同族同模式"
   }
 ]

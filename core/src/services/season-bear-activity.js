@@ -132,6 +132,52 @@ function buildBearRuleModel(play, shop) {
   };
 }
 
+// 种子礼包节点与游记奖励记录是同一节点（2026090102）：field 110 starRecord 用于只读
+// 展示，mega_event.rewards 才是种子礼包领取态（pet-diary-operate 的 seeds 前置校验）。
+const BEAR_SEEDS_ACTIVITY_ID = BEAR_RECORD_ACTIVITY_ID;
+
+/**
+ * 一键领取资格汇总（只读推导，不产生写请求）。
+ * 条件与 pet-diary-operate 的服务端前置校验逐条镜像：story / compensation /
+ * claimDog / seeds 四类免费领取；任一条件不满足时该类归 false，前端跳过不试写。
+ * 入参是 PetDiaryGetGroupReply 解码后的同条 GetGroup 回包（bear 读快照已有，零额外请求）。
+ */
+function summarizeBearClaimEligibility(decodedGroupReply, options = {}) {
+  const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const children = Array.isArray(decodedGroupReply?.group?.children)
+    ? decodedGroupReply.group.children
+    : [];
+  const findChild = id => children.find(entry => Number(entry?.head?.id || 0) === id) || null;
+  const nodeActive = (head) => {
+    const start = Number(head?.start_time) || 0;
+    const end = Number(head?.end_time) || 0;
+    return start > 0 && nowSeconds >= start && nowSeconds <= end;
+  };
+  const pet = findChild(BEAR_PLAY_ACTIVITY_ID);
+  if (!pet || !nodeActive(pet.head)) {
+    return { available: false, reason: 'S3 萌宠当前不在活动时间内' };
+  }
+  const state = pet.pet_treasure_hunt || null;
+  if (!state) return { available: false, reason: 'S3 萌宠实时状态未下发' };
+  const nurture = state.nurture || {};
+  const stories = (Array.isArray(state.story?.stories) ? state.story.stories : [])
+    .filter(story => story && story.unlocked === true && story.claimed !== true)
+    .map(story => Number(story.order))
+    .filter(order => order > 0);
+  const seeds = findChild(BEAR_SEEDS_ACTIVITY_ID);
+  const seedsClaimable = !!seeds && nodeActive(seeds.head)
+    && (Array.isArray(seeds.mega_event?.rewards) ? seeds.mega_event.rewards : [])
+      .some(reward => reward && reward.claimable === true && reward.claimed !== true);
+  return {
+    available: true,
+    reason: '',
+    stories,
+    dogClaimable: Number(nurture.stage) === 2 && nurture.dog_granted !== true,
+    compensationCount: Number(state.plunder?.plunder_compensation_count) || 0,
+    seedsClaimable,
+  };
+}
+
 function statusLabel(node, nowSeconds) {
   if (!node) return '当前回包未包含';
   if (toNum(node.startTime) > nowSeconds) return '未开始';
@@ -230,5 +276,6 @@ module.exports = {
   BEAR_TREASURE_ITEM_ID,
   BEAR_GUIDE_MANUAL_ACTIONS,
   BEAR_CLIENT_UI_UID,
-  getBearObservedItemIds, normalizeBearActivity,
+  BEAR_SEEDS_ACTIVITY_ID,
+  getBearObservedItemIds, normalizeBearActivity, summarizeBearClaimEligibility,
 };

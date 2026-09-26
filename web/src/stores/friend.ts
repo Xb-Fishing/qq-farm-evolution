@@ -15,9 +15,18 @@ export interface KnownFriendSettings {
   friendsListCacheTtlSec: number
 }
 
+// 已证实在线信号源（与 core/src/services/friend-activity.js 的 ONLINE_SOURCES 对齐），
+// 只有这些源的 friend_activity_evidence 日志能实时点亮好友在线标记。
+const ONLINE_EVIDENCE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online'])
+// 实时证据有效期：超过即撤销在线标记，回落到 30 秒快照兜底。
+const ONLINE_EVIDENCE_TTL_MS = 10_000
+
 export const useFriendStore = defineStore('friend', () => {
   const friends = ref<any[]>([])
   const loading = ref(false)
+  // gid -> { at, source }：实时在线证据，log:new 桥写入，10 秒过期由页面 ticker 撤销
+  const onlineEvidence = ref<Record<string, { at: number, source: string }>>({})
+  let friendsReqSeq = 0
   const dogInfoLoading = ref(false)
   const friendLands = ref<Record<string, any[]>>({})
   const friendLandsLoading = ref<Record<string, boolean>>({})
@@ -35,7 +44,11 @@ export const useFriendStore = defineStore('friend', () => {
   const knownFriendSettingsSaving = ref(false)
 
   function clearFriendData() {
+    // 代次前移：清空后没有新 fetch 时（A→B→A / 手动清空），旧响应 seq 不再匹配，不会写回旧列表
+    friendsReqSeq++
+    loading.value = false
     friends.value = []
+    onlineEvidence.value = {}
     friendLands.value = {}
     friendLandsLoading.value = {}
     blacklist.value = []
@@ -106,25 +119,91 @@ export const useFriendStore = defineStore('friend', () => {
     }
   }
 
+  // 把仍在有效期内的实时在线证据合并进新拉取的好友快照：
+  // 晚到的列表响应不能覆盖更新的实时在线标记。
+  function mergeOnlineEvidence(list: any[], now = Date.now()) {
+    const fresh = Object.entries(onlineEvidence.value)
+      .filter(([, ev]) => now - ev.at <= ONLINE_EVIDENCE_TTL_MS)
+    if (fresh.length === 0)
+      return list
+    const byGid = new Map(fresh.map(([gid, ev]) => [Number(gid), ev]))
+    return list.map((f: any) => {
+      const ev = byGid.get(Number(f?.gid))
+      return ev ? { ...f, online: true, activeAt: ev.at } : f
+    })
+  }
+
   async function fetchFriends(accountId: string, forceSync = false) {
     if (!accountId)
       return
     const requestedId = String(accountId)
+    // 代次保护：更晚的请求开始后，旧响应不写列表、旧 finally 不清新请求的 loading
+    const seq = ++friendsReqSeq
     loading.value = true
     try {
       const res = await api.get('/api/friends', {
         headers: { 'x-account-id': accountId },
         params: forceSync ? { forceSync: 'true' } : {},
       })
-      if (!isCurrentAccount(requestedId))
+      if (seq !== friendsReqSeq || !isCurrentAccount(requestedId))
         return
       if (res.data.ok) {
-        friends.value = res.data.data || []
+        friends.value = mergeOnlineEvidence(res.data.data || [])
       }
     }
     finally {
-      loading.value = false
+      if (seq === friendsReqSeq)
+        loading.value = false
     }
+  }
+
+  // log:new 桥：只认当前账号、已证实在线源、10 秒窗口内的非未来证据。
+  // 数据包形状来自 worker setLogHook + admin emitRealtimeLog：
+  // { accountId, time, tag, msg, isWarn, meta: { module, event, friendGid, source, at } }
+  function applyOnlineEvidence(accountId: unknown, gid: unknown, at: unknown, source: unknown, now = Date.now()) {
+    if (!accountId || !isCurrentAccount(String(accountId)))
+      return false
+    const id = Number(gid)
+    const src = String(source || '')
+    if (!Number.isSafeInteger(id) || id <= 0 || !ONLINE_EVIDENCE_SOURCES.has(src))
+      return false
+    const atMs = Number(at) || 0
+    if (!atMs || atMs > now + 1000 || now - atMs > ONLINE_EVIDENCE_TTL_MS)
+      return false
+    const key = String(id)
+    const prev = onlineEvidence.value[key]
+    if (prev && prev.at >= atMs)
+      return true
+    onlineEvidence.value = { ...onlineEvidence.value, [key]: { at: atMs, source: src } }
+    const idx = friends.value.findIndex(f => Number(f?.gid) === id)
+    if (idx >= 0) {
+      friends.value[idx] = { ...friends.value[idx], online: true, activeAt: atMs }
+    }
+    return true
+  }
+
+  function applyOnlineEvidenceLog(entry: any, now = Date.now()) {
+    const meta = entry?.meta
+    if (!meta || meta.event !== 'friend_activity_evidence')
+      return false
+    return applyOnlineEvidence(entry.accountId, meta.friendGid, meta.at, meta.source, now)
+  }
+
+  // 撤销过期证据对应的在线标记（页面 1 秒 ticker 调用）
+  function expireOnlineEvidence(now = Date.now()) {
+    const expired = Object.entries(onlineEvidence.value)
+      .filter(([, ev]) => now - ev.at > ONLINE_EVIDENCE_TTL_MS)
+      .map(([gid]) => Number(gid))
+    if (expired.length === 0)
+      return
+    const next = { ...onlineEvidence.value }
+    for (const gid of expired)
+      delete next[String(gid)]
+    onlineEvidence.value = next
+    const expiredSet = new Set(expired)
+    friends.value = friends.value.map((f: any) =>
+      expiredSet.has(Number(f?.gid)) ? { ...f, online: false } : f,
+    )
   }
 
   async function fetchFriendsDogInfo(accountId: string) {
@@ -434,12 +513,15 @@ export const useFriendStore = defineStore('friend', () => {
   return {
     friends,
     loading,
+    onlineEvidence,
+    applyOnlineEvidenceLog,
+    expireOnlineEvidence,
     dogInfoLoading,
     friendLands,
     friendLandsLoading,
     blacklist,
     watchlist,
-  autoBadList,
+    autoBadList,
     interactRecords,
     interactLoading,
     interactError,

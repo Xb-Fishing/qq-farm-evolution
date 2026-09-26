@@ -240,3 +240,102 @@ test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 
     if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
   }
 });
+
+test('月下美人 2026-09-25/26 Bag 出现,按镜像配置快照+Plant+Bag 三方证据登记', () => {
+  const {
+    getSeedImageBySeedId, getItemImageById,
+  } = require('../src/config/gameConfig');
+  // 种子进运行时种子索引（type 5），背包优先种植可识别
+  assert.equal(getItemById(26030)?.name, '月下美人种子');
+  assert.equal(isSeedItem(26030), true);
+  // 植物映射：seed→plant→fruit 双向闭环；官方 Plant 表 size null=无2x2证据，登记为 1x1
+  const plant = getPlantBySeedId(26030);
+  assert.equal(plant?.name, '月下美人');
+  assert.equal(plant?.size, 1);
+  assert.equal(plant?.fruit?.id, 46030);
+  assert.equal(plant?.mutant_effect_plant, '5:1126030:1');
+  // 果实由 EventPlants 合成条目命名（同枸杞惯例，不进 EventItems）
+  assert.equal(getItemById(46030)?.name, '月下美人');
+  // 黄金变体果实（Plant 1126030 fruit 1046030 + ItemInfo type 17 双源）
+  assert.equal(getItemById(1046030)?.name, '黄金·月下美人');
+  assert.equal(isSeedItem(1046030), false);
+  // 官方专属图（非通用回退）：种子/果实/黄金三张都必须命中本地文件
+  assert.match(getSeedImageBySeedId(26030), /26030_Crop_6030_Seed\.png$/);
+  assert.match(getSeedImageBySeedId(46030), /46030_Crop_6030_Seed\.png$/);
+  assert.match(getSeedImageBySeedId(1046030) || getItemImageById(1046030), /1046030_gold_Crop_6030_Seed\.png$/);
+  // 背包识别不再 unknown，mappingStatus=mapped 且带真实图片
+  const seeds = getBagSeedsFromItems([
+    { id: 26030, count: 2, showName: '月下美人种子' },
+    { id: 46030, count: 48, showName: '月下美人' },
+    { id: 1046030, count: 1, showName: '黄金·月下美人' },
+  ]);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].mappingStatus, 'mapped');
+  assert.equal(seeds[0].plantSize, 1);
+  assert.match(seeds[0].image, /26030_Crop_6030_Seed\.png$/);
+});
+
+test('月下美人图片文件缺失时审计必须报 seed_icon_missing,不得静默通过', () => {
+  const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
+  const config = require('../src/config/gameConfig');
+  // 正常：登记 + 图片齐备 → 无缺口
+  const ok = auditBagSeedCoverage(
+    [{ id: 26030, count: 2 }],
+    getBagSeedsFromItems([{ id: 26030, count: 2 }]),
+  );
+  assert.equal(ok.issues.filter(i => i.itemId === 26030).length, 0);
+  // 行为回归：图片索引拿不到该种子贴图时必须产生 seed_icon_missing 缺口
+  const noIconLookup = Object.create(config);
+  noIconLookup.getSeedImageBySeedId = () => '';
+  const missing = auditBagSeedCoverage(
+    [{ id: 26030, count: 2 }],
+    getBagSeedsFromItems([{ id: 26030, count: 2 }]),
+    noIconLookup,
+  );
+  assert.ok(missing.issues.some(i => i.itemId === 26030 && i.kind === 'seed_icon_missing'));
+});
+
+test('bag_unclassified 签名变化同步进运行时待办,同签名不风暴', () => {
+  const utilsPath = require.resolve('../src/utils/utils');
+  const warehousePath = require.resolve('../src/services/warehouse');
+  const inboxPath = require.resolve('../src/services/evolution-issue-inbox');
+  const previousUtils = require.cache[utilsPath];
+  const previousWarehouse = require.cache[warehousePath];
+  const previousInbox = require.cache[inboxPath];
+  const recorded = [];
+  const utilsMod = require('../src/utils/utils');
+  require.cache[utilsPath] = mockModule(utilsPath, {
+    ...utilsMod,
+    log: () => {},
+    logWarn: () => {},
+  });
+  require.cache[inboxPath] = mockModule(inboxPath, {
+    recordRuntimeIssue: (type, level) => {
+      recorded.push({ type, level });
+      return true;
+    },
+  });
+  delete require.cache[warehousePath];
+  try {
+    const { getBagSeedsFromItems: getSeeds } = require('../src/services/warehouse');
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(recorded.length, 1, 'first unknown id must enter the issue inbox');
+    assert.deepEqual(recorded[0], { type: 'bag_unclassified', level: 'warn' });
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(recorded.length, 1, 'same signature must not storm the inbox');
+    // 签名变化但只是旧 ID 消失（无新增）：不刷待办次数
+    getSeeds([{ id: 4299982, count: 1 }]);
+    assert.equal(recorded.length, 2);
+    // 全部补齐后复位，再出现可重新上报
+    getSeeds([{ id: 29004, count: 3 }]);
+    getSeeds([{ id: 4299981, count: 1 }]);
+    assert.equal(recorded.length, 3, 'after reset, new unknown must re-enter the inbox');
+  } finally {
+    delete require.cache[warehousePath];
+    if (previousUtils === undefined) delete require.cache[utilsPath];
+    else require.cache[utilsPath] = previousUtils;
+    if (previousInbox === undefined) delete require.cache[inboxPath];
+    else require.cache[inboxPath] = previousInbox;
+    if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
+  }
+});

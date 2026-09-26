@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BearActivityPanel from '@/components/activity/BearActivityPanel.vue'
+import ClaimAllPanel from '@/components/activity/ClaimAllPanel.vue'
 import SeasonRuleActivityPanel from '@/components/activity/SeasonRuleActivityPanel.vue'
 import AdminActivityUpdatePanel from '@/components/admin/AdminActivityUpdatePanel.vue'
 import EvolutionAgentSettings from '@/components/admin/EvolutionAgentSettings.vue'
@@ -22,6 +23,7 @@ const { bearActivity, bearLoading, bearError, bearOperating } = storeToRefs(acti
 const { wishActivity, wishLoading, wishError } = storeToRefs(activityStore)
 const { happyShareActivity, happyShareLoading, happyShareError } = storeToRefs(activityStore)
 const { seasonWishOperating } = storeToRefs(activityStore)
+const { claimAllRunning, claimAllStep, claimAllResults } = storeToRefs(activityStore)
 const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
@@ -88,6 +90,28 @@ async function operateSeasonWish(action: string, input: Record<string, unknown> 
   }
 }
 
+// 一键领取：编排层只在 store 内复用已证实手动写入口；部分失败不提示全成功
+let activityViewAlive = true
+async function claimAll() {
+  if (!currentAccountId.value || claimAllRunning.value || seasonWishOperating.value || bearOperating.value)
+    return
+  const runAccount = String(currentAccountId.value)
+  const result = await activityStore.runClaimAll(runAccount)
+  // 取消/切账号/卸载后的旧任务结果直接静默：不得在新账号页弹旧任务提示
+  if (!activityViewAlive || currentAccountId.value !== runAccount || result?.error === '已取消')
+    return
+  if (!result?.ok)
+    toast.error(String((result as any)?.summary || result?.error || '一键领取未完成'))
+  else
+    toast.success(String((result as any)?.summary || '一键领取完成'))
+}
+
+// 页面卸载：停止一键领取后续请求，旧响应不回填、不弹提示
+onBeforeUnmount(() => {
+  activityViewAlive = false
+  activityStore.cancelClaimAll()
+})
+
 watch(currentAccountId, () => {
   activityStore.clearActivityData()
   refreshAll()
@@ -147,12 +171,17 @@ onMounted(refreshAll)
       <div v-if="bearError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ bearError }}
       </div>
+      <ClaimAllPanel
+        :running="claimAllRunning" :disabled="!currentAccountId" :step="claimAllStep"
+        :results="claimAllResults" :has-operating="!!seasonWishOperating || !!bearOperating"
+        @claim="claimAll"
+      />
       <BearActivityPanel v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
       <div v-if="wishError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ wishError }}
       </div>
       <SeasonRuleActivityPanel
-        :activity="wishActivity" :loading="wishLoading" :kind="'wish'" :operating="seasonWishOperating"
+        :activity="wishActivity" :loading="wishLoading" kind="wish" :operating="seasonWishOperating"
         heading="秋祈良愿 · 每日祈愿"
         subtitle="每日祈愿领好运奖励 · 限定种子 / 烟花 / 盆栽 · 错过存储 5 日 · 邮件补发"
         @refresh="refreshWish" @operate="operateSeasonWish"
@@ -161,7 +190,7 @@ onMounted(refreshAll)
         {{ happyShareError }}
       </div>
       <SeasonRuleActivityPanel
-        :activity="happyShareActivity" :loading="happyShareLoading" :kind="'happyShare'" :operating="seasonWishOperating"
+        :activity="happyShareActivity" :loading="happyShareLoading" kind="happyShare" :operating="seasonWishOperating"
         heading="快乐不独享 · 快乐值"
         subtitle="每日领取 / 每日首次分享 / 好友快乐包链接 · 档位奖励（稚萌熊熊）"
         @refresh="refreshHappyShare" @operate="operateSeasonWish"
