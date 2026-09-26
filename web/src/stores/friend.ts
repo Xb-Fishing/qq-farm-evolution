@@ -355,14 +355,28 @@ export const useFriendStore = defineStore('friend', () => {
     catch { /* 名单拉取失败不阻塞好友页 */ }
   }
 
+  // 返回结果供页面提示（每个好友独立开关，与重点监控无依赖）。
+  // stale=true 表示响应回来时账号已切换：不写名单、页面也不得弹错
   async function toggleAutoBad(accountId: string, gid: number) {
     if (!accountId || !gid)
-      return
-    const res = await api.post('/api/friend-auto-bad/toggle', { gid }, {
-      headers: { 'x-account-id': accountId },
-    })
-    if (res.data.ok) {
-      autoBadList.value = res.data.data || []
+      return { ok: false, error: '参数无效', stale: false }
+    const requestedId = String(accountId)
+    try {
+      const res = await api.post('/api/friend-auto-bad/toggle', { gid }, {
+        headers: { 'x-account-id': accountId },
+      })
+      if (!isCurrentAccount(requestedId))
+        return { ok: false, error: '', stale: true }
+      if (res.data.ok) {
+        autoBadList.value = res.data.data || []
+        return { ok: true, stale: false }
+      }
+      return { ok: false, error: res.data.error || '设置失败', stale: false }
+    }
+    catch (e: any) {
+      if (!isCurrentAccount(requestedId))
+        return { ok: false, error: '', stale: true }
+      return { ok: false, error: e?.response?.data?.error || '设置失败', stale: false }
     }
   }
 

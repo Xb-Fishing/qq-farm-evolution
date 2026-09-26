@@ -1027,7 +1027,7 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
-      return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed' };
+      return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
     }
     logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
       module: 'friend',
@@ -1036,16 +1036,19 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
       friendName: name,
       friendGid: gid,
     });
-    return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed' };
+    return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
   }
 
   // 进门即记录 presence（含空地块早退路径），Enter 回包同时是离线探测
-  let atHomeNow = false;
+  // atHomeDecoded：回包里真的下发了 at_home 字段才算解码——protobuf 原型
+  // 缺省值 false 不能当"下发过 false"，缺字段时 atHome=null（不下结论）
+  let atHomeNow = null;
+  const atHomeDecoded = Object.prototype.hasOwnProperty.call(enterReply || {}, 'at_home');
   let offlineSinceMs = 0;
   try {
     const presence = friendActivity.noteEnterPresence(gid, enterReply);
-    atHomeNow = presence.atHome;
-    offlineSinceMs = atHomeNow ? 0 : presence.lastOnlineMs;
+    atHomeNow = atHomeDecoded ? !!presence.atHome : null;
+    offlineSinceMs = atHomeDecoded && presence.atHome ? 0 : presence.lastOnlineMs;
     if (presence.onlineEdge) {
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
         `好友上线：${name || `GID:${gid}`}`);
@@ -1059,7 +1062,7 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
   // 失败直接离开，不再做任何写动作
   if (guard && !guard()) {
     await leave(gid);
-    return { entered: true, online, bug: 0, weed: 0, reason: 'aborted', aborted: true, offlineSinceMs };
+    return { entered: true, online, bug: 0, weed: 0, reason: 'aborted', aborted: true, offlineSinceMs, atHome: atHomeNow, atHomeDecoded };
   }
 
   const lands = enterReply.lands || [];
@@ -1073,6 +1076,8 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
       weed: 0,
       reason: !online ? 'not_online' : (!allowPlace ? 'session_done' : 'no_lands'),
       offlineSinceMs,
+      atHome: atHomeNow,
+      atHomeDecoded,
     };
   }
 
@@ -1095,6 +1100,8 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
     reason: placed.reasons.join(',') || null,
     aborted: placed.aborted,
     offlineSinceMs,
+    atHome: atHomeNow,
+    atHomeDecoded,
   };
 }
 
