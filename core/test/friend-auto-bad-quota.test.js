@@ -218,6 +218,58 @@ test('午夜 server+8 日界：清缓存（checkDailyReset）、清闸门、等�
   assert.equal(visits.length, 1, '新游戏日新证据后恢复执行');
 });
 
+// ===== 次日恢复丢事件顺序回归（2026-09-26）=====
+// 竞态：前一游戏日额度耗尽暂停（gate + 日界 timer）；跨日后、恢复 timer
+// 尚未执行时新 at_home 证据先到。事件入口若不做跨日清理，随后的恢复
+// tick 会 resumeIfNewDay 清掉所有未 done 会话——连刚建的新日会话一起丢。
+
+test('恢复竞态-新事件先到：新日证据不被迟到恢复 tick 的跨日清理丢掉', async () => {
+  const visits = [];
+  setup({
+    badRemaining: () => 0,
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  const pause = autoBadQuota.activePause();
+  assert.ok(pause);
+  assert.equal(autoBad.sessionCountForTests(), 1, '暂停前存在旧日待执行会话');
+  fakeClock = pause.resumeAt + 1_000; // 跨入新游戏日，恢复 timer 尚未执行
+  deps.badRemaining = () => 50; // 新日额度已恢复
+  // 新日新证据先到（订阅同步触发 handleOnlineEvidence），随后恢复 timer 到期一拍
+  friendActivity.recordActivity(303, fakeClock, 'at_home', 't');
+  fakeClock += 2_000;
+  await autoBad.runTickBody();
+  assert.equal(autoBad.sessionCountForTests(), 1, '新日证据会话必须跨过恢复清理存活');
+  assert.equal(visits.length, 1, '新日新证据应正常出手');
+  // 旧日待执行证据不得因竞态被重放：恢复后无新证据再拍一拍零访问
+  fakeClock += 2_000;
+  await autoBad.runTickBody();
+  assert.equal(visits.length, 1, 'done 会话去重语义保持');
+});
+
+test('恢复竞态-timer先到：跨日清理旧会话、旧日待执行证据不重放（原语义保持）', async () => {
+  const visits = [];
+  setup({
+    badRemaining: () => 0,
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  const pause = autoBadQuota.activePause();
+  assert.ok(pause);
+  fakeClock = pause.resumeAt + 1_000;
+  deps.badRemaining = () => 50;
+  await autoBad.runTickBody(); // 恢复 timer 先到：清闸门/清缓存/清旧会话
+  assert.equal(autoBad.sessionCountForTests(), 0, '跨日恢复清掉未 done 旧会话');
+  assert.equal(visits.length, 0, '恢复第一拍零访问');
+  fakeClock += 2_000;
+  await autoBad.runTickBody(); // 无新证据：不重放
+  assert.equal(visits.length, 0, '旧日待执行证据不得重放');
+  friendActivity.recordActivity(303, fakeClock, 'at_home', 't');
+  fakeClock += 2_000;
+  await autoBad.runTickBody();
+  assert.equal(visits.length, 1, 'timer 先到路径：新证据后正常出手');
+});
+
 test('时钟偏差：排程延迟按服务器钟计算，不用 resumeAt - 本机 now', async () => {
   const skew = 5 * 60_000; // 服务器钟快 5 分钟
   autoBad.stopAutoBadLoop();

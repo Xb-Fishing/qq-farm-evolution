@@ -18,8 +18,8 @@ test('autoBadFriendGids 存取往返并进入配置快照', () => {
   store.setWatchlistFriendGids(accountId, []); // 建立账号配置
   assert.deepEqual(store.getAutoBadFriendGids(accountId), []);
 
-  store.setAutoBadFriendGids(accountId, [1202689703, 'bad', 0, -1]);
-  assert.deepEqual(store.getAutoBadFriendGids(accountId), [1202689703], '非法 gid 应被过滤');
+  store.setAutoBadFriendGids(accountId, [2101, 'bad', 0, -1]);
+  assert.deepEqual(store.getAutoBadFriendGids(accountId), [2101], '非法 gid 应被过滤');
 
   // applyConfigSnapshot 是 Worker 收 config_sync 后的合并入口，必须认识新字段
   store.applyConfigSnapshot({ autoBadFriendGids: [42] }, { persist: false, accountId });
@@ -52,9 +52,9 @@ test('friend-auto-bad 路由可查询与切换并广播配置', async () => {
   assert.equal(list.state.body.ok, true);
 
   const toggled = res();
-  await routes.get('POST /api/friend-auto-bad/toggle')({ body: { gid: 1202689703 } }, toggled);
+  await routes.get('POST /api/friend-auto-bad/toggle')({ body: { gid: 2101 } }, toggled);
   assert.equal(toggled.state.body.ok, true);
-  assert.deepEqual(toggled.state.body.data.map(item => item.gid), [1202689703]);
+  assert.deepEqual(toggled.state.body.data.map(item => item.gid), [2101]);
   assert.ok(broadcast >= 1, '切换后必须 broadcastConfig 让 Worker 立即生效');
 });
 
