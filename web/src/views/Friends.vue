@@ -2,7 +2,7 @@
 import type { FriendTabKey } from '@/components/friends/FriendsTabs.vue'
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import api from '@/api'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import FriendsFriendList from '@/components/friends/FriendsFriendList.vue'
@@ -281,8 +281,20 @@ useIntervalFn(() => {
   }
 }, 1000)
 
-// 实时在线桥：后端 log:new 的 friend_activity_evidence（已证实在线源）立即点亮
-// 好友在线标记，不等 30 秒快照。日志实时关闭时 statusStore 不推送，自然退化到兜底。
+// 在线证据直连通道（2026-09-26）：statusStore 的独立订阅在日志展示筛选
+// 之前同步分发——Dashboard 关闭实时日志不再连坐好友在线点亮（短在线尤其
+// 不漏）。同步逐条分发，不丢同批多好友事件；下面的 logs watch 保留兜底
+// （applyOnlineEvidenceLog 幂等，不产生重复请求）。
+const unsubscribeOnlineEvidence = statusStore.onOnlineEvidence((entry: any) => {
+  if (currentAccount.value?.running)
+    friendStore.applyOnlineEvidenceLog(entry)
+})
+onBeforeUnmount(() => {
+  unsubscribeOnlineEvidence()
+})
+
+// 实时在线桥（兜底）：后端 log:new 的 friend_activity_evidence（已证实在线源）立即点亮
+// 好友在线标记，不等 30 秒快照。日志实时关闭时走上面的直连通道。
 let processedLogs: any[] | null = null
 let processedLogCount = 0
 // 观察数组身份 + 长度 + 末条：日志达 1000 条上限后 push+slice 替换数组长度不变，
@@ -433,7 +445,9 @@ async function handleToggleAutoBad(friend: any, e: Event) {
   e.stopPropagation()
   if (!currentAccountId.value)
     return
-  await friendStore.toggleAutoBad(currentAccountId.value, Number(friend.gid))
+  const result = await friendStore.toggleAutoBad(currentAccountId.value, Number(friend.gid))
+  if (!result?.ok && !result?.stale)
+    toast.error(result?.error || '设置失败')
 }
 
 function getFriendStatusText(friend: any) {

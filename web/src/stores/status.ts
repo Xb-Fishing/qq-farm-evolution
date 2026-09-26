@@ -117,12 +117,41 @@ export const useStatusStore = defineStore('status', () => {
     }
   }
 
-  function handleRealtimeLog(payload: any) {
-    if (!realtimeLogsEnabled.value)
+  // ===== 好友在线证据独立订阅通道（2026-09-26）=====
+  // Dashboard 的日志展示筛选（setRealtimeLogsEnabled(false)）不得连坐业务
+  // 在线信号：已识别 friend_activity_evidence 在日志展示过滤之前、账号
+  // 过滤之后同步分发（Set 回调逐条分发，不丢同批多好友事件；不强行开
+  // 日志展示、不新增 HTTP/游戏 RPC/服务端消息）。源白名单/异账号/过期
+  // 由消费方 friendStore.applyOnlineEvidenceLog 复验，本通道不存原始包。
+  const onlineEvidenceListeners = new Set<(entry: any) => void>()
+  function onOnlineEvidence(cb: (entry: any) => void) {
+    onlineEvidenceListeners.add(cb)
+    return () => {
+      onlineEvidenceListeners.delete(cb)
+    }
+  }
+  function dispatchOnlineEvidence(entry: any) {
+    if (onlineEvidenceListeners.size === 0)
       return
+    const meta = entry?.meta
+    if (!meta || meta.event !== 'friend_activity_evidence')
+      return
+    for (const cb of onlineEvidenceListeners) {
+      try {
+        cb(entry)
+      }
+      catch { /* 单订阅者异常不阻断其他订阅与日志流 */ }
+    }
+  }
+
+  function handleRealtimeLog(payload: any) {
     const body = (payload && typeof payload === 'object') ? payload : {}
     const accountId = String(body.accountId || body.id || '')
     if (currentRealtimeAccountId.value && accountId && accountId !== currentRealtimeAccountId.value)
+      return
+    // 在线证据直连通道：日志展示关闭也分发（业务在线与日志筛选解耦）
+    dispatchOnlineEvidence(normalizeLogEntry(payload))
+    if (!realtimeLogsEnabled.value)
       return
     pushRealtimeLog(payload)
   }
@@ -357,7 +386,10 @@ export const useStatusStore = defineStore('status', () => {
     fetchAccountLogs,
     fetchDailyGifts,
     setRealtimeLogsEnabled,
+    onOnlineEvidence,
     connectRealtime,
     disconnectRealtime,
+    // 测试专用：直接喂 log:new 载荷，验证在线证据通道与日志筛选解耦
+    __handleRealtimeLogForTests: handleRealtimeLog,
   }
 })

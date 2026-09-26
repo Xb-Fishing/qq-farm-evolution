@@ -315,12 +315,15 @@ function registerAdminFriendRoutes({
       return res.status(400).json({ ok: false, error: "Missing gid" });
     }
 
-    const list = store.getAutoBadFriendGids
-      ? store.getAutoBadFriendGids(accountId)
-      : [];
+    // 旧配置可能残留字符串 gid：归一化数值并去重后再判断开/关
+    const list = [...new Set(
+      (store.getAutoBadFriendGids ? store.getAutoBadFriendGids(accountId) : [])
+        .map(Number)
+        .filter(Number.isFinite),
+    )];
     const next = list.includes(gid)
       ? list.filter((item) => item !== gid)
-      : [...list, gid];
+      : [...list, gid]; // list 已归一化去重，不会写出重复/字符串 gid
     const saved = store.setAutoBadFriendGids
       ? store.setAutoBadFriendGids(accountId, next)
       : next;
