@@ -171,6 +171,10 @@ function pageHarness() {
         currentAccount: vue.ref({ id: 'account-a', running: true, platform: 'qq' }),
     };
     const logsRef = vue.ref([]);
+    // 对齐真实 status store 的在线证据独立订阅通道（status.ts onOnlineEvidence /
+    // dispatchOnlineEvidence）：Set 回调逐条分发，仅分发 friend_activity_evidence，
+    // 分发与日志展示（logs 数组）解耦——日志未入 logs 也能点亮。
+    const evidenceListeners = new Set();
     const statusStub = {
         status: vue.ref({ connection: { connected: true } }),
         loading: vue.ref(false),
@@ -179,6 +183,18 @@ function pageHarness() {
         logs: logsRef,
         fetchStatus: async () => {},
         clearAccountScopedData() { logsRef.value = []; },
+        onOnlineEvidence(cb) {
+            evidenceListeners.add(cb);
+            return () => { evidenceListeners.delete(cb); };
+        },
+    };
+    const dispatchOnlineEvidence = (entry) => {
+        const meta = entry?.meta;
+        if (!meta || meta.event !== 'friend_activity_evidence')
+            return;
+        for (const cb of evidenceListeners) {
+            try { cb(entry); } catch { /* 单订阅者异常不阻断 */ }
+        }
     };
     const toastStub = { info() {}, success() {}, error() {} };
     // reactive 包装让 ref 字段在属性访问时解包（对齐真实 pinia store 行为）
@@ -217,7 +233,7 @@ function pageHarness() {
     const app = renderer.createApp({ render: () => vue.h(View) });
     app.use(piniaInstance);
     app.mount({});
-    return { app, account: accountStore, status: statusStore, friendStore, intervals };
+    return { app, account: accountStore, status: statusStore, friendStore, intervals, dispatchOnlineEvidence };
 }
 
 test('page: log:new reliable evidence lights online immediately without waiting for snapshot', async () => {
@@ -246,6 +262,32 @@ test('page: log:new reliable evidence lights online immediately without waiting 
         h.status.logs.push(evidenceLog('account-a', 1003, 'at_home', Date.now()));
         await vue.nextTick();
         assert.equal(Object.keys(h.friendStore.onlineEvidence).includes('1003'), false, '页面卸载后无后续处理');
+    }
+    finally {
+        try { h.app.unmount(); } catch {}
+    }
+});
+
+test('page: direct online-evidence channel lights friend even when log is not shown in logs array; unmount unsubscribes', async () => {
+    const h = pageHarness();
+    try {
+        h.friendStore.friends = [{ gid: 2001, name: 'synthetic-a' }, { gid: 2002, name: 'synthetic-b' }];
+        const now = Date.now();
+        // 日志展示关闭（未入 logs 数组）场景：独立订阅通道仍同步分发并点亮
+        const before = h.status.logs.length;
+        h.dispatchOnlineEvidence(evidenceLog('account-a', 2001, 'at_home', now));
+        assert.equal(h.status.logs.length, before, '分发不写入日志展示数组');
+        await vue.nextTick();
+        assert.equal(h.friendStore.friends[0].online, true, '未入 logs 数组的证据经直连通道点亮');
+        // 非 friend_activity_evidence 事件不分发
+        h.dispatchOnlineEvidence(evidenceLog('account-a', 2002, 'at_home', now, 'other_event'));
+        await vue.nextTick();
+        assert.equal(h.friendStore.friends[1].online, undefined, '非在线证据事件零效果');
+        // 卸载退订：同一通道再分发不再被消费
+        h.app.unmount();
+        h.dispatchOnlineEvidence(evidenceLog('account-a', 2002, 'lands_push', Date.now()));
+        await vue.nextTick();
+        assert.equal(Object.keys(h.friendStore.onlineEvidence).includes('2002'), false, 'unmount 退订后不再消费');
     }
     finally {
         try { h.app.unmount(); } catch {}

@@ -43,7 +43,8 @@ function goToPage(page: number) {
 
 function formatActiveAgo(atMs: number) {
   const minutes = Math.max(1, Math.round((Date.now() - atMs) / 60000))
-  if (minutes < 60) return `${minutes}分钟前`
+  if (minutes < 60)
+    return `${minutes}分钟前`
   return `${Math.floor(minutes / 60)}小时前`
 }
 </script>
@@ -170,7 +171,7 @@ function formatActiveAgo(atMs: number) {
           @click="emit('toggleAutoBad', friend, $event)"
         >
           <span :class="autoBadGidSet.has(Number(friend.gid)) ? 'i-carbon-misuse-alt' : 'i-carbon-misuse'" />
-          {{ autoBadGidSet.has(Number(friend.gid)) ? ' 已自动捣乱' : ' 在线捣乱' }}
+          {{ autoBadGidSet.has(Number(friend.gid)) ? ' 已开启捣乱' : ' 在线捣乱' }}
         </button>
         <button
           class="rounded px-3 py-2 text-sm transition"
