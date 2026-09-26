@@ -1,8 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-// 在线自动捣乱重构（2026-09-26）行为验收：
+// 在线自动捣乱（2026-09-26 第三版：纯被动证据触发）行为验收：
 // 全部为内存态/替身测试，无真实网络与游戏写请求。
+// 用户定标：在线识别是被动 trigger——无新鲜在线证据即零 Enter/Leave/GetAll。
 const autoBad = require('../src/services/friend-auto-bad');
 const friendActivity = require('../src/services/friend-activity');
 const { placeAutoBadItems, visitFriendForAutoBad } = require('../src/services/friend-visit');
@@ -37,12 +38,10 @@ function stub(overrides = {}) {
     stealImminent: () => false,
     harvestDue: () => false,
     harvestImminent: () => false,
-    online: () => false,
+    online: gid => friendActivity.isFriendOnlineRecently(gid, fakeNow),
+    friendName: gid => friendActivity.getCachedFriendName(gid),
     visit: async () => ({ entered: true, online: false, bug: 0, weed: 0 }),
     delay: async () => { },
-    // 观察层名册默认为空：既有用例不受全好友采样影响，观察专项再覆盖
-    rosterCache: () => [],
-    fetchRoster: async () => [],
     ...overrides,
   };
   const originals = {};
@@ -58,8 +57,18 @@ function stub(overrides = {}) {
 
 function setup(overrides = {}) {
   autoBad.stopAutoBadLoop(); // 清会话状态与定时器
+  friendActivity.resetForTest();
   fakeNow = Date.now();
-  return stub(overrides);
+  const base = stub(overrides);
+  autoBad.startAutoBadLoop(); // 订阅证据：会话只能由在线证据创建
+  return base;
+}
+
+/** 注入一次新鲜在线证据（at_home 等已证实在线源）并推进到证据唤醒之后。 */
+async function wake(gid, source = 'at_home') {
+  friendActivity.recordActivity(gid, fakeNow, source, 't');
+  fakeNow += 2_000; // 越过证据拉近的 0.3-1.5s
+  await autoBad.runTickBody();
 }
 
 async function runTicks(n = 1, stepMs = 10_000) {
@@ -72,182 +81,196 @@ async function runTicks(n = 1, stepMs = 10_000) {
 test.afterEach(() => {
   while (restores.length) restores.pop()();
   autoBad.stopAutoBadLoop();
+  friendActivity.resetForTest();
 });
 
-test('doHelp 关闭/帮助经验上限不牵连：显式名单目标仍执行且真实放成才 done', async () => {
-  // 调度不读取 friend_help/friend_bad 开关与帮助经验状态（结构独立），
-  // 行为上验证守卫全放行时执行并置 done
+// ===== 核心验收：无证据零请求 =====
+
+test('无在线证据：长时间推进零访问（全部未开捣乱/无人在线同理）', async () => {
+  const visits = [];
+  setup({
+    gids: () => [303, 304],
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await runTicks(10, 60_000); // 10 分钟推进
+  assert.equal(visits.length, 0, '无证据不得有任何 Enter/Leave');
+  assert.equal(autoBad.sessionCountForTests(), 0, '无证据不得建会话');
+});
+
+test('启停与新名单不制造请求：start/名单变更/时间推进均零访问', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  autoBad.stopAutoBadLoop();
+  autoBad.startAutoBadLoop();
+  deps.gids = () => [303, 304, 305];
+  await runTicks(5, 30_000);
+  assert.equal(visits.length, 0, '启停/新名单/时间推进不是发起理由');
+});
+
+test('结构收口：不再有 rosterCache/fetchRoster 依赖（名册零拉取）', () => {
+  setup();
+  assert.equal('rosterCache' in deps, false, '观察层名册缓存依赖应删除');
+  assert.equal('fetchRoster' in deps, false, '自动名册拉取依赖应删除');
+});
+
+test('陈旧证据零动作：证据过期后 tick 不进门，等下一事件', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't'); // 建会话
+  fakeNow += 60_000; // 证据超过 10s 新鲜窗口
+  await runTicks(3, 5_000);
+  assert.equal(visits.length, 0, '陈旧证据不得发起动作');
+});
+
+// ===== 证据触发 =====
+
+test('可信在线证据到达才动作：at_home/lands_push/presence_online 均触发', async () => {
+  for (const source of ['at_home', 'presence_online']) {
+    const visits = [];
+    setup({
+      visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+    });
+    await wake(303, source);
+    assert.equal(visits.length, 1, `${source} 应触发一次动作`);
+    assert.equal(visits[0], 303);
+  }
+});
+
+test('非在线源与非名单目标不触发：summary_drift/last_login/social_item_placed 零动作', async () => {
+  for (const source of ['summary_drift', 'last_login', 'social_item_placed']) {
+    const visits = [];
+    setup({
+      visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+    });
+    friendActivity.recordActivity(303, fakeNow, source, 't');
+    friendActivity.recordActivity(999, fakeNow, 'at_home', 't'); // 非名单目标
+    fakeNow += 2_000;
+    await runTicks(2, 5_000);
+    assert.equal(visits.length, 0, `${source}/非名单目标不得触发`);
+    assert.equal(autoBad.sessionCountForTests(), 0);
+  }
+});
+
+test('没有重点标记也能触发：普通名单目标（非 watchlist）证据即动作', async () => {
+  const visits = [];
+  setup({
+    gids: () => [303], // 与重点/watchlist 无关的显式 autoBad 名单
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 2, weed: 1 }; },
+  });
+  await wake(303, 'presence_online');
+  assert.equal(visits.length, 1);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '真实放成才 done');
+});
+
+test('守卫传给写动作：guard 是函数且 allowPlace=true', async () => {
   const visits = [];
   setup({
     visit: async (friend, tally, myGid, opts) => {
       visits.push({ gid: friend.gid, opts: { ...opts } });
-      return { entered: true, online: true, bug: 1, weed: 2 };
-    },
-  });
-  await runTicks(2); // 第 1 拍编入+错开，第 2 拍执行
-  assert.equal(visits.length, 1, '目标应被访问一次');
-  assert.equal(visits[0].gid, 303);
-  assert.equal(visits[0].opts.allowPlace, true);
-  assert.equal(typeof visits[0].opts.guard, 'function', '调度必须传写动作守卫');
-  const session = autoBad.getSessionStateForTests(303);
-  assert.equal(session.done, true, '真实放成后才置 done');
-});
-
-test('无在线证据零捣乱：探测观察到不在场→不放置、不消耗、回到发现节奏', async () => {
-  const visits = [];
-  setup({
-    visit: async (friend, tally, myGid, opts) => {
-      visits.push({ opts: { ...opts } });
-      return { entered: true, online: false, bug: 0, weed: 0, reason: 'not_online' };
-    },
-  });
-  await runTicks(2);
-  assert.equal(visits.length, 1);
-  const session = autoBad.getSessionStateForTests(303);
-  assert.equal(session.done, false);
-  const wait = session.nextAt - fakeNow;
-  assert.ok(wait >= 0 && wait <= autoBad.PROBE_MAX_MS,
-    `发现节奏应在 10-15s（实际 ${wait}ms）`);
-});
-
-test('持续在线不重复：done 后再探测在线只续期探测，不再放', async () => {
-  const visits = [];
-  setup({
-    visit: async (friend, tally, myGid, opts) => {
-      visits.push({ opts: { ...opts } });
-      return visits.length === 1
-        ? { entered: true, online: true, bug: 1, weed: 0 }
-        : { entered: true, online: true, bug: 0, weed: 0, reason: 'session_done' };
-    },
-  });
-  await runTicks(2);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
-  fakeNow += autoBad.DONE_PROBE_MAX_MS + 5_000; // 越过 done 放宽探测间隔
-  await runTicks(1, 1_000);
-  assert.equal(visits.length, 2, 'done 后仍探测（观察离线）');
-  assert.equal(visits[1].opts.allowPlace, false, 'done 后不得再放置');
-  assert.equal(autoBad.getSessionStateForTests(303).done, true, '持续在线 done 保持');
-  const wait = autoBad.getSessionStateForTests(303).nextAt - fakeNow;
-  assert.ok(wait >= autoBad.DONE_PROBE_MIN_MS - 2_000 && wait <= autoBad.DONE_PROBE_MAX_MS,
-    `done 探测节奏 5-8min（实际 ${wait}ms）`);
-});
-
-test('离线后再上线可重置：服务端确证 ≥3 分钟且晚于完成时刻 → done 复位、重新执行', async () => {
-  const visits = [];
-  setup({
-    visit: async () => {
-      visits.push({});
-      if (visits.length === 1) return { entered: true, online: true, bug: 1, weed: 0 };
-      // 离线探测：服务端下发 4 分钟前的 last_online（离线发生在 done 之后）
-      if (visits.length === 2) return { entered: true, online: false, bug: 0, weed: 0, offlineSinceMs: fakeNow - 4 * 60_000 };
       return { entered: true, online: true, bug: 1, weed: 0 };
     },
   });
-  await runTicks(2);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
-  const doneAt = fakeNow;
-  fakeNow += autoBad.DONE_PROBE_MAX_MS + 5_000; // done 后 8min+ 才探测离线
-  assert.ok(fakeNow - 4 * 60_000 > doneAt, '测试前提：离线时刻应晚于 done 时刻');
-  await runTicks(1, 1_000); // 观察到确证长离线
-  assert.equal(autoBad.getSessionStateForTests(303).done, false, '确证离线应复位会话');
-  fakeNow += autoBad.PROBE_MAX_MS + 1_000; // 越过发现探测间隔，好友再上线
-  await runTicks(1, 1_000);
-  assert.equal(visits.length, 3, '再上线应重新执行');
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+  await wake(303);
+  assert.equal(visits.length, 1);
+  assert.equal(typeof visits[0].opts.guard, 'function', '调度必须传写动作守卫');
+  assert.equal(visits[0].opts.allowPlace, true);
 });
 
-test('远古 last_online 不复位刚成功的会话：offlineSince 早于 done 时刻 → done 保持', async () => {
+test('多事件不双发：连续多次证据只执行一次（done 后证据不重放）', async () => {
   const visits = [];
   setup({
-    visit: async () => {
-      visits.push({});
-      if (visits.length === 1) return { entered: true, online: true, bug: 1, weed: 0 };
-      // 服务端下发的 last_online 是 1 小时前的远古时刻（早于 done）
-      return { entered: true, online: false, bug: 0, weed: 0, offlineSinceMs: fakeNow - 3_600_000 };
-    },
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
   });
-  await runTicks(2);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
-  fakeNow += autoBad.DONE_PROBE_MAX_MS + 5_000;
-  await runTicks(1, 1_000);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true,
-    '远古 last_online 不得让刚完成的会话复位');
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  friendActivity.recordActivity(303, fakeNow + 100, 'presence_online', 't');
+  friendActivity.recordActivity(303, fakeNow + 200, 'at_home', 't');
+  fakeNow += 2_000;
+  await runTicks(3, 5_000);
+  assert.equal(visits.length, 1, '多事件合并为一次执行');
+  // done 后持续在线证据：不重复执行
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  await runTicks(2, 5_000);
+  assert.equal(visits.length, 1, 'done 后持续证据不得重复动作');
 });
 
-test('进门失败不消耗机会且有界退避：60s 起指数、10min 封顶、不热循环', async () => {
-  let attempts = 0;
+test('多目标公平轮转：同时有证据时串行全访问不漏', async () => {
+  const visits = [];
   setup({
-    visit: async () => { attempts += 1; return { entered: false, online: false, reason: 'enter_failed' }; },
+    gids: () => [303, 304, 305],
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
   });
-  await runTicks(2);
-  assert.equal(attempts, 1);
-  assert.equal(autoBad.getSessionStateForTests(303).done, false);
-  const waits = [];
-  for (let i = 0; i < 5; i++) {
-    fakeNow += autoBad.getSessionStateForTests(303).nextAt - fakeNow + 1;
+  for (const gid of [303, 304, 305]) friendActivity.recordActivity(gid, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  // 真实派发错峰（≥DISPATCH_GAP_MS）：三拍逐个串行访问，不漏不双发
+  for (let i = 0; i < 3; i++) {
+    friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+    friendActivity.recordActivity(304, fakeNow, 'at_home', 't');
+    friendActivity.recordActivity(305, fakeNow, 'at_home', 't');
     await autoBad.runTickBody();
-    fakeNow += 10_000;
-    waits.push(autoBad.getSessionStateForTests(303).nextAt - fakeNow);
+    fakeNow += 3_000;
   }
-  // 单拍内只试一次（不热循环），退避有下界与封顶
-  assert.equal(attempts, 6);
-  assert.ok(waits.every(w => w >= autoBad.BACKOFF_BASE_MS - 10_000), `退避下界（实际 ${waits}）`);
-  assert.ok(waits.every(w => w <= autoBad.BACKOFF_MAX_MS), `退避封顶（实际 ${waits}）`);
+  assert.deepEqual(visits.sort(), [303, 304, 305], '串行全覆盖');
+  assert.equal(visits.length, 3, '每目标恰好一次');
 });
 
-test('抢收/自己收获让步：守卫期内零访问、会话不动，恢复后可执行', async () => {
+test('lands_push 只是地块变化证据：记活跃但不点亮 online、不触发 autoBad（农场变化≠主人上线）', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  friendActivity.recordActivity(303, fakeNow, 'lands_push', 't');
+  assert.equal(friendActivity.isFriendActiveRecently(303, fakeNow), true, '仍是活跃证据');
+  assert.equal(friendActivity.isFriendOnlineRecently(303, fakeNow), false, '不得点亮 online');
+  fakeNow += 2_000;
+  await runTicks(3, 5_000);
+  assert.equal(autoBad.sessionCountForTests(), 0, 'lands_push 不得建会话');
+  assert.equal(visits.length, 0, 'lands_push 不得触发动作');
+});
+
+// ===== 守卫：触发后翻转零写 =====
+
+test('触发后暂停/断线/名单移除/额度耗尽：零访问', async () => {
+  for (const [key, value] of [
+    ['paused', true], ['quietHours', true], ['checking', true],
+    ['badPaused', true], ['harvestDue', true], ['stealDue', true],
+    ['connected', false], ['badRemaining', 0],
+  ]) {
+    const visits = [];
+    autoBad.stopAutoBadLoop();
+    friendActivity.resetForTest();
+    const overrides = { visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; } };
+    overrides[key] = typeof value === 'boolean' ? () => value : () => value;
+    stub(overrides);
+    autoBad.startAutoBadLoop();
+    friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+    fakeNow += 2_000;
+    await autoBad.runTickBody();
+    assert.equal(visits.length, 0, `${key}=${value} 应挡住访问`);
+    autoBad.stopAutoBadLoop();
+  }
+});
+
+test('名单移除即清会话；证据到达时已移出名单则不建会话', async () => {
   const visits = [];
   const base = setup({
-    visit: async () => { visits.push({}); return { entered: true, online: true, bug: 1, weed: 0 }; },
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
   });
-  await runTicks(1);
-  // 进入到期窗口但被收获让步挡住
-  fakeNow += 10_000;
-  deps.stealDue = () => true;
+  await wake(303);
+  assert.equal(autoBad.sessionCountForTests(), 1);
+  deps.gids = () => [];
   await autoBad.runTickBody();
-  assert.equal(visits.length, 0, '让步期间不得访问');
-  assert.equal(autoBad.getSessionStateForTests(303).done, false, '让步不消耗机会');
-  deps.stealDue = base.stealDue;
+  assert.equal(autoBad.sessionCountForTests(), 0, '移出名单应清理会话');
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
   await autoBad.runTickBody();
-  assert.equal(visits.length, 1, '恢复后应执行');
-});
-
-test('每日额度耗尽：动作档零请求；观察层仍采样普通+已开启好友且 put 计数为 0（2026-09-26 新职责）', async () => {
-  const visits = [];
-  const put = { bug: 0, weed: 0 }; // 计数 spy：生产 helper 会 catch 写异常，throw 不能证明未调用
-  setup({
-    badRemaining: () => 0,
-    gids: () => [303],
-    rosterCache: () => [303, 404],
-    visit: async (friend, tally, myGid, options) => {
-      const r = await visitFriendForAutoBad(friend, tally, myGid, {
-        ...options,
-        impl: {
-          enter: async () => ({ at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }] }),
-          leave: async () => { },
-          analyze: () => ({ canPutBug: [11], canPutWeed: [12] }),
-          place: {
-            badRemaining: () => 0, remainingFor: () => 0,
-            checkCanOperate: async () => ({ canOperate: true }),
-            putInsects: async () => { put.bug += 1; },
-            putWeeds: async () => { put.weed += 1; },
-          },
-        },
-      });
-      visits.push({ gid: friend.gid, allowPlace: options.allowPlace });
-      return r;
-    },
-  });
-  await runTicks(5, 16_000);
-  // 动作档被 80 预算闸拦下：不存在任何 allowPlace≠false 的动作通道访问
-  assert.equal(visits.filter(v => v.allowPlace !== false).length, 0, '额度耗尽动作档零探测');
-  // 303（已开启 autoBad）与 404（普通好友）都被观察层覆盖，全走零写通道
-  for (const gid of [303, 404]) {
-    const observed = visits.filter(v => v.gid === gid && v.allowPlace === false);
-    assert.ok(observed.length >= 1, `额度耗尽观察层仍采样好友 ${gid}`);
-  }
-  assert.equal(put.bug, 0, '观察路径零放虫（put 计数）');
-  assert.equal(put.weed, 0, '观察路径零放草（put 计数）');
+  assert.equal(autoBad.sessionCountForTests(), 0, '已移出名单的证据不建会话');
+  assert.equal(visits.length, 1);
+  deps.gids = base.gids;
 });
 
 test('黑名单与自身排除仍生效', async () => {
@@ -256,64 +279,412 @@ test('黑名单与自身排除仍生效', async () => {
     gids: () => [1, 202, 303],
     myGid: () => 1,
     blacklist: () => new Set([202]),
-    visit: async (friend) => { visits.push(friend.gid); return { entered: true, online: false }; },
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
   });
-  await runTicks(2);
-  assert.deepEqual(visits, [303]);
-});
-
-test('新鲜在线证据即刻拉近：不等发现探测到期', async () => {
-  const visits = [];
-  setup({
-    visit: async (friend) => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
-  });
-  await autoBad.runTickBody(); // 编入+错开（nextAt 在未来，不推进时钟）
-  assert.ok(autoBad.getSessionStateForTests(303).nextAt > fakeNow, '错开排程应在未来');
-  deps.online = () => true; // 外部路径产出 at_home/lands_push 证据
-  await autoBad.runTickBody();
-  const pulled = autoBad.getSessionStateForTests(303).nextAt - fakeNow;
-  assert.ok(pulled <= 1_500, `证据命中应拉近到 ≤1.5s（实际 ${pulled}ms）`);
+  for (const gid of [1, 202, 303]) friendActivity.recordActivity(gid, fakeNow, 'at_home', 't');
   fakeNow += 2_000;
   await autoBad.runTickBody();
-  assert.deepEqual(visits, [303], '证据命中后应立即执行');
+  assert.deepEqual(visits, [303], '自身与黑名单目标不访问');
 });
 
-test('多目标分散调度：串行全访问，不漏', async () => {
+test('抢收/自己收获让步：守卫期内零访问，恢复后可执行', async () => {
+  const visits = [];
+  const base = setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  deps.stealDue = () => true;
+  await autoBad.runTickBody();
+  assert.equal(visits.length, 0, '让步期间不得访问');
+  deps.stealDue = base.stealDue;
+  await autoBad.runTickBody();
+  assert.equal(visits.length, 1, '恢复后应执行');
+});
+
+// ===== 会话语义：done / 复位 =====
+
+test('沉默不重置 done：无任何观测长时间推进，done 保持', async () => {
   const visits = [];
   setup({
-    gids: () => [303, 304, 305],
-    visit: async (friend) => { visits.push(friend.gid); return { entered: true, online: false }; },
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
   });
-  // 盲探测全局 5s 派发槽（第二轮审查）：一次 tick 至多一个盲 Enter，
-  // 多目标同时到期也不集中进门——4 拍（步长盖过 15s 探测上界）内串行全覆盖
-  await runTicks(4, 16_000);
-  assert.deepEqual(visits.sort(), [303, 304, 305]);
+  await wake(303);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+  await runTicks(5, 30 * 60_000); // 2.5 小时沉默
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '沉默不得当离线复位');
+  assert.equal(visits.length, 1);
 });
 
-test('配置收缩与停止：移出名单即清会话，stop 清一切', async () => {
-  const base = setup();
-  await runTicks(1);
-  assert.equal(autoBad.sessionCountForTests(), 1);
-  deps.gids = () => [];
+test('缺 at_home 字段的进门回包不当明确离场：done 保持', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  // 既有访问路径带回包但缺 at_home 字段（protobuf 缺省）：不是明确 false
+  friendActivity.noteEnterPresence(303, { basic: { last_online: 0 }, lands: [] }, fakeNow);
+  await runTicks(2, 5_000);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '缺字段不得复位');
+  assert.equal(visits.length, 1);
+});
+
+test('短暂离场（显式 at_home=false，<3 分钟）不复位 done', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow + 30_000);
+  await runTicks(2, 5_000);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '3 分钟内短暂离场不得复位');
+});
+
+test('远古 last_online 不复位刚成功的会话：done 保持', async () => {
+  setup({
+    visit: async () => ({ entered: true, online: true, bug: 1, weed: 0 }),
+  });
+  await wake(303);
+  const doneAt = fakeNow;
+  friendActivity.noteEnterPresence(303, {
+    at_home: false,
+    basic: { last_online: Math.floor((doneAt - 3_600_000) / 1000) }, // 1 小时前
+    lands: [],
+  }, fakeNow);
+  await runTicks(2, 5_000);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true,
+    '远古 last_online 不得让刚完成的会话复位');
+});
+
+test('明确离场（服务端确证 ≥3 分钟且晚于 done）后新在线事件可重置并再执行', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => {
+      visits.push(friend.gid);
+      return { entered: true, online: true, bug: 1, weed: 0 };
+    },
+  });
+  await wake(303);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+  const doneAt = fakeNow;
+  fakeNow += 10 * 60_000; // 10 分钟后既有访问观察到明确离场
+  friendActivity.noteEnterPresence(303, {
+    at_home: false,
+    basic: { last_online: Math.floor((doneAt + 4 * 60_000) / 1000) }, // done 后 4 分钟离线
+    lands: [],
+  }, fakeNow);
+  assert.equal(autoBad.getSessionStateForTests(303).done, false, '确证离线应复位会话');
+  // 好友再上线（新的在线事件）：重新执行一次
+  await wake(303, 'presence_online');
+  assert.equal(visits.length, 2, '复位后新在线事件应再执行一次');
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+});
+
+test('单次显式离场 + 长时间沉默：done 保持（沉默不是持续离线的证据）', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
+  await runTicks(5, 10 * 60_000); // 50 分钟沉默，无任何观测
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '单次 false + 沉默不得复位');
+  assert.equal(visits.length, 1);
+});
+
+test('两次显式离场观测跨度 ≥3 分钟才复位；在线证据清首见重算；复位后新在线事件再执行', async () => {
+  const visits = [];
+  setup({
+    visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  await wake(303);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
+  // 第一次显式 false：记首见，不复位
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
+  fakeNow += 60_000;
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
   await autoBad.runTickBody();
-  assert.equal(autoBad.sessionCountForTests(), 0, '移出名单应清理会话');
-  deps.gids = base.gids;
-  await runTicks(1);
-  assert.equal(autoBad.sessionCountForTests(), 1);
-  autoBad.startAutoBadLoop();
-  assert.equal(autoBad.isAutoBadLoopArmed(), true);
-  autoBad.stopAutoBadLoop();
-  assert.equal(autoBad.isAutoBadLoopArmed(), false);
-  assert.equal(autoBad.sessionCountForTests(), 0);
+  assert.equal(autoBad.getSessionStateForTests(303).done, true, '跨度 1 分钟不得复位');
+  // 中途在线证据：清掉首见时刻，重新计时
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 60_000;
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
+  fakeNow += autoBad.OFFLINE_RESUME_MS + 10_000;
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: 0 }, lands: [] }, fakeNow);
+  await autoBad.runTickBody();
+  assert.equal(autoBad.getSessionStateForTests(303).done, false, '跨度 ≥3 分钟的两次显式 false 应复位');
+  // 复位后新在线事件：再执行一次
+  await wake(303, 'presence_online');
+  assert.equal(visits.length, 2, '复位后新在线事件应再执行');
+  assert.equal(autoBad.getSessionStateForTests(303).done, true);
 });
 
-test('全局暂停/免打扰/静默时段/巡查互斥守卫：零访问', async () => {
-  for (const key of ['badPaused', 'paused', 'quietHours', 'checking', 'harvestDue']) {
-    const visits = [];
+// ===== 退避与失败 =====
+
+test('进门失败不消耗机会且有界退避：60s 起指数、10min 封顶、证据不穿透退避', async () => {
+  let attempts = 0;
+  setup({
+    visit: async () => { attempts += 1; return { entered: false, online: false, reason: 'enter_failed' }; },
+  });
+  await wake(303);
+  assert.equal(attempts, 1);
+  assert.equal(autoBad.getSessionStateForTests(303).done, false);
+  const waits = [];
+  for (let i = 0; i < 5; i++) {
+    fakeNow = autoBad.getSessionStateForTests(303).nextAt + 1;
+    friendActivity.recordActivity(303, fakeNow, 'at_home', 't'); // 退避期内新证据
+    await autoBad.runTickBody();
+    fakeNow += 10_000;
+    waits.push(autoBad.getSessionStateForTests(303).nextAt - fakeNow);
+  }
+  assert.equal(attempts, 6);
+  assert.ok(waits.every(w => w >= autoBad.BACKOFF_BASE_MS - 10_000), `退避下界（实际 ${waits}）`);
+  assert.ok(waits.every(w => w <= autoBad.BACKOFF_MAX_MS), `退避封顶（实际 ${waits}）`);
+});
+
+test('在线但零执行：退避计满，退避到期后恢复执行', async () => {
+  let attempts = 0;
+  setup({
+    visit: async () => { attempts += 1; return { entered: true, online: true, bug: 0, weed: 0 }; },
+  });
+  await wake(303);
+  const deadline = autoBad.getSessionStateForTests(303).retryNotBefore;
+  assert.ok(deadline > fakeNow, '零成功应有退避 deadline');
+  for (let i = 0; i < 3; i++) {
+    fakeNow += 5_000;
+    friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+    await autoBad.runTickBody();
+  }
+  assert.equal(attempts, 1, '退避期内证据与 tick 都不得重试');
+  assert.ok(autoBad.getSessionStateForTests(303).nextAt >= deadline);
+  fakeNow = deadline + 3_000;
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  await autoBad.runTickBody();
+  assert.equal(attempts, 2, '退避到期且有新鲜证据后应恢复执行');
+});
+
+// ===== 串行锁 / 在途票据 / 启停互斥 =====
+
+test('真实串行锁：证据唤醒不另起并发进门，跨 stop/start 并发 ≤1，旧代迟到结果作废', async () => {
+  let active = 0;
+  let maxActive = 0;
+  let resolveVisit = null;
+  let firstVisit = true;
+  setup({
+    now: () => Date.now(),
+    // 首次进门挂起（测试旧代在途）；后续进门立即 settle，防新代派发死锁
+    visit: () => new Promise(resolve => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (firstVisit) {
+        firstVisit = false;
+        resolveVisit = () => {
+          active -= 1;
+          resolve({ entered: true, online: true, bug: 2, weed: 0 });
+        };
+      } else {
+        active -= 1;
+        resolve({ entered: true, online: true, bug: 0, weed: 0 });
+      }
+    }),
+  });
+  friendActivity.recordActivity(303, Date.now(), 'at_home', 't');
+  await waitFor(() => resolveVisit !== null, 6_000, '首拍应开始进门');
+  // 进门在途：当前 Enter 的 noteEnterPresence 同步触发的短定时器不得另起并发体
+  friendActivity.recordActivity(303, Date.now(), 'lands_push', 't');
+  await sleep(700);
+  assert.equal(maxActive, 1, '在途 Enter 未 settle 前不得另起并发进门');
+  assert.equal(autoBad.isAutoBadRunning(), true);
+  // stop 不假装旧网络完成；start 新代后调度体在串行锁后排队
+  autoBad.stopAutoBadLoop();
+  assert.equal(autoBad.isAutoBadRunning(), true, 'stop 后旧代在途仍应如实报告运行中');
+  autoBad.startAutoBadLoop();
+  const queued = autoBad.runTickBody();
+  friendActivity.recordActivity(303, Date.now(), 'at_home', 't');
+  await sleep(300);
+  assert.equal(maxActive, 1, '跨 stop/start 并发进门仍 ≤1');
+  resolveVisit(); // 旧代 settle：迟到成功结果被代际栅栏拦下
+  await queued;
+  assert.equal(autoBad.getSessionStateForTests(303).done, false,
+    '旧代迟到结果不得写入新会话状态');
+  autoBad.stopAutoBadLoop();
+});
+
+test('在途票据计数：排队即占票据，全 settle 才 false（含 stop/start 不伪造空闲）', async () => {
+  let resolveVisit = null;
+  setup({
+    visit: () => new Promise(resolve => {
+      resolveVisit = () => resolve({ entered: true, online: true, bug: 1, weed: 0 });
+    }),
+  });
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  const a = autoBad.runTickBody(); // 排队即占票据
+  assert.equal(autoBad.isAutoBadRunning(), true, '测试入口在途也不得误报空闲');
+  try {
+    await sleep(50);
+    assert.ok(resolveVisit, '应已开始进门');
     autoBad.stopAutoBadLoop();
-    stub({ [key]: () => true, visit: async () => { visits.push({}); return { entered: true, online: true, bug: 1, weed: 0 }; } });
-    await runTicks(2);
-    assert.equal(visits.length, 0, `${key} 应挡住访问`);
+    assert.equal(autoBad.isAutoBadRunning(), true, 'stop 不得伪造空闲');
+    autoBad.startAutoBadLoop();
+    assert.equal(autoBad.isAutoBadRunning(), true, 'start 后旧体在途仍不空闲');
+    resolveVisit();
+    await a;
+    assert.equal(autoBad.isAutoBadRunning(), false, 'pending 全 settle 才空闲');
+  } finally {
+    if (resolveVisit) resolveVisit();
+    await a.catch(() => { });
+  }
+});
+
+// ===== 部分成功 =====
+
+test('部分成功+暂停中止：已放成的虫不丢、会话完成、恢复后不重放', async () => {
+  friendActivity.resetForTest();
+  const puts = { bug: 0, weed: 0 };
+  const base = setup({
+    visit: (friend, tally, myGid, opts) => visitFriendForAutoBad(friend, tally, myGid, {
+      ...opts,
+      impl: {
+        enter: async () => ({ at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }, { id: 2 }] }),
+        leave: async () => { },
+        analyze: () => ({ canPutBug: [11], canPutWeed: [21] }),
+        place: {
+          badRemaining: () => 50,
+          remainingFor: () => 50,
+          checkCanOperate: async () => ({ canOperate: true }),
+          // 虫放成的瞬间全局暂停翻转 → 草必须在 put 前被 guard 拦下
+          putInsects: async (gid, targets) => {
+            puts.bug += targets.length;
+            deps.paused = () => true;
+            return { ok: targets.length };
+          },
+          putWeeds: async () => { puts.weed += 1; return { ok: 1 }; },
+        },
+      },
+    }),
+  });
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  await autoBad.runTickBody();
+  assert.equal(puts.bug, 1, '虫应放成');
+  assert.equal(puts.weed, 0, '暂停翻转后草零写');
+  const s = autoBad.getSessionStateForTests(303);
+  assert.equal(s.done, true, '部分成功（虫 1 草 0）也会话完成，不丢成功');
+  // 恢复 + 长时间推进 + 持续在线证据：不得重放已成功的虫
+  deps.paused = base.paused;
+  friendActivity.recordActivity(303, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  await runTicks(2, 5_000);
+  assert.equal(puts.bug, 1, '恢复后不得重放虫');
+  assert.equal(puts.weed, 0);
+});
+
+// ===== 昵称 =====
+
+test('运行时昵称：有缓存用昵称，缺失回退 GID，改名即时更新，不为补名增请求', async () => {
+  friendActivity.resetForTest();
+  const seen = [];
+  setup({
+    gids: () => [303, 304],
+    visit: async friend => { seen.push({ gid: friend.gid, name: friend.name }); return { entered: true, online: true, bug: 1, weed: 0 }; },
+  });
+  friendActivity.noteFriendName(303, '合成昵称甲');
+  await wake(303); // 有昵称
+  await wake(304); // 无昵称 → GID 回退
+  friendActivity.noteFriendName(303, '合成昵称乙'); // 改名
+  autoBad.stopAutoBadLoop();
+  autoBad.startAutoBadLoop();
+  friendActivity.recordActivity(304, fakeNow, 'at_home', 't');
+  fakeNow += 2_000;
+  // 304 已 done，不会再访；改名验证改走 303：先复位再触发
+  friendActivity.noteEnterPresence(303, { at_home: false, basic: { last_online: Math.floor(fakeNow / 1000) - 240 } }, fakeNow);
+  const s = autoBad.getSessionStateForTests(303);
+  assert.equal(s.done, false, '服务端确证离线应复位 303');
+  await wake(303, 'presence_online');
+  const names303 = seen.filter(v => v.gid === 303).map(v => v.name);
+  assert.deepEqual(names303, ['合成昵称甲', '合成昵称乙'], '昵称即时更新');
+  assert.equal(seen.find(v => v.gid === 304).name, 'GID:304', '缺失回退 GID');
+  // 不为补名增请求：每次证据至多一次 visit
+  assert.equal(seen.length, 3, '昵称解析零额外请求');
+});
+
+test('friend_activity_evidence 文案：用运行时昵称，无 [重点] 前缀，未知回退 GID', () => {
+  friendActivity.resetForTest();
+  const utils = require('../src/utils/utils');
+  const messages = [];
+  utils.setLogHook((_tag, msg, _isWarn, meta) => {
+    if (meta && meta.event === 'friend_activity_evidence') messages.push({ msg, meta });
+  });
+  try {
+    friendActivity.noteFriendName(501, '合成好友丙');
+    friendActivity.recordActivity(501, Date.now(), 'at_home', 't');
+    friendActivity.recordActivity(502, Date.now(), 'lands_push', 't');
+    assert.equal(messages.length, 2);
+    assert.ok(messages[0].msg.includes('合成好友丙'), '有昵称用昵称');
+    assert.ok(!messages[0].msg.includes('[重点]'), '不得有 [重点] 误导前缀');
+    assert.ok(messages[1].msg.includes('GID:502'), '未知回退 GID');
+    assert.ok(!messages[1].msg.includes('[重点]'));
+    // 字段白名单：无原始包/凭据
+    const allowed = new Set(['module', 'event', 'friendGid', 'source', 'at', 'tag']);
+    for (const m of messages) {
+      for (const key of Object.keys(m.meta)) assert.ok(allowed.has(key), `白名单外字段 ${key}`);
+    }
+  } finally {
+    utils.setLogHook(null);
+    friendActivity.resetForTest();
+  }
+});
+
+test('占位昵称解析：入参 name=GID 占位时优先刚取得的真昵称（真实 visit 回包端到端）', async () => {
+  friendActivity.resetForTest();
+  // 真实 visitFriendForAutoBad：进门前入参 name 是 GID 占位，回包 basic.name
+  // 取得真昵称后，上线提示的展示名应显示真昵称而非占位
+  await visitFriendForAutoBad({ gid: 801, name: 'GID:801' }, { putBug: 0, putWeed: 0 }, 1, {
+    impl: {
+      enter: async () => ({ at_home: true, basic: { name: '合成真名戊', last_online: 0 }, lands: [] }),
+      leave: async () => { },
+      analyze: () => ({ canPutBug: [], canPutWeed: [] }),
+    },
+  });
+  assert.equal(friendActivity.getCachedFriendName(801), '合成真名戊', '回包昵称进运行时名册');
+  assert.equal(friendActivity.resolveFriendDisplayName(801, 'GID:801'), '合成真名戊',
+    '占位入参必须让位给刚取得的真昵称');
+  assert.equal(friendActivity.resolveFriendDisplayName(801, ''), '合成真名戊', '空入参回退昵称');
+  assert.equal(friendActivity.resolveFriendDisplayName(802, 'GID:802'), 'GID:802', '无昵称回退占位/GID');
+  assert.equal(friendActivity.resolveFriendDisplayName(802, '合成入参己'), '合成入参己', '真入参优先');
+  friendActivity.resetForTest();
+});
+
+test('noteEnterPresence 喂昵称：BasicInfo.name 进运行时名册并供上线提示回退', () => {
+  friendActivity.resetForTest();
+  friendActivity.noteEnterPresence(601, { at_home: true, basic: { name: '合成进门丁', last_online: 0 }, lands: [] });
+  assert.equal(friendActivity.getCachedFriendName(601), '合成进门丁');
+  assert.equal(friendActivity.getCachedFriendName(602), '', '未知好友空串回退');
+  friendActivity.resetForTest();
+});
+
+test('onPresenceObservation：分发在场观测，缺 at_home 字段 atHomeDecoded=false', () => {
+  friendActivity.resetForTest();
+  const obs = [];
+  const un = friendActivity.onPresenceObservation((gid, at, payload) => obs.push({ gid, at, ...payload }));
+  try {
+    const t = Date.now();
+    friendActivity.noteEnterPresence(701, { at_home: true, basic: { last_online: 0 }, lands: [] }, t);
+    friendActivity.noteEnterPresence(701, { basic: { last_online: 0 }, lands: [] }, t + 1_000);
+    const offlineSec = Math.floor(t / 1000) - 42; // 真实 epoch 秒级 last_online
+    friendActivity.noteEnterPresence(701, { at_home: false, basic: { last_online: offlineSec }, lands: [] }, t + 2_000);
+    assert.equal(obs.length, 3);
+    assert.deepEqual(obs[0], { gid: 701, at: t, atHomeDecoded: true, atHome: true, lastOnlineMs: 0 });
+    assert.equal(obs[1].atHomeDecoded, false, '缺字段未解码');
+    assert.equal(obs[2].atHomeDecoded, true);
+    assert.equal(obs[2].atHome, false);
+    assert.equal(obs[2].lastOnlineMs, offlineSec * 1000, '秒级 last_online 转 ms 供离线确证');
+  } finally {
+    un();
+    friendActivity.resetForTest();
   }
 });
 
@@ -375,164 +746,6 @@ test('无地块：零请求，固定原因', async () => {
   assert.equal(impl.calls.check.length + impl.calls.putBug + impl.calls.putWeed, 0);
 });
 
-// ===== noteEnterPresence：证据生产一致性 =====
-
-test('陈旧/缺省 last_online 不覆盖同次 at_home 证据；真实离线才覆盖', () => {
-  friendActivity.resetForTest();
-  const gid = 303;
-  const t0 = Date.now();
-  const first = friendActivity.noteEnterPresence(gid, { at_home: true, lands: [] }, t0);
-  assert.equal(first.atHome, true);
-  assert.equal(first.onlineEdge, true, '首次 at_home 是上升沿');
-  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 1_000), true);
-  assert.equal(friendActivity.isFriendOnlineRecently(gid, t0 + 1_000), true);
-
-  // 缺省 last_online=0（字段不下发）：不得当离线时刻，也不得当在线
-  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: 0 }, lands: [] }, t0 + 2_000);
-  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 3_000), true, 'at_home 证据不得被缺省 0 覆盖');
-
-  // 陈旧历史 last_online（1 小时前）：不覆盖更新的 at_home
-  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: Math.floor(t0 / 1000) - 3600 }, lands: [] }, t0 + 4_000);
-  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 5_000), true, '陈旧 last_online 不得覆盖 at_home');
-
-  // 真实离线（刚刚）：覆盖为离线
-  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: Math.floor(t0 / 1000) + 6 }, lands: [] }, t0 + 7_000);
-  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 8_000), false, '真实离线应覆盖');
-});
-
-// ===== 2026-09-26 终验收补充 =====
-
-test('noteEnterPresence 时间单位与返回值：秒级 last_online → 墙钟 ms', () => {
-  friendActivity.resetForTest();
-  const t0 = Date.now();
-  const sec = Math.floor(t0 / 1000) - 60;
-  const r = friendActivity.noteEnterPresence(701, { at_home: false, basic: { last_online: sec }, lands: [] }, t0);
-  assert.equal(r.atHome, false);
-  assert.equal(r.lastOnlineMs, sec * 1000, '秒级 epoch 应转 ms');
-  // ms 级时间戳直传
-  const r2 = friendActivity.noteEnterPresence(701, { at_home: false, basic: { last_online: t0 - 30_000 }, lands: [] }, t0 + 1_000);
-  assert.equal(r2.lastOnlineMs, t0 - 30_000, 'ms 级应原样返回');
-  // at_home 时离线时刻为 0
-  const r3 = friendActivity.noteEnterPresence(701, { at_home: true, basic: { last_online: 123 }, lands: [] }, t0 + 2_000);
-  assert.equal(r3.atHome, true);
-  assert.equal(r3.lastOnlineMs, 0);
-  friendActivity.resetForTest();
-});
-
-test('在线层独立：非在线活跃源不覆盖在线信号；同毫秒高优先级源胜出', () => {
-  friendActivity.resetForTest();
-  const t = Date.now();
-  const notified = [];
-  const un = friendActivity.onOnlineEvidence((gid, at, source) => notified.push(source));
-  try {
-    friendActivity.recordActivity(801, t, 'at_home', 'x');
-    // 后到 1 秒的 summary_drift（活跃源，非在线源）不得影响在线判定
-    friendActivity.recordActivity(801, t + 1_000, 'summary_drift', 'y');
-    assert.equal(friendActivity.isFriendOnlineRecently(801, t + 5_000), true,
-      '10s 窗内 at_home 在线信号不得被 summary_drift 覆盖');
-    // 同毫秒：presence_online 先到，at_home 后到 → at_home（更可靠）胜出并通知
-    friendActivity.recordActivity(802, t, 'presence_online', 'x');
-    assert.equal(notified[notified.length - 1], 'presence_online');
-    friendActivity.recordActivity(802, t, 'at_home', 'x');
-    assert.equal(notified[notified.length - 1], 'at_home', '同毫秒高优先级在线源应胜出');
-  } finally {
-    un();
-    friendActivity.resetForTest();
-  }
-});
-
-// require-cache 替换 friend-api，让 visitFriend/visitFriendForSteal 的进门
-// 走替身——验证"所有进门路径（含空土地）先记录 presence 再早退"的真实行为
-function withFriendApiStub(stubApi, fn) {
-  const apiPath = require.resolve('../src/services/friend-api');
-  const visitPath = require.resolve('../src/services/friend-visit');
-  const origApi = require.cache[apiPath];
-  const origVisit = require.cache[visitPath];
-  require.cache[apiPath] = { id: apiPath, filename: apiPath, loaded: true, exports: stubApi };
-  delete require.cache[visitPath];
-  try {
-    return fn(require(visitPath));
-  } finally {
-    if (origVisit) require.cache[visitPath] = origVisit;
-    else delete require.cache[visitPath];
-    if (origApi) require.cache[apiPath] = origApi;
-    else delete require.cache[apiPath];
-  }
-}
-
-test('所有进门路径（含空土地）先记录 presence 再早退', async () => {
-  friendActivity.resetForTest();
-  const tally = () => ({ steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 });
-  const api = {
-    enterFriendFarm: async _gid => ({ at_home: true, basic: { last_online: 0 }, lands: [] }),
-    leaveFriendFarm: async () => { },
-    checkCanOperateRemote: async () => ({ canOperate: true }),
-    handleFriendEnterError: () => ({ handled: false }),
-  };
-  await withFriendApiStub(api, async visit => {
-    const r1 = await visit.visitFriend({ gid: 601, name: 'A' }, tally(), 1, '');
-    assert.equal(r1.entered, true);
-    assert.equal(friendActivity.isFriendOnlineRecently(601), true,
-      'visitFriend 空土地早退前必须有 at_home 在线证据');
-    const r2 = await visit.visitFriendForSteal({ gid: 602, name: 'B' }, tally(), 1, '');
-    assert.equal(r2.entered, true);
-    assert.equal(friendActivity.isFriendOnlineRecently(602), true,
-      'visitFriendForSteal 空土地早退前必须有在线证据');
-  });
-  friendActivity.resetForTest();
-});
-
-test('在线捣乱进门 at_home 解码四态：缺字段/显式false/显式true/仅其它在线证据', async () => {
-  // protobuf 原型缺省 false 不能当"下发过 false"：atHomeDecoded 只认
-  // 回包里真的存在 at_home 字段；缺字段时 atHome=null，不伪称在场/不在场。
-  const mk = (enterReply) => {
-    let left = 0;
-    const promise = visitFriendForAutoBad({ gid: 701, name: 'x' }, { putBug: 0, putWeed: 0 }, 1, {
-      impl: {
-        enter: async () => enterReply,
-        leave: async () => { left += 1; },
-        analyze: () => ({ canPutBug: [], canPutWeed: [] }),
-      },
-    });
-    return promise.then(r => ({ ...r, left }));
-  };
-  try {
-    // 1) 缺 at_home 字段：未解码，atHome=null、online 仅看其它证据（无→false）
-    friendActivity.resetForTest();
-    let r = await mk({ basic: { last_online: 0 }, lands: [{ id: 1 }] });
-    assert.equal(r.entered, true);
-    assert.equal(r.atHomeDecoded, false, '缺 at_home 字段：未解码');
-    assert.equal(r.atHome, null, '缺字段不下结论');
-    assert.equal(r.online, false, '无其它在线证据时不判在线');
-    assert.equal(r.left, 1);
-
-    // 2) 显式 at_home=false：已解码且本次未取得在场证据（不声称离线）
-    friendActivity.resetForTest();
-    r = await mk({ at_home: false, basic: { last_online: 0 }, lands: [{ id: 1 }] });
-    assert.equal(r.atHomeDecoded, true);
-    assert.equal(r.atHome, false, '显式 false 是解码出的在场位');
-    assert.equal(r.online, false, '本次未取得在场证据');
-
-    // 3) 显式 at_home=true：解码且在线
-    friendActivity.resetForTest();
-    r = await mk({ at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }] });
-    assert.equal(r.atHomeDecoded, true);
-    assert.equal(r.atHome, true);
-    assert.equal(r.online, true, 'at_home=true 即在线');
-
-    // 4) 缺 at_home 字段但 10s 窗口内已有其它已证实在线证据：
-    //    online=true（合并口径）而 atHome 仍 null（本次未解码）
-    friendActivity.resetForTest();
-    friendActivity.recordActivity(701, Date.now(), 'lands_push', 'test');
-    r = await mk({ basic: { last_online: 0 }, lands: [{ id: 1 }] });
-    assert.equal(r.atHomeDecoded, false);
-    assert.equal(r.atHome, null, '合并在线证据不得伪称本次解码在场位');
-    assert.equal(r.online, true, '其它在线证据仍构成在线');
-  } finally {
-    friendActivity.resetForTest();
-  }
-});
-
 test('虫远程检查抛错：固定原因码、不阻断草', async () => {
   const impl = makeImpl();
   impl.checkCanOperate = async (gid, opId) => {
@@ -589,748 +802,151 @@ test('远程 check 完成后、put 前重查 guard：等待期间暂停 → 零�
   assert.equal(impl.calls.putWeed, 0, '守卫翻转后草也零写');
 });
 
-test('部分成功+暂停中止：已放成的虫不丢、会话完成、恢复后不重放', async () => {
-  friendActivity.resetForTest();
-  const puts = { bug: 0, weed: 0 };
-  const base = setup({
-    visit: (friend, tally, myGid, opts) => visitFriendForAutoBad(friend, tally, myGid, {
-      ...opts,
-      impl: {
-        enter: async () => ({ at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }, { id: 2 }] }),
-        leave: async () => { },
-        analyze: () => ({ canPutBug: [11], canPutWeed: [21] }),
-        place: {
-          badRemaining: () => 50,
-          remainingFor: () => 50,
-          checkCanOperate: async () => ({ canOperate: true }),
-          // 虫放成的瞬间全局暂停翻转 → 草必须在 put 前被 guard 拦下
-          putInsects: async (gid, targets) => {
-            puts.bug += targets.length;
-            deps.paused = () => true;
-            return { ok: targets.length };
-          },
-          putWeeds: async () => { puts.weed += 1; return { ok: 1 }; },
-        },
-      },
-    }),
-  });
-  await runTicks(2); // 编入 + 执行
-  assert.equal(puts.bug, 1, '虫应放成');
-  assert.equal(puts.weed, 0, '暂停翻转后草零写');
-  const s = autoBad.getSessionStateForTests(303);
-  assert.equal(s.done, true, '部分成功（虫 1 草 0）也会话完成，不丢成功');
-  // 恢复 + 长时间推进：不得重放已成功的虫（allowPlace=false）
-  deps.paused = base.paused;
-  fakeNow += autoBad.DONE_PROBE_MAX_MS + 5_000;
-  await autoBad.runTickBody();
-  assert.equal(puts.bug, 1, '恢复后不得重放虫');
-  assert.equal(puts.weed, 0);
-  friendActivity.resetForTest();
-});
+// ===== noteEnterPresence：证据生产一致性 =====
 
-test('证据唤醒：无会话目标秒级唤醒，不等 30s 空档定时器', async () => {
+test('陈旧/缺省 last_online 不覆盖同次 at_home 证据；真实离线才覆盖', () => {
   friendActivity.resetForTest();
-  const visits = [];
-  setup({ now: () => Date.now(), visit: async () => { visits.push(Date.now()); return { entered: true, online: false }; } });
+  const gid = 303;
   const t0 = Date.now();
-  autoBad.startAutoBadLoop();
-  friendActivity.recordActivity(303, Date.now(), 'at_home', 't'); // 尚无会话
-  await waitFor(() => visits.length > 0, 5_000, '无会话也应及时唤醒进门');
-  assert.ok(visits[0] - t0 <= 4_000, `唤醒应秒级（实际 ${visits[0] - t0}ms）`);
-  autoBad.stopAutoBadLoop();
+  const first = friendActivity.noteEnterPresence(gid, { at_home: true, lands: [] }, t0);
+  assert.equal(first.atHome, true);
+  assert.equal(first.onlineEdge, true, '首次 at_home 是上升沿');
+  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 1_000), true);
+  assert.equal(friendActivity.isFriendOnlineRecently(gid, t0 + 1_000), true);
+
+  // 缺省 last_online=0（字段不下发）：不得当离线时刻，也不得当在线
+  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: 0 }, lands: [] }, t0 + 2_000);
+  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 3_000), true, 'at_home 证据不得被缺省 0 覆盖');
+
+  // 陈旧历史 last_online（1 小时前）：不覆盖更新的 at_home
+  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: Math.floor(t0 / 1000) - 3600 }, lands: [] }, t0 + 4_000);
+  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 5_000), true, '陈旧 last_online 不得覆盖 at_home');
+
+  // 真实离线（刚刚）：覆盖为离线
+  friendActivity.noteEnterPresence(gid, { at_home: false, basic: { last_online: Math.floor(t0 / 1000) + 6 }, lands: [] }, t0 + 7_000);
+  assert.equal(friendActivity.isFriendAtHomeRecently(gid, t0 + 8_000), false, '真实离线应覆盖');
+});
+
+test('noteEnterPresence 时间单位与返回值：秒级 last_online → 墙钟 ms', () => {
+  friendActivity.resetForTest();
+  const t0 = Date.now();
+  const sec = Math.floor(t0 / 1000) - 60;
+  const r = friendActivity.noteEnterPresence(701, { at_home: false, basic: { last_online: sec }, lands: [] }, t0);
+  assert.equal(r.atHome, false);
+  assert.equal(r.lastOnlineMs, sec * 1000, '秒级 epoch 应转 ms');
+  const r2 = friendActivity.noteEnterPresence(701, { at_home: false, basic: { last_online: t0 - 30_000 }, lands: [] }, t0 + 1_000);
+  assert.equal(r2.lastOnlineMs, t0 - 30_000, 'ms 级应原样返回');
+  const r3 = friendActivity.noteEnterPresence(701, { at_home: true, basic: { last_online: 123 }, lands: [] }, t0 + 2_000);
+  assert.equal(r3.atHome, true);
+  assert.equal(r3.lastOnlineMs, 0);
   friendActivity.resetForTest();
 });
 
-test('可靠在线源（lands_push/presence_online）唤醒；非在线源与非名单目标不唤醒', async () => {
-  for (const source of ['lands_push', 'presence_online']) {
-    friendActivity.resetForTest();
-    setup({ now: () => Date.now(), visit: async () => ({ entered: true, online: false }) });
-    autoBad.startAutoBadLoop();
-    friendActivity.recordActivity(303, Date.now(), source, 't');
-    await sleep(700);
-    assert.equal(autoBad.sessionCountForTests(), 1, `${source} 应唤醒建会话`);
-    autoBad.stopAutoBadLoop();
-    friendActivity.resetForTest();
-  }
-  for (const source of ['summary_drift', 'last_login', 'social_item_placed']) {
-    friendActivity.resetForTest();
-    setup({ now: () => Date.now(), visit: async () => ({ entered: true, online: false }) });
-    autoBad.startAutoBadLoop();
-    friendActivity.recordActivity(303, Date.now(), source, 't');
-    friendActivity.recordActivity(999, Date.now(), 'at_home', 't'); // 非名单目标
-    await sleep(700);
-    assert.equal(autoBad.sessionCountForTests(), 0, `${source}/非名单目标不得唤醒`);
-    autoBad.stopAutoBadLoop();
-    friendActivity.resetForTest();
-  }
-});
-
-test('证据唤醒不得穿透退避：deadline 不提前、不无限延后、期内零进门', async () => {
+test('在线层独立：非在线活跃源不覆盖在线信号；同毫秒高优先级源胜出', () => {
   friendActivity.resetForTest();
-  let attempts = 0;
-  setup({
-    visit: async () => { attempts += 1; return { entered: true, online: true, bug: 0, weed: 0 }; },
-  });
-  await runTicks(2);
-  const deadline = autoBad.getSessionStateForTests(303).retryNotBefore;
-  assert.ok(deadline > fakeNow, '零成功应有退避 deadline');
-  autoBad.startAutoBadLoop(); // 订阅证据唤醒
-  for (let i = 0; i < 3; i++) {
-    friendActivity.recordActivity(303, fakeNow + i * 1_000, 'at_home', 't');
-  }
-  await sleep(400); // 唤醒 tick 已跑过（真实定时器 300ms）
-  const s = autoBad.getSessionStateForTests(303);
-  assert.ok(s.nextAt >= deadline, `证据不得提前退避 deadline（${s.nextAt} < ${deadline}）`);
-  assert.ok(s.nextAt <= deadline, '也不得无限延后（退避到期即解锁）');
-  assert.equal(attempts, 1, '退避期内零新进门');
-  autoBad.stopAutoBadLoop();
-  friendActivity.resetForTest();
-});
-
-test('tick 内持续在线证据同样不提前退避 deadline，到期恢复执行', async () => {
-  let attempts = 0;
-  setup({
-    online: () => true, // 每轮 tick 都有"新鲜证据"
-    visit: async () => { attempts += 1; return { entered: true, online: true, bug: 0, weed: 0 }; },
-  });
-  await runTicks(2);
-  const deadline = autoBad.getSessionStateForTests(303).retryNotBefore;
-  for (let i = 0; i < 3; i++) {
-    fakeNow += 5_000;
-    await autoBad.runTickBody();
-  }
-  assert.equal(attempts, 1, '退避期内 tick 也不得重试');
-  assert.ok(autoBad.getSessionStateForTests(303).nextAt >= deadline);
-  fakeNow = deadline + 3_000;
-  await autoBad.runTickBody();
-  assert.equal(attempts, 2, '退避到期后应恢复执行');
-});
-
-test('真实串行锁：证据唤醒不另起并发进门，跨 stop/start 并发 ≤1，旧代迟到结果作废', async () => {
-  friendActivity.resetForTest();
-  let active = 0;
-  let maxActive = 0;
-  let resolveVisit = null;
-  setup({
-    now: () => Date.now(),
-    visit: () => new Promise(resolve => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      resolveVisit = () => {
-        active -= 1;
-        resolve({ entered: true, online: true, bug: 2, weed: 0 });
-      };
-    }),
-  });
-  autoBad.startAutoBadLoop();
-  friendActivity.recordActivity(303, Date.now(), 'at_home', 't');
-  await waitFor(() => resolveVisit !== null, 6_000, '首拍应开始进门');
-  // 进门在途：当前 Enter 的 noteEnterPresence 同步触发的短定时器不得另起并发体
-  friendActivity.recordActivity(303, Date.now(), 'lands_push', 't');
-  await sleep(700);
-  assert.equal(maxActive, 1, '在途 Enter 未 settle 前不得另起并发进门');
-  assert.equal(autoBad.isAutoBadRunning(), true);
-  // stop 不假装旧网络完成；start 新代后调度体在串行锁后排队
-  autoBad.stopAutoBadLoop();
-  assert.equal(autoBad.isAutoBadRunning(), true, 'stop 后旧代在途仍应如实报告运行中');
-  autoBad.startAutoBadLoop();
-  const queued = autoBad.runTickBody();
-  friendActivity.recordActivity(303, Date.now(), 'at_home', 't');
-  await sleep(300);
-  assert.equal(maxActive, 1, '跨 stop/start 并发进门仍 ≤1');
-  resolveVisit(); // 旧代 settle：迟到成功结果被代际栅栏拦下
-  await queued;
-  assert.equal(autoBad.getSessionStateForTests(303).done, false,
-    '旧代迟到结果不得写入新会话状态');
-  autoBad.stopAutoBadLoop();
-  friendActivity.resetForTest();
-});
-
-test('在途票据计数：同代两个排队体，A settle 后 B 未完成时 isAutoBadRunning 仍 true；全 settle 才 false', async () => {
-  friendActivity.resetForTest();
-  let settleA = null; // A 以 visit 抛错 settle：不写 nextAt，B 到期后可真实进门
-  let settleB = null;
-  setup({
-    gids: () => [303],
-    visit: () => new Promise((resolve, reject) => {
-      if (!settleA) settleA = reject;
-      else settleB = resolve;
-    }),
-  });
-  await autoBad.runTickBody(); // 初始化会话（nextAt 在未来）
-  fakeNow = autoBad.getSessionStateForTests(303).nextAt + 1; // 越过 nextAt 到期
-  const a = autoBad.runTickBody(); // A 开始进门（deferred，不 await）
-  a.catch(() => { }); // A 将以异常 settle（模拟 visit 失败）
-  assert.equal(autoBad.isAutoBadRunning(), true, 'A 在途应报告运行中');
+  const t = Date.now();
+  const notified = [];
+  const un = friendActivity.onOnlineEvidence((gid, at, source) => notified.push(source));
   try {
-    await sleep(50);
-    assert.ok(settleA, 'A 应已开始进门');
-    const b = autoBad.runTickBody(); // 同代 B 排队（等 A 释放串行锁）
-    assert.equal(autoBad.isAutoBadRunning(), true, 'B 排队中也应报告运行中');
-    settleA(new Error('simulated visit failure')); // A settle，B 接管串行锁
-    fakeNow += 6_000; // B 的重试同样走 5s 盲探测槽：失败不突发（同步推进，B 微任务启动前生效）
-    await sleep(50);
-    assert.ok(settleB, 'B 应接管并真实进门');
-    assert.equal(autoBad.isAutoBadRunning(), true, 'A 已释放、B 尚未完成时仍应报告运行中');
-    settleB({ entered: true, online: true, bug: 1, weed: 0 }); // B settle
-    await Promise.allSettled([a, b]);
-    assert.equal(autoBad.isAutoBadRunning(), false, '全部 settle 后才空闲');
+    friendActivity.recordActivity(801, t, 'at_home', 'x');
+    friendActivity.recordActivity(801, t + 1_000, 'summary_drift', 'y');
+    assert.equal(friendActivity.isFriendOnlineRecently(801, t + 5_000), true,
+      '10s 窗内 at_home 在线信号不得被 summary_drift 覆盖');
+    friendActivity.recordActivity(802, t, 'presence_online', 'x');
+    assert.equal(notified[notified.length - 1], 'presence_online');
+    friendActivity.recordActivity(802, t, 'at_home', 'x');
+    assert.equal(notified[notified.length - 1], 'at_home', '同毫秒高优先级在线源应胜出');
   } finally {
-    // 已 settle 的 promise 再 settle 是 no-op：兜底释放 deferred，防污染串行锁
-    try { settleA && settleA(new Error('cleanup')); } catch { }
-    try { settleB && settleB({ entered: true, online: true, bug: 1, weed: 0 }); } catch { }
+    un();
+    friendActivity.resetForTest();
   }
 });
 
-test('在途票据计数：stop/start 不伪造空闲，pending 全 settle 才 false（含测试入口）', async () => {
-  friendActivity.resetForTest();
-  let resolveVisit = null;
-  setup({
-    gids: () => [303],
-    visit: () => new Promise(resolve => {
-      resolveVisit = () => resolve({ entered: true, online: true, bug: 1, weed: 0 });
-    }),
-  });
-  await autoBad.runTickBody(); // 初始化会话
-  fakeNow = autoBad.getSessionStateForTests(303).nextAt + 1;
-  let released = false;
-  const release = () => { if (resolveVisit && !released) { released = true; resolveVisit(); } };
-  const a = autoBad.runTickBody(); // 测试入口：排队即占票据，不得误报空闲
-  assert.equal(autoBad.isAutoBadRunning(), true, '测试入口在途也不得误报空闲');
+// require-cache 替换 friend-api，让 visitFriend/visitFriendForSteal 的进门
+// 走替身——验证"所有进门路径（含空土地）先记录 presence 再早退"的真实行为
+function withFriendApiStub(stubApi, fn) {
+  const apiPath = require.resolve('../src/services/friend-api');
+  const visitPath = require.resolve('../src/services/friend-visit');
+  const origApi = require.cache[apiPath];
+  const origVisit = require.cache[visitPath];
+  require.cache[apiPath] = { id: apiPath, filename: apiPath, loaded: true, exports: stubApi };
+  delete require.cache[visitPath];
   try {
-    await sleep(50);
-    assert.ok(resolveVisit, '首拍应已开始进门');
-    autoBad.stopAutoBadLoop();
-    assert.equal(autoBad.isAutoBadRunning(), true, 'stop 不得伪造空闲');
-    autoBad.startAutoBadLoop();
-    assert.equal(autoBad.isAutoBadRunning(), true, 'start 后旧体在途仍不空闲');
-    release();
-    await a;
-    assert.equal(autoBad.isAutoBadRunning(), false, 'pending 全 settle 才空闲');
+    return fn(require(visitPath));
   } finally {
-    release();
+    if (origVisit) require.cache[visitPath] = origVisit;
+    else delete require.cache[visitPath];
+    if (origApi) require.cache[apiPath] = origApi;
+    else delete require.cache[apiPath];
   }
-  autoBad.stopAutoBadLoop();
-});
+}
 
-test('多目标探测全局错峰：相邻探测进门间隔 ≥ PROBE_GLOBAL_GAP_MS', async () => {
-  setup({
-    gids: () => [303, 304, 305],
-    visit: async () => ({ entered: true, online: false, offlineSinceMs: 0 }),
-  });
-  await runTicks(8, 3_000); // 初次错开进门 + 观察不在场 → 全部转探测节奏（5s 盲槽下逐个轮到）
-  const slots = [303, 304, 305].map(g => autoBad.getSessionStateForTests(g).nextAt).sort((a, b) => a - b);
-  for (let i = 1; i < slots.length; i++) {
-    assert.ok(slots[i] - slots[i - 1] >= autoBad.PROBE_GLOBAL_GAP_MS,
-      `相邻探测应全局错峰 ≥${autoBad.PROBE_GLOBAL_GAP_MS}ms（实际 ${slots}）`);
-  }
-});
-
-test('两次短暂离线（10-30s）不复位 done；本地持续 ≥3 分钟离线后再上线可新一次', async () => {
-  const visits = [];
-  setup({
-    visit: async (friend, tally, myGid, opts) => {
-      visits.push({ opts: { ...opts } });
-      return visits.length === 1
-        ? { entered: true, online: true, bug: 1, weed: 0 }
-        : { entered: true, online: false, bug: 0, weed: 0, offlineSinceMs: 0 };
-    },
-  });
-  await runTicks(2);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
-  const forceProbe = () => autoBad.__setNextAtForTests(303, fakeNow - 1);
-  // 第一次短暂离线（30s 后的下一拍，模拟证据拉近的探测）：记首见时刻，done 保持
-  fakeNow += 30_000;
-  forceProbe();
-  await autoBad.runTickBody();
-  assert.equal(autoBad.getSessionStateForTests(303).done, true, '第一次短暂离线不得复位');
-  // 第二次仍在 3 分钟内：本地未确证，done 保持
-  fakeNow += 30_000;
-  forceProbe();
-  await autoBad.runTickBody();
-  assert.equal(autoBad.getSessionStateForTests(303).done, true, '3 分钟内第二次离线不得复位');
-  // 持续 ≥3 分钟后仍观察到不在场：本地确证 → 复位
-  fakeNow += autoBad.OFFLINE_RESUME_MS + 30_000;
-  forceProbe();
-  await autoBad.runTickBody();
-  assert.equal(autoBad.getSessionStateForTests(303).done, false, '持续 ≥3 分钟离线应复位');
-  // 再上线：可重新执行一次（复位后的探测受全局节奏游标影响，直接强制到期）
-  fakeNow += autoBad.PROBE_MAX_MS + 1_000;
-  autoBad.__setNextAtForTests(303, fakeNow - 1);
-  let executed = false;
-  deps.visit = async () => { executed = true; return { entered: true, online: true, bug: 1, weed: 0 }; };
-  await autoBad.runTickBody();
-  assert.equal(executed, true, '复位后再上线应重新执行');
-});
-
-test('在线观测清掉离线首见时刻：离线→在线→离线，时钟重算', async () => {
-  const visits = [];
-  setup({
-    visit: async () => {
-      visits.push({});
-      if (visits.length === 1) return { entered: true, online: true, bug: 1, weed: 0 };
-      if (visits.length === 2) return { entered: true, online: false, offlineSinceMs: 0 };
-      if (visits.length === 3) return { entered: true, online: true, bug: 0, weed: 0 };
-      return { entered: true, online: false, offlineSinceMs: 0 };
-    },
-  });
-  await runTicks(2);
-  assert.equal(autoBad.getSessionStateForTests(303).done, true);
-  const forceProbe = () => autoBad.__setNextAtForTests(303, fakeNow - 1);
-  fakeNow += 2 * 60_000; // 离线观测 1（首见时刻记于此）
-  forceProbe();
-  await autoBad.runTickBody();
-  fakeNow += 10_000; // 又在线：清掉离线首见时刻
-  forceProbe();
-  await autoBad.runTickBody();
-  fakeNow += 2 * 60_000; // 再离线：距首见已 4 分钟，但在线已清零重算 → 不复位
-  forceProbe();
-  await autoBad.runTickBody();
-  assert.equal(autoBad.getSessionStateForTests(303).done, true, '在线证据清零后离线时长应重算');
-});
-
-
-// ===== 全好友观察层（2026-09-26 用户定标：在线检测面向全部好友）=====
-
-test('普通好友被轮转采样且零写；autoBad 空名单时观察层照常工作', async () => {
-  const visits = [];
-  setup({
-    gids: () => [],
-    rosterCache: () => [301, 302, 303],
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, allowPlace: options.allowPlace });
-      return { entered: true, online: false, bug: 0, weed: 0 };
-    },
-  });
-  await runTicks(4, 10_000); // 每 tick 最多一个观察，4 tick 覆盖 3 目标
-  const gidsSeen = visits.map(v => v.gid);
-  assert.ok(gidsSeen.includes(301) && gidsSeen.includes(302) && gidsSeen.includes(303),
-    '全部普通好友都被采样（轮转覆盖）');
-  assert.ok(visits.every(v => v.allowPlace === false), '观察必须零写通道');
-  assert.ok(visits.length <= 4, '一次 tick 最多一个观察');
-});
-
-test('观察不影响动作档会话：done/failCount 不被读 probe 改动', async () => {
-  const actionVisits = [];
-  setup({
-    gids: () => [303],
-    rosterCache: () => [303, 404],
-    visit: async (friend, tally, myGid, options) => {
-      actionVisits.push({ gid: friend.gid, allowPlace: options.allowPlace });
-      if (options.allowPlace !== false) return { entered: true, online: true, bug: 2, weed: 1 };
-      return { entered: true, online: false, bug: 0, weed: 0 };
-    },
-  });
-  await runTicks(2);
-  const afterAction = autoBad.getSessionStateForTests(303);
-  assert.equal(afterAction.done, true, '动作会话完成');
-  await runTicks(3, 10_000);
-  const afterObserve = autoBad.getSessionStateForTests(303);
-  assert.equal(afterObserve.done, true, '观察不重置 done');
-  assert.equal(afterObserve.failCount, 0, '观察不累计失败退避');
-  // 303 的观察采样也发生（覆盖 quota/done 时快档停摆的目标）
-  assert.ok(actionVisits.some(v => v.gid === 303 && v.allowPlace === false),
-    'autoBad 目标也被观察层兜底覆盖');
-});
-
-test('全局硬间隔：相邻观察实际发起间隔 >= 5000ms，多逾期不突发', async () => {
-  const times = [];
-  setup({
-    gids: () => [],
-    rosterCache: () => [501, 502, 503, 504, 505],
-    visit: async (friend) => { times.push({ gid: friend.gid, at: fakeNow }); return { entered: true, online: false }; },
-  });
-  // 单 tick 内即使全员到期也只发起一个
-  await autoBad.runTickBody();
-  assert.equal(times.length, 1, '一次 tick 最多一个观察（批量到期不突发）');
-  // 3s 步进：间隔不足 5s，不发起
-  fakeNow += 3_000;
-  await autoBad.runTickBody();
-  assert.equal(times.length, 1, '硬间隔内不发起');
-  // 再 +3s（累计 6s）：可发起
-  fakeNow += 3_000;
-  await autoBad.runTickBody();
-  assert.equal(times.length, 2, '间隔满足后发起');
-  for (let i = 1; i < times.length; i++) {
-    assert.ok(times[i].at - times[i - 1].at >= 5_000, '相邻观察发起间隔 >= 5s');
-  }
-});
-
-test('公平轮转：排序后继游标，动态新增低 ID 不饿死老好友', async () => {
-  let roster = [300, 400, 500];
-  const seen = [];
-  setup({
-    gids: () => [],
-    rosterCache: () => roster,
-    visit: async (friend) => { seen.push(friend.gid); return { entered: true, online: false }; },
-  });
-  for (let i = 0; i < 3; i++) { await autoBad.runTickBody(); fakeNow += 10_000; }
-  assert.deepEqual(seen.slice(0, 3).sort(), [300, 400, 500], '首轮全员覆盖');
-  // 游标推进中途插入低 ID：老好友仍按轮转采到
-  roster = [100, 300, 400, 500];
-  for (let i = 0; i < 4; i++) { await autoBad.runTickBody(); fakeNow += 10_000; }
-  const tail = seen.slice(3);
-  for (const gid of [300, 400, 500]) {
-    assert.ok(tail.includes(gid), `动态名单后老好友 ${gid} 仍被采样`);
-  }
-  assert.ok(tail.includes(100), '新好友也进入轮转');
-});
-
-test('10s 内已有真实观测（动作档刚进门）的目标跳过；跳过不伪更新观测时刻', async () => {
-  const visits = [];
-  setup({
-    gids: () => [303],
-    rosterCache: () => [303, 606],
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, at: fakeNow, observe: options.allowPlace === false });
-      if (options.allowPlace !== false) return { entered: true, online: true, bug: 2, weed: 1 };
-      return { entered: true, online: false, bug: 0, weed: 0 };
-    },
-  });
-  // 第 1 拍：动作档仅编入，观察层先采 303（真实首观测，占盲槽）；
-  // 第 2 拍：动作档进门 303（lastProbeAt 刚更新并占槽，同拍观察层无槽位）；
-  // 第 3 拍（+6s 槽空出）：观察层采 606（303 在 10s 新鲜窗口内被跳过）
-  await runTicks(2);
-  const obs303 = () => visits.filter(v => v.gid === 303 && v.observe).length;
-  assert.equal(obs303(), 1, '到目前恰好一次观察（动作刚进门不重复采）');
-  assert.ok(visits.some(v => v.gid === 303 && !v.observe), '动作档已进门');
-  fakeNow += 6_000;
-  await autoBad.runTickBody();
-  assert.equal(obs303(), 1, '10s 内刚进门的目标本轮跳过');
-  assert.ok(visits.some(v => v.gid === 606), '跳过不阻塞其他目标采样');
-  fakeNow += 11_000; // 超过新鲜窗口后 303 会被观察层再次覆盖
-  await autoBad.runTickBody();
-  assert.ok(obs303() >= 2, '新鲜窗口过后目标重新可采（跳过不得伪更新为永久跳过）');
-});
-
-test('共同守卫拦观察：全局暂停/静默/互斥/让步时观察也停', async () => {
-  for (const key of ['paused', 'quietHours', 'checking', 'stealDue', 'harvestImminent']) {
-    const visits = [];
-    setup({
-      gids: () => [],
-      rosterCache: () => [707],
-      visit: async () => { visits.push({}); return { entered: true, online: false }; },
-    });
-    deps[key] = () => true;
-    restores.push(() => { });
-    await autoBad.runTickBody();
-    assert.equal(visits.length, 0, `${key} 时观察零请求`);
-    deps[key] = () => false;
-  }
-});
-
-test('stop 清观察状态；stop 后在途观察迟到结果不写状态', async () => {
-  const visits = [];
-  setup({
-    gids: () => [],
-    rosterCache: () => [808],
-    visit: async (friend) => {
-      visits.push(friend.gid);
-      autoBad.stopAutoBadLoop(); // 在途观察完成前 stop（升代次）
-      return { entered: true, online: false };
-    },
-  });
-  await autoBad.runTickBody();
-  assert.equal(visits.length, 1);
-  const st = autoBad.__observeStateForTests();
-  assert.equal(st.rosterGids.length, 0, 'stop 清空名册');
-  assert.equal(st.nextBlindEnterAt, 0, 'stop 清空观察槽位');
-});
-
-test('名册冷读失败退避后恢复：fetchRoster 失败不崩、成功后采样', async () => {
-  setup({ gids: () => [] }); // 安装基础替身（connected/myGid 等真实默认在测试环境不可用）
+test('所有进门路径（含空土地）先记录 presence 再早退', async () => {
   friendActivity.resetForTest();
-  const visits = [];
-  let failFirst = true;
-  deps.rosterCache = () => null; // 冷缓存（三态契约：null=未知，[]=权威空表）
-  deps.fetchRoster = async () => {
-    if (failFirst) { failFirst = false; throw new Error('cold read fail'); }
-    return [909]; // 成功返回权威 gid 数组（null=失败）
+  const tally = () => ({ steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 });
+  const api = {
+    enterFriendFarm: async _gid => ({ at_home: true, basic: { last_online: 0 }, lands: [] }),
+    leaveFriendFarm: async () => { },
+    checkCanOperateRemote: async () => ({ canOperate: true }),
+    handleFriendEnterError: () => ({ handled: false }),
   };
-  autoBad.startAutoBadLoop();
-  await autoBad.runTickBody(); // 首拍：冷读失败（退避占位，不崩）
-  await sleep(100);
-  assert.equal(autoBad.__observeStateForTests().rosterGids.length, 0, '失败不落名册');
-  // 退避窗口内不重试
-  fakeNow += 3_000;
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.equal(autoBad.__observeStateForTests().rosterGids.length, 0, '退避窗口内不重试');
-  // 越过 5min 退避后重试成功，采样恢复
-  fakeNow += 6 * 60_000;
-  deps.visit = async (friend) => { visits.push(friend.gid); return { entered: true, online: false }; };
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.deepEqual(autoBad.__observeStateForTests().rosterGids, [909], '重试成功落名册');
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.deepEqual(visits, [909], '名册恢复后观察采样恢复');
-  autoBad.stopAutoBadLoop();
+  await withFriendApiStub(api, async visit => {
+    const r1 = await visit.visitFriend({ gid: 601, name: 'A' }, tally(), 1, '');
+    assert.equal(r1.entered, true);
+    assert.equal(friendActivity.isFriendOnlineRecently(601), true,
+      'visitFriend 空土地早退前必须有 at_home 在线证据');
+    const r2 = await visit.visitFriendForSteal({ gid: 602, name: 'B' }, tally(), 1, '');
+    assert.equal(r2.entered, true);
+    assert.equal(friendActivity.isFriendOnlineRecently(602), true,
+      'visitFriendForSteal 空土地早退前必须有在线证据');
+  });
   friendActivity.resetForTest();
 });
 
-test('真实 getter 接线：friend-api 名册快照（成功出口记录，失败不写）', () => {
-  const friendApi = require('../src/services/friend-api');
-  // 1) getAllFriends 的全部成功出口都必须接线快照记录（源码级验证，防真实链路漏挂）
-  const src = require('fs').readFileSync(require.resolve('../src/services/friend-api'), 'utf8');
-  const body = src.slice(src.indexOf('async function getAllFriends('), src.indexOf('/** Get pending friend applications'));
-  const exits = (body.match(/buildFriendReply\((?:known|fallback)Friends\)|GetAllFriendsReply\.decode\(body\)/g) || []).length;
-  const records = (body.match(/recordRosterReply\(/g) || []).length;
-  assert.equal(exits, 3, 'getAllFriends 三个成功出口（QQ 新接口/QQ 兜底/WeChat）');
-  assert.equal(exits, records, '每个成功出口必须记录快照');
-  // 2) 真实归一化行为：字符串 gid/重复项去重排序；空数组=权威空表非未知
-  const snap1 = friendApi.recordRosterReply([{ gid: 111 }, { gid: '222' }, { gid: 111 }]);
-  assert.deepEqual(snap1.gids, [111, 222], '字符串 gid 归一化、去重、排序');
-  assert.ok(snap1.at > 0, '快照带真实成功时刻');
-  const snap2 = friendApi.recordRosterReply([]);
-  assert.deepEqual(snap2.gids, [], '空回包=权威空表（不是未知）');
-  // 3) deps.rosterCache 真实接线：读快照而非自造数据
-  assert.deepEqual(deps.rosterCache(), [], 'deps.rosterCache 消费 friend-api 快照');
-  // 4) 回包对象形（game_friends）同样进快照
-  friendApi.recordRosterReply({ game_friends: [{ gid: 333 }] });
-  assert.deepEqual(deps.rosterCache(), [333], 'reply 形回包进入快照');
-});
-
-test('盲探测集中到期不突发：动作多目标 + 大名册同 tick 至多一个盲 Enter', async () => {
-  const visits = [];
-  const bigRoster = Array.from({ length: 12 }, (_, i) => 900 + i);
-  setup({
-    gids: () => [303, 304],
-    rosterCache: () => bigRoster,
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, at: fakeNow, observe: options.allowPlace === false });
-      return { entered: true, online: false };
-    },
-  });
-  // 预置全部动作目标到期（模拟批量到期），观察名册同样全到期
-  await autoBad.runTickBody(); // 第 1 拍编入
-  fakeNow = autoBad.getSessionStateForTests(303).nextAt + 20_000;
-  fakeNow = Math.max(fakeNow, autoBad.getSessionStateForTests(304).nextAt + 20_000);
-  for (let t = 0; t < 6; t++) {
-    await autoBad.runTickBody();
-    const thisTick = visits.filter(v => v.at === fakeNow);
-    assert.ok(thisTick.length <= 1, `单 tick 盲 Enter 至多一个（第 ${t} 拍实际 ${thisTick.length}）`);
-    fakeNow += 6_000; // 越过 5s 槽
-  }
-  assert.ok(visits.length >= 5, '槽位轮转下持续推进采样');
-});
-
-test('名册权威空表（缓存 []）：清空旧名册，不再探测已删除好友', async () => {
-  const visits = [];
-  let roster = [977];
-  setup({
-    gids: () => [],
-    rosterCache: () => roster,
-    visit: async (friend) => { visits.push(friend.gid); return { entered: true, online: false }; },
-  });
-  await autoBad.runTickBody();
-  assert.deepEqual(visits, [977], '有名册时正常采样');
-  fakeNow += 6_000;
-  roster = []; // 权威空表：好友全部删除
-  await autoBad.runTickBody();
-  fakeNow += 6_000;
-  await autoBad.runTickBody();
-  assert.deepEqual(visits, [977], '空表后不再探测旧好友（[] 不是未知，是删除）');
-});
-
-test('已知新鲜证据的动作唤醒不占盲槽：同 tick 观察仍可派发', async () => {
-  const visits = [];
-  setup({
-    gids: () => [303],
-    rosterCache: () => [404],
-    online: gid => gid === 303, // 仅动作目标有新鲜在线证据（证据唤醒优先通道；404 无证据走观察）
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, observe: options.allowPlace === false, at: fakeNow });
-      return { entered: true, online: true, bug: 1, weed: 0 };
-    },
-  });
-  await autoBad.runTickBody(); // 编入
-  fakeNow += 20_000; // 越过错峰
-  await autoBad.runTickBody();
-  // 同一拍内：动作 303（证据优先，不占盲槽）+ 观察 404（盲槽仍空闲可用）
-  assert.ok(visits.some(v => v.gid === 303 && !v.observe), '证据唤醒的动作先派发');
-  assert.ok(visits.some(v => v.gid === 404 && v.observe), '动作未占盲槽，观察同拍仍可派发');
-});
-
-test('观察守卫在 Enter 在途翻转：暂停/黑名单变更 → aborted 零写且 Leave', async () => {
-  const visits = [];
-  let guardFlip = false;
-  setup({
-    gids: () => [],
-    rosterCache: () => [987],
-    visit: (friend, tally, myGid, options) => visitFriendForAutoBad(friend, tally, myGid, {
-      ...options,
+test('在线捣乱进门 at_home 解码四态：缺字段/显式false/显式true/仅其它在线证据', async () => {
+  const mk = (enterReply) => {
+    let left = 0;
+    const promise = visitFriendForAutoBad({ gid: 701, name: 'x' }, { putBug: 0, putWeed: 0 }, 1, {
       impl: {
-        enter: async () => { guardFlip = true; return { at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }] }; },
-        leave: async () => { visits.push('leave'); },
-        analyze: () => ({ canPutBug: [11], canPutWeed: [12] }),
-        place: {
-          badRemaining: () => 50, remainingFor: () => 50,
-          checkCanOperate: async () => ({ canOperate: true }),
-          putInsects: async () => { visits.push('putBug'); },
-          putWeeds: async () => { visits.push('putWeed'); },
-        },
-      },
-    }),
-  });
-  // 观察守卫由调度传入；Enter 返回瞬间翻转暂停 → guard false
-  const origPaused = deps.paused;
-  deps.paused = () => guardFlip; // Enter 之后（guard 复查时）才变 true
-  restores.push(() => { });
-  await autoBad.runTickBody();
-  deps.paused = origPaused;
-  assert.deepEqual(visits, ['leave'], '守卫翻转即 Leave，零 put');
-});
-
-// ===== 第三轮审查收口用例 =====
-
-test('跨组公平：多个持续离线 autoBad 目标占槽时，普通好友在有限槽内全部被采样', async () => {
-  const visits = [];
-  setup({
-    gids: () => [303, 304, 305], // 三个 autoBad 目标持续离线、10-15s 反复到期
-    rosterCache: () => [404, 505], // 两个普通好友
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, observe: options.allowPlace === false });
-      if (options.allowPlace === false) return { entered: true, online: false };
-      return { entered: true, online: false }; // 动作探测也观察到不在场
-    },
-  });
-  // 模拟持续混合场景：每拍 6s（越过 5s 槽），26 拍 ≈ 156s
-  for (let t = 0; t < 26; t++) { await autoBad.runTickBody(); fakeNow += 6_000; }
-  for (const gid of [404, 505]) {
-    assert.ok(visits.some(v => v.gid === gid && v.observe),
-      `普通好友 ${gid} 必须在有限槽内被观察采样（2:1 公平让位）`);
-  }
-  assert.ok(visits.some(v => v.gid === 303 && !v.observe), 'autoBad 目标仍持续被动作探测');
-});
-
-test('盲槽被占不挡后面的已知在线目标（break→continue 收口）', async () => {
-  const visits = [];
-  setup({
-    gids: () => [303, 304],
-    online: gid => gid === 304, // 304 有新鲜在线证据
-    visit: async (friend, tally, myGid, options) => {
-      visits.push({ gid: friend.gid, at: fakeNow, observe: options.allowPlace === false });
-      if (friend.gid === 304) return { entered: true, online: true, bug: 1, weed: 0 };
-      return { entered: true, online: false };
-    },
-  });
-  await autoBad.runTickBody(); // 编入
-  fakeNow = Math.max(...[303, 304].map(g => autoBad.getSessionStateForTests(g).nextAt)) + 20_000;
-  await autoBad.runTickBody();
-  // 303（盲）先派发并占槽；304（已知在线）必须同拍仍被派发，不被槽位挡住
-  assert.ok(visits.some(v => v.gid === 303 && !v.observe), '盲探测派发并占槽');
-  assert.ok(visits.some(v => v.gid === 304 && !v.observe), '排在后面的已知在线目标同拍仍可动作');
-});
-
-test('既有巡查新鲜在线证据的目标不被观察层重复 Enter（跳过不伪更新）', async () => {
-  const visits = [];
-  let onlineGids = new Set([404]); // 既有巡查刚确认 404 在线（10s 窗口内）
-  setup({
-    gids: () => [],
-    rosterCache: () => [404, 505],
-    online: gid => onlineGids.has(gid),
-    visit: async (friend) => { visits.push(friend.gid); return { entered: true, online: false }; },
-  });
-  await autoBad.runTickBody();
-  assert.deepEqual(visits, [505], '有新鲜在线证据的 404 被跳过，观察 505');
-  onlineGids = new Set(); // 证据过期后 404 也会被采样（未伪更新）
-  fakeNow += 6_000;
-  await autoBad.runTickBody();
-  assert.ok(visits.includes(404), '证据过期后 404 恢复可采');
-});
-
-test('名册刷新失败语义：fetchRoster throw → 退避占位、旧名册沿用、不误报成功', async () => {
-  autoBad.stopAutoBadLoop();
-  friendActivity.resetForTest();
-  setup({ gids: () => [] });
-  deps.rosterCache = () => null; // 冷（无快照）
-  let fail = true;
-  deps.fetchRoster = async () => { if (fail) throw new Error('rpc fail'); return [606]; };
-  autoBad.startAutoBadLoop();
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.equal(autoBad.__observeStateForTests().rosterGids.length, 0, '失败不落名册');
-  fakeNow += 6 * 60_000; // 越过 5min 退避
-  deps.rosterCache = () => [707]; // 其他路径 getAllFriends 成功 → 快照可用
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.deepEqual(autoBad.__observeStateForTests().rosterGids, [707], '快照权威更新即时采用');
-  // 快照采纳后 30min 内即使过退避位也不再重复强制拉取（有界）
-  fakeNow += 6 * 60_000;
-  fail = false;
-  await autoBad.runTickBody();
-  await sleep(100);
-  assert.equal(autoBad.__observeStateForTests().rosterGids.length, 1, '名册保持单一来源');
-  autoBad.stopAutoBadLoop();
-  friendActivity.resetForTest();
-});
-
-test('friend_observe_sample 字段口径：onlineEvidence=合并证据，atHome=本次解码在场位（未解码为 null）', async () => {
-  // 主审修正 2：online 合并了 at_home 与 10s 窗口其它在线证据，
-  // 日志不得把"其它活跃证据"伪称"本次农场在场位=true"。
-  const samples = [];
-  const utils = require('../src/utils/utils');
-  utils.setLogHook((_tag, _msg, _isWarn, meta) => {
-    if (meta && meta.event === 'friend_observe_sample') samples.push(meta);
-  });
-  try {
-    let call = 0;
-    setup({
-      gids: () => [], // 只跑观察层
-      rosterCache: () => [801],
-      visit: async () => {
-        call += 1;
-        return call === 1
-          // 合并证据在线（online=true）但本次 Enter 解码 at_home=false
-          ? { entered: true, online: true, bug: 0, weed: 0, atHome: false, atHomeDecoded: true }
-          // 同样在线但本次回包未解码在场位
-          : { entered: true, online: true, bug: 0, weed: 0, atHome: false, atHomeDecoded: false };
+        enter: async () => enterReply,
+        leave: async () => { left += 1; },
+        analyze: () => ({ canPutBug: [], canPutWeed: [] }),
       },
     });
-    await autoBad.runTickBody();
-    await sleep(100);
-    fakeNow += 60_000; // 越过盲槽硬间隔与新鲜跳过窗口
-    await autoBad.runTickBody();
-    await sleep(100);
-    assert.equal(samples.length, 2, '两拍各一条采样日志');
-    const [s1, s2] = samples;
-    assert.equal(s1.onlineEvidence, true, '在线证据字段独立记录');
-    assert.equal(s1.atHome, false, '本次解码 at_home=false 不得因合并证据被改写为 true');
-    assert.equal(s1.atHomeSeen, true, '解码标志随 at_home 字段存在性记录（键名避开脱敏正则）');
-    assert.equal(typeof s1.accountId, 'string', '观察日志带 accountId 区分账号');
-    assert.equal(s1.result, 'ok');
-    assert.equal(s2.atHome, null, '未解码到场位时 atHome=null，不伪称在场/不在场');
-    assert.equal(s2.onlineEvidence, true);
-    // 无原始包/凭据入日志：字段白名单
-    const allowed = new Set(['module', 'event', 'accountId', 'result', 'friendGid', 'reason', 'onlineEvidence', 'atHomeSeen', 'atHome', 'sampledAt', 'tag']);
-    for (const s of samples) {
-      for (const key of Object.keys(s)) assert.ok(allowed.has(key), `日志出现白名单外字段 ${key}`);
-    }
-  } finally {
-    utils.setLogHook(null);
-  }
-});
+    return promise.then(r => ({ ...r, left }));
+  };
+  try {
+    // 1) 缺 at_home 字段：未解码，atHome=null、online 仅看其它证据（无→false）
+    friendActivity.resetForTest();
+    let r = await mk({ basic: { last_online: 0 }, lands: [{ id: 1 }] });
+    assert.equal(r.entered, true);
+    assert.equal(r.atHomeDecoded, false, '缺 at_home 字段：未解码');
+    assert.equal(r.atHome, null, '缺字段不下结论');
+    assert.equal(r.online, false, '无其它在线证据时不判在线');
+    assert.equal(r.left, 1);
 
-test('跨组公平让位仅在有合格观察候选时生效：名册全为黑名单时盲动作不被 streak>=2 永久挡死', async () => {
-  // 主审自查项：rosterGids 非空但观察层无合格候选（全黑名单）时，
-  // 让位等于盲动作永久停摆；也不能靠伪更新 lastProbeAt 解锁。
-  const visits = [];
-  setup({
-    gids: () => [303, 304],
-    rosterCache: () => [999], // 名册非空但唯一成员在黑名单 → 观察层无候选
-    blacklist: () => new Set([999]),
-    visit: async (friend) => {
-      visits.push(friend.gid);
-      return { entered: true, online: false, bug: 0, weed: 0, reason: 'not_online' };
-    },
-  });
-  for (let i = 0; i < 5; i++) {
-    await autoBad.runTickBody();
-    fakeNow = Math.max(
-      autoBad.getSessionStateForTests(303).nextAt,
-      autoBad.getSessionStateForTests(304).nextAt) + 20_000; // 越过节奏与 5s 盲槽
+    // 2) 显式 at_home=false：已解码且本次未取得在场证据（不声称离线）
+    friendActivity.resetForTest();
+    r = await mk({ at_home: false, basic: { last_online: 0 }, lands: [{ id: 1 }] });
+    assert.equal(r.atHomeDecoded, true);
+    assert.equal(r.atHome, false, '显式 false 是解码出的在场位');
+    assert.equal(r.online, false, '本次未取得在场证据');
+
+    // 3) 显式 at_home=true：解码且在线
+    friendActivity.resetForTest();
+    r = await mk({ at_home: true, basic: { last_online: 0 }, lands: [{ id: 1 }] });
+    assert.equal(r.atHomeDecoded, true);
+    assert.equal(r.atHome, true);
+    assert.equal(r.online, true, 'at_home=true 即在线');
+
+    // 4) 缺 at_home 字段但 10s 窗口内已有其它已证实在线证据
+    friendActivity.resetForTest();
+    friendActivity.recordActivity(701, Date.now(), 'presence_online', 'test');
+    r = await mk({ basic: { last_online: 0 }, lands: [{ id: 1 }] });
+    assert.equal(r.atHomeDecoded, false);
+    assert.equal(r.atHome, null, '合并在线证据不得伪称本次解码在场位');
+    assert.equal(r.online, true, '其它在线证据仍构成在线');
+  } finally {
+    friendActivity.resetForTest();
   }
-  assert.ok(visits.length >= 4,
-    `名册无合格候选时盲动作探测必须持续派发（实际 ${visits.length} 次）`);
 });

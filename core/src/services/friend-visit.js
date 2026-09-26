@@ -329,7 +329,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
     const presence = friendActivity.noteEnterPresence(gid, enterReply);
     if (presence.onlineEdge) {
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-        `好友上线：${name || `GID:${gid}`}`);
+        `好友上线：${friendActivity.resolveFriendDisplayName(gid, name)}`);
     }
   } catch { /* 证据记录失败不影响进门主流程 */ }
 
@@ -645,7 +645,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     const presence = friendActivity.noteEnterPresence(gid, enterReply);
     if (presence.onlineEdge) {
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-        `好友上线：${name || `GID:${gid}`}`);
+        `好友上线：${friendActivity.resolveFriendDisplayName(gid, name)}`);
     }
   } catch { /* 证据记录失败不影响进门主流程 */ }
 
@@ -800,7 +800,7 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
     const presence = friendActivity.noteEnterPresence(gid, enterReply);
     if (presence.onlineEdge) {
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-        `好友上线：${name || `GID:${gid}`}`);
+        `好友上线：${friendActivity.resolveFriendDisplayName(gid, name)}`);
     }
   } catch { /* 证据记录失败不影响进门主流程 */ }
 
@@ -1051,7 +1051,7 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
     offlineSinceMs = atHomeDecoded && presence.atHome ? 0 : presence.lastOnlineMs;
     if (presence.onlineEdge) {
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'friend_online',
-        `好友上线：${name || `GID:${gid}`}`);
+        `好友上线：${friendActivity.resolveFriendDisplayName(gid, name)}`);
     }
   } catch { /* 证据记录失败不影响进门主流程 */ }
   // 在线判定：本次进门 at_home，或 10 秒窗口内的已证实在线证据
