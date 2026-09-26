@@ -211,6 +211,14 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     res.status(response.statusCode).json(response.body);
   });
 
+  // review_blocked 的人工重试出口（2026-09-26）：仅管理员，不带任何透传参数，
+  // 服务端自行核对状态/工作区/远端同步/待审候选，失败原样返回不改状态。
+  app.post('/api/activity/update/evolve-retry', requireAdminToken, requireEvolutionConfigAdmin, (req, res) => {
+    const result = activityEvolver.retryReviewBlockedEvolution();
+    const response = buildEvolutionStartResponse(result, activityEvolver.getEvolveState());
+    res.status(response.statusCode).json(response.body);
+  });
+
   app.post('/api/activity/update/agent', requireAdminToken, requireEvolutionConfigAdmin, (req, res) => {
     const result = activityEvolver.setEvolutionAgent(req.body?.agent);
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });

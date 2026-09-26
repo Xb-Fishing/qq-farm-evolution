@@ -1202,7 +1202,11 @@ function launchEvolution(task, payload = {}) {
       }
     });
   }
-  if (BLOCKING_STATUSES.has(current.status)) {
+  // review_blocked 的人工重试出口（2026-09-26 死锁修复）：仅 retryReviewBlockedEvolution
+  // 这一个内部调用点显式携带 manualReviewRetry 放行该状态；后续 clean/sync 检查照常执行，
+  // automatic 与其它手动路径永不携带该参数，BLOCKING_STATUSES 语义不变。
+  if (BLOCKING_STATUSES.has(current.status)
+      && !(current.status === 'review_blocked' && payload.manualReviewRetry === true)) {
     return {
       ok: false,
       reason: 'blocked',
@@ -1649,6 +1653,90 @@ function readLatestReport() {
   } catch {
     return null;
   }
+}
+
+/**
+ * review_blocked 的人工重试出口（2026-09-26 用户批准的维护方案）：
+ * 双 Agent 轮因共享树并行变化被判验收阻断后，此前没有任何手动恢复路径，
+ * 每日自动闸门被 BLOCKING_STATUSES 永久挡住。该函数只在状态仍是 review_blocked、
+ * 工作区完全干净（含未跟踪）、HEAD 与 origin/main 一致且 origin 存在、没有等待
+ * 审核/待应用候选（state.commit / privacyBlockedCommit）时，从新基线重开一轮
+ * combinedDaily 安全巡检（复用当日综合巡检语义，不消费/不改写自动名额）。
+ * 旧轮 failure/日志/反馈全部保留，只归档为追溯字段，不送入 recover——新轮从
+ * research 开始并须重新走主 Agent 审批与最终验收。
+ */
+function retryReviewBlockedEvolution() {
+  if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
+  const state = readState();
+  if (state.status !== 'review_blocked') {
+    return { ok: false, reason: 'blocked', error: `仅「验收未通过（review_blocked）」状态可重试（当前：${state.status}）` };
+  }
+  const trackedMain = gitRefHead('origin/main');
+  if (!trackedMain) {
+    return { ok: false, reason: 'missing_origin', error: '本地没有 origin/main 跟踪引用，无法核对安全基线；请先 git fetch 后重试' };
+  }
+  if (gitHead() !== trackedMain) {
+    return { ok: false, reason: 'unsynced', error: '本地 HEAD 与 origin/main 不一致；请先推送或同步本地提交后重试' };
+  }
+  const dirty = worktreeChanges();
+  if (dirty) {
+    return {
+      ok: false,
+      reason: 'dirty',
+      error: `工作区仍有未提交内容（含未跟踪文件）；请先处理并提交这些改动，再点「重新验收并重试」`,
+    };
+  }
+  if (state.commit || state.privacyBlockedCommit) {
+    return {
+      ok: false,
+      reason: 'candidate_pending',
+      error: `上一轮仍有待审/待应用提交（${state.commit || state.privacyBlockedCommit}）；请先应用或拒绝重做收口`,
+    };
+  }
+  // 归档旧失败供追溯（明确的上轮失败记录字段）：保留旧 failure/reviewFeedback/
+  // baseCommit/log 定位，只在确有旧 failure 时更新归档——重复重试若启动失败，
+  // 旧的归档记录不被空值覆盖，仍可追溯。collaboration/commit 不清空：前者由
+  // previousTeamFailure 的状态条件天然排除 review_blocked（不靠清空规避），
+  // 正式 launch 会建立新 journal；后者本就由前置检查保证为空。
+  const failure = state.collaboration?.failure || null;
+  if (failure) {
+    state.lastReviewBlockedFailure = {
+      code: String(failure.code || ''),
+      phase: String(failure.phase || ''),
+      label: String(failure.label || '').slice(0, 300),
+      reviewFeedback: String(state.collaboration?.reviewFeedback || '').slice(0, 1000),
+      baseCommit: String(state.activeRun?.baseCommit || '').slice(0, 80),
+      logFile: String(state.logFile || '').slice(0, 1000),
+      summary: String(state.summary || '').slice(0, 500),
+      archivedAt: Date.now(),
+    };
+    writeState(state);
+  }
+
+  // 复用当日综合巡检语义：缓存活动增量 + 安全巡检交给同一个 Agent 团队；
+  // 不新增游戏扫描/枚举，不带 automatic:true（不消费自动名额，也不重置已消费名额）。
+  const report = readLatestReport();
+  const reportUsable = !!report && report.status !== 'unavailable' && report?.online?.available !== false;
+  const activityPlan = reportUsable ? planDailyActivityEvolution(report, state) : null;
+  if (activityPlan && !(activityPlan.reviewIds || []).length) {
+    // 重试轮以复核为底线：即使指纹判断无变化，也覆盖当前 List 下发的活动根节点；
+    // 下游 shouldRun 同步置真，保证 buildCachedActivityContext 与收口结算口径一致，
+    // 不会出现 shouldRun=false 跳过活动复核但 UI 声称综合验收。
+    activityPlan.reviewIds = [...new Set((report?.online?.checkedActivityIds || []).map(Number))]
+      .filter(id => id > 0);
+    if (activityPlan.reviewIds.length) activityPlan.shouldRun = true;
+  }
+  const launch = deps.launchEvolution || launchEvolution;
+  const result = launch('safety', {
+    manualReviewRetry: true,
+    combinedDaily: true,
+    report: reportUsable ? report : null,
+    activityPlan,
+  });
+  if (result && result.ok === false) {
+    logger.warn(`review_blocked 手动重试启动未成功（${result.reason || ''}）：${result.error || ''}`);
+  }
+  return result;
 }
 
 /**
@@ -2307,6 +2395,7 @@ module.exports = {
   getEvolveState,
   checkAndMaybeEvolve,
   runEvolutionNow,
+  retryReviewBlockedEvolution,
   applyEvolution,
   nextSafetyRunAt,
   getLocalDateKey,

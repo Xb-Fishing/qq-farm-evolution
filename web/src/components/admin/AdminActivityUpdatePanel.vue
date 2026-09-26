@@ -134,6 +134,7 @@ const testingNotify = ref(false)
 const instructionDraft = ref('')
 const instructionSaving = ref(false)
 const revisionRunning = ref(false)
+const reviewRetrying = ref(false)
 
 const EVOLVE_STATUS_LABELS: Record<string, string> = {
   idle: '空闲',
@@ -525,6 +526,35 @@ async function reviseEvolution() {
   }
 }
 
+// review_blocked 专属人工重试：点击即触发，无额外确认；前置条件（工作区干净、
+// HEAD 与远端一致）由后端最终检查，失败原因原样展示。
+async function retryReviewBlocked() {
+  if (reviewRetrying.value)
+    return
+  reviewRetrying.value = true
+  error.value = ''
+  try {
+    const { data } = await api.post('/api/activity/update/evolve-retry')
+    if (!data.ok)
+      throw new Error(data.error || '重试失败')
+    syncEvolveState(data.evolve)
+    if (data.started === false) {
+      toast.warning(data.message || '当前不满足重试条件')
+      await loadUpdateStatus()
+      return
+    }
+    toast.success('已重新启动综合巡检，完成后飞书通知')
+  }
+  catch (err: any) {
+    // 先刷新状态再落错误文案：loadUpdateStatus 开头会清空 error
+    await loadUpdateStatus()
+    error.value = err?.response?.data?.error || err.message || '重试失败'
+  }
+  finally {
+    reviewRetrying.value = false
+  }
+}
+
 async function toggleEvolutionEnabled() {
   togglingEvolution.value = true
   error.value = ''
@@ -799,6 +829,15 @@ onUnmounted(() => evolutionStore.stopPolling())
           @click="applyEvolve"
         >
           {{ applying ? '正在重启…' : '应用进化（重启生效）' }}
+        </button>
+        <button
+          v-if="evolve?.status === 'review_blocked'"
+          class="ml-2 rounded bg-purple-600 px-3 py-1.5 text-xs text-white transition hover:bg-purple-700 disabled:opacity-50"
+          :disabled="reviewRetrying"
+          title="验收未通过轮的人工重试：从当前基线重开一轮综合巡检（安全巡检 + 缓存活动增量）。需先处理并提交工作区改动并与远端同步，后端仍会最终检查"
+          @click="retryReviewBlocked"
+        >
+          {{ reviewRetrying ? '重试启动中…' : '重新验收并重试' }}
         </button>
         <button
           class="ml-2 rounded bg-slate-200 px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-300 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
