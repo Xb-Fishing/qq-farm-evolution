@@ -18,6 +18,27 @@ const { log } = require('../utils/utils');
 
 // gid -> { at, source, detail }；at 为好友活跃的最近证据时刻（墙钟 ms）。
 const activityEvidence = new Map();
+// gid -> { at, source }：已证实在线信号（at_home/lands_push/presence_online）
+// 独立成层（2026-09-26 验收修复）：活跃表会被 summary_drift/interact_record
+// 等非在线源按 now 覆盖，若在线判定共用活跃表，后到的"好友刚活跃"证据会把
+// 3 秒前的 at_home 在线信号顶掉。在线层只收已证实在线源，永不被非在线源覆盖。
+const onlineEvidence = new Map();
+const ONLINE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online']);
+// 同毫秒多源并发（进门回包与推送同拍）时保留更可靠的在线源
+const ONLINE_SOURCE_PRIORITY = { at_home: 3, lands_push: 2, presence_online: 1 };
+// 在线证据订阅（调度方事件唤醒用）：只推已证实在线源，返回取消函数。
+const onlineEvidenceListeners = new Set();
+function notifyOnlineEvidence(gid, at, source) {
+  for (const listener of onlineEvidenceListeners) {
+    try {
+      listener(gid, at, source);
+    } catch (err) {
+      log('好友', `在线证据订阅回调异常: ${err && err.message}`, {
+        module: 'friend', event: 'online_evidence_listener_error', result: 'error',
+      });
+    }
+  }
+}
 // 证据保留窗口：超过后视为陈旧，不再算"最近活跃"。
 const EVIDENCE_RETENTION_MS = 30 * 60_000;
 // 一次倒计时重置至少要延长多久才算"主人动过"（过滤小抖动/时钟校准）。
@@ -28,6 +49,28 @@ function recordActivity(gid, at, source, detail = '') {
   const id = toNum(gid);
   if (!id) return;
   const atMs = Number(at) || 0;
+  // 在线层独立结算，先于活跃表的"只保留更新时刻"早退——同毫秒更高
+  // 优先级在线源（at_home > lands_push > presence_online）仍要胜出并通知
+  if (ONLINE_SOURCES.has(source)) {
+    const prevOnline = onlineEvidence.get(id);
+    const better = !prevOnline
+      || atMs > prevOnline.at
+      || (atMs === prevOnline.at
+        && (ONLINE_SOURCE_PRIORITY[source] || 0) > (ONLINE_SOURCE_PRIORITY[prevOnline.source] || 0));
+    if (better) {
+      // 有界：与活跃表同容量上限，淘汰最旧，防长期运行无限增长
+      if (!prevOnline && onlineEvidence.size >= MAX_TRACKED_GIDS) {
+        let oldestOnlineKey = null;
+        let oldestOnlineAt = Number.POSITIVE_INFINITY;
+        for (const [key, value] of onlineEvidence) {
+          if (value.at < oldestOnlineAt) { oldestOnlineAt = value.at; oldestOnlineKey = key; }
+        }
+        if (oldestOnlineKey != null) onlineEvidence.delete(oldestOnlineKey);
+      }
+      onlineEvidence.set(id, { at: atMs, source });
+      notifyOnlineEvidence(id, atMs, source);
+    }
+  }
   const prev = activityEvidence.get(id);
   if (prev && prev.at >= atMs) return;
   if (activityEvidence.size >= MAX_TRACKED_GIDS && !activityEvidence.has(id)) {
@@ -206,19 +249,24 @@ function notePresenceFromBatch(gid, lastOnlineSec, now = Date.now()) {
 }
 
 /**
- * 在线信号是否新鲜（供 1s 快档判定）。2026-09-23 用户定标：动作/在场断流
- * 10 秒即视为离场放缓——窗口从 90s 收紧，且 lands_push（好友农场变化推送）
- * 也是在线源：好友不需要"进农场场景"（at_home），只要有动作就算在线。
- * at_home 在 1s 巡访中每秒刷新，所以人在农场时会持续保持快档。
+ * 在线信号是否新鲜（供 1s 快档/在线捣乱调度判定）。2026-09-23 用户定标：
+ * 动作/在场断流 10 秒即视为离场放缓；lands_push（好友农场变化推送）也是
+ * 在线源。2026-09-26 起读独立在线层（只收已证实在线源），非在线活跃证据
+ * 覆盖活跃表不再影响在线判定。
  */
 const ONLINE_SIGNAL_FRESH_MS = 10 * 1000;
-const ONLINE_SOURCES = new Set(['at_home', 'lands_push', 'presence_online']);
 
 function isFriendOnlineRecently(gid, now = Date.now(), windowMs = ONLINE_SIGNAL_FRESH_MS) {
-  const evidence = activityEvidence.get(toNum(gid));
+  const evidence = onlineEvidence.get(toNum(gid));
   if (!evidence) return false;
-  if (!ONLINE_SOURCES.has(evidence.source)) return false;
   return now - evidence.at <= windowMs;
+}
+
+/** 订阅已证实在线证据（at_home/lands_push/presence_online）。返回取消函数。 */
+function onOnlineEvidence(listener) {
+  if (typeof listener !== 'function') return () => { };
+  onlineEvidenceListeners.add(listener);
+  return () => onlineEvidenceListeners.delete(listener);
 }
 
 /** 单个好友的最新活跃证据（面板展示用）。 */
@@ -229,7 +277,10 @@ function getFriendActivity(gid, now = Date.now()) {
     at: evidence.at,
     source: evidence.source,
     detail: evidence.detail,
-    online: isFriendAtHomeRecently(gid, now),
+    // 2026-09-26 验收定标：面板 online 与调度用的可靠在线证据同口径
+    // （10 秒窗口内 at_home/lands_push/presence_online），atHome 单独保留
+    online: isFriendOnlineRecently(gid, now),
+    atHome: isFriendAtHomeRecently(gid, now),
     recent: isFriendActiveRecently(gid, now),
   };
 }
@@ -240,6 +291,7 @@ function getActivityEvidenceSummary(now = Date.now()) {
   for (const [gid, evidence] of activityEvidence) {
     if (now - evidence.at > EVIDENCE_RETENTION_MS) {
       activityEvidence.delete(gid);
+      onlineEvidence.delete(gid); // 在线层同步过期清理
       continue;
     }
     list.push({ gid, at: evidence.at, source: evidence.source, detail: evidence.detail });
@@ -247,8 +299,44 @@ function getActivityEvidenceSummary(now = Date.now()) {
   return list.sort((a, b) => b.at - a.at);
 }
 
+/**
+ * 进门回包的在场信号统一入口（visitFriend / visitFriendForSteal /
+ * visitFriendForHelp / 在线捣乱探测共用）：at_home=true 是唯一真·实时在线
+ * 信号；last_online>0 才是有效离线时刻——缺省 0 既不当离线时刻也不当在线，
+ * 读取路径必须是 enterReply.basic.last_online。recordActivity 只保留更新的
+ * 时刻，陈旧历史 last_online 不会覆盖更新的 at_home 证据；在线层独立后
+ * 非在线活跃证据也覆不掉在线信号。
+ * 返回 { atHome, onlineEdge, lastOnlineMs }：onlineEdge=at_home 上升沿
+ * （今日只记一次）；lastOnlineMs=离线时刻（墙钟 ms，0=未知/不下发）。
+ */
+function noteEnterPresence(gid, enterReply, now = Date.now()) {
+  const id = toNum(gid);
+  if (!id) return { atHome: false, onlineEdge: false, lastOnlineMs: 0 };
+  const atHome = !!(enterReply && enterReply.at_home);
+  let onlineEdge = false;
+  if (atHome) {
+    onlineEdge = noteAtHomeEdge(id, true);
+  } else {
+    noteAtHomeEdge(id, false);
+  }
+  let lastOnlineMs = 0;
+  try {
+    if (atHome) {
+      recordActivity(id, now, 'at_home', 'host in farm');
+    } else {
+      const sec = toNum(enterReply && enterReply.basic && enterReply.basic.last_online);
+      if (sec > 0) {
+        lastOnlineMs = sec > 1e12 ? sec : sec > 1e9 ? sec * 1000 : now;
+        recordActivity(id, Math.min(lastOnlineMs, now), 'last_online', String(sec));
+      }
+    }
+  } catch { /* 证据记录失败不影响进门主流程 */ }
+  return { atHome, onlineEdge, lastOnlineMs };
+}
+
 function resetForTest() {
   activityEvidence.clear();
+  onlineEvidence.clear();
   summaryBaselines.clear();
   lastLoginBaselines.clear();
   atHomeStates.clear();
@@ -266,7 +354,9 @@ module.exports = {
   isFriendActiveRecently,
   isFriendAtHomeRecently,
   isFriendOnlineRecently,
+  onOnlineEvidence,
   noteAtHomeEdge,
+  noteEnterPresence,
   notePresenceFromBatch,
   getFriendActivity,
   getActivityEvidenceSummary,

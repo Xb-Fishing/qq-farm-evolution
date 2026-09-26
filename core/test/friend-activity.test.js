@@ -153,7 +153,7 @@ test('isFriendAtHomeRecently tracks at_home evidence freshness', () => {
   const now = Date.now();
   // 无证据 → 不在线
   assert.equal(activity.isFriendAtHomeRecently(9, now), false);
-  // at_home 证据 30 秒前 → 在线
+  // at_home 证据 30 秒前 → 在场（90s 窗口）
   activity.recordActivity(9, now - 30_000, 'at_home', 'host in farm');
   assert.equal(activity.isFriendAtHomeRecently(9, now), true);
   // at_home 证据 2 分钟前 → 衰减（好友已离开的判定窗口 90s）
@@ -162,10 +162,15 @@ test('isFriendAtHomeRecently tracks at_home evidence freshness', () => {
   activity.recordActivity(10, now - 10_000, 'last_online', 'x');
   assert.equal(activity.isFriendAtHomeRecently(10, now), false);
   assert.equal(activity.isFriendActiveRecently(10, now), true);
-  // 面板访问器
-  const info = activity.getFriendActivity(9, now);
-  assert.equal(info.online, true);
-  assert.equal(info.source, 'at_home');
+  // 面板访问器（2026-09-26 定标：online 与调度的可靠在线证据同口径=10s 窗，
+  // atHome 独立保留 90s 在场语义；30 秒前的 at_home 不再显示"在线"）
+  const stale = activity.getFriendActivity(9, now);
+  assert.equal(stale.online, false, '30 秒前的 at_home 不在 10s 在线窗内');
+  assert.equal(stale.atHome, true);
+  activity.recordActivity(9, now, 'at_home', 'host in farm');
+  const fresh = activity.getFriendActivity(9, now);
+  assert.equal(fresh.online, true);
+  assert.equal(fresh.source, 'at_home');
 });
 
 // 上线上升沿：只在上线的第一次观测触发（今日事件去重基础）

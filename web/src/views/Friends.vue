@@ -262,6 +262,8 @@ async function loadData() {
 }
 
 useIntervalFn(() => {
+  // 10 秒过期的实时在线证据在这里撤销在线标记，回落到 30 秒快照兜底
+  friendStore.expireOnlineEvidence()
   friends.value = friends.value.map((friend: any) => {
     if (!friend?.plant || Number(friend.plant.matureInSec) <= 0)
       return friend
@@ -278,6 +280,32 @@ useIntervalFn(() => {
     }
   }
 }, 1000)
+
+// 实时在线桥：后端 log:new 的 friend_activity_evidence（已证实在线源）立即点亮
+// 好友在线标记，不等 30 秒快照。日志实时关闭时 statusStore 不推送，自然退化到兜底。
+let processedLogs: any[] | null = null
+let processedLogCount = 0
+// 观察数组身份 + 长度 + 末条：日志达 1000 条上限后 push+slice 替换数组长度不变，
+// 仅凭 length 的 watcher 会失效；末条/身份任一变化都能触发消费。
+watch(() => [statusStore.logs, statusStore.logs.length, statusStore.logs[statusStore.logs.length - 1]] as const, () => {
+  const list = statusStore.logs
+  if (list !== processedLogs) {
+    // 快照整体替换（logs:snapshot / push 后 slice 换数组）：从零重扫，过期证据会被时间窗拒绝
+    processedLogs = list
+    processedLogCount = 0
+  }
+  else if (processedLogCount >= list.length) {
+    // 同数组等长追加（上限后原地写入）：无从定位新条目，全量重扫；重复证据幂等
+    processedLogCount = 0
+  }
+  if (!currentAccount.value?.running) {
+    // 账号未运行：不处理但推进指针，避免恢复运行后补处理积压日志
+    processedLogCount = list.length
+    return
+  }
+  for (; processedLogCount < list.length; processedLogCount++)
+    friendStore.applyOnlineEvidenceLog(list[processedLogCount])
+})
 
 // 后台巡查/重点巡田可能在用户不展开好友卡片时读到新的地块墙钟；
 // 重新取本地好友快照即可刷新显示，不会额外请求腾讯好友接口。

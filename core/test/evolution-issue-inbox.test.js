@@ -65,3 +65,22 @@ test('未处理问题超过 72 小时也会自动物理清理', () => {
     path.join(dataDir, 'evolution-runtime-issues.json'), 'utf8'));
   assert.deepEqual(persisted.issues, []);
 });
+
+test('bag_unclassified 待办：新未知 ID 上报、确认后新发生不被误清', () => {
+  const t0 = Date.parse('2026-09-26T03:19:00Z');
+  assert.equal(recordRuntimeIssue('bag_unclassified', 'warn', t0), true);
+  let issues = getRuntimeIssueSnapshot(t0);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].key, 'bag_unclassified');
+  assert.equal(issues[0].severity, 'warn');
+
+  // Agent 复盘确认这批未知 ID 后，又出现新的未识别 ID（lastAt 更晚）
+  const batch = toRuntimeIssueBatch(issues);
+  recordRuntimeIssue('bag_unclassified', 'warn', t0 + 3600_000);
+  const result = acknowledgeRuntimeIssues(batch, t0 + 3600_000);
+  assert.equal(result.acknowledged, 1);
+  issues = getRuntimeIssueSnapshot(t0 + 3600_000);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].key, 'bag_unclassified');
+  assert.equal(issues[0].lastAt, t0 + 3600_000, 'ack of the old batch must not clear the newer occurrence');
+});

@@ -198,7 +198,10 @@ test('S3 只读取正常根详情和一次已知道具库存；失败不探测�
     },
   };
   const activity = await getBearActivity(options);
-  assert.deepEqual(calls[0], [2026090100, '']);
+  // 快照读取第三参只携带 onRawBody 私有回调（原始回包就地消费，不进入快照）
+  assert.equal(calls[0][0], 2026090100);
+  assert.equal(calls[0][1], '');
+  assert.equal(typeof calls[0][2]?.onRawBody, 'function');
   assert.equal(calls.length, 2);
   // 3 个基础道具 + 3 档挑战书 + 待护送宝藏 + 13 个商城道具 = 20。
   assert.equal(calls[1].length, 20);

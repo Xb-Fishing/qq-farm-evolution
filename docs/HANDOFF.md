@@ -2113,3 +2113,37 @@ QQ 农场全生态（中英文社区）无人实现"施肥前兆"或"好友在�
 - **好友在线自动捣乱开关（新功能）**：好友页每个好友新增「在线捣乱」按钮（紫色列）。名单 `autoBadFriendGids` 按账号持久化（与重点监控同构），路由 `GET/POST /api/friend-auto-bad(/toggle)`，切换即 broadcastConfig 让 Worker 生效。巡查循环检测到名单内好友上线（10 秒在线证据）时补进巡查目标（无帮助需求也进门），**一次上线只触发一次**（离线超 3 分钟再上线才重新触发）；实际放虫/放草在 `visitFriendForHelp` 内随机选地块、随机 1-3 块，受服务端每日限额与 bot 侧 BAD_DAILY_LIMIT 约束，帮助经验上限不拦截捣乱目标。回归 `friend-auto-bad.test.js` 覆盖存取往返、config_sync 合并、路由切换与广播。
 - **重点在线快档（700-1000ms 轮询）保留不删**：用户确认现有「重点好友上线即偷」（推送直达 fast-lane + PREARM）已够用，明确不动。
 - 验证：全量后端 708/708 通过；前端构建通过并部署；线上 toggle 往返与三个活动端点返回真实数据均已确认。
+
+## 线上识别/自动捣乱、一键领取与月下美人种子闭环（2026-09-26，维护会话）
+
+本轮四线并行收口，base f36b1ef23fb05dc7a04423b61b634ce542254726；由 Claude 完成实现，主协调进程复核并通过既有运行窗口应用。
+
+### 好友在线自动放虫/放草（friend-auto-bad.js 及接线）
+
+- 与既有「帮助」开关完全脱离：`autoBadFriendGids` 独立名单/路由/持久化，帮助额度 0 也照常执行。
+- 唤醒是排程不是保证即刻游戏成功：可靠在线证据（at_home/lands_push/presence_online）秒级唤醒调度，可靠证据到达后以 0.3-1.5s 为目标唤醒排程，但收获/抢收让步、通信预算、多目标全局 ≥2s 错峰可让路；无推送目标按 10-15s 探测间隔发现。旧重点快档（fast-lane 推送 + PREARM）不动。
+- 会话语义：真实放成才 done；虫/草独立结算（部分成功在 abort 前结算，任一成功即 done、清 failCount）；单项额度 0 零写请求；暂停/名单移除/停止为硬栅栏，guard 在远程 check 后、put 前重查；orchestrator 侧 `isAutoBadRunning()`/`isFriendVisitBusy()` 双向互斥。
+- 在途互斥用真实票据：`pendingBodies` 计数（入队 +1、settle -1），任何排队/执行中任务未 settle 即占用，跨 stop/start 并发进门 ≤1；不用代次标志伪清。
+- 离线重置为「确证 ≥3 分钟」：本地 `offlineObservedAt` 持续 ≥3min，或服务端 `offlineSinceMs` ≥3min 且晚于 `doneAt`（远古 last_online 不复位刚完成会话）；两次短时不在场不复位。
+- 行为反例（隔离 VM 真实执行同名生产函数 `visitFriendForHelp`）：基线单项 quota=0 仍发 2 次写，当前 0 次（tmp/auto-bad-coordinator-counterexample.json，sourceHash 与已验证工作区源码一致）；非「新函数不存在」式冒充。不宣称等同真实手机/真实草虫/端到端成功。
+- 页面在线标记补 30s 刷新延迟：实时日志的可靠在线证据驱动 Friends 页标记（账号/时间校验、10s 过期撤销、旧列表响应不覆盖新证据、换账号清数据作废旧 fetch）；日志满 1000 条等长回绕仍消费；30s 缓存读取仅兜底，零新增游戏请求。后台发现与页面收到证据不是同一保证。旧 UI 报告的 length-only watcher 为已修中间态。
+
+### 活动一键领取（activity.ts / Activity.vue / ClaimAllPanel.vue）
+
+- 只当前账号当前可领免费项（S3 四类 + 待领签文 + 快乐值每日/档位），不自动抽签/购买/分享/夺宝/消耗。
+- 先读资格后写：runClaimAll 开跑重读 bear/wish/happy-share 三组，只认本轮服务端状态；读取失败/活动未下发 → 该活动显式跳过零写。
+- 400 归因用写前白名单 `PRECONDITION_SKIP_CODES`（逐条来自两服务写前 fail 调用点）；未知 code、写后 REPLY_MISMATCH、无 code 400、网络错误一律 failed（结果未知不自动重试）。
+- 部分失败不报全成功，逐项渲染；单项 busy 按代次释放，clearActivityData 作废旧代次；组件卸载/切账号/取消不弹 toast。
+- 原始活动回包（rawBody）不进公开快照：经私有 `onRawBody` 回调就地消费（仅内部 protobuf 解码），wire 层埋标测试确认快照无密钥/Buffer 痕迹。
+
+### 月下美人种子（EventPlants/EventItems/图片/待办闭环）
+
+- 落地 26030 月下美人种子（type 5）、plant 1026030（seed 26030、fruit 46030×48、官方 size null → 按客户端默认登记 size:1）、46030 果实、1046030 黄金·月下美人（type 17）；3 张官方 PNG（sha256 与官方 manifest 匹配）一并纳入，不留人工终态。
+- 旧 27 条 EventPlants 配置逐条深比较未变化（仅末尾追加两条，原单行格式保留）。
+- 新增未识别 ID 在既有每日巡检后才出现且此前无待办上报（不推断具体 first-seen 时刻）；warehouse bag_unclassified 签名变化+新 ID 进 evolution-issue-inbox（同签名不风暴、纯消失不刷次数、ack 旧批次不清更晚新发生）。
+- 自动进化每日仅一次限制保留未改；5006（乌云使坏瓶，非种子道具）仍保留待办，不称全部未知物品清零。
+
+### 验证（协调进程隔离真实执行）
+
+- 后端全量 783/783 通过（0 fail / 0 skip）；前端 `vue-tsc -b` 0 error；隔离生产构建通过；改动文件 lint 0 error（既有 warning 保留）；文本隐私审计通过；3 张官方 PNG 资产 sha256 与 manifest 全匹配；逻辑指纹 a06b174e…97dfd。
+- 回滚：revert 本轮差异即可，无凭据/协议/设备身份改动。
