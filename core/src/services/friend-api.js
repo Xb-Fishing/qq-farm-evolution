@@ -87,7 +87,7 @@ function decodeProtoFields(rawBytes, depth = 0, maxDepth = 2) {
           if (nested.length > 0) {
             entry.fields = nested;
           }
-        } catch (_) {
+        } catch {
           // Ignore nested decode errors
         }
       }
@@ -127,7 +127,7 @@ function parseBriefDogInfoBytes(bytes) {
   let fields = [];
   try {
     fields = decodeProtoFields(bytes);
-  } catch (_) {
+  } catch {
     fields = [];
   }
   const varints = collectVarints(fields).filter(v => v > 0);
@@ -171,7 +171,7 @@ function postToMaster(msg) {
       parentPort.postMessage(msg);
       return true;
     }
-  } catch (_) {
+  } catch {
     // Ignore IPC errors
   }
   return false;
@@ -597,6 +597,8 @@ let rosterReqSeq = 0;
 let latestSuccessfulSeq = 0;
 
 /** 从 getAllFriends 成功回包提取名册快照（导出仅供测试直接验证归一化）。
+ * 快照附带 names（gid -> 昵称，remark 优先于 name），并惰性喂入
+ * friend-activity 的运行时名册（零新增请求；惰性 require 防初始化循环）。
  * reqSeq 省略时视为最新请求（测试直调用）。小于最新成功序号的迟到回包
  * 直接丢弃。 */
 function recordRosterReply(reply, reqSeq) {
@@ -604,8 +606,21 @@ function recordRosterReply(reply, reqSeq) {
   if (seq < latestSuccessfulSeq) return rosterSnapshot;
   latestSuccessfulSeq = seq;
   const friends = Array.isArray(reply) ? reply : extractReplyFriends(reply);
+  const names = {};
+  try {
+    const { noteFriendName } = require('./friend-activity');
+    for (const friend of friends) {
+      const gid = toNum(friend && friend.gid);
+      if (!gid) continue;
+      const name = String((friend && (friend.remark || friend.name)) || '').trim();
+      if (!name) continue;
+      names[gid] = name.slice(0, 60);
+      noteFriendName(gid, name);
+    }
+  } catch { /* 名字缺失不影响名册快照 */ }
   rosterSnapshot = {
     gids: normalizeFriendGids(friends.map(f => f && f.gid)).sort((a, b) => a - b),
+    names,
     at: Date.now(),
   };
   return rosterSnapshot;
@@ -619,7 +634,7 @@ function getRosterSnapshot() {
  * Get all friends. For QQ platform, try GetGameFriends first (with known GIDs),
  * then fall back to legacy methods. For WeChat, use GetAll directly.
  */
-async function getAllFriends(forceRefresh = false) {
+async function getAllFriends(_forceRefresh = false) {
   const reqSeq = ++rosterReqSeq; // 本请求序号；仅成功出口可发布快照
   const isQQ = CONFIG.platform === 'qq';
 
@@ -805,7 +820,7 @@ async function leaveFriendFarm(gid) {
   ).finish();
   try {
     await sendMsgAsync('gamepb.visitpb.VisitService', 'Leave', payload);
-  } catch (_) {
+  } catch {
     // Ignore leave errors
   }
 }
@@ -833,7 +848,7 @@ async function checkCanOperateRemote(gid, operationId) {
       canOperate: !!reply.can_operate,
       canStealNum: toNum(reply.can_steal_num),
     };
-  } catch (_) {
+  } catch {
     return { canOperate: true, canStealNum: 0 };
   }
 }

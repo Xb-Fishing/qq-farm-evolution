@@ -203,14 +203,19 @@ test('notePresenceFromBatch fires on last_online appearance/disappearance edges'
   assert.equal(activity.notePresenceFromBatch(11, leaveSec, now + 150_000), null);
 });
 
-// 2026-09-23 定标：lands_push 也是在线源，断流 10 秒即放缓
-test('isFriendOnlineRecently covers lands_push with 10s window', () => {
+// 2026-09-26 协议审查：LandsNotify 只有地块变化与 host_gid，可由他人放虫/
+// 偷菜触发——lands_push 只是活跃/地块变化证据，不再是在线源；在线 10s 窗
+// 由 at_home/presence_online 承担
+test('isFriendOnlineRecently 10s window 只认 at_home/presence_online；lands_push 只算活跃', () => {
   const activity = require('../src/services/friend-activity');
   activity.resetForTest();
   const now = Date.now();
   activity.recordActivity(21, now, 'lands_push', '3 lands');
-  assert.equal(activity.isFriendOnlineRecently(21, now + 5_000), true, '推送后 5 秒在线');
-  assert.equal(activity.isFriendOnlineRecently(21, now + 11_000), false, '断流 11 秒放缓');
+  assert.equal(activity.isFriendOnlineRecently(21, now + 5_000), false, '农场变化推送不得点亮在线');
+  assert.equal(activity.isFriendActiveRecently(21, now + 5_000), true, '仍是活跃证据');
+  activity.recordActivity(23, now, 'at_home', 'host in farm');
+  assert.equal(activity.isFriendOnlineRecently(23, now + 5_000), true, 'at_home 5 秒内在线');
+  assert.equal(activity.isFriendOnlineRecently(23, now + 11_000), false, '断流 11 秒放缓');
   // 非在线源（摘要漂移）不算在线
   activity.recordActivity(22, now, 'summary_drift', 'x');
   assert.equal(activity.isFriendOnlineRecently(22, now), false);

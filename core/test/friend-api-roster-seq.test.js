@@ -89,3 +89,29 @@ test('getAllFriends 共享快照：新空表先成功后旧全表迟到不写回
     }
   }
 });
+
+// ===== 名册昵称快照（2026-09-26 用户定标：只读内存名册）=====
+// 合成名测试数据；remark 优先于 name；快照 names 与 friend-activity
+// 运行时名册同源喂入；序号保护不受 names 影响。
+test('recordRosterReply 快照附带 names（remark>name）并喂运行时名册；迟到旧回包不回写昵称', async () => {
+  const friendApi = require('../src/services/friend-api');
+  const friendActivity = require('../src/services/friend-activity');
+  friendActivity.resetForTest();
+  const snap = friendApi.recordRosterReply([
+    { gid: 111, name: '合成A' },
+    { gid: 222, name: '合成B', remark: '合成备注B' },
+    { gid: 333 }, // 无名：不进 names，回退 GID
+  ]);
+  assert.equal(snap.names[111], '合成A');
+  assert.equal(snap.names[222], '合成备注B', 'remark 优先于 name');
+  assert.equal(snap.names[333], undefined, '无名好友不进 names');
+  assert.equal(friendActivity.getCachedFriendName(222), '合成备注B', '喂运行时名册');
+  assert.equal(friendActivity.getCachedFriendName(333), '', '无名回退空串');
+  // 迟到旧回包（低序号）不得发布：昵称也不得被旧值覆盖
+  friendApi.recordRosterReply([{ gid: 444, name: '合成D' }], 10); // 抬高最新成功序号
+  friendActivity.noteFriendName(111, '合成改名后');
+  friendApi.recordRosterReply([{ gid: 111, name: '合成旧名' }], 9);
+  assert.equal(friendActivity.getCachedFriendName(111), '合成改名后',
+    '迟到旧回包不得回写昵称');
+  friendActivity.resetForTest();
+});
