@@ -46,6 +46,12 @@ function isDefinitiveWxCredentialError(raw) {
     // 保留 token/refresh 关键词，仍应按不可恢复的 OAuth 授权失效处理。
     if (message.includes('授权范围') && (message.includes('失效') || message.includes('无效') || message.includes('重新扫码')))
         return true;
+    // code=-101：微信侧显式拒绝凭据兑换（2026-09-27 实证：账号A 被其他
+    // 终端顶号后，refresh 全部返回 -101，连续 2h15m/10+ 次无一恢复——顶号会使
+    // 本会话凭据血缘失效，只能重新扫码）。只认精确码值：-1 等结构异常码仍是
+    // 非 definitive（见 wx-credential-lifetime.test）。
+    if (/code=-101\b/.test(message) && message.includes('credential response rejected'))
+        return true;
     if (message.includes('40030') || message.includes('42007'))
         return true;
     if (/refresh[ _-]?token/.test(message) && (message.includes('-109') || message.includes('empty token')))
