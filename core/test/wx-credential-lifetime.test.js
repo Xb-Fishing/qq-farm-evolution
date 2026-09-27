@@ -139,3 +139,24 @@ test('刷新回包结构异常不应误判永久失效或回显上游消息', as
     globalThis.fetch = originalFetch;
   }
 });
+
+// 2026-09-27 实证（账号A 被其他终端顶号）：-101 是微信侧显式拒绝凭据兑换，
+// 连续 2h15m/10+ 次重试无一恢复，必须按 definitive 处理停掉保活/重登循环；
+// 精确码值匹配，-1 结构异常仍保持非 definitive。
+test('code=-101 凭据兑换被拒按 definitive 处理，-1 结构异常不受影响', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => jsonResponse({ code: -101 });
+    await assert.rejects(new WxLoginService().refreshLoginBuffer({
+      openid: 'openid-fixture', accesstoken: 'a1', refreshtoken: 'r1', cookies: new Map(),
+    }), error => {
+      assert.equal(error.wxCode, -101);
+      assert.equal(isDefinitiveWxCredentialError(error.message), true, error.message);
+      return true;
+    });
+    // humanize 后的运行时文案同样要命中（保活/自动刷新链路拿的是这种消息）
+    assert.equal(isDefinitiveWxCredentialError('获取 Code 失败: WeChat login_buffer failed: code=-101 credential response rejected（自动续期失败，请重新扫码登录）'), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
