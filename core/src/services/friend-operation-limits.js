@@ -1,4 +1,5 @@
 const { toNum, log, sleep } = require('../utils/utils');
+const { getPlantByFruitId } = require('../config/gameConfig');
 const { getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { sendMsgAsync } = require('../utils/network');
@@ -361,8 +362,10 @@ async function stealHarvest(gid, landIds) {
 }
 
 /**
- * HarvestReply.items 到手物品总量（偷菜真实数量；2026-09-28 前统计的
- * "偷 N 个"实为地块数）。回包未携带 items 时返回 0，调用方回退块数。
+ * HarvestReply.items 到手果实总量（偷菜真实数量；2026-09-28 前统计的
+ * "偷 N 个"实为地块数）。只统计能映射到植物的果实 id——每块地回包是
+ * "果实+杂物"成对（如 40516x84,1028x2），杂物（1028 等）不计入数量。
+ * 回包未携带 items 时返回 0，调用方回退块数。
  * detail 返回 "id xN" 串供日志核对 items 语义。
  */
 function sumHarvestItemCount(reply) {
@@ -372,8 +375,9 @@ function sumHarvestItemCount(reply) {
   for (const it of items) {
     const count = toNum(it && it.count);
     if (count > 0) {
-      total += count;
-      detail.push(`${toNum(it && it.id)}x${count}`);
+      const id = toNum(it && it.id);
+      if (getPlantByFruitId(id)) total += count;
+      detail.push(`${id}x${count}`);
     }
   }
   return { total, detail: detail.join(',') };
