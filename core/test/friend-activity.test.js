@@ -205,8 +205,9 @@ test('notePresenceFromBatch fires on last_online appearance/disappearance edges'
 
 // 2026-09-26 协议审查：LandsNotify 只有地块变化与 host_gid，可由他人放虫/
 // 偷菜触发——lands_push 只是活跃/地块变化证据，不再是在线源；在线 10s 窗
-// 由 at_home/presence_online 承担
-test('isFriendOnlineRecently 10s window 只认 at_home/presence_online；lands_push 只算活跃', () => {
+// 由 at_home/presence_online 承担。2026-09-28 增补：social_item_placed
+// （放置道具，owner+created_at 精确）升辅助在线源。
+test('isFriendOnlineRecently 10s window 只认 at_home/presence_online/social_item_placed；lands_push 只算活跃', () => {
   const activity = require('../src/services/friend-activity');
   activity.resetForTest();
   const now = Date.now();
@@ -219,6 +220,29 @@ test('isFriendOnlineRecently 10s window 只认 at_home/presence_online；lands_p
   // 非在线源（摘要漂移）不算在线
   activity.recordActivity(22, now, 'summary_drift', 'x');
   assert.equal(activity.isFriendOnlineRecently(22, now), false);
+});
+
+// 2026-09-28 用户定标：放是在线动作的体现——social_item_placed（有服务端
+// created_at 精确时刻）升辅助在线源；weed/insect owners 无放置时间戳，
+// 只能以推送到达为上界，不得点亮在线，仅作活跃辅助证据。
+test('social_item_placed 点亮在线；weed/insect owners 只算活跃', () => {
+  const activity = require('../src/services/friend-activity');
+  activity.resetForTest();
+  const now = Date.now();
+  activity.noteSocialItems([
+    { id: 10, plant: { social_items: [
+      { item_id: 301101, owner_gid: 31, created_at: Math.floor(now / 1000) },
+    ] } },
+  ], 1, now);
+  assert.equal(activity.isFriendOnlineRecently(31, now + 5_000), true, '放置道具 5 秒内算在线');
+  assert.equal(activity.isFriendOnlineRecently(31, now + 11_000), false, '11 秒后失效');
+  activity.noteMischiefOwners([
+    { id: 11, plant: { weed_owners: [41], insect_owners: [1, 42] } },
+  ], 1, now);
+  assert.equal(activity.isFriendOnlineRecently(41, now), false, '无时间戳的放草不得点亮在线');
+  assert.equal(activity.isFriendActiveRecently(41, now), true, '放草仍是活跃证据');
+  assert.equal(activity.isFriendActiveRecently(42, now), true, '放虫也是活跃证据');
+  assert.equal(activity.isFriendActiveRecently(1, now), false, '自己的 gid 忽略');
 });
 
 // 快车道成熟判定（方案C 2026-09-24）：最后阶段开始时刻已过 = 可偷窗口

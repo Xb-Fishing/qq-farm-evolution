@@ -19,7 +19,9 @@ export interface KnownFriendSettings {
 // 只有这些源的 friend_activity_evidence 日志能实时点亮好友在线标记。
 // lands_push 已剔除：LandsNotify 推送只有地块变化与 host_gid，可由他人放虫/
 // 放草/偷菜触发，农场变化 ≠ 主人上线（2026-09-26 协议审查）。
-const ONLINE_EVIDENCE_SOURCES = new Set(['at_home', 'presence_online'])
+// 2026-09-28 增补：social_item_placed 升辅助在线源——放置是写操作，
+// owner_gid+created_at 精确到操作时刻（与 lands_push 的"主人推断"不同）。
+const ONLINE_EVIDENCE_SOURCES = new Set(['at_home', 'presence_online', 'social_item_placed'])
 // 实时证据有效期：超过即撤销在线标记，回落到 30 秒快照兜底。
 const ONLINE_EVIDENCE_TTL_MS = 10_000
 

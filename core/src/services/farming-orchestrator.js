@@ -553,8 +553,11 @@ function startFarmCheckLoop(options = {}) {
 function onLandsChangedPush(lands) {
   // 自家农场地块推送里 social_items 的 owner_gid/created_at = 谁在我家放
   // 了道具+何时放（2026-09-22 好友活跃证据，零成本搭车）。
+  // weed_owners/insect_owners = 谁在我家放了草/虫（2026-09-28，无放置时间戳，
+  // 以推送到达为上界，只算活跃不算在线）。
   try {
     friendActivity.noteSocialItems(lands, getUserState().gid, Date.now());
+    friendActivity.noteMischiefOwners(lands, getUserState().gid, Date.now());
   } catch { /* 证据失败不影响主流程 */ }
   if (!isAutomationOn('farm_push')) return;
   if (isIdleQuiet()) return;

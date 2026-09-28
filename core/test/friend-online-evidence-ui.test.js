@@ -76,7 +76,6 @@ test('store: reliable online evidence lights friend online immediately; unreliab
 
     for (const bad of [
         evidenceLog('account-b', 1002, 'at_home', now), // 异账号
-        evidenceLog('account-a', 1002, 'social_item_placed', now), // 非在线源
         evidenceLog('account-a', 1002, 'summary_drift', now),
         evidenceLog('account-a', 1002, 'at_home', now - 10_001), // 过期
         evidenceLog('account-a', 1002, 'at_home', now + 60_000), // 未来
@@ -89,6 +88,9 @@ test('store: reliable online evidence lights friend online immediately; unreliab
     assert.equal(h.store.applyOnlineEvidenceLog(evidenceLog('account-a', Infinity, 'at_home', now), now), false);
     assert.equal(h.store.applyOnlineEvidenceLog(evidenceLog('account-a', -5, 'at_home', now), now), false);
     assert.equal(h.store.friends[1].online, undefined);
+    // 2026-09-28 定标：social_item_placed 升辅助在线源，应点亮
+    assert.equal(h.store.applyOnlineEvidenceLog(evidenceLog('account-a', 1002, 'social_item_placed', now), now), true);
+    assert.equal(h.store.friends[1].online, true);
 });
 
 test('store: evidence older than 10s revokes online mark; clearFriendData wipes evidence', () => {

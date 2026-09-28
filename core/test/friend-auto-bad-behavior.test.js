@@ -145,8 +145,8 @@ test('陈旧证据零动作：证据过期后 tick 不进门，等下一事件',
 
 // ===== 证据触发 =====
 
-test('可信在线证据到达才动作：at_home/lands_push/presence_online 均触发', async () => {
-  for (const source of ['at_home', 'presence_online']) {
+test('可信在线证据到达才动作：at_home/social_item_placed/presence_online 均触发', async () => {
+  for (const source of ['at_home', 'social_item_placed', 'presence_online']) {
     const visits = [];
     setup({
       visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
@@ -157,8 +157,10 @@ test('可信在线证据到达才动作：at_home/lands_push/presence_online 均
   }
 });
 
-test('非在线源与非名单目标不触发：summary_drift/last_login/social_item_placed 零动作', async () => {
-  for (const source of ['summary_drift', 'last_login', 'social_item_placed']) {
+// 2026-09-28 定标：social_item_placed 升辅助在线源（放置=在线动作），
+// 从"零动作"组移入触发组；summary_drift/last_login 仍是非在线源。
+test('非在线源与非名单目标不触发：summary_drift/last_login 零动作', async () => {
+  for (const source of ['summary_drift', 'last_login']) {
     const visits = [];
     setup({
       visit: async friend => { visits.push(friend.gid); return { entered: true, online: true, bug: 1, weed: 0 }; },
