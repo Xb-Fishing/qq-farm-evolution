@@ -338,6 +338,30 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
 }
 
 // ============ 消息处理 ============
+// LandsNotify 推送不带 reason 字段（proto 只有 lands+host_gid），落地时
+// 直接解码地块状态做触发源判别（2026-09-28 定标观察：系统自动长草/缺水
+// 不触发推送，推送≈有人操作；草/虫 owner 即操作者 gid）。
+function summarizeLandsForLog(lands) {
+    return (lands || []).map(land => {
+        const p = land && land.plant;
+        if (!p) return `地${toNum(land && land.id)}:空地`;
+        const gids = (arr) => (arr || []).map(toNum).filter(Boolean).join(',');
+        const bits = [`地${toNum(land.id)}:${p.name || toNum(p.id)}`];
+        if (toNum(p.dry_num) > 0) bits.push(`缺水${toNum(p.dry_num)}`);
+        const weed = gids(p.weed_owners);
+        const insect = gids(p.insect_owners);
+        const stealers = gids(p.stealers);
+        if (weed) bits.push(`草by[${weed}]`);
+        if (insect) bits.push(`虫by[${insect}]`);
+        if (stealers) bits.push(`偷by[${stealers}]`);
+        const items = (p.social_items || [])
+            .map(it => `${toNum(it && it.owner_gid)}:${toNum(it && it.item_id)}x${toNum(it && it.count)}`)
+            .filter(Boolean);
+        if (items.length) bits.push(`道具[${items.join(',')}]`);
+        return bits.join(' ');
+    }).join(' | ');
+}
+
 function handleMessage(data) {
     try {
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -418,6 +442,7 @@ function handleNotify(msg) {
                     if (hostGid === userState.gid || hostGid === 0) {
                         log('系统', `收到自家 LandsNotify（${lands.length} 块地）`, {
                             module: 'system', event: 'lands_notify_rx', hostGid, lands: lands.length,
+                            detail: summarizeLandsForLog(lands),
                         });
                         networkEvents.emit('landsChanged', lands);
                     } else {
@@ -426,6 +451,7 @@ function handleNotify(msg) {
                         // 访客"推送好友农场变化——这是唯一可能的真·trigger 通道。
                         log('好友', `收到好友 LandsNotify：GID ${hostGid}（${lands.length} 块地变化）`, {
                             module: 'friend', event: 'friend_lands_notify_rx', hostGid, lands: lands.length,
+                            detail: summarizeLandsForLog(lands),
                         });
                         networkEvents.emit('friendLandsChanged', { hostGid, lands });
                     }

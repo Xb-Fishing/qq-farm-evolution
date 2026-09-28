@@ -28,9 +28,13 @@ const onlineEvidence = new Map();
 // 2026-09-26 协议审查剔除：proto 只有 lands 与 host_gid，无操作者/主人
 // 在线字段，且可由被放虫/放草/偷菜触发——农场变化 ≠ 主人上线，
 // 保留为普通活跃/地块变化证据（收菜快通道语义不变）。
-const ONLINE_SOURCES = new Set(['at_home', 'presence_online']);
+// 2026-09-28 用户定标增补：social_item_placed 升为辅助在线源——放置是
+// 好友写操作，owner_gid + created_at 精确到操作时刻，操作者此刻必然在线。
+// 与 lands_push 的区别：这是"操作者身份"证据，不是"农场主人"推断；
+// at_home 仍是最可靠判别，原判别不撤。
+const ONLINE_SOURCES = new Set(['at_home', 'presence_online', 'social_item_placed']);
 // 同毫秒多源并发（进门回包与推送同拍）时保留更可靠的在线源
-const ONLINE_SOURCE_PRIORITY = { at_home: 3, presence_online: 1 };
+const ONLINE_SOURCE_PRIORITY = { at_home: 3, social_item_placed: 2, presence_online: 1 };
 // 在线证据订阅（调度方事件唤醒用）：只推已证实在线源，返回取消函数。
 const onlineEvidenceListeners = new Set();
 function notifyOnlineEvidence(gid, at, source) {
@@ -164,6 +168,32 @@ function noteSocialItems(lands, myGid, now = Date.now()) {
       // 只记最近 30 分钟内放置的道具；老道具不是"当前活跃"证据。
       if (now - atMs > EVIDENCE_RETENTION_MS) continue;
       recordActivity(owner, atMs, 'social_item_placed', `item ${toNum(item.item_id)}`);
+    }
+  }
+}
+
+/**
+ * 自家推送地块的放草/放虫 owner（2026-09-28 用户定标）：weed_owners/
+ * insect_owners 是"谁在我家放了草/虫"的操作者列表——放是在线动作的体现，
+ * 作为活跃辅助证据。proto 无放置时间戳，只能以推送到达时刻为上界
+ * （自家农场循环 5-20 分钟清一次草虫，陈旧度有界），故不进在线源；
+ * 在线判别仍由 at_home/presence_online/social_item_placed 承担。
+ */
+function noteMischiefOwners(lands, myGid, now = Date.now()) {
+  const my = toNum(myGid);
+  for (const land of Array.isArray(lands) ? lands : []) {
+    const plant = land && land.plant;
+    const landId = toNum(land && land.id);
+    const fields = [
+      ['weed_owners', 'weed_placed'],
+      ['insect_owners', 'insect_placed'],
+    ];
+    for (const [field, source] of fields) {
+      for (const owner of Array.isArray(plant && plant[field]) ? plant[field] : []) {
+        const id = toNum(owner);
+        if (!id || id === my) continue;
+        recordActivity(id, now, source, `land ${landId}`);
+      }
     }
   }
 }
@@ -418,6 +448,7 @@ module.exports = {
   AT_HOME_FRESH_MS,
   recordActivity,
   noteSocialItems,
+  noteMischiefOwners,
   noteImplicitClock,
   noteSummaryDrift,
   noteLastLogin,
