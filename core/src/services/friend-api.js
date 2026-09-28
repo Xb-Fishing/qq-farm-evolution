@@ -833,6 +833,64 @@ async function leaveFriendFarm(gid) {
   }
 }
 
+// ===== CheckCanOperate 预检查失败诊断（2026-09-28）=====
+// 巡查证据：某账号的 CheckCanOperate 曾单段巡查内连续 12 次失败并连带
+// 触发降速；旧实现吞掉错误详情，业务拒绝/传输失败已不可分辨，catch 后
+// 静默放行使预检查失败完全不可见。
+// 这里只补一条脱敏诊断日志：不改请求次数、不加重试、不传治理豁免参数、
+// 返回语义原样。记录字段仅限固定事件名、错误类别（business=服务端业务
+// 错误 / transport=传输类错误）、操作号、可严格解析为十进制整数的服务端
+// 业务码（缺失或非严格十进制整数记 unknown）；错误原文、账号/好友身份与
+// 请求回包内容一律不落。诊断记录器自身抛错也只静默吞掉——绝不把原本的
+// 兜底返回变成 Promise 拒绝。
+const PRECHECK_FAILURE_EVENT = 'friend_precheck_failure';
+const MAX_PRECHECK_FAILURE_SIGNATURES = 16;
+const MAX_PRECHECK_FAILURE_LOGS = 32;
+const precheckFailureSignatures = new Set();
+let precheckFailureLogCount = 0;
+
+/** 服务端业务错误带 isServerBusinessError 标记（见 network.js），其余归传输类。 */
+function classifyPrecheckFailure(err) {
+  if (err && err.isServerBusinessError === true) {
+    // 只认严格十进制整数：number 或全数字字符串。toNum 的宽松转换会把
+    // "0x10"/"1e2" 一类非十进制整数字符串转成数值记下，这里必须归 unknown。
+    const raw = err.serverErrorCode;
+    const parsed = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+    return {
+      category: 'business',
+      code: typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0
+        ? parsed
+        : 'unknown',
+    };
+  }
+  return { category: 'transport', code: 'unknown' };
+}
+
+/** 同一签名只记一次；签名表与日志总量各有固定上限，防未知错误码风暴。
+ *  自身绝不抛错：诊断故障不得把 checkCanOperateRemote 的兜底返回变成拒绝。 */
+function recordPrecheckFailure(operationId, err) {
+  try {
+    const info = classifyPrecheckFailure(err);
+    const signature = `${info.category}|${info.code}|${toNum(operationId)}`;
+    if (precheckFailureSignatures.has(signature)) return;
+    if (precheckFailureSignatures.size >= MAX_PRECHECK_FAILURE_SIGNATURES) return;
+    if (precheckFailureLogCount >= MAX_PRECHECK_FAILURE_LOGS) return;
+    precheckFailureSignatures.add(signature);
+    precheckFailureLogCount += 1;
+    log('好友',
+      `CheckCanOperate 预检查失败已兜底放行: category=${info.category} code=${info.code} operationId=${toNum(operationId)}`,
+      {
+        module: 'friend',
+        event: PRECHECK_FAILURE_EVENT,
+        category: info.category,
+        serverCode: info.code,
+        operationId: toNum(operationId),
+      });
+  } catch {
+    // 诊断写入失败：静默吞掉，保持原有兜底语义。
+  }
+}
+
 /** Check whether we can perform a remote operation on a friend's farm. */
 async function checkCanOperateRemote(gid, operationId) {
   if (!types.CheckCanOperateRequest || !types.CheckCanOperateReply) {
@@ -856,7 +914,8 @@ async function checkCanOperateRemote(gid, operationId) {
       canOperate: !!reply.can_operate,
       canStealNum: toNum(reply.can_steal_num),
     };
-  } catch {
+  } catch (err) {
+    recordPrecheckFailure(operationId, err);
     return { canOperate: true, canStealNum: 0 };
   }
 }
