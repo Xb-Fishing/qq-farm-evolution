@@ -7,13 +7,28 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { getDataFile } = require('../config/runtime-paths');
+const { getDataFile, getDataDir } = require('../config/runtime-paths');
 
 const ISSUE_FILE = getDataFile('evolution-runtime-issues.json');
 const LOCK_FILE = `${ISSUE_FILE}.lock`;
 const RETENTION_MS = 72 * 60 * 60 * 1000;
 const STALE_LOCK_MS = 30 * 1000;
 const MAX_ISSUES = 40;
+
+// 源码模式默认生产数据目录（runtime-paths 未导出该计算，这里按同一规则推导）。
+const DEFAULT_DATA_DIR = path.join(__dirname, '..', '..', 'data');
+
+/**
+ * 测试进程（node --test 带 NODE_TEST_CONTEXT）若数据目录仍解析到默认生产
+ * 目录，则不持久化：2026-09-28 巡查发现未设独立 FARM_DATA_DIR 的测试夹具
+ * 把合成未知物品真实写进了生产收件箱（bag_unclassified 污染）。按最终解析
+ * 路径判断——即使显式把 FARM_DATA_DIR 指向默认目录同样不写；指向独立
+ * 临时目录时保持真实读写，收件箱行为测试不受影响。
+ */
+function isTestContextOnDefaultDataDir() {
+  if (!process.env.NODE_TEST_CONTEXT) return false;
+  return path.resolve(getDataDir()) === path.resolve(DEFAULT_DATA_DIR);
+}
 
 const ISSUE_DEFINITIONS = Object.freeze({
   slowdown: { severity: 'warn', label: '连续请求失败触发普通巡查降速' },
@@ -106,6 +121,8 @@ function recordRuntimeIssue(type, level = 'warn', now = Date.now()) {
   const key = String(type || '');
   const definition = ISSUE_DEFINITIONS[key];
   if (!definition || (level !== 'warn' && level !== 'error')) return false;
+  // 测试进程 + 默认生产数据目录：不写盘也不建锁文件，杜绝测试污染生产收件箱。
+  if (isTestContextOnDefaultDataDir()) return false;
   return withIssueLock(() => {
     const issues = readIssueFile(now);
     const existing = issues.find(issue => issue.key === key);

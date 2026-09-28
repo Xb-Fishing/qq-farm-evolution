@@ -84,3 +84,82 @@ test('bag_unclassified 待办：新未知 ID 上报、确认后新发生不被�
   assert.equal(issues[0].key, 'bag_unclassified');
   assert.equal(issues[0].lastAt, t0 + 3600_000, 'ack of the old batch must not clear the newer occurrence');
 });
+
+// ===== 测试污染边界（2026-09-28）=====
+// 真实 getBagSeedsFromItems 合成未知物品路径：测试进程指向默认生产数据目录
+// （含显式 FARM_DATA_DIR 指向默认目录）时收件箱不持久化；独立临时目录的
+// 生产模式（无 NODE_TEST_CONTEXT）正常登记一次，同签名重复调用不刷次数。
+const INBOX_PATH = require.resolve('../src/services/evolution-issue-inbox');
+const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
+const DEFAULT_ISSUE_FILE = path.join(DEFAULT_DATA_DIR, 'evolution-runtime-issues.json');
+
+function readDefaultIssueFile() {
+  try { return fs.readFileSync(DEFAULT_ISSUE_FILE, 'utf8'); } catch { return null; }
+}
+
+/** 换入按指定环境解析 ISSUE_FILE 的全新收件箱实例；warehouse 的懒 require 在调用时命中它。 */
+function withFreshInbox(envOverrides, run) {
+  const savedDir = process.env.FARM_DATA_DIR;
+  const savedTestContext = process.env.NODE_TEST_CONTEXT;
+  const savedEntry = require.cache[INBOX_PATH];
+  delete require.cache[INBOX_PATH];
+  for (const [key, value] of Object.entries(envOverrides)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return run(require(INBOX_PATH));
+  } finally {
+    delete require.cache[INBOX_PATH];
+    if (savedEntry) require.cache[INBOX_PATH] = savedEntry;
+    if (savedDir === undefined) delete process.env.FARM_DATA_DIR;
+    else process.env.FARM_DATA_DIR = savedDir;
+    if (savedTestContext === undefined) delete process.env.NODE_TEST_CONTEXT;
+    else process.env.NODE_TEST_CONTEXT = savedTestContext;
+  }
+}
+
+test('测试进程指向默认生产数据目录时不持久化（含显式 FARM_DATA_DIR 指向默认目录）', () => {
+  const warehouse = require('../src/services/warehouse'); // 真实识别路径
+  const before = readDefaultIssueFile();
+
+  // 场景 1：未设 FARM_DATA_DIR（收件箱按默认生产目录解析）
+  withFreshInbox({ NODE_TEST_CONTEXT: 'test', FARM_DATA_DIR: undefined }, (inbox) => {
+    warehouse.getBagSeedsFromItems([{ id: 4299131, count: 1 }]);
+    assert.equal(inbox.recordRuntimeIssue('bag_unclassified', 'warn'), false,
+      '测试上下文 + 默认目录：直接调用也不持久化');
+    assert.equal(readDefaultIssueFile(), before, '生产收件箱文件未被写入');
+  });
+
+  // 场景 2：显式把 FARM_DATA_DIR 指向默认目录——按最终路径判断，同样不写
+  withFreshInbox({ NODE_TEST_CONTEXT: 'test', FARM_DATA_DIR: DEFAULT_DATA_DIR }, (inbox) => {
+    warehouse.getBagSeedsFromItems([{ id: 4299132, count: 1 }]);
+    assert.equal(inbox.recordRuntimeIssue('bag_unclassified', 'warn'), false,
+      '显式指向默认目录同样不持久化');
+    assert.equal(readDefaultIssueFile(), before, '生产收件箱文件仍未被写入');
+  });
+});
+
+test('独立目录的生产模式经真实未知物品路径登记一次，同签名重复不刷次数', () => {
+  const prodDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-farm-inbox-prod-'));
+  try {
+    const warehouse = require('../src/services/warehouse');
+    withFreshInbox({ NODE_TEST_CONTEXT: undefined, FARM_DATA_DIR: prodDir }, (inbox) => {
+      warehouse.getBagSeedsFromItems([{ id: 4299133, count: 1 }]);
+      let issues = inbox.getRuntimeIssueSnapshot();
+      assert.equal(issues.length, 1, '生产模式在独立目录正常登记');
+      assert.equal(issues[0].key, 'bag_unclassified');
+      assert.equal(issues[0].count, 1, '首次出现登记一次');
+
+      warehouse.getBagSeedsFromItems([{ id: 4299133, count: 1 }]);
+      issues = inbox.getRuntimeIssueSnapshot();
+      assert.equal(issues[0].count, 1, '同签名重复调用不刷次数');
+
+      warehouse.getBagSeedsFromItems([{ id: 4299133, count: 1 }, { id: 4299134, count: 1 }]);
+      issues = inbox.getRuntimeIssueSnapshot();
+      assert.equal(issues[0].count, 2, '新增未知 ID 才再登记');
+    });
+  } finally {
+    fs.rmSync(prodDir, { recursive: true, force: true });
+  }
+});
