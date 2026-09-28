@@ -165,7 +165,7 @@ message HarvestRequest {
 
 message HarvestReply {
     repeated LandInfo land = 1;
-    // repeated Item items = 2;     // corepb.Item
+    repeated corepb.Item items = 2;      // 到手物品（偷菜真实数量，2026-09-28 启用）
     // repeated Item lost_items = 3;
     repeated OperationLimit operation_limits = 4;
 }

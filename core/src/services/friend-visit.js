@@ -29,6 +29,7 @@ const {
   helpWeed,
   helpInsecticide,
   stealHarvest,
+  sumHarvestItemCount,
   putInsectsDetailed,
   putWeedsDetailed,
 } = require('./friend-operation-limits');
@@ -114,14 +115,15 @@ async function doFriendOperation(gid, opType) {
         : analysis.stealable.length;
       const targetLands = analysis.stealable.slice(0, stealCount);
 
+      let stolenQty = 0;
       okCount = await runBatchWithFallback(
         targetLands,
-        ids => stealHarvest(numericGid, ids),
-        id => stealHarvest(numericGid, id)
+        ids => stealHarvest(numericGid, ids).then(r => { stolenQty += sumHarvestItemCount(r).total; }),
+        id => stealHarvest(numericGid, id).then(r => { stolenQty += sumHarvestItemCount(r).total; })
       );
 
       if (okCount > 0) {
-        recordOperation('steal', okCount);
+        recordOperation('steal', stolenQty || okCount);
         try {
           await sellAllFruits();
         } catch (sellErr) {
@@ -134,7 +136,12 @@ async function doFriendOperation(gid, opType) {
         }
       }
 
-      return { ok: true, opType, count: okCount, message: `偷取完成 ${okCount} 块` };
+      return {
+        ok: true, opType, count: okCount,
+        message: stolenQty > 0
+          ? `偷取完成 ${stolenQty} 个（${okCount} 块）`
+          : `偷取完成 ${okCount} 块`,
+      };
     }
 
     // ---- Water ----
@@ -357,10 +364,15 @@ async function visitFriend(friend, tally, myGid, accountId) {
         : analysis.stealable.length;
       const targetLands = analysis.stealable.slice(0, stealCount);
       let stolen = 0;
+      let stolenQty = 0;
+      const stolenItems = [];
       const stolenNames = [];
 
       try {
-        await stealHarvest(gid, targetLands);
+        const reply = await stealHarvest(gid, targetLands);
+        const got = sumHarvestItemCount(reply);
+        stolenQty += got.total;
+        if (got.detail) stolenItems.push(got.detail);
         stolen = targetLands.length;
         targetLands.forEach(landId => {
           const info = analysis.stealableInfo.find(s => s.landId === landId);
@@ -369,7 +381,10 @@ async function visitFriend(friend, tally, myGid, accountId) {
       } catch {
         for (const landId of targetLands) {
           try {
-            await stealHarvest(gid, [landId]);
+            const reply = await stealHarvest(gid, [landId]);
+            const got = sumHarvestItemCount(reply);
+            stolenQty += got.total;
+            if (got.detail) stolenItems.push(got.detail);
             stolen++;
             const info = analysis.stealableInfo.find(s => s.landId === landId);
             if (info) stolenNames.push(info.name);
@@ -383,9 +398,16 @@ async function visitFriend(friend, tally, myGid, accountId) {
         const namesStr = [...new Set(stolenNames)].join('/');
         actionLogs.push(`偷${stolen}${namesStr ? `(${namesStr})` : ''}`);
         tally.steal += stolen;
-        recordOperation('steal', stolen);
+        recordOperation('steal', stolenQty || stolen);
         recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
-          `偷取 ${name} ${stolen} 个${namesStr ? `（${namesStr}）` : ''}`);
+          stolenQty > 0
+            ? `偷取 ${name} ${stolenQty} 个（${stolen} 块地${namesStr ? `，${namesStr}` : ''}）`
+            : `偷取 ${name} ${stolen} 块地${namesStr ? `（${namesStr}）` : ''}`);
+        if (stolenItems.length) {
+          log('好友', `偷菜到手物品：${stolenItems.join(' | ')}`, {
+            module: 'friend', event: 'steal_items_detail', friendGid: gid, result: 'ok',
+          });
+        }
       }
     }
   }
@@ -585,14 +607,19 @@ async function fastLaneSteal(gid, lands) {
   const prev = fastLaneInFlight.get(id) || Promise.resolve();
   const run = prev.catch(() => undefined).then(async () => {
     try {
-      await stealHarvest(id, targets);
-      recordOperation('steal', targets.length);
+      const reply = await stealHarvest(id, targets);
+      const got = sumHarvestItemCount(reply);
+      const qty = got.total || targets.length;
+      recordOperation('steal', qty);
       log('好友', `[重点] 快车道偷菜成功：${targets.length} 块（推送直达，未进门）`, {
         module: 'friend', event: '偷好友菜', friendGid: id, priority: true,
         actions: [`偷${targets.length}`], mode: 'fast_lane', result: 'ok',
+        ...(got.detail ? { stealItems: got.detail } : {}),
       });
       recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
-        `快车道偷取 ${targets.length} 块（推送直达）`);
+        got.total > 0
+          ? `快车道偷取 ${got.total} 个（${targets.length} 块地，推送直达）`
+          : `快车道偷取 ${targets.length} 块（推送直达）`);
       void sellAllFruits().catch(() => {});
     } catch { /* 已被主人收走等预期失败，静默 */ }
   });
@@ -696,10 +723,15 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
         : analysis.stealable.length;
       const targetLands = analysis.stealable.slice(0, stealCount);
       let stolen = 0;
+      let stolenQty = 0;
+      const stolenItems = [];
       const stolenNames = [];
 
       try {
-        await stealHarvest(gid, targetLands);
+        const reply = await stealHarvest(gid, targetLands);
+        const got = sumHarvestItemCount(reply);
+        stolenQty += got.total;
+        if (got.detail) stolenItems.push(got.detail);
         stolen = targetLands.length;
         targetLands.forEach(landId => {
           const info = analysis.stealableInfo.find(s => s.landId === landId);
@@ -708,7 +740,10 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
       } catch {
         for (const landId of targetLands) {
           try {
-            await stealHarvest(gid, [landId]);
+            const reply = await stealHarvest(gid, [landId]);
+            const got = sumHarvestItemCount(reply);
+            stolenQty += got.total;
+            if (got.detail) stolenItems.push(got.detail);
             stolen++;
             const info = analysis.stealableInfo.find(s => s.landId === landId);
             if (info) stolenNames.push(info.name);
@@ -722,9 +757,16 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
         const namesStr = [...new Set(stolenNames)].join('/');
         actionLogs.push(`偷${stolen}${namesStr ? `(${namesStr})` : ''}`);
         tally.steal += stolen;
-        recordOperation('steal', stolen);
+        recordOperation('steal', stolenQty || stolen);
         recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
-          `偷取 ${name} ${stolen} 个${namesStr ? `（${namesStr}）` : ''}`);
+          stolenQty > 0
+            ? `偷取 ${name} ${stolenQty} 个（${stolen} 块地${namesStr ? `，${namesStr}` : ''}）`
+            : `偷取 ${name} ${stolen} 块地${namesStr ? `（${namesStr}）` : ''}`);
+        if (stolenItems.length) {
+          log('好友', `偷菜到手物品：${stolenItems.join(' | ')}`, {
+            module: 'friend', event: 'steal_items_detail', friendGid: gid, result: 'ok',
+          });
+        }
       } else if (targetLands.length > 0) {
         // 已确认有可偷地块且服务端允许操作，但批量与逐地 Harvest 都失败。
         // 告诉调度器保留短时成熟重试，不能误当成“已被偷光”清掉 due。

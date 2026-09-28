@@ -361,6 +361,25 @@ async function stealHarvest(gid, landIds) {
 }
 
 /**
+ * HarvestReply.items 到手物品总量（偷菜真实数量；2026-09-28 前统计的
+ * "偷 N 个"实为地块数）。回包未携带 items 时返回 0，调用方回退块数。
+ * detail 返回 "id xN" 串供日志核对 items 语义。
+ */
+function sumHarvestItemCount(reply) {
+  const items = (reply && reply.items) || [];
+  let total = 0;
+  const detail = [];
+  for (const it of items) {
+    const count = toNum(it && it.count);
+    if (count > 0) {
+      total += count;
+      detail.push(`${toNum(it && it.id)}x${count}`);
+    }
+  }
+  return { total, detail: detail.join(',') };
+}
+
+/**
  * Generic helper to put items (weeds/insects) on friend's lands one by one.
  * Returns the number of successful operations.
  */
@@ -512,6 +531,7 @@ module.exports = {
   helpWeed,
   helpInsecticide,
   stealHarvest,
+  sumHarvestItemCount,
   putPlantItems,
   putPlantItemsDetailed,
   putInsects,
