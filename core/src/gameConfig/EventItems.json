@@ -275,5 +275,13 @@
     "desc": "雨落成诗活动道具，在好友作物上放出一朵乌云，可得30经验。",
     "icon_res": "gui/texture/icon/icon_weatherBottle_6/spriteFrame",
     "evidence": "Bag 实际出现 5006（bag_unclassified_item 复盘）+ client-config-evidence ItemInfo 快照（type 23、icon_weatherBottle_6、desc 逐字）交叉核对；与已登记 5005 青蛙使坏瓶同族同模式；见 docs/HANDOFF.md 2026-09-26 巡检"
+  },
+  {
+    "id": 301101,
+    "name": "黄金虫",
+    "type": 23,
+    "desc": "在好友农场放置可获得30经验，仅限好友本人清除，可获得相同奖励。",
+    "icon_res": "gui/texture/icon/icon_bug_golden/spriteFrame",
+    "evidence": "神秘商人自动购买实际到账 301101 x10（2026-09-30 13:54，bag_unclassified_item 复盘）+ client-config-evidence ItemInfo 快照命中（type 23、icon_bug_golden、desc 逐字）；interaction_type=additemuseItem，同 5005/5006 使坏族；见 docs/HANDOFF.md 2026-09-30 巡检"
   }
 ]
