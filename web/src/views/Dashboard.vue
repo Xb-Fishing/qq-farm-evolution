@@ -3,11 +3,11 @@ import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/api'
+import AccountModal from '@/components/AccountModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import { useAccountStore } from '@/stores/account'
-import AccountModal from '@/components/AccountModal.vue'
 import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
@@ -30,14 +30,25 @@ const reloginBusy = ref(false)
 const showReloginModal = ref(false)
 const toast = useToastStore()
 
+// UI 操作代次：新扫码取代进行中的直接重登反馈（账号锁/后台代次各自独立处理）
+let loginFlowSeq = 0
+
 async function reloginFromHome() {
   const account = accountStore.currentAccount
   if (!account || reloginBusy.value)
     return
   reloginBusy.value = true
+  const flow = loginFlowSeq
+  const requestedAccountId = account.id
   try {
-    // 先试直接登录（refreshtoken 刷凭据，无需扫码）；失败自动弹扫码
+    // 先试直接登录（refreshtoken 刷凭据，无需扫码）；失败自动弹扫码。
+    // await 期间用户可能已切换账号或已主动重新扫码：迟到结果既不能给
+    // 别的账号弹扫码、不能误提示旧成功，也不能重新弹已被扫码取代的 QR。
     const result = await accountStore.reloginAccount(account.id)
+    const superseded = loginFlowSeq !== flow
+      || accountStore.currentAccount?.id !== requestedAccountId
+    if (superseded)
+      return
     if (result.ok) {
       toast.success('直接登录成功（免扫码）')
       return
@@ -45,11 +56,42 @@ async function reloginFromHome() {
     showReloginModal.value = true
   }
   catch {
-    showReloginModal.value = true
+    if (loginFlowSeq === flow && accountStore.currentAccount?.id === requestedAccountId)
+      showReloginModal.value = true
   }
   finally {
-    reloginBusy.value = false
+    if (loginFlowSeq === flow)
+      reloginBusy.value = false
   }
+}
+
+// 显式重新扫码授权：不尝试旧凭据，直接为当前账号打开微信扫码（在线也可用）。
+// 取代进行中的直接重登：其迟到成功/失败都被忽略，旧 finally 不再动 busy。
+function rescanFromHome() {
+  const account = accountStore.currentAccount
+  if (!account || account.platform !== 'wx')
+    return
+  loginFlowSeq += 1
+  reloginBusy.value = false
+  showReloginModal.value = true
+}
+
+// 扫码保存成功：刷新账号列表；仅当保存的就是当前账号时清它的旧状态
+// 显示缓存并等待新状态（打开 QR 或保存失败都不清，保留旧正常显示）
+async function onAccountSaved(savedAccountId?: string) {
+  showReloginModal.value = false
+  const savedId = savedAccountId == null ? '' : String(savedAccountId)
+  const isCurrentAccountSaved = !!savedId && savedId === String(accountStore.currentAccount?.id ?? '')
+  // 先清当前账号旧状态再刷新列表：授权已保存落盘，列表刷新失败也不得把
+  // 已保存当失败回滚显示（不重开 QR、不清别的账号）
+  if (isCurrentAccountSaved)
+    statusStore.clearAccountScopedData()
+  try {
+    await accountStore.fetchAccounts()
+  }
+  catch { /* 账号列表刷新失败有界处理：缓存已清，等 realtime / 下次轮询补齐 */ }
+  if (isCurrentAccountSaved)
+    await refresh()
 }
 const { dashboardItems } = storeToRefs(bagStore)
 
@@ -842,6 +884,14 @@ useIntervalFn(updateCountdowns, 1000)
             >
               {{ reloginBusy ? '登录中…' : '重新登录' }}
             </button>
+            <button
+              v-if="currentAccount?.platform === 'wx'"
+              class="rounded bg-blue-500 px-2 py-1 text-xs text-white transition hover:bg-blue-600"
+              title="跳过旧凭据，直接用微信扫码为当前账号更换授权"
+              @click="rescanFromHome"
+            >
+              重新扫码授权
+            </button>
           </div>
         </div>
         <div class="mb-1 truncate text-xl font-bold" :title="displayName">
@@ -1250,6 +1300,6 @@ useIntervalFn(updateCountdowns, 1000)
     :edit-data="currentAccount"
     initial-tab="wx"
     @close="showReloginModal = false"
-    @saved="showReloginModal = false"
+    @saved="onAccountSaved"
   />
 </template>

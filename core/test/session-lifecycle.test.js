@@ -254,7 +254,9 @@ test('在线账号不再按固定周期换 Code 或重启 Worker', () => {
 
 test('Worker 每次启动后都会重新挂载凭据保活', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/runtime/worker-manager.js'), 'utf8');
-  assert.match(source, /scheduleAccountRefresh\(account\.id\)/);
+  // 语义不绑定局部变量名：startWorker 末尾守卫式重挂保活，参数为 canonical
+  // 账号对象的 id（真实消费新 expiry 的行为由 wx-online-rescan 链路用例覆盖）
+  assert.match(source, /if \(typeof scheduleAccountRefresh === 'function'\) scheduleAccountRefresh\(\w+\.id\);/);
 });
 
 test('Code 刷新和长凭据保活失败会留下脱敏进化线索', () => {

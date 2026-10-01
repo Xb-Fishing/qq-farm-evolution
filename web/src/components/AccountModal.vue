@@ -172,7 +172,10 @@ async function completeWxLogin(context: NonNullable<typeof confirmedWxLogin>) {
   if (!isCurrentWxLogin(context) || !codeResult.success || !codeResult.code)
     return
   const name = wxAccountName.value.trim() || result.nickname || `微信账号${Date.now()}`
-  if (wxLoginStore.config.autoAddAccount) {
+  // autoAddAccount 只控制自动【新增】账号；对既有账号的明确重新扫码，
+  // 无论开关如何都必须把完整扫码会话 + 新 Code 写回原账号，
+  // 不能退回只保存 Code 的手动路径（会丢掉扫码换来的新凭据）。
+  if (target || wxLoginStore.config.autoAddAccount) {
     await addAccount({
       id: target?.id,
       name: target ? (target.name || name) : name,
@@ -369,7 +372,12 @@ async function addAccount(data: any, requestGeneration = modalGeneration) {
     if (requestGeneration !== modalGeneration || !props.show)
       return
     if (res.data.ok) {
-      emit('saved')
+      // 携带本次保存的账号 id：既有账号重扫 = target id；新增账号取回包
+      // 末位新账号。无 id（旧调用方/异常形态）保持 undefined 兼容。
+      const savedList = res.data.data && Array.isArray(res.data.data.accounts)
+        ? res.data.data.accounts
+        : []
+      emit('saved', data.id || (savedList.at(-1) || {}).id)
       close()
     }
     else {

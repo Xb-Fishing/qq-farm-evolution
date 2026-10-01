@@ -284,11 +284,11 @@ function createDataProvider(deps) {
             return { autoCodeRefresh: data };
         },
 
-        refreshAccountCode: async (ref) => {
+        refreshAccountCode: async (ref, reason) => {
             const id = resolveAccountId(ref);
             if (!id) throw new Error('Missing x-account-id');
             if (typeof refreshAccountCode !== 'function') throw new Error('自动刷新服务不可用');
-            const ok = await refreshAccountCode(id, 'manual');
+            const ok = await refreshAccountCode(id, reason || 'manual');
             return { ok };
         },
 
