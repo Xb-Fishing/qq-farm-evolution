@@ -14,7 +14,9 @@ function registerAdminAccountRuntimeRoutes({
       }
 
       const refreshed = await provider.refreshAccountCode(accountId, "manual_relogin");
-      if (!refreshed) {
+      // provider 返回 { ok }，旧代码按对象真值判断导致失败也报"直接登录成功"，
+      // 用户永远等不到扫码入口。必须按 ok 字段判断。
+      if (!refreshed || refreshed.ok !== true) {
         const store = require("../models/store");
         const data = typeof store.getAccounts === "function" ? store.getAccounts() : {};
         const account = (Array.isArray(data.accounts) ? data.accounts : [])

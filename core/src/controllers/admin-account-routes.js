@@ -381,6 +381,9 @@ function registerAdminAccountRoutes({
         }
       } else if (wasRunning && !onlyRenaming) {
         provider.restartAccount(nextAccount.id);
+        // 在线原生重扫：用刚保存的二维码 Code 立即重建一次连接（不追加
+        // 授权请求、不改 autoLogin），queued 表示正在用新授权重连。
+        if (body.wxSessionId && nextAccount.platform === "wx") startQueued = true;
       } else if (!wasRunning && body.wxSessionId && nextAccount.platform === "wx") {
         // A successful rescan of an offline account is a login request, not just a save.
         if (typeof provider.saveAutoCodeRefresh === "function") {

@@ -52,6 +52,19 @@ function createWorkerManager(deps) {
     const scheduler = createScheduler('worker_manager');
     const restartHistory = new Map();
     const credentialRefreshes = new Map();
+    // RPC 超时定时器全局序号：worker 记录的 reqId 从 1 重置，按账号+reqId
+    // 命名会在换代后重名（新请求覆盖旧定时器，旧 promise 永久悬挂）。
+    let rpcTimerSeq = 0;
+
+    /** 结算某条 Worker 记录的全部挂起 RPC 并清其计时器（记录被替换/删除前必调） */
+    function settleWorkerRequests(wrk) {
+        if (!wrk || !wrk.requests || wrk.requests.size === 0) return;
+        for (const pending of wrk.requests.values()) {
+            if (pending.timerKey) scheduler.clear(pending.timerKey);
+            try { pending.reject(new Error('Worker exited')); } catch { }
+        }
+        wrk.requests.clear();
+    }
     const WATCHDOG_PING_MS = 30000;
     const WATCHDOG_TIMEOUT_MS = 90000;
     const WATCHDOG_MAX_RESTARTS = 3;
@@ -172,6 +185,9 @@ function createWorkerManager(deps) {
      */
     function startWorker(account) {
         if (!account || !account.id) return false;
+        // 全程使用 canonical latest：restartWorker 闭包捕获的是排队重启时的
+        // 快照，两轮扫码并发时旧快照会把上一轮 Code/身份元数据发给新 Worker。
+        // 持久层没有该账号时保留传入快照兜底（等价于旧行为）。
         const data = typeof getAccounts === 'function' ? getAccounts() : {};
         const latest = (Array.isArray(data.accounts) ? data.accounts : [])
             .find(item => String(item.id) === String(account.id)) || account;
@@ -182,42 +198,42 @@ function createWorkerManager(deps) {
             });
             return false;
         }
-        if (workers[account.id]) return false;
+        if (workers[latest.id]) return false;
 
-        log('系统', `正在启动账号: ${  account.name}`, {
-            accountId: String(account.id),
-            accountName: account.name
+        log('系统', `正在启动账号: ${  latest.name}`, {
+            accountId: String(latest.id),
+            accountName: latest.name
         });
 
         let proc = null;
         try {
-            proc = createWorker(account);
+            proc = createWorker(latest);
         } catch (err) {
             const errorMsg = err && err.message ? err.message : String(err || 'unknown error');
-            log('错误', `账号 ${  account.name  } 启动失败: ${  errorMsg}`, {
-                accountId: String(account.id),
-                accountName: account.name
+            log('错误', `账号 ${  latest.name  } 启动失败: ${  errorMsg}`, {
+                accountId: String(latest.id),
+                accountName: latest.name
             });
-            addAccountLog('start_failed', `账号 ${  account.name  } 启动失败`,
-                account.id, account.name, { reason: errorMsg });
+            addAccountLog('start_failed', `账号 ${  latest.name  } 启动失败`,
+                latest.id, latest.name, { reason: errorMsg });
             return false;
         }
 
         // 注册 Worker 记录
-        workers[account.id] = {
+        workers[latest.id] = {
             process: proc,
             status: null,
             logs: [],
             requests: new Map(),
             reqId: 1,
-            name: account.name,
-            username: account.username || '',
-            platform: account.platform || 'qq',
-            gid: account.gid || '',
-            openId: account.openId || account.open_id || '',
-            qq: account.qq || account.uin || '',
-            uin: account.uin || account.qq || '',
-            avatar: account.avatar || account.avatarUrl || '',
+            name: latest.name,
+            username: latest.username || '',
+            platform: latest.platform || 'qq',
+            gid: latest.gid || '',
+            openId: latest.openId || latest.open_id || '',
+            qq: latest.qq || latest.uin || '',
+            uin: latest.uin || latest.qq || '',
+            avatar: latest.avatar || latest.avatarUrl || '',
             stopping: false,
             startedAt: Date.now(),
             disconnectedSince: 0,
@@ -227,64 +243,69 @@ function createWorkerManager(deps) {
             lastPongAt: Date.now()
         };
 
-        // 发送启动配置
+        // 发送启动配置（同上：用 latest 的 Code/平台，不用旧快照）
         proc.send({
             type: 'start',
-            config: { code: account.code, platform: account.platform }
+            config: { code: latest.code, platform: latest.platform }
         });
 
         // 发送配置快照
         proc.send({
             type: 'config_sync',
-            config: buildConfigSnapshotForAccount(account.id)
+            config: buildConfigSnapshotForAccount(latest.id)
         });
 
-        // 监听 Worker 消息
+        // 监听 Worker 消息：旧进程迟到消息不得作用于已换代的 Worker 记录
         proc.on('message', (msg) => {
-            handleWorkerMessage(account.id, msg);
+            const current = workers[latest.id];
+            if (!current || current.process !== proc) return;
+            handleWorkerMessage(latest.id, msg);
         });
 
         // 监听 Worker 错误
         proc.on('error', (err) => {
-            log('系统', `账号 ${  account.name  } 子进程启动失败: ${ 
+            log('系统', `账号 ${  latest.name  } 子进程启动失败: ${
                 err && err.message ? err.message : err}`, {
-                accountId: String(account.id),
-                accountName: account.name
+                accountId: String(latest.id),
+                accountName: latest.name
             });
         });
 
         // 监听 Worker 退出
         proc.on('exit', (code, signal) => {
-            const wrk = workers[account.id];
-            const displayName = wrk && wrk.name ? wrk.name : account.name;
+            const wrk = workers[latest.id];
+            const displayName = wrk && wrk.name ? wrk.name : latest.name;
+            // 同代次守卫：wrk 已是新进程时，本进程不得动新代次的任何状态
+            const sameGeneration = !!wrk && wrk.process === proc;
 
-            log('系统', `账号 ${  displayName  } 进程退出 (code=${  code 
+            log('系统', `账号 ${  displayName  } 进程退出 (code=${  code
                 }, signal=${  signal || 'none'  })`, {
-                accountId: String(account.id),
+                accountId: String(latest.id),
                 accountName: displayName,
                 runtimeMode: threadMode ? 'thread' : 'fork'
             });
 
-            scheduler.clear(`force_kill_${  account.id}`);
-            scheduler.clear(`restart_fallback_${  account.id}`);
-
-            // 清理所有未完成的 API 请求
-            if (wrk && wrk.requests && wrk.requests.size > 0) {
-                for (const [reqId, pending] of wrk.requests.entries()) {
-                    scheduler.clear(`api_timeout_${  account.id  }_${  reqId}`);
-                    try { pending.reject(new Error('Worker exited')); } catch { }
-                }
-                wrk.requests.clear();
+            // force_kill/restart_fallback 按账号命名：只有本代次还持有
+            // workers 记录时才清理，否则旧 exit 会取消新 Worker 已挂的
+            // 强杀/重启回退定时器，下一轮重启可能永远完不成。
+            if (sameGeneration) {
+                scheduler.clear(`force_kill_${  latest.id}`);
+                scheduler.clear(`restart_fallback_${  latest.id}`);
             }
 
-            if (wrk && wrk.process === proc) {
-                delete workers[account.id];
+            // 清理所有未完成的 API 请求：只清本进程的。若退出事件晚于新
+            // Worker 注册（force_kill 与 restart_fallback 竞态），这里的
+            // workers[latest.id] 已是新 Worker，绝不能替它拒绝请求。
+            if (sameGeneration) settleWorkerRequests(wrk);
+
+            if (sameGeneration) {
+                delete workers[latest.id];
             }
         });
 
         // 每次启动/重启后重新武装微信凭据保活。stopWorker 会清理旧任务，
         // 因此必须由新 Worker 生命周期重新建立，避免重启一次后保活永久消失。
-        if (typeof scheduleAccountRefresh === 'function') scheduleAccountRefresh(account.id);
+        if (typeof scheduleAccountRefresh === 'function') scheduleAccountRefresh(latest.id);
 
         return true;
     }
@@ -311,7 +332,13 @@ function createWorkerManager(deps) {
             const current = workers[accountId];
             if (current && current.process === targetProc) {
                 current.process.kill();
-                delete workers[accountId];
+                // 记录即将删除而旧 proc 的 exit 可能迟到（甚至已被新记录
+                // 顶替后才会触发守卫跳过），必须在这里结算旧 RPC，否则
+                // 旧 promise 只能等早已被同名新任务覆盖的超时定时器。
+                settleWorkerRequests(current);
+                // kill 可能同步触发 exit → doRestart 已注册新 Worker：删除前
+                // 重查记录仍是本代次，否则会把新记录一起删掉
+                if (workers[accountId] === current) delete workers[accountId];
             }
         });
     }
@@ -333,12 +360,16 @@ function createWorkerManager(deps) {
         const doRestart = () => {
             if (restarted) return;
             restarted = true;
-            scheduler.clear(`restart_fallback_${  accountId}`);
-
             const current = workers[accountId];
+            // 只有当前记录仍是本代次（或已无记录）时才清 restart_fallback，
+            // 避免另一个旧重启回调取消新代次已挂的同名定时器
+            if (!current || current.process === targetProc) {
+                scheduler.clear(`restart_fallback_${  accountId}`);
+            }
             if (!current) return startWorker(account);
             if (current.process !== targetProc) return;
 
+            settleWorkerRequests(current);
             delete workers[accountId];
             startWorker(account);
         };
@@ -347,7 +378,9 @@ function createWorkerManager(deps) {
             const current = workers[accountId];
             if (!current || current.process !== targetProc) return false;
             try { current.process.kill(); } catch { }
-            delete workers[accountId];
+            settleWorkerRequests(current);
+            // kill 同步 exit 可能让 doRestart 先注册新 Worker：删除前重查
+            if (workers[accountId] === current) delete workers[accountId];
             return true;
         };
 
@@ -583,9 +616,11 @@ function createWorkerManager(deps) {
         } else if (msg.type === 'api_response') {
             // API 响应
             const { id, result, error } = msg;
-            scheduler.clear(`api_timeout_${  accountId  }_${  id}`);
+            const pendingRequest = wrk.requests.get(id);
+            if (pendingRequest && pendingRequest.timerKey)
+                scheduler.clear(pendingRequest.timerKey);
 
-            const pending = wrk.requests.get(id);
+            const pending = pendingRequest;
             if (pending) {
                 if (error) {
                     const err = new Error(error);
@@ -682,10 +717,13 @@ function createWorkerManager(deps) {
 
         return new Promise((resolve, reject) => {
             const reqId = wrk.reqId++;
-            wrk.requests.set(reqId, { resolve, reject });
+            // 计时器名带全局序号：换代后新记录 reqId 从 1 重置，按账号+reqId
+            // 命名会重名并互相覆盖，导致旧请求永久悬挂
+            const timerKey = `api_timeout_${  accountId  }_${  reqId  }_${  ++rpcTimerSeq}`;
+            wrk.requests.set(reqId, { resolve, reject, timerKey });
 
             // API 超时保护
-            scheduler.setTimeoutTask(`api_timeout_${  accountId  }_${  reqId}`, timeoutMs, () => {
+            scheduler.setTimeoutTask(timerKey, timeoutMs, () => {
                 if (wrk.requests.has(reqId)) {
                     wrk.requests.delete(reqId);
                     reject(new Error('API Timeout'));
