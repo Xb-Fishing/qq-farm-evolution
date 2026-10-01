@@ -93,6 +93,12 @@ corepack enable
 corepack prepare pnpm@10.30.2 --activate
 pnpm install --frozen-lockfile
 pnpm build:web
+
+# 首次启动：将占位符替换为你自己的管理员用户名和强密码
+# 已有管理员的部署可跳过这两行
+export FARM_ADMIN_USERNAME='<your-admin-name>'
+export FARM_ADMIN_PASSWORD='<your-strong-password>'
+
 bash start.sh
 ```
 
