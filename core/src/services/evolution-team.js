@@ -40,6 +40,36 @@ const FAILURE_LABELS = {
 const RECOVERABLE = new Set(['invalid_output', 'invalid_decision', 'cli_spawn', 'cli_exit', 'output_limit', 'missing_result',
   'invalid_envelope', 'verification_failed', 'missing_handoff', 'review_rejected']);
 const REVIEW_FAILURES = new Set(['verification_failed', 'missing_handoff', 'review_rejected']);
+// GitHub 反馈 issue 的最终结论只来自主 Agent 最终复核；fixed 是唯一可声称已修复的状态。
+const GITHUB_RESOLUTION_STATUSES = new Set(['fixed', 'not_reproducible', 'wont_fix', 'in_progress', 'invalid']);
+
+/**
+ * 校验主 Agent 复核输出的 per-issue 反馈结论映射；任何字段不合法都返回 null（调用方
+ * 决定按 invalid_decision 拒绝还是在读取 journal 时安全丢弃），绝不静默降级成 fixed。
+ */
+function normalizeGithubResolutions(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 8) return null;
+  const resolutions = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const issue = Number(item.issue);
+    if (!Number.isInteger(issue) || issue < 1 || issue > 2147483647) return null;
+    if (!GITHUB_RESOLUTION_STATUSES.has(item.status)) return null;
+    // 映射按批次快照的 issue 报告指纹对齐（不是让复核者预测未来提交哈希）：
+    // fixed 必须携带 64 位指纹；其他状态可省略。
+    const fingerprint = String(item.fingerprint || '').toLowerCase();
+    if (fingerprint && !/^[0-9a-f]{64}$/.test(fingerprint)) return null;
+    if (item.status === 'fixed' && !fingerprint) return null;
+    if (item.note !== undefined && typeof item.note !== 'string') return null;
+    resolutions.push({
+      issue, status: item.status,
+      ...(fingerprint ? { fingerprint } : {}),
+      ...(item.note ? { note: item.note.slice(0, 300) } : {}),
+    });
+  }
+  return resolutions;
+}
 
 function createTeamError(code, details = {}) {
   const error = new Error(FAILURE_LABELS[code] || FAILURE_LABELS.unknown);
@@ -94,6 +124,15 @@ function buildStageSchema(phase) {
           required: ['topic', 'rule', 'evidence'] } },
       } : {}),
       summary: { type: 'string', minLength: 1, maxLength: 24000 },
+      // review 阶段可选输出：本轮 GitHub 反馈 issue 的最终结论映射（未处理不输出或空数组）。
+      ...(phase === 'review' ? { githubResolutions: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
+        properties: {
+          issue: { type: 'integer', minimum: 1, maximum: 2147483647 },
+          status: { type: 'string', enum: [...GITHUB_RESOLUTION_STATUSES] },
+          fingerprint: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          note: { type: 'string', maxLength: 300 },
+        },
+        required: ['issue', 'status'] } } } : {}),
       ...(['diagnose', 'plan'].includes(phase) ? { allowedFiles: { type: 'array', maxItems: 30, items: { type: 'string' } } } : {}),
       ...(phase === 'plan' ? { baselineChecks: { type: 'array', maxItems: 4, items: { type: 'object', additionalProperties: false,
         properties: { sourceFiles: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } },
@@ -135,6 +174,12 @@ function teamJournalPath(logDir, runId) {
   return path.join(logDir, `evolve-team-${runId}.json`);
 }
 
+/** Journal 侧读取：无效映射整体丢弃（无结论≠修复），note 过隐私检查后保留。 */
+function journalGithubResolutions(value) {
+  const resolutions = value.decision === 'approve' ? normalizeGithubResolutions(value.githubResolutions) : null;
+  return (resolutions || []).map(item => ({ ...item, ...(item.note ? { note: safeReviewFeedback(item.note) } : {}) }));
+}
+
 function readTeamJournal(logDir, active) {
   if (!active?.dualAgentEnabled) return null;
   try {
@@ -164,6 +209,7 @@ function readTeamJournal(logDir, active) {
       reviewFeedback: safeReviewFeedback(value.reviewFeedback),
       feedbackReviewed: value.feedbackReviewed === true,
       reviewedBy: value.mainAgent,
+      githubResolutions: journalGithubResolutions(value),
       lessons: normalizeLessons(value.lessons),
     };
   } catch { return null; }
@@ -227,8 +273,18 @@ function parseStageResult(text, phase, runtimeTerms) {
     catch { throw createTeamError('private_handoff'); }
     if (value.feedbackReviewed !== undefined && typeof value.feedbackReviewed !== 'boolean') throw createTeamError('invalid_decision');
   }
+  // 反馈结论映射只属于 review 阶段；无效映射按决策无效拒绝，不静默丢弃后冒充无结论。
+  let githubResolutions;
+  if (phase === 'review' && value.githubResolutions !== undefined) {
+    githubResolutions = normalizeGithubResolutions(value.githubResolutions);
+    if (!githubResolutions) throw createTeamError('invalid_decision');
+    for (const item of githubResolutions) {
+      if (item.note !== undefined) item.note = sanitizeHandoff(item.note, runtimeTerms);
+    }
+  }
   return { decision: value.decision, summary: sanitizeHandoff(value.summary, runtimeTerms),
     ...(lessons ? { lessons, feedbackReviewed: value.feedbackReviewed === true } : {}),
+    ...(githubResolutions ? { githubResolutions } : {}),
     ...(allowedFiles ? { allowedFiles } : {}),
     ...(phase === 'plan' ? { acceptanceChecks: value.acceptanceChecks.map(item => sanitizeHandoff(item, runtimeTerms)), baselineChecks: value.baselineChecks } : {}) };
 }
@@ -241,7 +297,7 @@ function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
     plan: `你是主 Agent ${LABELS[settings.mainAgent]}，负责独立巡查并确认思路。逐条审查子 Agent 的证据、GitHub 借鉴适用性、HANDOFF 不变量和修改范围。批准时给出明确文件范围、实施步骤、验收条件，将具体实现交给子 Agent。decision 为 approve（批准具体方案）、no_change（确认无需改动）或 reject（方案需重写）。approve 必须在 allowedFiles 明确列出实施文件（含 HANDOFF 和测试），并在 acceptanceChecks 逐条列出可执行的行为验收条件；需要协调器做旧代码反向对照时，必须在 baselineChecks 声明 sourceFiles/testFiles/minFailures（基线由协调器固定、只在隔离副本执行）；没有要求则为空数组。不要只在文字验收清单里要求执行器没有登记的工具动作。其他决策给空数组。拒绝后只允许子 Agent 修订方案，不得提前实施。保留用户已批准并上线的功能，不因本轮未重新找到历史材料就撤销授权或删除入口。不得仅复述子 Agent 建议。`,
     revise_plan: `你是子 Agent ${LABELS[settings.subAgent]}，根据主 Agent 最近一次拒绝理由修订研究结论和实施建议。此阶段始终只读，不写代码、测试或文档，不重新扩展无关任务；逐条回应缺口，给出最小文件范围与真实行为测试方案，交回主 Agent 重新审批。decision 固定为 researched。`,
     implement: `你是子 Agent ${LABELS[settings.subAgent]}，负责实施主 Agent 已批准的方案，只能修改已批准 allowedFiles，逐项满足 acceptanceChecks；这些条件是本轮验收合同。修改代码、补必要回归、更新 HANDOFF 并验证。无法按批准范围完成时停止并如实说明，不扩大范围；不得提交，由协调进程在主 Agent 复核后统一提交。decision 为 implemented 或 no_change。交接须列出实际改动、验证与未解决问题。`,
-    review: `你是主 Agent ${LABELS[settings.mainAgent]}，负责最终独立复核。读取当前完整 git diff（含新文件），对照批准方案、子 Agent 交接和协调进程测试结果，核实 HANDOFF/证据/隐私与核心收益链。以已批准的 acceptanceChecks 验收；不得在验收时新增无关需求或扩大范围，新增未决项可记录待处理。发现当前差异引入的真实回归必须指出可复现证据。拒绝时逐条说明不满足哪条合同、对应文件及所需行为测试。只能审查，不能改代码或补提提交。decision 仅可为 approve（改动满足批准方案且验证通过）或 reject（存在未解决问题）。禁止把测试通过等同业务结论正确。${repairOnly ? '本次仅验收已批准的编排修复补丁，原巡检尚未完成；补丁需要应用后才能继续原任务，不得假称原任务完成。' : ''}`,
+    review: `你是主 Agent ${LABELS[settings.mainAgent]}，负责最终独立复核。读取当前完整 git diff（含新文件），对照批准方案、子 Agent 交接和协调进程测试结果，核实 HANDOFF/证据/隐私与核心收益链。以已批准的 acceptanceChecks 验收；不得在验收时新增无关需求或扩大范围，新增未决项可记录待处理。发现当前差异引入的真实回归必须指出可复现证据。拒绝时逐条说明不满足哪条合同、对应文件及所需行为测试。只能审查，不能改代码或补提提交。decision 仅可为 approve（改动满足批准方案且验证通过）或 reject（存在未解决问题）。禁止把测试通过等同业务结论正确。任务提示含 GitHub 反馈 issue 批次时，必须在 githubResolutions 中按 issue 编号逐项给出最终结论：fixed 仅限该 issue 的问题确已在本轮改动中修复并验证，且 fingerprint 必须原样填该 issue 批次快照中的 fingerprint 字段（64 位报告版本指纹；不要预测或编造提交哈希）；未处理/部分处理用 in_progress，不复现/不采纳如实标注；没有对应修复输出空数组或不输出该字段，禁止为安抚报告者编造 fixed。${repairOnly ? '本次仅验收已批准的编排修复补丁，原巡检尚未完成；补丁需要应用后才能继续原任务，不得假称原任务完成。' : ''}`,
     diagnose: `你是主 Agent ${LABELS[settings.mainAgent]}，负责本轮失败的根因诊断。先检查交接中的失败阶段、固定错误类别、退出码、已完成结论和当前工作区，再对照实际代码确认原因；不得从零重复广泛搜索。给子 Agent 制定最小修复方案、精确文件范围和验收步骤。decision 为 repair 或 stop；allowedFiles 是明确授权修改的相对文件路径数组，格式/临时执行器问题用空数组，只验证调用并准备重试。若原因已由当前版本修复，也应选 repair 并给空数组，让子 Agent 验证后继续原任务；stop 只用于仍有阻碍、无法安全自动处理的情况。鉴权、模型不可用等需要人工配置时应 stop，不读取、修改或输出任何凭据。有代码修复时必须把 docs/HANDOFF.md 和必要测试列入文件范围。只有确有编排代码缺陷时可批准下述两个输出/协作文件，并配套回归；发布器、凭据和隐私控制文件始终不能修改。`,
     repair: `你是子 Agent ${LABELS[settings.subAgent]}，按主 Agent 最新 diagnose 中的原因、方案和 allowedFiles 执行修复。只能修改精确列出的文件；空数组表示只读排查/验证并为重试准备，不得改代码。不得通过替换结果、伪造主 Agent 的 approve、写运行状态、关闭验证、修改密钥或绕开权限来收口。decision 为 implemented 或 no_change，说明实际处理和剩余问题，交回主 Agent 验收。`,
     repair_review: `你是主 Agent ${LABELS[settings.mainAgent]}，独立验收子 Agent 的修复。核对原失败原因、批准范围、当前差异与真实验证结果。确认修复解决原因且没有绕开检查时返回 approve，存在未解决问题返回 reject。验收通过后由协调进程重跑原失败阶段，绝不能替它伪造成功或跳过正常最终复核。`,
@@ -286,7 +342,7 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
   let verifiedChecks = '';
   let approvedBaselineChecks = [];
   let requiresApply = false;
-  let acceptedReport = { lessons: [], feedbackReviewed: false };
+  let acceptedReport = { lessons: [], feedbackReviewed: false, githubResolutions: [] };
   const repairReady = new Error('reviewed_repair_requires_apply');
   const details = () => ({
     recoveryAttempt: recoveryKind === 'review' ? reviewRecoveryAttempt : runtimeRecoveryAttempt,
@@ -410,6 +466,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
   const result = (decision, head, files = []) => ({
     decision, head, ...details(), repairOnly: requiresApply,
     lessons: requiresApply ? [] : acceptedReport.lessons,
+    // 反馈修复结论只随最终 approve 的完整巡检发布；repairOnly/未走最终复核一律为空。
+    githubResolutions: requiresApply ? [] : (acceptedReport.githubResolutions || []),
     feedbackReviewed: !requiresApply && acceptedReport.feedbackReviewed,
     reviewedOrchestrationFiles: normalizeOrchestrationFiles(files).filter(file => reviewedOrchestrationFiles.has(file)),
   });
@@ -420,7 +478,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       await verifyCurrent();
       const value = await phase('review', settings.mainAgent);
       if (value.decision !== 'approve') throw fail(createTeamError('review_rejected'), 'review', settings.mainAgent);
-      acceptedReport = { lessons: normalizeLessons(value.lessons), feedbackReviewed: value.feedbackReviewed === true };
+      acceptedReport = { lessons: normalizeLessons(value.lessons), feedbackReviewed: value.feedbackReviewed === true,
+        githubResolutions: value.githubResolutions || [] };
     }, false);
     const approved = await inspect();
     if (requiresApply && !normalizeOrchestrationFiles(approved.files).length) {
@@ -453,7 +512,8 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
     }
     plan = normalizePlanApproval(plan);
     if (plan.decision === 'no_change' && !(await inspect()).dirty) {
-      acceptedReport = { lessons: normalizeLessons(plan.lessons), feedbackReviewed: plan.feedbackReviewed === true };
+      acceptedReport = { lessons: normalizeLessons(plan.lessons), feedbackReviewed: plan.feedbackReviewed === true,
+        githubResolutions: [] };
       return result('no_change', baseline.head);
     }
     if (plan.decision === 'approve') {
@@ -487,4 +547,5 @@ module.exports = {
   normalizeAgentSettings, validateAgentSettings, teamJournalPath, readTeamJournal,
   isTeamResultApproved, sanitizeHandoff, parseStageResult, buildTeamStagePrompt, runTeamWorkflow,
   buildStageSchema, createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, MAX_RECOVERY_ATTEMPTS, safeReviewFeedback, normalizePlanApproval,
+  normalizeGithubResolutions,
 };

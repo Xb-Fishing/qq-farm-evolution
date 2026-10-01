@@ -28,6 +28,8 @@ const {
   normalizeAgentSettings, validateAgentSettings, readTeamJournal, isTeamResultApproved,
   normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
 } = require('./evolution-team');
+// GitHub issues 反馈路由：模块加载零副作用；未启用 owner 私有配置时全部入口直接返回。
+const githubFeedback = require('./evolution-github-feedback');
 const {
   ISSUE_DEFINITIONS,
   acknowledgeRuntimeIssues,
@@ -164,6 +166,8 @@ function defaultState() {
     logFile: '',
     runtimeIssueBatch: [],
     feedbackBatch: null,
+    // GitHub 反馈批次摘要（只有编号/指纹/水位，issue 正文留在私有批次文件里）。
+    githubFeedbackBatch: null,
     feedbackCleanupPending: false,
     learningReceipt: '',
     handledUnknownIds: [],
@@ -273,6 +277,21 @@ function normalizePersistedState(value, now = Date.now()) {
   state.runtimeIssueBatch = normalizeRuntimeIssueBatch(state.runtimeIssueBatch);
   state.feedbackBatch = Number.isSafeInteger(state.feedbackBatch?.throughAt) && state.feedbackBatch.throughAt > 0
     && state.feedbackBatch.throughAt <= now ? { throughAt: state.feedbackBatch.throughAt } : null;
+  // GitHub 反馈批次摘要只保留编号/指纹/采集水位；非法整体丢弃（等价于本轮无批次）。
+  state.githubFeedbackBatch = (() => {
+    const batch = state.githubFeedbackBatch;
+    if (!batch || typeof batch !== 'object') return null;
+    const capturedAt = Number(batch.capturedAt);
+    if (!Number.isSafeInteger(capturedAt) || capturedAt <= 0) return null;
+    return {
+      capturedAt,
+      complete: batch.complete === true,
+      issueNumbers: [...new Set((Array.isArray(batch.issueNumbers) ? batch.issueNumbers : [])
+        .map(Number).filter(id => Number.isInteger(id) && id > 0))].slice(0, 12),
+      fingerprint: /^[0-9a-f]{64}$/i.test(String(batch.fingerprint || '')) ? String(batch.fingerprint) : '',
+      payloadDigest: /^[0-9a-f]{64}$/.test(String(batch.payloadDigest || '')) ? String(batch.payloadDigest) : '',
+    };
+  })();
   state.feedbackCleanupPending = state.feedbackCleanupPending === true;
   state.learningReceipt = /^[a-f0-9]{64}$/.test(state.learningReceipt || '') ? state.learningReceipt : '';
   state.activeRun = normalizeActiveRun(state.activeRun);
@@ -450,7 +469,7 @@ function activityEvidenceFingerprint(report) {
   return crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
 }
 
-function buildIncrementalReviewContext(state, task, report = null) {
+function buildIncrementalReviewContext(state, task, report = null, githubBatch = null) {
   const memory = normalizeEvolutionMemory(state?.evolutionMemory);
   const previous = task === 'safety' ? memory.safety : memory.activity;
   const changedPaths = changedPathsSince(previous.reviewedHead);
@@ -472,6 +491,9 @@ function buildIncrementalReviewContext(state, task, report = null) {
   lines.push(state?.feedbackBatch?.throughAt
     ? `- 本轮反馈采样截止：${new Date(state.feedbackBatch.throughAt).toISOString()}；只验收并清理此时间之前的已处理反馈，之后的新事件留下一轮。`
     : '- 本轮未取得完整反馈采样水位；不得将采集缺失解释为没有问题或允许清空反馈。');
+  // GitHub 反馈批次（脱敏不可信数据小节）：未启用/未采集时不注入，不虚构空批次。
+  const githubSection = githubFeedback.buildGithubFeedbackSection(githubBatch);
+  if (githubSection) lines.push(githubSection);
   lines.push('【每日交互反馈（最近24小时，临时本机日志；无原始输入/身份）】');
   lines.push(JSON.stringify(getDailyFeedback().snapshot()));
   lines.push('【按逻辑指纹复用的完整回归记录】');
@@ -1199,6 +1221,8 @@ function launchEvolution(task, payload = {}) {
         latest.status = 'pending_apply';
         latest.summary = `推送自愈成功：${current.commit.slice(0, 8)} 已上 GitHub，待确认应用`;
         writeState(latest);
+        // 自愈成功 = 同一发布边界：与正常 finalize 一样补反馈收口（幂等，不重复回复）。
+        resumePublishedFeedback(latest);
       }
     });
   }
@@ -1286,6 +1310,9 @@ function launchEvolution(task, payload = {}) {
   if (payload.automatic !== true) state.lastManualRunDate = getLocalDateKey();
   state.runtimeIssueBatch = task === 'safety' ? toRuntimeIssueBatch(runtimeIssues) : [];
   state.feedbackBatch = getDailyFeedback().captureBatch();
+  // GitHub 反馈批次：同步切收集器私有缓存快照（无网络），失败返回显式 incomplete 批次。
+  const githubBatch = githubFeedback.captureFeedbackBatch();
+  state.githubFeedbackBatch = githubFeedback.summarizeBatch(githubBatch);
   state.feedbackCleanupPending = false;
   state.learningReceipt = '';
   if (task === 'safety') {
@@ -1314,7 +1341,7 @@ function launchEvolution(task, payload = {}) {
   const evidenceFingerprint = task === 'activity'
     ? activityEvidenceFingerprint(payload.report)
     : (payload.combinedDaily ? String(payload.activityPlan?.fingerprint || '') : '');
-  const incrementalContext = buildIncrementalReviewContext(current, task, payload.report);
+  const incrementalContext = buildIncrementalReviewContext(current, task, payload.report, githubBatch);
   const prompt = task === 'safety'
     ? buildSafetyPrompt(
         current.userInstruction,
@@ -1510,6 +1537,19 @@ function launchEvolution(task, payload = {}) {
         : `${notificationContent}\n新活动: ${payload.newUnknown.join(',') || '无'}；结束: ${payload.newEnded.join(',') || '无'}；复核: ${payload.reviewIds.join(',') || '无'}`,
     );
     if (outcome === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
+    // pending_apply = 已推送 + 远端核对 + 隐私扫描通过；只在该边界进入反馈回复链路。
+    // 异步收口不阻塞 finalize；编排修复轮（repairOnly）没有原巡检结论，不回复 issue。
+    if (outcome === 'pending_apply' && !teamJournal?.repairOnly) {
+      void githubFeedback.handlePublishedEvolution({
+        status: outcome,
+        commit: headAfter,
+        dualAgentEnabled: settings.dualAgentEnabled,
+        mainAgent: agent,
+        batchSummary: next.githubFeedbackBatch,
+        journal: teamJournal,
+        changeSummary: next.changeSummary,
+      }).catch(() => {});
+    }
     // 每日自动名额已消费（含失败），不再自动重跑；内部两次有界返工由团队工作流自己完成。
   };
   const watchAgent = () => {
@@ -1911,6 +1951,16 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
     settleDailyReview(latest);
     writeState(latest);
     await notify('农场 bot 进化推送已恢复', [latest.summary, latest.changeSummary].filter(Boolean).join('\n'));
+    // 重推收口后同样进入反馈回复链路（发布核对在发送前还会再做一次）。
+    void githubFeedback.handlePublishedEvolution({
+      status: 'pending_apply',
+      commit,
+      dualAgentEnabled: latest.dualAgentEnabled,
+      mainAgent: latest.mainAgent,
+      batchSummary: latest.githubFeedbackBatch,
+      journal: latest.collaboration,
+      changeSummary: latest.changeSummary,
+    }).catch(() => {});
   });
 }
 
@@ -2047,6 +2097,17 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
   await notify(`农场 bot ${tag}恢复结果`, [next.summary, next.changeSummary, ...next.privacyFindings]
     .filter(Boolean).join('\n'));
   if (next.status === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
+  if (next.status === 'pending_apply' && !teamJournal?.repairOnly) {
+    void githubFeedback.handlePublishedEvolution({
+      status: 'pending_apply',
+      commit: headAfter,
+      dualAgentEnabled: active.dualAgentEnabled,
+      mainAgent: active.agent,
+      batchSummary: next.githubFeedbackBatch,
+      journal: teamJournal,
+      changeSummary: next.changeSummary,
+    }).catch(() => {});
+  }
 
 }
 
@@ -2120,6 +2181,31 @@ function reconcileSynchronizedPrivacyBlock(state) {
   return next;
 }
 
+/**
+ * 已发布进化的反馈收口补挂钩（启动恢复/推送自愈共用）：状态是已验证发布
+ * （pending_apply/applied）、有实际提交与批次摘要，且（双 Agent）主批准 journal 仍
+ * 有效时，幂等地再进一次反馈收口。入队按键去重、发送有送达标记核对，重复调用不会
+ * 重复回复；任何前置条件缺失都直接返回——绝不伪造批准/学习/清理状态，也不触发新的
+ * 进化运行。未启用反馈路由时该调用是纯 no-op（disabled）。
+ */
+function resumePublishedFeedback(state) {
+  if (!state || !['pending_apply', 'applied'].includes(state.status)) return;
+  if (!state.commit || !state.githubFeedbackBatch) return;
+  const journal = state.collaboration;
+  // repairOnly 轮没有原巡检结论（与 finalize 同口径），不得作为批准依据。
+  if (state.dualAgentEnabled
+    && (journal?.repairOnly || !isTeamResultApproved(journal, state.commit))) return;
+  void githubFeedback.handlePublishedEvolution({
+    status: state.status,
+    commit: state.commit,
+    dualAgentEnabled: state.dualAgentEnabled === true,
+    mainAgent: state.mainAgent || state.agent,
+    batchSummary: state.githubFeedbackBatch,
+    journal,
+    changeSummary: state.changeSummary,
+  }).catch(() => {});
+}
+
 function startActivityEvolver(options = {}) {
   deps = options;
   scheduler.clearAll();
@@ -2146,6 +2232,12 @@ function startActivityEvolver(options = {}) {
   }
 
   scheduleDailyEvolution();
+  // GitHub 反馈收集器：立即采集一次后按 15-30 分钟有界轮询；未启用时零定时器零外呼。
+  githubFeedback.startGithubFeedbackCollector();
+  // 启动恢复：进程可能在「已验证发布」落盘后、反馈入队/送达前死亡，排空只能补已入队
+  // 条目。这里对仍有效的发布收口幂等补挂钩（入队去重保证不重复回复），不伪造批准、
+  // 不触发新的进化运行。
+  resumePublishedFeedback(reconciled.state);
   const dateKey = getLocalDateKey();
   if (reconciled.state.status === 'push_failed' && reconciled.state.commit) {
     schedulePushRetry(reconciled.state.commit, DAILY_RETRY_MS);
@@ -2290,6 +2382,12 @@ async function reviseEvolution(value) {
     ? `正在按修改要求重做被隐私闸门拦截的提交 ${rejectedCommit.slice(0, 8)}（Agent 续接原会话）`
     : `正在拒绝提交 ${rejectedCommit.slice(0, 8)}，推送回退后将按新要求重新执行${task === 'safety' ? '安全巡检' : '活动进化'}`;
   writeState(state);
+  // 拒绝边界已成立：在任何被等待的 revert/push 之前，先把发件箱里该提交的未发送
+  // 条目扣成终态。否则远端 main 仍指向被拒修复的窗口期内，排空循环可能把「已修复」
+  // 评论发出去。已送达条目不撤回（不否认已发布事实）；失败只影响反馈通道，不阻塞回退。
+  try {
+    await githubFeedback.holdGithubFeedbackForRevision({ commit: rejectedCommit, reason: 'owner_reverting' });
+  } catch { /* 反馈通道故障不改变拒绝/回退语义 */ }
 
   let revertHead = '';
   if (privacyRedo) {
