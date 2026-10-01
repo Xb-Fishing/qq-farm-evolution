@@ -1,6 +1,6 @@
 {
-  "reviewedAt": "2026-09-11",
-  "method": "客户端 ItemInfo/Plant 快照交叉核对 + 当前 Bag 出售条件 + 腾讯 CDN PNG 内容与 SHA-256 校验",
+  "reviewedAt": "2026-10-01",
+  "method": "客户端 ItemInfo/Plant 快照交叉核对 + 当前 Bag 出售条件；早期 entries 逐条经腾讯 CDN PNG 内容与 SHA-256 校验（含 url 字段者）；2026-10-01 起 activityEntries 快照来源条目（sourceGrade=reviewed_public_client_snapshot）按经审阅的公开参考系提取快照核验：sourcePath 相对路径 + gitBlob + sha256 三方对齐，CDN URL/原生资源清单关联未观测，属待改进的溯源项",
   "references": [
     {
       "commit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
@@ -9,6 +9,16 @@
     {
       "commit": "6cd1e4e9006075448efa74accb088c99a2d055de",
       "repositoryAlias": "public-reference-2"
+    },
+    {
+      "commit": "864caf335192321c6a6c3737f4801f9b6a2b3a82",
+      "repositoryAlias": "public-reference-3",
+      "note": "官方提取 ItemInfo/Plant 含 20435 家族（20435/40435/1040435/1020435/1120435）与 seed_images 三 PNG（git blob 026b2c69/785e57e3）"
+    },
+    {
+      "commit": "9982736473545e43e8b8746f82ef074d46436b08",
+      "repositoryAlias": "public-reference-4",
+      "note": "40435.png 独立携带同一 blob 026b2c69，与 public-reference-3 字节一致；两参考系同源与否未验证，不作独立性主张"
     }
   ],
   "entries": [
@@ -316,6 +326,39 @@
       "sha256": "180c64aa50a44e01816135ed1c0c62e6f6cbc4010a41d18018cbae9bb4482089",
       "sourceCommit": "34505ac2ad19f259bca952d4ea369037dd087ecb",
       "assetPath": "gold/Crop_5995"
+    },
+    {
+      "id": 20435,
+      "file": "core/src/gameConfig/seed_images_named/20435_Crop_435_Seed.png",
+      "sha256": "40a37caa1e73c186b9085515fd35021784af7eea98423bd4ef2046d08216f291",
+      "sourceCommit": "864caf335192321c6a6c3737f4801f9b6a2b3a82",
+      "assetPath": "Crop_435",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20435.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "gitBlob": "026b2c697807161e61dc7805e3957b5e6d42fee7",
+      "note": "100x100 RGBA；assetPath 为 ItemInfo 观测到的逻辑资产名 Crop_435；与经审阅提取快照的 sourcePath/gitBlob/sha256 对齐；CDN URL/原生资源清单关联未观测"
+    },
+    {
+      "id": 40435,
+      "file": "core/src/gameConfig/seed_images_named/40435_Crop_435_Seed.png",
+      "sha256": "40a37caa1e73c186b9085515fd35021784af7eea98423bd4ef2046d08216f291",
+      "sourceCommit": "864caf335192321c6a6c3737f4801f9b6a2b3a82",
+      "assetPath": "Crop_435",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/40435.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "gitBlob": "026b2c697807161e61dc7805e3957b5e6d42fee7",
+      "note": "与 20435 复用同一 PNG 的依据：两处 source 文件 gitBlob 与 sha256 完全一致，且 ItemInfo 中种子 20435/果实 40435 逻辑资产名同为 Crop_435（同枸杞 21625/41625 先例）；public-reference-4 亦携带同 blob 的 40435.png 交叉；CDN URL/原生资源清单关联未观测"
+    },
+    {
+      "id": 1040435,
+      "file": "core/src/gameConfig/seed_images_named/1040435_gold_Crop_435_Seed.png",
+      "sha256": "20d19f25b0edfa47ba90e3b854478337ac5bf4bf7e949bb9b5c6b1bd4c9e7385",
+      "sourceCommit": "864caf335192321c6a6c3737f4801f9b6a2b3a82",
+      "assetPath": "gold/Crop_435",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040435.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "gitBlob": "785e57e381264a2cae00ebe0add3390f88d6c7b9",
+      "note": "100x100 RGBA；assetPath 为 ItemInfo 观测到的逻辑资产名 gold/Crop_435；同一 blob 亦用于该参考系 1120435.png（黄金展示植物）；CDN URL/原生资源清单关联未观测"
     }
   ]
 }
