@@ -283,5 +283,24 @@
     "desc": "在好友农场放置可获得30经验，仅限好友本人清除，可获得相同奖励。",
     "icon_res": "gui/texture/icon/icon_bug_golden/spriteFrame",
     "evidence": "神秘商人自动购买实际到账 301101 x10（2026-09-30 13:54，bag_unclassified_item 复盘）+ client-config-evidence ItemInfo 快照命中（type 23、icon_bug_golden、desc 逐字）；interaction_type=additemuseItem，同 5005/5006 使坏族；见 docs/HANDOFF.md 2026-09-30 巡检"
+  },
+  {
+    "id": 20435,
+    "name": "山丹丹种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_435",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的山丹丹。",
+    "evidence": "公开参考系官方提取 ItemInfo 20435 逐字（type 5、plant、Crop_435、level 41、sells 1001:2000）+ Plant 1020435 seed_id=20435/fruit 40435×48 交叉 + 本机 Bag 实际出现（2026-10-01 bag_unclassified 复盘）+ 本机 steal 实测服务端土地名 山丹丹/黄金·山丹丹 与提取配置名称逐字一致；见 tmp 私有取证 2026-10-01"
+  },
+  {
+    "id": 1040435,
+    "name": "黄金·山丹丹",
+    "type": 17,
+    "asset_name": "gold/Crop_435",
+    "sells": "1005:6",
+    "evidence": "公开参考系官方提取 ItemInfo 1040435 逐字（type 17、gold/Crop_435、sells 1005:6、level 200）+ Plant 1120435 黄金·山丹丹 fruit 1040435×10 交叉 + 本机 steal 实测黄金·山丹丹 命名地块到手 1040435（每地 1-3，2026-10-01 六轮/四好友）；黄金判定来自官方提取与服务端植物名双源（非 ID 段规律）"
   }
 ]
