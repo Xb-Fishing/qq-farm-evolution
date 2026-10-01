@@ -67,6 +67,22 @@
 - pnpm 10+
 - Git
 
+### 初始化管理员（首次启动前）
+
+全新数据目录没有默认管理员，也没有默认密码。首次启动前，先在本机环境变量里配置管理员：
+
+```bash
+export FARM_ADMIN_USERNAME='<your-admin-name>'
+export FARM_ADMIN_PASSWORD='<your-strong-password>'
+```
+
+- 管理员只在数据目录还没有任何管理员时创建；已有管理员的部署继续使用原账号，不需要重复初始化，也不会因修改环境变量而覆盖密码。
+- 源码方式启动不会自动读取仓库根目录的 `.env`：在完成依赖安装和前端构建后，直接 `npm --prefix core start`（或 `bash start.sh` / `pnpm -C core dev`）前要先 `export`，或写进你使用的进程管理器环境。
+- 用户名需 3-32 位字母数字下划线，密码需满足强度要求，不符合时拒绝创建。
+
+> [!IMPORTANT]
+> 不要把初始化变量写进仓库、日志或截图，也不要把管理面板直接暴露到公网。
+
 ### 把农场跑起来
 
 ```bash
@@ -82,27 +98,37 @@ bash start.sh
 
 看到服务启动后，打开 <http://localhost:3007>，你的农场控制室就准备好了。
 
-全新数据目录没有默认管理员密码。首次启动前在本机配置一个强密码：
-
-```bash
-export FARM_ADMIN_USERNAME='<your-admin-name>'
-export FARM_ADMIN_PASSWORD='<your-strong-password>'
-```
-
-> [!IMPORTANT]
-> 不要把初始化变量写进仓库、日志或截图，也不要把管理面板直接暴露到公网。已有 `core/data/users.json` 的部署继续使用原管理员，不需要重复初始化。
-
 想继续装修控制室？可以另外启动前端开发服务器：
 
 ```bash
 pnpm dev:web
 ```
 
+### 关于注册卡密
+
+- 管理员账号直接登录面板，不需要注册卡密。
+- 本部署的注册卡密由管理员在面板「卡密管理」中创建：时间卡密可用于注册和续费；额度卡密只能登录后续费，不能用于注册。
+- 「创建时间卡密」和「开启免费领取」是两个独立的动作：面板需要先有可领取的时间卡密库存，才能打开免费领取开关；全新部署的免费领取默认关闭，需管理员显式开启。
+
 ## 🐳 Docker 部署
 
 ```bash
 git clone https://github.com/Xb-Fishing/qq-farm-evolution.git qq-farm-bot
 cd qq-farm-bot
+```
+
+首次部署时，先在仓库根目录创建 `.env`，将占位符替换为你自己的管理员用户名和强密码：
+
+```dotenv
+FARM_ADMIN_USERNAME='<your-admin-name>'
+FARM_ADMIN_PASSWORD='<your-strong-password>'
+```
+
+`docker compose` 会把这两个值转发进容器。密码使用单引号包裹，避免 `$` 等字符被当作变量展开。已有管理员的部署可省略这一步；未配置时容器仍会启动，但不会创建管理员。
+
+完成配置后启动：
+
+```bash
 docker compose up -d --build
 ```
 
@@ -128,7 +154,7 @@ docker compose up -d --build
 | 抓包代理端口池 | `18000-18999` |
 | 持久化数据 | 仓库上级目录的 `data/` |
 
-如需指定抓包服务对外地址，可在仓库根目录创建 `.env`：
+如需指定抓包服务对外地址，可在仓库根目录的 `.env` 中另外设置：
 
 ```dotenv
 CAPTURE_ADVERTISE_IPS=203.0.113.10,198.51.100.20

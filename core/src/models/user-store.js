@@ -15,8 +15,8 @@ const DEFAULT_ACCOUNT_LIMIT = 2;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-// 卡密领取状态
-let cardClaimEnabled = true;
+// 卡密领取状态（全新/不可读的配置一律默认关闭，只有文件里显式 enabled 才开启）
+let cardClaimEnabled = false;
 let cardClaimRecords = [];
 
 // PBKDF2 参数
@@ -868,12 +868,14 @@ function loadCardClaimRecords() {
             cardClaimEnabled = data.enabled === true;
             cardClaimRecords = data.records || [];
         } else {
-            cardClaimEnabled = true;
+            // 全新部署默认关闭免费领取，需管理员在面板显式开启
+            cardClaimEnabled = false;
             cardClaimRecords = [];
             saveCardClaimRecords();
         }
     } catch {
-        cardClaimEnabled = true;
+        // 配置不可读时按关闭处理，避免无库存却对外显示可领取
+        cardClaimEnabled = false;
         cardClaimRecords = [];
     }
 }

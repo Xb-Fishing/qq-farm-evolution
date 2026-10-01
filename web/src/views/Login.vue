@@ -34,6 +34,7 @@ const rateLimitRemaining = ref(0)
 const routeUsername = computed(() => String(route.query.username || '').trim())
 
 const cardClaimEnabled = ref(false)
+const availableTimeCards = ref(0)
 const cardClaimLoading = ref(false)
 const showClaimModal = ref(false)
 const claimModalContent = ref({
@@ -43,6 +44,9 @@ const claimModalContent = ref({
   cardCode: '',
   days: 0,
 })
+
+// 已开启免费领取但库存为 0：按钮禁用并提示
+const claimStockEmpty = computed(() => cardClaimEnabled.value && availableTimeCards.value <= 0)
 
 const showResetVerifyModal = ref(false)
 const showResetPasswordModal = ref(false)
@@ -378,6 +382,8 @@ async function checkCardClaimStatus() {
     const res = await api.get('/api/card-claim/status')
     if (res.data.ok) {
       cardClaimEnabled.value = res.data.enabled === true
+      const stock = Number(res.data.availableTimeCards)
+      availableTimeCards.value = Number.isFinite(stock) && stock > 0 ? Math.floor(stock) : 0
     }
   }
   catch (e) {
@@ -386,7 +392,8 @@ async function checkCardClaimStatus() {
 }
 
 async function claimFreeCard() {
-  if (cardClaimLoading.value)
+  // 程序化点击兜底：未开启或无库存时不发请求
+  if (cardClaimLoading.value || !cardClaimEnabled.value || availableTimeCards.value <= 0)
     return
 
   cardClaimLoading.value = true
@@ -430,6 +437,8 @@ async function claimFreeCard() {
   }
   finally {
     cardClaimLoading.value = false
+    // 领取尝试后刷新库存与开关状态（不改变每人一张的发放语义）
+    checkCardClaimStatus()
   }
 }
 
@@ -551,11 +560,11 @@ async function fetchGameVersion() {
             <button
               type="button"
               class="claim-card-btn"
-              :disabled="cardClaimLoading"
+              :disabled="cardClaimLoading || claimStockEmpty"
               @click="claimFreeCard"
             >
               <span v-if="cardClaimLoading" class="i-svg-spinners-90-ring-with-bg" />
-              <span v-else>免费领取卡密</span>
+              <span v-else>{{ claimStockEmpty ? '暂无可领取卡密' : '免费领取卡密' }}</span>
             </button>
           </div>
 
@@ -566,6 +575,9 @@ async function fetchGameVersion() {
             placeholder="请输入卡密"
             :required="!isLogin"
           />
+          <p class="form-hint">
+            注册卡密由本站管理员发放。自行部署请使用配置好的管理员账号登录，管理员无需卡密。
+          </p>
         </div>
 
         <BaseButton
