@@ -10,6 +10,7 @@ import BaseInput from '@/components/ui/BaseInput.vue'
 import { getPasswordStrength } from '@/composables/usePasswordStrength'
 import { useAppStore } from '@/stores/app'
 import { formatTimeDuration, useUserStore } from '@/stores/user'
+import { resolveSafeRedirect } from '@/utils/safe-redirect'
 
 const USERNAME_RE = /^\w+$/
 
@@ -154,7 +155,8 @@ async function handleSubmit() {
           success.value = '登录成功！请修改默认密码以确保账户安全'
         }
         setTimeout(() => {
-          window.location.href = '/'
+          // 提醒通知里的自助链接会在登录后回到原页面；只接受站内相对路径。
+          window.location.href = resolveSafeRedirect(route.query.redirect) || '/'
         }, 500)
       }
       else {

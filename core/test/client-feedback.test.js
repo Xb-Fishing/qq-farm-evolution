@@ -21,9 +21,9 @@ function fixture() {
     hasAttribute() { return false; }
     getAttribute() { return null; }
   }
-  const window = { location: { pathname: '/friends/private-name' }, addEventListener: (key, fn) => { listeners[key] = fn; } };
+  const window = { location: { pathname: '/friends/private-name', origin: 'https://panel.example.invalid' }, addEventListener: (key, fn) => { listeners[key] = fn; } };
   const document = { visibilityState: 'visible', addEventListener: (key, fn) => { listeners[key] = fn; } };
-  const globals = { window, document, Element, Uint8Array, AbortController,
+  const globals = { window, document, Element, Uint8Array, AbortController, URL,
     crypto: require('node:crypto').webcrypto,
     Date: { now: () => time },
     localStorage: { getItem: key => storage.get(key) || null },
@@ -73,6 +73,7 @@ test('真实 Axios 入口将点击关联号交给后端，网络错误产生固�
     'axios': { __esModule: true, default: webRequire('axios') },
     '@/stores/toast': { useToastStore: () => toast },
     '@/utils/daily-feedback': f.feedback,
+    '@/utils/safe-redirect': f.load('utils/safe-redirect.ts'),
   }).default;
   let trace;
   api.defaults.adapter = async (config) => {

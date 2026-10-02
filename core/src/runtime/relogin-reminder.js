@@ -11,6 +11,9 @@ function createReloginReminderService(deps) {
     getAccounts,
     addOrUpdateAccount,
     resolveWorkerControls,
+    // 小注入点：同一账号的失效提醒已由微信 Bark 重扫提醒认领时跳过通用
+    // 下线推送，避免双提醒；QQ/普通掉线/旧数据路径不受影响。
+    shouldSkipOfflineReminder,
   } = deps;
 
   const reloginWatchers = new Map();
@@ -277,6 +280,15 @@ function createReloginReminderService(deps) {
       log('系统',
         `触发下线提醒: 账号=${  accountName || accountId  }, 原因=${  reason}`,
         { accountId, accountName, reason, username });
+
+      if (typeof shouldSkipOfflineReminder === 'function') {
+        try {
+          if (shouldSkipOfflineReminder({ accountId, accountName, reason, username })) {
+            log('系统', '该账号的微信失效提醒已由重扫提醒覆盖，跳过通用下线提醒', { accountId });
+            return;
+          }
+        } catch { /* 判定异常按不跳过处理 */ }
+      }
 
       const cfg = store.getOfflineReminder ? store.getOfflineReminder(username) : null;
       if (!cfg) {

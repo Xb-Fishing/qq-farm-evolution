@@ -336,6 +336,17 @@ function registerAdminAccountRoutes({
       if (body.wxSessionId && body.wxid && currentUser) {
         const wxLoginAdapter = require("../services/wx-login-adapter");
         wxLoginAdapter.consumePendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
+        // 新授权已被服务端接受：推进扫码代次（允许下一次失效重新提醒），
+        // 并作废该账号遗留的自助二维码（守望/图片能力/adapter 会话）。
+        try {
+          const reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
+          const reminderAccountId = isUpdate
+            ? String(nextAccount.id)
+            : String((data.accounts.at(-1) || {}).id || "");
+          if (reminderAccountId) {
+            await reminder.noteAcceptedScan(reminderAccountId);
+          }
+        } catch { /* 提醒状态更新失败不阻断账号保存 */ }
       }
       if (provider.addAccountLog) {
         const accountId = isUpdate

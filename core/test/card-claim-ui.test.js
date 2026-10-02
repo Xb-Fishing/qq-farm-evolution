@@ -106,6 +106,9 @@ function loginHarness({ enabled, availableTimeCards, claimResult }) {
         '@/composables/usePasswordStrength': { getPasswordStrength: () => ({ valid: true, message: '', score: 2 }) },
         '@/stores/app': { useAppStore: () => appStub },
         '@/stores/user': { useUserStore: () => ({}), formatTimeDuration: card => `${card.days}天` },
+        '@/utils/safe-redirect': evaluate(fs.readFileSync(path.join(root, 'web/src/utils/safe-redirect.ts'), 'utf8'), {}, {
+            window: { location: { origin: 'https://panel.example.invalid' } },
+        }),
     }, { console }).default;
 
     // 必须带 bindingMetadata：script-setup 绑定经 $setup 解析，而不是实例代理
