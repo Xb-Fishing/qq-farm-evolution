@@ -186,6 +186,16 @@ function createRuntimeEngine(options = {}) {
 
     runtimeEvents.on('account_log', (entry) => {
         if (onAccountLog) onAccountLog(entry);
+        // 「已在其他终端登录」踢下线：作为用户手机进场的参考信号记录（维护
+        // 计划前置条件）。绑定快照在调用内同步捕获；异步落盘失败静默放弃，
+        // 不影响踢下线/接管主流程，也不代表能检测到全部手机进场。
+        if (entry && entry.action === 'kickout_stop'
+            && String(entry.reason || '').trim() === '已在其他终端登录') {
+            try {
+                const recorded = getSharedWxLoginReminder().noteOtherTerminalLogin(entry.accountId);
+                if (recorded && typeof recorded.catch === 'function') recorded.catch(() => {});
+            } catch { /* 记录失败不影响账号日志 */ }
+        }
     });
 
     /** 广播配置到所有/指定 Worker */
@@ -264,10 +274,18 @@ function createRuntimeEngine(options = {}) {
             await startAllAccounts();
         }
         autoCodeRefresh.rescheduleAll();
+
+        // 扫码维护参考计划的本地巡检：只读注册表与账号状态，零网络探测。
+        try {
+            getSharedWxLoginReminder().startMaintenanceSweep();
+        } catch (error) {
+            log('错误', `微信扫码维护计划巡检启动失败: ${(error && error.message) || error}`);
+        }
     }
 
     /** 停止所有账号 */
     function stopAllAccounts() {
+        try { getSharedWxLoginReminder().stopMaintenanceSweep(); } catch { /* 未启动即可 */ }
         for (const id of Object.keys(workers)) {
             stopWorker(id);
         }

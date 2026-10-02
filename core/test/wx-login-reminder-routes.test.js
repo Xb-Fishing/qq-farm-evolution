@@ -153,6 +153,9 @@ test('配置保存是真实异步落盘：POST 后 GET/磁盘都返回持久化�
     barkServer: 'https://bark.selfhost.example.com',
     deviceKey: 'owner1-key',
     serverUrl: 'https://panel.example.com',
+    advanceEnabled: true,
+    maintenanceCycleHours: 24,
+    advanceMinutes: 60,
   });
   // 磁盘上确实有（重启可恢复），且为私有权限。
   const registry = JSON.parse(fs.readFileSync(path.join(dataDir, 'wx-login-reminder.json'), 'utf8'));
@@ -180,6 +183,57 @@ test('配置校验失败 400：带字段级错误，不落盘', async () => {
   }
   const untouched = await call('GET', '/api/user/wx-login-reminder/config', { user: owner2 });
   assert.equal(untouched.body.config.deviceKey, '', '非法补丁不得部分落盘');
+});
+
+test('维护计划字段校验：数值边界、周期-提前量关系、部分 PATCH 合并、可关闭', async () => {
+  // 非法值：非有限数、越界、提前量不小于周期。
+  for (const body of [
+    { maintenanceCycleHours: 3 },
+    { maintenanceCycleHours: 169 },
+    { maintenanceCycleHours: 'abc' },
+    { advanceMinutes: 4 },
+    { advanceMinutes: 24 * 60 },
+    { maintenanceCycleHours: 4, advanceMinutes: 240 },
+    { advanceEnabled: 'yes' },
+  ]) {
+    const res = await call('POST', '/api/user/wx-login-reminder/config', { user: owner2, body });
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+    assert.equal(res.body.ok, false);
+    assert.ok(Object.keys(res.body.fields || {}).length > 0);
+  }
+
+  // 只改周期但小于既有提前量：关系校验必须拦截。
+  const shrink = await call('POST', '/api/user/wx-login-reminder/config', {
+    user: owner2, body: { maintenanceCycleHours: 5 },
+  });
+  // 默认提前量 60 < 5h：应通过；把提前量改大后再缩周期才被拦。
+  assert.equal(shrink.statusCode, 200);
+  const widen = await call('POST', '/api/user/wx-login-reminder/config', {
+    user: owner2, body: { advanceMinutes: 290 },
+  });
+  assert.equal(widen.statusCode, 200);
+  assert.equal(widen.body.config.advanceMinutes, 290);
+  const shrinkNow = await call('POST', '/api/user/wx-login-reminder/config', {
+    user: owner2, body: { maintenanceCycleHours: 4 },
+  });
+  assert.equal(shrinkNow.statusCode, 400);
+  assert.ok(shrinkNow.body.fields.maintenanceCycleHours);
+
+  // 部分 PATCH 合并：只改提前量，周期保持。
+  const partial = await call('POST', '/api/user/wx-login-reminder/config', {
+    user: owner2, body: { advanceMinutes: 90 },
+  });
+  assert.equal(partial.statusCode, 200);
+  assert.equal(partial.body.config.advanceMinutes, 90);
+  assert.equal(partial.body.config.maintenanceCycleHours, 5);
+
+  // 可整体关闭提前提醒（保留终态失效提醒模式）。
+  const off = await call('POST', '/api/user/wx-login-reminder/config', {
+    user: owner2, body: { advanceEnabled: false },
+  });
+  assert.equal(off.statusCode, 200);
+  assert.equal(off.body.config.advanceEnabled, false);
+  assert.equal(off.body.config.enabled, false, '总开关仍保持用户自己的设置');
 });
 
 test('启用时面板地址必须手机可达：localhost 拒绝；缺地址拒绝启用', async () => {

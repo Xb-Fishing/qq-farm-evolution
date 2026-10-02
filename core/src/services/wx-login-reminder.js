@@ -17,11 +17,22 @@ const logger = require('./logger');
  * （noteAcceptedScan，来自面板/自助已认证的保存路径）才递增；token 轮换、
  * 改备注、服务重启都不重置。同代次只发一条；外发声明必须先成功落盘，
  * 落盘失败一律不外发（fail closed），发送失败保留声明不风暴。
+ *
+ * 另含可选「扫码维护参考计划」提前提醒：以真实接受扫码的时刻为基线，
+ * 按用户自设周期（默认 24h，可 4..168h）计算参考维护时间，提前量默认
+ * 60 分钟。它不是微信官方到期时间（上游凭据 ~2h 滚动续期），也不保证
+ * 零断线。发送前置条件：该代次尚未用过唯一一次自动提醒 + 最近 24h 内
+ * 观察到「已在其他终端登录」踢下线信号（作为用户手机进场的参考代理，
+ * 会漏掉无在线 Bot 时的手机进场，也不能区分另一台 PC）。本地定时巡检
+ * 不做任何外部探测、不生成二维码、不改运行中的账号。
  */
 
 const REGISTRY_FILENAME = 'wx-login-reminder.json';
 const DEFAULT_BARK_SERVER = 'https://api.day.app';
 const BARK_SEND_TIMEOUT_MS = 10 * 1000;
+const ADVANCE_SWEEP_INTERVAL_MS = 60 * 1000;
+// 「其他终端登录」信号的参考回看窗口（用户指定固定 24h，不随计划周期变化）。
+const OTHER_TERMINAL_LOGIN_LOOKBACK_MS = 24 * 3600 * 1000;
 // 与 wx-login-adapter 的本地扫码会话期限一致（WX_SESSION_TTL_MS=300s）。
 // 这是本地会话截止，不代表微信侧二维码的实际寿命（可能更早失效）。
 const LOCAL_SESSION_TTL_MS = 300 * 1000;
@@ -47,6 +58,26 @@ function normalizeUserConfig(raw) {
     barkServer: trim(input.barkServer) || DEFAULT_BARK_SERVER,
     deviceKey: trim(input.deviceKey),
     serverUrl: trim(input.serverUrl).replace(/\/+$/, ''),
+    ...normalizeAdvancePlan(input),
+  };
+}
+
+/**
+ * 扫码维护参考计划参数（服务端防御性钳制；路由层另做逐字段校验）：
+ * 周期默认 24h（4..168h），提前量默认 60 分钟（>=5 且严格小于周期）。
+ */
+function normalizeAdvancePlan(input) {
+  const cycleRaw = Number(input.maintenanceCycleHours);
+  const maintenanceCycleHours = Number.isFinite(cycleRaw) && cycleRaw >= 4 && cycleRaw <= 168
+    ? cycleRaw : 24;
+  const advanceRaw = Number(input.advanceMinutes);
+  const fallbackAdvance = 60;
+  let advanceMinutes = Number.isFinite(advanceRaw) ? Math.round(advanceRaw) : fallbackAdvance;
+  advanceMinutes = Math.min(Math.max(advanceMinutes, 5), maintenanceCycleHours * 60 - 1);
+  return {
+    advanceEnabled: input.advanceEnabled !== false,
+    maintenanceCycleHours,
+    advanceMinutes,
   };
 }
 
@@ -80,7 +111,36 @@ function ownSafeEntries(object) {
 }
 
 function emptyRegistry() {
-  return { users: {}, generations: {}, incidents: {} };
+  return {
+    users: {}, generations: {}, incidents: {},
+    acceptedScans: {}, advanceNotices: {}, otherTerminalLogins: {},
+  };
+}
+
+// 可选分区（旧文件缺失视为空）：字段类型非法即整体阻断。
+function validateOptionalSections(parsed) {
+  const shapes = {
+    acceptedScans: value => Number.isInteger(Number(value.at)) && Number(value.at) >= 0
+      && Number.isInteger(Number(value.generation)) && Number(value.generation) >= 0
+      && typeof value.owner === 'string' && typeof value.wxid === 'string',
+    advanceNotices: value => Number.isInteger(Number(value.generation)) && Number(value.generation) >= 0
+      && Number.isInteger(Number(value.claimedAt)) && Number(value.claimedAt) >= 0
+      && Number.isInteger(Number(value.sentAt)) && Number(value.sentAt) >= 0
+      && typeof value.lastError === 'string',
+    otherTerminalLogins: value => Number.isInteger(Number(value.at)) && Number(value.at) >= 0
+      && typeof value.owner === 'string' && typeof value.wxid === 'string',
+  };
+  for (const [section, check] of Object.entries(shapes)) {
+    if (parsed[section] === undefined) {
+      parsed[section] = {};
+      continue;
+    }
+    if (!isPlainObject(parsed[section])) return false;
+    for (const [, value] of ownSafeEntries(parsed[section])) {
+      if (!isPlainObject(value) || !check(value)) return false;
+    }
+  }
+  return true;
 }
 
 /** 读取 + 校验：文件缺失视为空；损坏/结构非法则进入阻断态（宁可不发，不可错发）。 */
@@ -107,6 +167,7 @@ function readRegistryStrict(file) {
         return { ok: false };
       }
     }
+    if (!validateOptionalSections(parsed)) return { ok: false };
     return { ok: true, data: parsed };
   } catch {
     return { ok: false };
@@ -146,6 +207,12 @@ function createWxLoginReminderService(deps = {}) {
     ? deps.completeRescan : null;
   const registryFile = deps.registryFile
     || (() => getDataFile(REGISTRY_FILENAME));
+  // 本地巡检定时器（测试注入假时钟用）；默认 60s，只读本地状态，无外部探测。
+  const sweepIntervalMs = Math.max(1, Number(deps.sweepIntervalMs) || ADVANCE_SWEEP_INTERVAL_MS);
+  const sweepTimers = deps.timers || {
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: handle => clearInterval(handle),
+  };
 
   // 进程内串行化注册表读写与临界区，配合落盘声明避免并发双发。
   let mutexTail = Promise.resolve();
@@ -180,10 +247,16 @@ function createWxLoginReminderService(deps = {}) {
     return withRegistry(() => {
       const data = loadRegistry();
       if (registryBlocked) throw new Error('REGISTRY_UNAVAILABLE');
+      const cloneEntries = section => Object.fromEntries(
+        Object.entries(data[section] || {}).map(([key, value]) => [key, { ...value }]),
+      );
       const next = {
         users: { ...data.users },
         generations: { ...data.generations },
-        incidents: Object.fromEntries(Object.entries(data.incidents).map(([key, value]) => [key, { ...value }])),
+        incidents: cloneEntries('incidents'),
+        acceptedScans: cloneEntries('acceptedScans'),
+        advanceNotices: cloneEntries('advanceNotices'),
+        otherTerminalLogins: cloneEntries('otherTerminalLogins'),
       };
       const changed = mutator(next) !== false;
       if (!changed) return data;
@@ -258,6 +331,11 @@ function createWxLoginReminderService(deps = {}) {
    * 面板已认证路径成功接受一次新扫码后调用：递增代次并清除待重扫状态，
    * 同时作废该账号遗留的自助二维码（守望/图片能力/adapter 本地会话）。
    * 只有这里能让代次前进（服务端控制），轮换 token / 改备注 / 重启都不会。
+   *
+   * 同时以服务端当前时间记录「真实接受扫码」基线（维护参考计划唯一合法
+   * 起点，绝不用 lastSuccess/updatedAt/进程启动等推断），并作废该代次的
+   * 提前提醒声明（新扫码是唯一重新武装方式）。「其他终端登录」信号在同
+   * 属主/同微信绑定时保留真实旧时间戳，绝不改写成扫码时刻。
    */
   async function noteAcceptedScan(accountId, options = {}) {
     const key = String(accountId || '');
@@ -266,8 +344,28 @@ function createWxLoginReminderService(deps = {}) {
     const ownCompletion = options.keepSessionId && pending?.sessionId === String(options.keepSessionId);
     if (!ownCompletion) supersedePendingSessions(key);
     await commitRegistry((data) => {
-      data.generations[key] = (Number(data.generations[key]) || 0) + 1;
+      const nextGeneration = (Number(data.generations[key]) || 0) + 1;
+      data.generations[key] = nextGeneration;
       delete data.incidents[key];
+      delete data.advanceNotices[key];
+      const liveAccount = findAccount(key);
+      const previousLogin = data.otherTerminalLogins[key];
+      if (!liveAccount) {
+        // 账号已不存在：绑定基线一并失效。
+        delete data.acceptedScans[key];
+        delete data.otherTerminalLogins[key];
+        return;
+      }
+      const owner = String(liveAccount.username || '').trim();
+      const wxid = String(liveAccount.wxid || '');
+      if (previousLogin && String(previousLogin.owner) === owner
+        && String(previousLogin.wxid) === wxid) {
+        data.otherTerminalLogins[key] = { ...previousLogin };
+      } else {
+        // 换属主/换微信：旧信号不属于新绑定，丢弃（不伪造新时间戳）。
+        delete data.otherTerminalLogins[key];
+      }
+      data.acceptedScans[key] = { at: now(), generation: nextGeneration, owner, wxid };
     });
     if (ownCompletion && pendingByAccount.get(key) === pending) {
       // 本次自助保存推进代次，保留它的完成状态与启动守卫；其他扫码取消旧任务。
@@ -310,6 +408,302 @@ function createWxLoginReminderService(deps = {}) {
       sentAt: Number(incident.sentAt) || 0,
       lastError: sanitizeErrorText(incident.lastError),
     };
+  }
+
+  // ── 「其他终端登录」信号（用户手机进场参考；官方踢下线原因文本） ──
+
+  function latestOtherTerminalLogin(data, accountId) {
+    const entry = data.otherTerminalLogins[String(accountId)];
+    if (!isPlainObject(entry)) return null;
+    const at = Number(entry.at);
+    if (!Number.isInteger(at) || at < 0) return null;
+    return { at, owner: String(entry.owner || ''), wxid: String(entry.wxid || '') };
+  }
+
+  function isRecentOtherTerminalLogin(entry, owner, wxid, nowMs) {
+    if (!entry || !owner || !wxid) return false;
+    if (entry.owner !== owner || entry.wxid !== wxid) return false;
+    // 只认窗口内且不晚于当前时刻的时间戳（未来值视为脏数据）。
+    return entry.at <= nowMs && entry.at >= nowMs - OTHER_TERMINAL_LOGIN_LOOKBACK_MS;
+  }
+
+  /**
+   * runtime 监听到「已在其他终端登录」踢下线时调用：记录服务端当前时刻，
+   * 作为维护参考计划的手机进场参考。同步捕获绑定快照后异步落盘；
+   * 任何失败都静默放弃（信号缺失只会少发提醒，fail closed），不影响
+   * 踢下线/接管主流程。不推进代次、不重置计划、不触发任何外发。
+   */
+  function noteOtherTerminalLogin(accountId) {
+    const key = String(accountId || '');
+    if (!key || !SAFE_KEY_RE.test(key)) return Promise.resolve(false);
+    const account = findAccount(key);
+    if (!account || String(account.platform || '') !== 'wx') return Promise.resolve(false);
+    const owner = String(account.username || '').trim();
+    const wxid = String(account.wxid || '');
+    // 缺原生微信身份（wxid 为空）的账号没有可绑定的进场参考，不记录。
+    if (!owner || !wxid) return Promise.resolve(false);
+    const at = now();
+    return withRegistry(() => {
+      const data = loadRegistry();
+      if (registryBlocked) return false;
+      const liveAccount = findAccount(key);
+      if (!liveAccount || String(liveAccount.platform || '') !== 'wx') return false;
+      if (String(liveAccount.username || '').trim() !== owner
+        || String(liveAccount.wxid || '') !== wxid) return false;
+      const previous = data.otherTerminalLogins[key];
+      if (previous && Number(previous.at) > at) return false; // 迟到旧信号不得回拨最新值
+      const otherTerminalLogins = { ...data.otherTerminalLogins, [key]: { at, owner, wxid } };
+      try {
+        writeRegistryFilePrivate(registryFile(), { ...data, otherTerminalLogins });
+      } catch {
+        return false; // 写失败：不更新内存态，信号缺失宁可少发
+      }
+      registryState = { ...data, otherTerminalLogins };
+      return true;
+    });
+  }
+
+  // ── 扫码维护参考计划（本地巡检；仅真实接受扫码作为基线） ──
+
+  /** 计划视图：只读；pauseReason 必须与实际状态一致（可用且无阻塞时为空）。 */
+  function buildPlanView(account) {
+    const nowMs = now();
+    const owner = String(account.username || '').trim();
+    const wxid = String(account.wxid || '');
+    const config = getUserConfig(owner);
+    const data = loadRegistry();
+    const key = String(account.id);
+    const activity = latestOtherTerminalLogin(data, key);
+    // 绑定不符的信号时间戳属于旧绑定，不得展示在新绑定名下。
+    const bindingMatched = !!activity && activity.owner === owner && activity.wxid === wxid;
+    const view = {
+      mode: 'reference',
+      advanceEnabled: config.advanceEnabled,
+      cycleHours: config.maintenanceCycleHours,
+      advanceMinutes: config.advanceMinutes,
+      available: false,
+      waitingForScan: true,
+      acceptedScanAt: 0,
+      maintenanceAt: 0,
+      reminderAt: 0,
+      remainingMs: 0,
+      overdue: false,
+      notified: false,
+      notificationSentAt: 0,
+      notificationError: '',
+      recentMobileActivityAt: bindingMatched ? activity.at : 0,
+      recentMobileActivityAvailable: isRecentOtherTerminalLogin(activity, owner, wxid, nowMs),
+      pauseReason: '完成下一次扫码后开始计算计划',
+    };
+    const scan = isPlainObject(data.acceptedScans[key]) ? data.acceptedScans[key] : null;
+    const generation = Number(data.generations[key]) || 0;
+    const scanAt = Number(scan && scan.at);
+    // 缺原生身份 / 无真实扫码基线 / 代次或绑定不符 / 基线时间非法（含未来值）
+    // 都不构成有效计划，也不制造历史时间戳。
+    if (!wxid || !scan || Number(scan.generation) !== generation
+      || String(scan.owner || '') !== owner || String(scan.wxid || '') !== wxid
+      || !Number.isInteger(scanAt) || scanAt <= 0 || scanAt > nowMs) {
+      return view;
+    }
+    const maintenanceAt = scanAt + config.maintenanceCycleHours * 3600_000;
+    const reminderAt = maintenanceAt - config.advanceMinutes * 60_000;
+    const notice = isPlainObject(data.advanceNotices[key])
+      && Number(data.advanceNotices[key].generation) === generation
+      ? data.advanceNotices[key] : null;
+    view.available = true;
+    view.waitingForScan = false;
+    view.acceptedScanAt = scanAt;
+    view.maintenanceAt = maintenanceAt;
+    view.reminderAt = reminderAt;
+    view.remainingMs = maintenanceAt - nowMs;
+    view.overdue = nowMs >= maintenanceAt;
+    // notified = 本代次唯一一次自动提醒已认领（含发送失败，不承诺送达）。
+    view.notified = !!notice;
+    view.notificationSentAt = notice ? (Number(notice.sentAt) || 0) : 0;
+    view.notificationError = notice ? sanitizeErrorText(notice.lastError) : '';
+    // 明确清空：有效计划不得再显示「等待扫码」字样；阻塞原因按实情给出。
+    view.pauseReason = '';
+    if (account.autoLogin === false) {
+      view.pauseReason = '账号已设为不登录（暂停），不发送周期提醒';
+    } else if (config.enabled !== true) {
+      view.pauseReason = '提醒总开关未开启，不发送周期提醒';
+    } else if (!view.recentMobileActivityAvailable) {
+      view.pauseReason = '最近 24 小时未观察到其他终端登录（手机进场参考），暂不发送周期提醒';
+    } else if (config.advanceEnabled !== true) {
+      view.pauseReason = '已在设置中关闭扫码维护参考计划的提前提醒';
+    }
+    return view;
+  }
+
+  /**
+   * 单账号提前提醒判定：只读本地注册表与账号状态（零网络探测、零二维码
+   * 生成）。入口先做同步快照（accountId/owner/wxid/意愿），声明临界区内
+   * 用「下一份注册表状态 + 实时账号绑定」重验全部条件后才落盘声明——
+   * 排队期间的暂停/换绑/禁用/改参数必须拦下且不消耗唯一一次声明；
+   * 外发前再读当前配置与状态做最后一道校验。任何不满足都静默跳过。
+   */
+  async function maybeSendAdvanceNotice(account) {
+    // 同步快照：等待期间账号对象可能被改（autoLogin/wxid 等），不得信可变引用。
+    const key = String(account.id);
+    const snapshot = {
+      accountId: key,
+      owner: String(account.username || '').trim(),
+      wxid: String(account.wxid || ''),
+      active: account.autoLogin !== false,
+    };
+    // 缺属主/缺原生微信身份/用户明确暂停（autoLogin=false）都不发。
+    if (!key || !snapshot.owner || !snapshot.wxid || !snapshot.active) return false;
+    const nowMs = now();
+    const data = loadRegistry();
+    if (registryBlocked) return false;
+    const generation = Number(data.generations[key]) || 0;
+    const scan = isPlainObject(data.acceptedScans[key]) ? data.acceptedScans[key] : null;
+    const scanAt = Number(scan && scan.at);
+    if (!scan) return false; // 没有真实扫码基线：不制造历史时间戳
+    if (Number(scan.generation) !== generation
+      || String(scan.owner || '') !== snapshot.owner
+      || String(scan.wxid || '') !== snapshot.wxid
+      || !Number.isInteger(scanAt) || scanAt <= 0 || scanAt > nowMs) return false;
+    // 该代次已有失效事件（终端兜底已记录/认领）：不再发「参考维护」提醒。
+    const incident = data.incidents[key];
+    if (incident && (Number(incident.generation) || 0) === generation) return false;
+    const notice = data.advanceNotices[key];
+    if (notice && (Number(notice.generation) || 0) === generation) return false;
+
+    // 入口侧预检（快速路径）；真实判定以声明临界区内的最新状态为准。
+    const config = getUserConfig(snapshot.owner);
+    if (config.enabled !== true || config.advanceEnabled !== true) return false;
+    const reminderAt = scanAt + config.maintenanceCycleHours * 3600_000 - config.advanceMinutes * 60_000;
+    if (nowMs < reminderAt) return false;
+    if (!isRecentOtherTerminalLogin(latestOtherTerminalLogin(data, key), snapshot.owner, snapshot.wxid, nowMs)) {
+      return false;
+    }
+
+    let claimed = false;
+    await commitRegistry((next) => {
+      if ((Number(next.generations[key]) || 0) !== generation) return false;
+      const liveScan = next.acceptedScans[key];
+      if (!liveScan || Number(liveScan.at) !== scanAt) return false;
+      const liveIncident = next.incidents[key];
+      if (liveIncident && (Number(liveIncident.generation) || 0) === generation) return false;
+      const liveNotice = next.advanceNotices[key];
+      if (liveNotice && (Number(liveNotice.generation) || 0) === generation) return false;
+      // 临界区内重验实时账号绑定与运行意愿（排队期间的暂停/换绑拦下且不声明）。
+      const liveAccount = findAccount(key);
+      if (!liveAccount || String(liveAccount.platform || '') !== 'wx') return false;
+      if (String(liveAccount.username || '').trim() !== snapshot.owner
+        || String(liveAccount.wxid || '') !== snapshot.wxid) return false;
+      if (liveAccount.autoLogin === false) return false;
+      // 以「下一份注册表」重读属主配置：排队期间的禁用/改参数立即生效，
+      // 周期与提前量也按最新值重新判定到期。
+      const liveConfig = normalizeUserConfig(
+        Object.prototype.hasOwnProperty.call(next.users, snapshot.owner) ? next.users[snapshot.owner] : {},
+      );
+      if (liveConfig.enabled !== true || liveConfig.advanceEnabled !== true) return false;
+      if (!parseBarkTarget(liveConfig.deviceKey, liveConfig.barkServer).key) return false;
+      if (!buildHelpLink(liveConfig, key)) return false;
+      const liveReminderAt = scanAt + liveConfig.maintenanceCycleHours * 3600_000
+        - liveConfig.advanceMinutes * 60_000;
+      if (now() < liveReminderAt) return false;
+      if (!isRecentOtherTerminalLogin(
+        latestOtherTerminalLogin(next, key), snapshot.owner, snapshot.wxid, now())) return false;
+      next.advanceNotices[key] = { generation, claimedAt: now(), sentAt: 0, lastError: '' };
+      claimed = true;
+      return true;
+    });
+    if (!claimed) return false;
+
+    // 外发前最后一道实时校验：配置以「此刻」为准（声明后的禁用仍应拦下），
+    // 终端失效若已记录则不再发参考提醒。
+    const liveData = loadRegistry();
+    if ((Number(liveData.generations[key]) || 0) !== generation) return false;
+    if (liveData.incidents[key]
+      && (Number(liveData.incidents[key].generation) || 0) === generation) return false;
+    const liveAccount = findAccount(key);
+    if (!liveAccount || String(liveAccount.platform || '') !== 'wx'
+      || String(liveAccount.username || '').trim() !== snapshot.owner
+      || String(liveAccount.wxid || '') !== snapshot.wxid
+      || liveAccount.autoLogin === false) return false;
+    const sendConfig = getUserConfig(snapshot.owner);
+    const sendTarget = parseBarkTarget(sendConfig.deviceKey, sendConfig.barkServer);
+    const sendLink = buildHelpLink(sendConfig, key);
+    if (sendConfig.enabled !== true || sendConfig.advanceEnabled !== true
+      || !sendTarget.key || !sendLink) return false;
+
+    const name = String(liveAccount.name || '') || key;
+    const overdue = now() >= scanAt + sendConfig.maintenanceCycleHours * 3600_000;
+    // 措辞不得声称账号此刻必然正常运行（无连接态证据），只说明参考语义。
+    const result = await sendBark(sendConfig, {
+      title: '微信扫码维护提醒',
+      body: `${overdue
+        ? `你设置的账号「${name}」扫码维护参考时间已到。这是维护参考提醒，不表示账号已失效；请方便时点开链接发送新的二维码完成重扫。`
+        : `你设置的账号「${name}」扫码维护参考时间将到。这是维护参考提醒，不表示账号已失效；请方便时点开链接准备/发送新的二维码（到时再生成，现在无需扫码）。`
+         }计划为自行设置的参考，非微信官方到期时间。`,
+      url: sendLink,
+    });
+    await commitRegistry((next) => {
+      const entry = next.advanceNotices[key];
+      if (!entry || (Number(entry.generation) || 0) !== generation) return false;
+      if (result.ok) {
+        entry.sentAt = now();
+        entry.lastError = '';
+        log('系统', `微信扫码维护提前提醒已发送: ${name}`, { accountId: key });
+      } else {
+        entry.lastError = sanitizeErrorText(result.error);
+        log('错误', `微信扫码维护提前提醒发送失败: ${name}`, { accountId: key, error: entry.lastError });
+      }
+      return true;
+    });
+    return true;
+  }
+
+  let sweepTimer = null;
+  let sweepInFlight = false;
+
+  /**
+   * 一轮本地巡检：逐账号判定，单账号异常不阻断其余；不与在途一轮重叠。
+   * 自身任何异常（含 getAccounts 抛错）都被吞掉——巡检失败绝不影响进程。
+   */
+  function sweepOnce() {
+    if (sweepInFlight) return Promise.resolve(0);
+    sweepInFlight = true;
+    return (async () => {
+      let sent = 0;
+      try {
+        const data = getAccounts();
+        const accounts = Array.isArray(data && data.accounts) ? data.accounts : [];
+        for (const account of accounts) {
+          if (!account || String(account.platform || '') !== 'wx') continue;
+          try {
+            if (await maybeSendAdvanceNotice(account)) sent += 1;
+          } catch { /* 单账号失败静默，下一轮再看 */ }
+        }
+      } catch { /* 巡检自身异常静默：绝不冒泡到定时器/启动路径 */ }
+      finally {
+        sweepInFlight = false;
+      }
+      return sent;
+    })();
+  }
+
+  /** 由 runtime-engine 启动一次：立即执行一轮 + 周期巡检；不阻塞进程退出。 */
+  function startMaintenanceSweep() {
+    if (sweepTimer) return false;
+    const handle = sweepTimers.setInterval(() => { sweepOnce(); }, sweepIntervalMs);
+    if (handle && typeof handle.unref === 'function') handle.unref();
+    sweepTimer = handle;
+    try {
+      sweepOnce(); // 启动即补一轮：进程重启后的到期计划不等到下个整周期。
+    } catch { /* 同步异常也不影响启动 */ }
+    return true;
+  }
+
+  function stopMaintenanceSweep() {
+    if (!sweepTimer) return false;
+    const handle = sweepTimer;
+    sweepTimer = null;
+    try { sweepTimers.clearInterval(handle); } catch { /* 已清理 */ }
+    return true;
   }
 
   // ── Bark 发送（严格校验 HTTP 状态 + 厂商 code；device_key 不进日志） ──
@@ -397,12 +791,20 @@ function createWxLoginReminderService(deps = {}) {
         if (boundOwner && String(liveAccount.username || '') !== boundOwner) return false;
         if (boundWxid && String(liveAccount.wxid || '') !== boundWxid) return false;
         if ((Number(data.generations[key]) || 0) !== generation) return false;
+        // 本代次已用过唯一一次自动提醒（提前维护提醒，含发送失败）：
+        // 如实记录失效与 needsRescan，但不再外发第二条。
+        const early = data.advanceNotices[key];
+        const earlyClaimed = isPlainObject(early) && (Number(early.generation) || 0) === generation;
         const incident = data.incidents[key];
         if (incident && (Number(incident.generation) || 0) === generation) {
           if (incident.claimed === true) {
             // 同一代次已声明（含上次发送失败）只补 needsRescan 标记，不重复外发。
             if (incident.needsRescan === true) return false;
             data.incidents[key] = { ...incident, needsRescan: true };
+            return true;
+          }
+          if (earlyClaimed) {
+            data.incidents[key] = { ...incident, needsRescan: true, claimed: true, claimedAt: now() };
             return true;
           }
           // 此前通知未就绪（未启用/缺 Key）只记了 needsRescan：属主配置就绪
@@ -423,12 +825,12 @@ function createWxLoginReminderService(deps = {}) {
           needsRescan: true,
           firstSeenAt: Number(incident && incident.firstSeenAt) || now(),
           // 通知未就绪（未启用/缺 Key）只记 needsRescan 不声明，启用时可补发一次。
-          claimed: canNotify,
-          claimedAt: canNotify ? now() : 0,
+          claimed: canNotify || earlyClaimed,
+          claimedAt: (canNotify || earlyClaimed) ? now() : 0,
           sentAt: 0,
           lastError: '',
         };
-        shouldSend = canNotify;
+        shouldSend = canNotify && !earlyClaimed;
         return true;
       });
       const completedPending = pendingByAccount.get(key);
@@ -887,6 +1289,8 @@ function createWxLoginReminderService(deps = {}) {
         ...pending,
         expiresAtLabel: '本地扫码会话截止（微信侧二维码可能提前失效）',
       } : null,
+      // 扫码维护参考计划（与扫码会话独立：不生成二维码、不改运行状态）。
+      plan: buildPlanView(account),
     };
   }
 
@@ -895,6 +1299,7 @@ function createWxLoginReminderService(deps = {}) {
     setUserConfig,
     sendBark,
     noteAcceptedScan,
+    noteOtherTerminalLogin,
     noteCredentialInvalid,
     dispatchPendingForUser,
     shouldSuppressOfflineReminder,
@@ -907,6 +1312,10 @@ function createWxLoginReminderService(deps = {}) {
     getQrImage,
     noteSessionConsumed,
     stopWatcher,
+    startMaintenanceSweep,
+    stopMaintenanceSweep,
+    // 确定性单轮巡检（测试/浏览器夹具用；不生成二维码、不开任何路由）。
+    sweepMaintenanceOnce: sweepOnce,
     parseBarkTarget,
   };
 }

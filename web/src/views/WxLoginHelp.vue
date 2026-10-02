@@ -15,11 +15,32 @@ interface HelpPendingSession {
   qrBase64: string
 }
 
+interface HelpPlan {
+  mode: string
+  advanceEnabled: boolean
+  cycleHours: number
+  advanceMinutes: number
+  available: boolean
+  waitingForScan: boolean
+  acceptedScanAt: number
+  maintenanceAt: number
+  reminderAt: number
+  remainingMs: number
+  overdue: boolean
+  notified: boolean
+  notificationSentAt: number
+  notificationError: string
+  recentMobileActivityAt: number
+  recentMobileActivityAvailable: boolean
+  pauseReason: string
+}
+
 interface HelpStatus {
   serverNow: number
   account: { id: string, name: string, platform: string }
   incident: { needsRescan: boolean, lastError: string, sentAt: number }
   pending: HelpPendingSession | null
+  plan: HelpPlan | null
 }
 
 const route = useRoute()
@@ -110,6 +131,68 @@ const remainingLabel = computed(() => {
 const canSend = computed(() => !sending.value && !forbidden.value && !!accountId.value)
 const canRetryLogin = computed(() =>
   !retrying.value && !sending.value && !forbidden.value && status.value?.pending?.state === 'confirmed_retry')
+
+// ── 扫码维护参考计划（与扫码会话独立；只读展示，不生成二维码） ──
+const DAY_MS = 86_400_000
+
+function formatServerTime(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0)
+    return '—'
+  return new Date(ms).toLocaleString()
+}
+
+function formatDuration(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60_000))
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0)
+    return `${days} 天 ${hours} 小时`
+  if (hours > 0)
+    return `${hours} 小时 ${minutes} 分钟`
+  return `${minutes} 分钟`
+}
+
+const planSummary = computed(() => {
+  const plan = status.value?.plan
+  if (!plan)
+    return ''
+  if (!plan.available)
+    return plan.pauseReason || '完成下一次扫码后开始计算计划'
+  const parts = []
+  if (plan.overdue) {
+    parts.push('维护参考时间已到')
+  }
+  else {
+    parts.push(`下次维护参考时间 ${formatServerTime(plan.maintenanceAt)}（剩约 ${formatDuration(plan.remainingMs)}）`)
+  }
+  parts.push(`周期 ${plan.cycleHours} 小时，提前 ${plan.advanceMinutes} 分钟提醒`)
+  if (plan.notified) {
+    // notified 只代表唯一一次自动提醒已认领（含发送失败），不承诺送达。
+    parts.push(plan.notificationSentAt > 0
+      ? '本轮自动提醒已发送，同次扫码不会重复自动发送'
+      : `本轮自动提醒已尝试${plan.notificationError ? `（上次发送失败：${plan.notificationError}）` : ''}，不会重复自动发送`)
+  }
+  else if (plan.pauseReason) {
+    parts.push(plan.pauseReason)
+  }
+  return parts.join('；')
+})
+
+const planActivityLabel = computed(() => {
+  const plan = status.value?.plan
+  if (!plan)
+    return ''
+  if (!plan.recentMobileActivityAt)
+    return '最近未观察到其他终端登录（会漏掉无在线 Bot 时的手机进场，也无法区分另一台 PC）'
+  const when = formatServerTime(plan.recentMobileActivityAt)
+  // 与服务端判定一致：窗口含边界（<= 24h）。
+  const within = plan.recentMobileActivityAvailable
+    && (Number(status.value?.serverNow) || 0) - plan.recentMobileActivityAt <= DAY_MS
+  return within
+    ? `最近其他终端登录（作为手机进场参考）：${when}，在 24 小时窗口内`
+    : `最近其他终端登录（作为手机进场参考）：${when}，已超出 24 小时窗口`
+})
 
 // 只读轮询状态；页面绝不自动发起发送类请求（发送必须来自用户点击）。
 const { pause: stopStatusPolling, resume: startStatusPolling } = useIntervalFn(async () => {
@@ -343,6 +426,26 @@ onUnmounted(() => {
         >
           当前凭据未被判失效。如扫码遇到问题，仍可主动更换授权。
         </div>
+      </div>
+
+      <div v-if="status?.plan" class="ui-card rounded-lg p-4 text-sm">
+        <div class="mb-1 text-gray-900 font-bold dark:text-gray-100">
+          扫码维护参考计划
+        </div>
+        <p v-if="status.plan.available" class="text-gray-700 dark:text-gray-300">
+          {{ planSummary }}
+        </p>
+        <p v-else class="text-gray-500 dark:text-gray-400">
+          {{ planSummary }}
+        </p>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ planActivityLabel }}
+        </p>
+        <p class="mt-1 text-xs text-gray-400">
+          计划为你自行设置的参考（在「设置 → 用户管理 → 微信重扫提醒」调整），不代表微信官方到期时间，也不保证零断线。
+          同次扫码只自动提醒一次；若尚未提前提醒，实际失效时再提醒，成功重扫后开始下一轮。
+          提前提醒不会自动生成二维码或改动运行中的账号。
+        </p>
       </div>
 
       <div class="ui-card rounded-lg p-4">

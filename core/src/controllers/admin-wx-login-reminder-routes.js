@@ -64,6 +64,35 @@ function validateReminderConfigPatch(body, currentConfig) {
   } else if (body.enabled === true && !String(currentConfig.serverUrl || '').trim()) {
     errors.serverUrl = '启用提醒前必须填写面板访问地址（手机要能打开）';
   }
+  if (body.advanceEnabled !== undefined) {
+    if (typeof body.advanceEnabled !== 'boolean') errors.advanceEnabled = '开关必须为布尔值';
+    else patch.advanceEnabled = body.advanceEnabled;
+  }
+  if (body.maintenanceCycleHours !== undefined) {
+    const value = Number(body.maintenanceCycleHours);
+    if (!Number.isFinite(value) || value < 4 || value > 168) {
+      errors.maintenanceCycleHours = '维护周期需为 4–168 小时';
+    } else {
+      patch.maintenanceCycleHours = value;
+      // 只改周期时也校验与既有提前量的关系（提前量必须严格小于新周期）。
+      if (body.advanceMinutes === undefined) {
+        const currentAdvance = Number(currentConfig.advanceMinutes) || 60;
+        if (currentAdvance >= value * 60) {
+          errors.maintenanceCycleHours = '维护周期必须大于当前的提前提醒分钟数';
+        }
+      }
+    }
+  }
+  if (body.advanceMinutes !== undefined) {
+    const value = Number(body.advanceMinutes);
+    const cycle = patch.maintenanceCycleHours !== undefined
+      ? patch.maintenanceCycleHours : (Number(currentConfig.maintenanceCycleHours) || 24);
+    if (!Number.isFinite(value) || value < 5 || value >= cycle * 60) {
+      errors.advanceMinutes = `提前提醒需 ≥5 分钟且小于维护周期（当前 ${cycle} 小时）`;
+    } else {
+      patch.advanceMinutes = value;
+    }
+  }
   return { errors, patch };
 }
 
@@ -92,6 +121,9 @@ function sanitizeConfigForClient(config) {
     barkServer: String(config.barkServer || ''),
     deviceKey: String(config.deviceKey || ''),
     serverUrl: String(config.serverUrl || ''),
+    advanceEnabled: config.advanceEnabled !== false,
+    maintenanceCycleHours: Number(config.maintenanceCycleHours) || 24,
+    advanceMinutes: Number(config.advanceMinutes) || 60,
   };
 }
 
