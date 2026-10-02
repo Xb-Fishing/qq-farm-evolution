@@ -11,6 +11,8 @@ const { createDataProvider } = require('./data-provider');
 const { createReloginReminderService } = require('./relogin-reminder');
 const { createRuntimeState } = require('./runtime-state');
 const { createWorkerManager } = require('./worker-manager');
+const { getSharedWxLoginReminder } = require('../services/wx-login-reminder');
+const { bindRescanProvider } = require('../services/wx-rescan-save');
 
 /** 操作类型键列表 */
 const OPERATION_KEYS = [
@@ -74,7 +76,10 @@ function createRuntimeEngine(options = {}) {
         addAccountLog,
         getAccounts: store.getAccounts,
         addOrUpdateAccount: store.addOrUpdateAccount,
-        resolveWorkerControls: () => engine
+        resolveWorkerControls: () => engine,
+        // 微信失效已由 Bark 重扫提醒认领时，不再叠加通用下线推送。
+        shouldSkipOfflineReminder: ({ accountId }) =>
+            getSharedWxLoginReminder().shouldSuppressOfflineReminder(accountId) === true
     });
     const { getOfflineAutoDeleteMs, triggerOfflineReminder } = reloginReminder;
 
@@ -84,7 +89,11 @@ function createRuntimeEngine(options = {}) {
         addOrUpdateAccount: store.addOrUpdateAccount,
         resolveWorkerControls: () => engine,
         log,
-        addAccountLog
+        addAccountLog,
+        // 仅微信账号凭据被服务端判定明确失效时通知一次；回调内部自带
+        // 平台过滤与去重，异常不影响保活/错误预算。
+        onWxCredentialDefinitivelyInvalid: (accountId) =>
+            getSharedWxLoginReminder().noteCredentialInvalid(accountId)
     });
 
     // 创建 Worker 管理器
@@ -157,9 +166,12 @@ function createRuntimeEngine(options = {}) {
         restartWorker,
         scheduleAutoCodeRefresh: autoCodeRefresh.scheduleAccount,
         stopAutoCodeRefresh: autoCodeRefresh.stopAccount,
-        refreshAccountCode: autoCodeRefresh.refreshAccountCode
+        refreshAccountCode: autoCodeRefresh.refreshAccountCode,
+        needsWxRescan: (id) => getSharedWxLoginReminder().needsRescan(id)
     };
     const dataProvider = createDataProvider(dataProviderDeps);
+    // 服务端守望的扫码保存复用与面板相同的账号运行时动作。
+    bindRescanProvider(dataProvider);
 
     // 绑定全局日志事件
     runtimeEvents.on('log', (entry) => {

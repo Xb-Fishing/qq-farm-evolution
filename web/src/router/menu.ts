@@ -66,6 +66,14 @@ export const menuRoutes: MenuItem[] = [
     component: () => import('@/views/Settings.vue'),
   },
   {
+    path: 'wx-login-help',
+    name: 'wxLoginHelp',
+    label: '微信重新扫码',
+    icon: 'i-carbon-qr-code',
+    component: () => import('@/views/WxLoginHelp.vue'),
+    showInNav: false,
+  },
+  {
     path: 'admin',
     name: 'admin',
     label: '后台',

@@ -6,8 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkQR = checkQR;
 exports.consumePendingWxInfo = consumePendingWxInfo;
 exports.getAccountAvatar = getAccountAvatar;
+exports.cancelWxSession = cancelWxSession;
 exports.getFarmCode = getFarmCode;
 exports.getQRCode = getQRCode;
+exports.getWxSessionInfo = getWxSessionInfo;
 exports.isDefinitiveWxCredentialError = isDefinitiveWxCredentialError;
 exports.shouldRefreshWxCredentialForCodeError = shouldRefreshWxCredentialForCodeError;
 exports.keepWxCredentialAlive = keepWxCredentialAlive;
@@ -230,6 +232,35 @@ function consumePendingWxInfo(sessionId, openid, owner) {
     wxSessions.delete(id);
     return true;
 }
+/**
+ * 本地扫码会话元数据（属主校验）：返回会话真实起止时刻，供自助重扫页
+ * 展示「本地会话截止」倒计时——不是微信侧二维码寿命。
+ */
+function getWxSessionInfo(sessionId, owner) {
+    cleanupExpiredSessions();
+    const uuid = String(sessionId || '');
+    const targetOwner = String(owner || '');
+    const entry = wxSessions.get(uuid);
+    if (!uuid || !targetOwner || !entry || String(entry.owner || '') !== targetOwner)
+        return null;
+    return {
+        sessionId: uuid,
+        createdAt: Number(entry.createdAt) || 0,
+        expiresAt: (Number(entry.createdAt) || 0) + WX_SESSION_TTL_MS,
+        confirmed: entry.confirmed === true,
+        openid: String(entry.openid || ''),
+    };
+}
+/** 属主匹配时主动取消本地扫码会话（被更新的发送/重扫取代时清理，防悬空授权）。 */
+function cancelWxSession(sessionId, owner) {
+    const uuid = String(sessionId || '');
+    const targetOwner = String(owner || '');
+    const entry = wxSessions.get(uuid);
+    if (!uuid || !targetOwner || !entry || String(entry.owner || '') !== targetOwner)
+        return false;
+    wxSessions.delete(uuid);
+    return true;
+}
 // MMTLS 握手失败错误 → 可读指引（区分凭证失效与网络波动）
 function humanizeWxCodeError(raw) {
     const s = String(raw || '').replace(/(\btoken\s+)[^\s,;]+/gi, '$1[REDACTED]');
@@ -255,13 +286,16 @@ async function getQRCode(owner) {
     try {
         const { session, qr } = await wxLogin.createQrSession();
         const uuid = node_crypto_1.default.randomBytes(16).toString('hex');
-        wxSessions.set(uuid, { owner: String(owner || ''), session, createdAt: Date.now() });
+        const createdAt = Date.now();
+        wxSessions.set(uuid, { owner: String(owner || ''), session, createdAt });
         return {
             Success: true,
             Data: {
                 Uuid: uuid,
                 QrBase64: qr.toString('base64'),
-                // 在微信内打开面板点此链接，等同扫码后的确认页，免存图免扫码。
+                // 本地扫码会话起止（WX_SESSION_TTL_MS），不是微信侧二维码寿命。
+                CreatedAt: createdAt,
+                ExpiresAt: createdAt + WX_SESSION_TTL_MS,
             },
         };
     }

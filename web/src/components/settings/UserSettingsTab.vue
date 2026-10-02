@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import type { NeedsRescanAccount, WxLoginReminderConfig } from '@/composables/settings/useWxLoginReminder'
 import DeviceProtocolCard from '@/components/settings/DeviceProtocolCard.vue'
 import OfflineReminderCard from '@/components/settings/OfflineReminderCard.vue'
 import PasswordChangeCard from '@/components/settings/PasswordChangeCard.vue'
+import WxLoginReminderCard from '@/components/settings/WxLoginReminderCard.vue'
 
 interface SelectOption<T = string | number> {
   label: string
@@ -50,6 +52,9 @@ defineProps<{
   currentChannelDocUrl: string
   offlineSaving: boolean
   offlineTesting: boolean
+  wxReminderSaving: boolean
+  wxReminderTesting: boolean
+  needsRescanAccounts: NeedsRescanAccount[]
 }>()
 
 const emit = defineEmits<{
@@ -62,12 +67,15 @@ const emit = defineEmits<{
   openDocs: []
   testOffline: []
   saveOffline: []
+  saveWxReminder: []
+  testWxReminder: []
 }>()
 
 const deviceProtocolForm = defineModel<DeviceProtocolConfig>('deviceProtocolForm', { required: true })
 const selectedDevicePreset = defineModel<string>('selectedDevicePreset', { required: true })
 const passwordForm = defineModel<PasswordForm>('passwordForm', { required: true })
 const offlineConfig = defineModel<OfflineReminderConfig>('offlineConfig', { required: true })
+const wxReminderConfig = defineModel<WxLoginReminderConfig>('wxReminderConfig', { required: true })
 </script>
 
 <template>
@@ -105,6 +113,15 @@ const offlineConfig = defineModel<OfflineReminderConfig>('offlineConfig', { requ
         @open-docs="emit('openDocs')"
         @test="emit('testOffline')"
         @save="emit('saveOffline')"
+      />
+
+      <WxLoginReminderCard
+        v-model:config="wxReminderConfig"
+        :saving="wxReminderSaving"
+        :testing="wxReminderTesting"
+        :needs-rescan-accounts="needsRescanAccounts"
+        @save="emit('saveWxReminder')"
+        @test="emit('testWxReminder')"
       />
     </div>
   </div>

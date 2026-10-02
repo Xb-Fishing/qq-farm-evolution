@@ -2,6 +2,7 @@ import { useStorage } from '@vueuse/core'
 import axios from 'axios'
 import { useToastStore } from '@/stores/toast'
 import { currentFeedbackTrace, recordClientFailure } from '@/utils/daily-feedback'
+import { resolveSafeRedirect } from '@/utils/safe-redirect'
 
 const tokenRef = useStorage('admin_token', '')
 const accountIdRef = useStorage('current_account_id', '')
@@ -52,7 +53,10 @@ api.interceptors.response.use((response) => {
     if (error.response.status === 401) {
       if (!window.location.pathname.includes('/login')) {
         tokenRef.value = ''
-        window.location.href = '/login'
+        // 会话过期时保留当前页（如自助重扫深链），登录后回到原页面；
+        // 只接受站内相对路径，不产生新的外跳。
+        const returnTo = resolveSafeRedirect(window.location.pathname + window.location.search) || '/'
+        window.location.href = `/login?redirect=${encodeURIComponent(returnTo)}`
         toast.warning('登录已过期，请重新登录')
       }
     }

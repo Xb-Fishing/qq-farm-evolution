@@ -60,6 +60,12 @@ function createAutoCodeRefreshService(deps) {
     log,
     addAccountLog,
   } = deps;
+  // 凭据被判「明确失效」时的通知回调（微信重扫提醒）。仅在两条终态路径
+  // （保活 definitive / 换 Code definitive）到达时触发；自身异常绝不影响
+  // 保活节奏、错误预算或 Worker 生命周期。
+  const onWxCredentialDefinitivelyInvalid = typeof deps.onWxCredentialDefinitivelyInvalid === 'function'
+    ? deps.onWxCredentialDefinitivelyInvalid
+    : null;
   const keepCredentialAlive = typeof deps.keepWxCredentialAlive === 'function'
     ? deps.keepWxCredentialAlive
     : wxLoginAdapter.keepWxCredentialAlive;
@@ -121,9 +127,21 @@ function createAutoCodeRefreshService(deps) {
 
   function blockCredential(accountId) {
     // 失败前 token 可能已滚动，必须记录持久化后的身份。
-    definitiveCredentialFailures.set(String(accountId), credentialIdentity(findAccount(accountId)));
+    const account = findAccount(accountId);
+    definitiveCredentialFailures.set(String(accountId), credentialIdentity(account));
     scheduler.clear(getKeepaliveTaskName(accountId));
     scheduler.clear(`relogin_${String(accountId)}`);
+    if (onWxCredentialDefinitivelyInvalid && account && String(account.platform || '') === 'wx') {
+      // 带绑定快照（属主/wxid）异步传递，回调侧不再回头取「当前值」；
+      // QQ 账号即使错误文案命中也不走微信重扫提醒。
+      try {
+        Promise.resolve(onWxCredentialDefinitivelyInvalid({
+          accountId: String(accountId),
+          owner: String(account.username || ''),
+          wxid: String(account.wxid || ''),
+        })).catch(() => { /* 提醒失败不影响凭据阻断本身 */ });
+      } catch { /* 回调同步异常同样吞掉 */ }
+    }
   }
 
   function isCredentialBlocked(accountId) {

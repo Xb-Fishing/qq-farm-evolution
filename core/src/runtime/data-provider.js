@@ -26,7 +26,8 @@ function createDataProvider(deps) {
         restartWorker,
         scheduleAutoCodeRefresh,
         stopAutoCodeRefresh,
-        refreshAccountCode
+        refreshAccountCode,
+        needsWxRescan
     } = deps;
 
     /** 获取账号列表 */
@@ -318,6 +319,10 @@ function createDataProvider(deps) {
                 acc.running = !!worker;
                 acc.autoLogin = store.isAccountAutoLogin(acc);
                 acc.hasWxCredential = !!acc.loginBuffer;
+                // 微信账号凭据已被判定明确失效、等待用户重新扫码。
+                acc.needsWxRescan = acc.platform === 'wx'
+                    && typeof needsWxRescan === 'function'
+                    && needsWxRescan(acc.id) === true;
                 delete acc.loginBuffer;
                 delete acc.refreshtoken;
                 delete acc.accesstoken;
@@ -330,6 +335,18 @@ function createDataProvider(deps) {
                 }
             });
             return data;
+        },
+
+        // 自助扫码已换发并落盘新 Code，直接沿现有 Worker 路径恢复，避免再次换码。
+        startAccountFromSavedWxCode: (ref, expectedCode) => {
+            const id = resolveAccountId(ref);
+            const account = findAccount(id || ref);
+            if (!account || account.platform !== 'wx' || !account.loginBuffer
+                || !expectedCode || account.code !== expectedCode) return false;
+            store.addOrUpdateAccount({ id: account.id, autoLogin: true });
+            if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
+            startWorker(findAccount(id || ref) || account);
+            return true;
         },
 
         startAccount: async (ref) => {

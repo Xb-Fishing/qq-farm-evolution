@@ -76,6 +76,17 @@ function rescanFromHome() {
   showReloginModal.value = true
 }
 
+// 凭据已被系统判定失效的微信账号：跳转自助重扫页（可把二维码推送到手机）。
+const currentAccountNeedsRescan = computed(() =>
+  !!(currentAccount.value as (typeof currentAccount.value & { needsWxRescan?: boolean }) | null)?.needsWxRescan)
+
+function openWxLoginHelp() {
+  const account = accountStore.currentAccount
+  if (!account || account.platform !== 'wx')
+    return
+  window.location.href = `/wx-login-help?accountId=${encodeURIComponent(String(account.id))}`
+}
+
 // 扫码保存成功：刷新账号列表；仅当保存的就是当前账号时清它的旧状态
 // 显示缓存并等待新状态（打开 QR 或保存失败都不清，保留旧正常显示）
 async function onAccountSaved(savedAccountId?: string) {
@@ -846,13 +857,13 @@ useIntervalFn(updateCountdowns, 1000)
   <div class="flex flex-col gap-5 pt-1 md:pt-2">
     <div
       v-if="slowdownActive"
-      class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20"
+      class="flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-lg bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20"
     >
       <div class="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
         <div class="i-carbon-warning-alt text-lg" />
         <span>
           请求异常降速中：普通巡查放缓到约 {{ slowdownDelaySec }} 秒级，自己收获、成熟抢收和施肥 HOT 保持运行；约
-          <span class="font-mono font-bold">{{ formatDuration(slowdownRemainSec) }}</span>
+          <span class="font-bold font-mono">{{ formatDuration(slowdownRemainSec) }}</span>
           后恢复常规节奏
         </span>
       </div>
@@ -891,6 +902,14 @@ useIntervalFn(updateCountdowns, 1000)
               @click="rescanFromHome"
             >
               重新扫码授权
+            </button>
+            <button
+              v-if="currentAccountNeedsRescan"
+              class="rounded bg-amber-500 px-2 py-1 text-xs text-white transition hover:bg-amber-600"
+              title="微信登录已被系统确认失效：打开自助页面，可把新二维码推送到手机"
+              @click="openWxLoginHelp"
+            >
+              需重新扫码·发到手机
             </button>
           </div>
         </div>
@@ -1218,7 +1237,7 @@ useIntervalFn(updateCountdowns, 1000)
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-star-filled text-yellow-500" />
           <span>重点监控</span>
-          <span class="ml-auto text-xs font-normal text-gray-400">常态低频；确认施肥后自动进入 HOT</span>
+          <span class="ml-auto text-xs text-gray-400 font-normal">常态低频；确认施肥后自动进入 HOT</span>
         </h3>
         <div class="space-y-1.5">
           <div
@@ -1226,7 +1245,7 @@ useIntervalFn(updateCountdowns, 1000)
             :key="item.gid"
             class="ui-subtle-panel flex items-center justify-between rounded-lg px-3 py-2"
           >
-            <div class="flex min-w-0 items-center gap-2">
+            <div class="min-w-0 flex items-center gap-2">
               <span class="truncate text-sm text-gray-700 dark:text-gray-200">{{ item.name }}</span>
               <span
                 v-if="item.inWindow"
@@ -1234,7 +1253,7 @@ useIntervalFn(updateCountdowns, 1000)
                 :title="`已进入 ${watchlistWindowMinutes} 分钟成熟观察窗口；仅确认施肥后切换 HOT 并放宽门限`"
               >成熟观察</span>
             </div>
-            <div class="font-mono text-sm font-bold" :class="item.inWindow ? 'text-emerald-500' : 'text-gray-500'">
+            <div class="text-sm font-bold font-mono" :class="item.inWindow ? 'text-emerald-500' : 'text-gray-500'">
               {{ item.remainSec > 0 ? formatDuration(item.remainSec) : '已成熟，抢收中' }}
             </div>
           </div>
@@ -1246,7 +1265,7 @@ useIntervalFn(updateCountdowns, 1000)
           <div class="i-carbon-list-checked" />
           <span>今日事件</span>
           <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-            <span class="text-xs font-normal text-gray-400">仅保留当天</span>
+            <span class="text-xs text-gray-400 font-normal">仅保留当天</span>
             <BaseButton
               variant="secondary"
               size="sm"
@@ -1274,13 +1293,13 @@ useIntervalFn(updateCountdowns, 1000)
         <div v-if="!dailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
           今天还没有记录到事件
         </div>
-        <div v-else class="max-h-80 space-y-1.5 overflow-y-auto pr-1">
+        <div v-else class="max-h-80 overflow-y-auto pr-1 space-y-1.5">
           <div
             v-for="ev in [...dailyEvents].reverse()"
             :key="`${ev.at}-${ev.type}`"
             class="ui-subtle-panel flex items-start gap-2 rounded-lg px-3 py-1.5"
           >
-            <span class="shrink-0 font-mono text-xs text-gray-400">{{ formatEventTime(ev.at) }}</span>
+            <span class="shrink-0 text-xs text-gray-400 font-mono">{{ formatEventTime(ev.at) }}</span>
             <span
               v-if="EVENT_TYPE_LABELS[ev.type] || ev.level !== 'info'"
               class="shrink-0 rounded px-1.5 py-0.5 text-xs"

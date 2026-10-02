@@ -64,6 +64,10 @@ const { createAdminSessionManager } = require("./admin-session-manager");
 const { registerAdminSuperAdminRoutes } = require("./admin-super-admin-routes");
 const { registerAdminSystemRoutes } = require("./admin-system-routes");
 const { registerAdminUserRoutes } = require("./admin-user-routes");
+const {
+  registerAdminWxLoginReminderRoutes,
+  registerWxLoginQrImageRoute,
+} = require("./admin-wx-login-reminder-routes");
 const userStore = require("../models/user-store");
 
 const adminLogger = createModuleLogger("admin");
@@ -412,6 +416,8 @@ function startAdminServer(dataProvider) {
     updateAdminSessions,
   });
   registerHealthRoute(app);
+  // 二维码图片能力令牌是唯一需要在认证门前注册的只读端点（Bark 内嵌图）。
+  registerWxLoginQrImageRoute(app);
   registerAuthGate(app, requireAdminToken);
   registerRequestTimeoutGuard(app);
   registerAdminPublicInfoRoutes({
@@ -592,6 +598,14 @@ function startAdminServer(dataProvider) {
     updateRuntimeConfig,
   });
   registerAdminQrLoginRoutes({ app });
+  registerAdminWxLoginReminderRoutes({
+    app,
+    canAccessAccount,
+    resolveAccountReference,
+    findAccountByRef,
+    getAccountsForUser,
+    logger: adminLogger,
+  });
   registerAdminProxyRoutes({ app, logger: adminLogger });
   registerAdminLoginLogRoutes({
     app,
