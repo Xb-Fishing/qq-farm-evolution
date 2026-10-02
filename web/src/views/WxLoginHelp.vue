@@ -13,6 +13,7 @@ interface HelpPendingSession {
   state: string
   detail: string
   qrBase64: string
+  qrMimeType: string
 }
 
 interface HelpPlan {
@@ -69,7 +70,7 @@ const STATE_LABELS: Record<string, string> = {
   saving: '已确认，正在保存新授权…',
   confirmed_retry: '已确认，但换取游戏登录码暂时失败',
   saved: '重新扫码完成，账号已更新',
-  expired: '二维码已过期，可点击「重新发送二维码」',
+  expired: '二维码已过期，可点击「刷新二维码」',
   error: '保存失败',
 }
 
@@ -81,12 +82,14 @@ const stateLabel = computed(() => {
 })
 
 const qrImageSrc = computed(() => {
-  const qr = status.value?.pending?.qrBase64
+  const pending = status.value?.pending
+  const qr = pending?.qrBase64
   if (!qr)
     return ''
   if (qr.startsWith('data:'))
     return qr
-  return `data:image/png;base64,${qr}`
+  // 服务端按真实字节嗅探出的类型（上游可能是 JPEG）；旧服务端缺字段回退 PNG。
+  return `data:${pending?.qrMimeType || 'image/png'};base64,${qr}`
 })
 
 // 倒计时锚点只用服务端时间差（expiresAt - serverNow）+ 本地单调流逝
@@ -115,13 +118,13 @@ const remainingLabel = computed(() => {
     return ''
   // 服务端已判过期（微信侧二维码可能早于本页倒计时失效）：以服务端为准。
   if (pending.state === 'expired')
-    return '二维码已过期，请重新发送'
+    return '二维码已过期，请刷新'
   const anchor = countAnchor.value
   if (!anchor)
     return ''
   const remaining = anchor.remainingMs - (elapsedNow.value - anchor.atMonotonic)
   if (remaining <= 0)
-    return '扫码窗口已结束，请重新发送二维码'
+    return '扫码窗口已结束，请刷新二维码'
   const totalSeconds = Math.ceil(remaining / 1000)
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
@@ -298,7 +301,7 @@ async function sendQr() {
       return
     if (data?.ok) {
       pushInfo.value = data.data.pushed
-        ? '新二维码已推送到你的 Bark 通知（含二维码图片，点击通知可回到本页）'
+        ? '新二维码已推送到你的 Bark（通知只有二维码图片；点开通知可回到本页，过期后点「刷新二维码」）'
         : `二维码仅在页面显示，未推送：${data.data.pushError || '未知原因'}`
       await loadStatus(true, epoch)
       if (!['saved', 'expired', 'error'].includes(status.value?.pending?.state || ''))
@@ -443,8 +446,8 @@ onUnmounted(() => {
         </p>
         <p class="mt-1 text-xs text-gray-400">
           计划为你自行设置的参考（在「设置 → 用户管理 → 微信重扫提醒」调整），不代表微信官方到期时间，也不保证零断线。
-          同次扫码只自动提醒一次；若尚未提前提醒，实际失效时再提醒，成功重扫后开始下一轮。
-          提前提醒不会自动生成二维码或改动运行中的账号。
+          同次扫码只自动推送一张二维码；若尚未提前推送，实际失效时再推一张，成功重扫后开始下一轮。
+          到点如已有可用二维码则不重复推送，也不会改动正在运行的账号。
         </p>
       </div>
 
@@ -463,11 +466,11 @@ onUnmounted(() => {
             {{ status.pending.detail }}
           </p>
           <p v-if="status?.pending?.state === 'confirmed_retry'" class="max-w-md text-center text-xs text-amber-600 dark:text-amber-400">
-            {{ status.pending.detail || '网络波动导致换码失败' }}。扫码确认仍然有效，可直接重试；若持续失败，请重新发送二维码。
+            {{ status.pending.detail || '网络波动导致换码失败' }}。扫码确认仍然有效，可直接重试；若持续失败，请刷新二维码。
           </p>
         </div>
         <div v-else class="py-8 text-center text-sm text-gray-500">
-          暂无待扫码二维码。点击下方按钮生成并发送到你的 Bark。
+          暂无待扫码二维码。点击下方按钮生成一张并推送到你的 Bark。
         </div>
 
         <div class="mt-2 flex justify-center gap-2">
@@ -477,7 +480,7 @@ onUnmounted(() => {
             :disabled="!canSend"
             @click="sendQr"
           >
-            {{ qrImageSrc ? '重新发送二维码' : '现在发送二维码' }}
+            {{ qrImageSrc ? '刷新二维码' : '现在发送二维码' }}
           </BaseButton>
           <BaseButton
             v-if="canRetryLogin"
@@ -514,9 +517,9 @@ onUnmounted(() => {
         <p class="mb-1 font-medium">
           说明
         </p>
-        <p>1. 点击「发送二维码」后，服务器会生成新二维码并立即推送到你的 Bark 通知；Apple Watch 能否显示取决于 iPhone 的通知镜像设置。</p>
+        <p>1. 点击「发送二维码」后，服务器会生成新二维码并立即推送到你的 Bark；通知只有这张二维码图片（无标题和文字），Apple Watch 能否显示取决于 iPhone 的通知镜像设置。</p>
         <p>2. 页面可以关闭或切到微信：服务器会在后台继续等待你扫码确认并自动保存。</p>
-        <p>3. 倒计时是本页扫码窗口的参考时间；微信里的二维码可能更早失效，过期后点「重新发送二维码」再试即可。</p>
+        <p>3. 倒计时是本页扫码窗口（约 5 分钟）的参考时间；微信里的二维码可能更早失效，过期后点「刷新二维码」再试即可。</p>
         <p v-if="loadError" class="mt-1 text-red-500">
           {{ loadError }}
         </p>

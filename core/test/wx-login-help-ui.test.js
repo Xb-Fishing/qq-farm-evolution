@@ -232,7 +232,7 @@ function helpHarness(initialAccountId = '301', responder = null) {
   };
   const filename = path.join(root, 'web/src/views/WxLoginHelp.vue');
   const { descriptor } = compiler.parse(
-    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending, planSummary, planActivityLabel })\n</script>'),
+    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending, planSummary, planActivityLabel, qrImageSrc })\n</script>'),
     { filename },
   );
   const source = compiler.compileScript(descriptor, { id: 'wx-help-test' }).content;
@@ -282,7 +282,7 @@ test('时钟偏移无关：服务器时间戳与本地墙钟差数小时，仍�
     // 服务端 expired 终态覆盖本地正计时。
     h.getResponder.fn = () => ({ data: { ok: true, data: helpStatusFixture('301', { pending: { ...helpStatusFixture('301').pending, state: 'expired' } }) } });
     await h.interval.callback();
-    assert.equal(h.instance().remainingLabel, '二维码已过期，请重新发送');
+    assert.equal(h.instance().remainingLabel, '二维码已过期，请刷新');
     assert.equal(h.interval.active, false, 'expired 终态停止轮询');
   }
   finally { h.app.unmount(); }
@@ -396,6 +396,27 @@ test('confirmed_retry：按钮仅在可重试态出现，重试不带新二维�
     assert.equal(h.instance().canRetryLogin, false);
   }
   finally { h.app.unmount(); }
+});
+
+test('二维码 dataURL 用服务端嗅探的真实图片类型；旧服务端缺省回退 PNG', async () => {
+  // 服务端按魔数嗅探上报 JPEG（上游真实返回 JPEG）：dataURL 必须用真实类型，
+  // 否则手机浏览器拒渲染。
+  const jpeg = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', {
+    pending: { ...helpStatusFixture('301').pending, qrMimeType: 'image/jpeg' },
+  }) } }));
+  try {
+    await settle();
+    assert.ok(jpeg.instance().qrImageSrc.startsWith('data:image/jpeg;base64,qr-image-301'), jpeg.instance().qrImageSrc);
+  }
+  finally { jpeg.app.unmount(); }
+
+  // 旧服务端不带 qrMimeType：回退 PNG。
+  const legacy = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301') } }));
+  try {
+    await settle();
+    assert.ok(legacy.instance().qrImageSrc.startsWith('data:image/png;base64,qr-image-301'), legacy.instance().qrImageSrc);
+  }
+  finally { legacy.app.unmount(); }
 });
 
 test('403 无权访问：停轮询、不再发起后续请求', async () => {

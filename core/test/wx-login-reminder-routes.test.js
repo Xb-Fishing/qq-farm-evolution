@@ -328,6 +328,9 @@ test('发送二维码：推送目标取账号属主配置（管理员代点也�
   assert.equal(pushes.length, 1, '属主配置就绪：恰好一次外发');
   const body = pushes[0].body;
   assert.equal(body.device_key, 'owner1-key', 'device_key 必须是账号属主的 Key');
+  assert.equal(body.title, '', '推送是纯二维码通知：无标题');
+  assert.equal(body.body, ' ', '正文仅一个空白字符（无文字内容）');
+  assert.deepEqual(Object.keys(body).sort(), ['body', 'device_key', 'group', 'image', 'title', 'url']);
   assert.match(body.image, /^https:\/\/panel\.example\.com\/api\/wx-login-qr-image\/[0-9a-f]{64}$/);
   assert.match(body.url, /\/wx-login-help\?accountId=301$/);
   assert.equal(res.body.data.session.sessionId.length > 0, true);
@@ -366,6 +369,37 @@ test('公开图片路由在认证门前可用：有效令牌 200 PNG，无效/�
   assert.equal(replaced.statusCode, 410, '被新二维码替换的旧令牌必须立即吊销');
 });
 
+test('上游返回 JPEG 时图片路由按真实 Content-Type 输出原样字节', async () => {
+  pushes.length = 0;
+  // 上游二维码接口真实返回 JPEG（线上事故场景）：临时替换 adapter 打桩。
+  const JPEG_B64 = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(48, 9)]).toString('base64');
+  const realGetQRCode = adapter.getQRCode;
+  adapter.getQRCode = async () => {
+    const createdAt = Date.now();
+    return {
+      Success: true,
+      Data: {
+        Uuid: `routes-sess-jpeg-${Date.now()}`, QrBase64: JPEG_B64,
+        CreatedAt: createdAt, ExpiresAt: createdAt + 300_000,
+      },
+    };
+  };
+  try {
+    const res = await call('POST', '/api/wx-login-help/send-qr', { user: owner1, body: { accountId: '301' } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.data.session.qrMimeType, 'image/jpeg', '会话视图带真实图片类型');
+    const jpegToken = String(pushes[0].body.image).split('/').pop();
+    const image = await call('GET', '/api/wx-login-qr-image/:token', { params: { token: jpegToken } });
+    assert.equal(image.statusCode, 200);
+    assert.equal(image.headers['content-type'], 'image/jpeg', 'Content-Type 按魔数嗅探结果输出');
+    assert.ok(Buffer.isBuffer(image.body) && image.body.subarray(0, 3).equals(Buffer.from([0xFF, 0xD8, 0xFF])),
+      'JPEG 原始字节原样透传');
+  }
+  finally {
+    adapter.getQRCode = realGetQRCode;
+  }
+});
+
 test('重试完成登录路由映射：失败 400；成功如实报告 started/startError', async () => {
   const original = shared.retryCompleteLogin;
   try {
@@ -400,6 +434,9 @@ test('重试完成登录路由映射：失败 400；成功如实报告 started/s
 
 test('启用提醒时补发此前未发送的待重扫事件（每代次至多一条）', async () => {
   pushes.length = 0;
+  // 前一用例给 302 留下的手动扫码会话仍在有效期内：自动补发会让位不重发，
+  // 先以一次真实扫码清场（生产里旧会话也是这样被取代的）。
+  await shared.noteAcceptedScan('302');
   // owner2 先经历一次失效（未配置 → 只记 needsRescan，不外发）。
   assert.equal(await shared.noteCredentialInvalid('302'), false);
   assert.equal(shared.getIncident('302').needsRescan, true);

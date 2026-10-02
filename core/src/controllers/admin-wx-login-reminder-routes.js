@@ -6,8 +6,9 @@
  * - /api/user/wx-login-reminder/*：当前登录用户自己的 Bark 配置与测试发送。
  * - /api/wx-login-help/*：账号状态与「发送二维码」；一律先过 canAccessAccount，
  *   推送目标始终取账号属主（account.username）的配置，与管理员代点无关。
- * - /api/wx-login-qr-image/:token：唯一在认证门之前注册的只读 PNG 能力令牌，
- *   供 Bark 通知内嵌二维码图片；过期/替换/消费后即吊销。
+ * - /api/wx-login-qr-image/:token：唯一在认证门之前注册的只读二维码图片
+ *   能力令牌，供 Bark 通知内嵌二维码图片（PNG/JPEG 按真实字节与 Content-Type
+ *   返回）；过期/替换/消费后即吊销。
  */
 
 const BARK_DOC_URL = 'https://github.com/Finb/Bark';
@@ -326,7 +327,8 @@ function registerAdminWxLoginReminderRoutes({
 
 /**
  * 公开二维码图片读取：必须注册在认证门之前（唯一例外，不放宽白名单）。
- * 能力令牌为 256 位随机值，只绑当前有效会话；仅返回 PNG，无用户/账号/凭据信息。
+ * 能力令牌为 256 位随机值，只绑当前有效会话；按服务端嗅探出的真实类型
+ * 返回原样字节（PNG/JPEG），无用户/账号/凭据信息。
  */
 function registerWxLoginQrImageRoute(app) {
   const reminder = require('../services/wx-login-reminder').getSharedWxLoginReminder();
@@ -339,7 +341,7 @@ function registerWxLoginQrImageRoute(app) {
       // 410：令牌从未存在（枚举尝试）、已过期、被新二维码替换或会话已消费。
       return res.status(410).end();
     }
-    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Type', image.contentType || 'image/png');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(image.png);
   });

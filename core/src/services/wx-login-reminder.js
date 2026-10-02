@@ -23,8 +23,14 @@ const logger = require('./logger');
  * 60 分钟。它不是微信官方到期时间（上游凭据 ~2h 滚动续期），也不保证
  * 零断线。发送前置条件：该代次尚未用过唯一一次自动提醒 + 最近 24h 内
  * 观察到「已在其他终端登录」踢下线信号（作为用户手机进场的参考代理，
- * 会漏掉无在线 Bot 时的手机进场，也不能区分另一台 PC）。本地定时巡检
- * 不做任何外部探测、不生成二维码、不改运行中的账号。
+ * 会漏掉无在线 Bot 时的手机进场，也不能区分另一台 PC）。
+ *
+ * 所有 Bark 通知只携带一张当次生成的扫码二维码图片（无标题、正文仅一
+ * 个空白字符）：上游二维码接口真实返回 JPEG，这里按魔数嗅探 PNG/JPEG
+ * 后原样字节透传（不做格式转换、不引新依赖），图片经公开能力令牌路由
+ * 按真实 Content-Type 输出。自动提醒（提前/终态）到点即生成并推送新
+ * 二维码；已有可用扫码会话（未过期且在等待/已扫/保存中）时不重复推送、
+ * 绝不取消用户会话，手动刷新永远可以重发。
  */
 
 const REGISTRY_FILENAME = 'wx-login-reminder.json';
@@ -38,6 +44,7 @@ const OTHER_TERMINAL_LOGIN_LOOKBACK_MS = 24 * 3600 * 1000;
 const LOCAL_SESSION_TTL_MS = 300 * 1000;
 const WATCHER_POLL_INTERVAL_MS = 2000;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+const JPEG_MAGIC = Buffer.from([0xFF, 0xD8, 0xFF]);
 const SAFE_KEY_RE = /^[\w.:-]{1,128}$/;
 // 声明/事件里允许落盘的 lastError 只保留可读短语，绝不含路径、密钥或异常原文。
 const SAFE_ERROR_RE = /^[\p{Script=Han}\w ：:，,。.\-()（）=/]{1,160}$/u;
@@ -98,8 +105,12 @@ function parseBarkTarget(deviceKey, barkServer) {
   }
 }
 
-function isPngBuffer(buffer) {
-  return Buffer.isBuffer(buffer) && buffer.length > 8 && buffer.subarray(0, 4).equals(PNG_MAGIC);
+/** 魔数嗅探：只认 PNG / JPEG 原始字节（拒绝 HTML/SVG/未知内容），不做格式转换。 */
+function sniffImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer)) return '';
+  if (buffer.length > 8 && buffer.subarray(0, 4).equals(PNG_MAGIC)) return 'image/png';
+  if (buffer.length > 4 && buffer.subarray(0, 3).equals(JPEG_MAGIC)) return 'image/jpeg';
+  return '';
 }
 
 function isPlainObject(value) {
@@ -536,11 +547,12 @@ function createWxLoginReminderService(deps = {}) {
   }
 
   /**
-   * 单账号提前提醒判定：只读本地注册表与账号状态（零网络探测、零二维码
-   * 生成）。入口先做同步快照（accountId/owner/wxid/意愿），声明临界区内
-   * 用「下一份注册表状态 + 实时账号绑定」重验全部条件后才落盘声明——
-   * 排队期间的暂停/换绑/禁用/改参数必须拦下且不消耗唯一一次声明；
-   * 外发前再读当前配置与状态做最后一道校验。任何不满足都静默跳过。
+   * 单账号提前提醒判定：入口先做同步快照（accountId/owner/wxid/意愿），
+   * 声明临界区内用「下一份注册表状态 + 实时账号绑定」重验全部条件后才
+   * 落盘声明——排队期间的暂停/换绑/禁用/改参数必须拦下且不消耗唯一一次
+   * 声明；外发前再读当前配置与状态做最后一道校验。到点外发的内容是
+   * 当次生成并推送的扫码二维码图片（仅图片，无标题/正文）；已有可用
+   * 扫码会话时跳过不重复、绝不取消。任何不满足都静默跳过。
    */
   async function maybeSendAdvanceNotice(account) {
     // 同步快照：等待期间账号对象可能被改（autoLogin/wxid 等），不得信可变引用。
@@ -631,28 +643,79 @@ function createWxLoginReminderService(deps = {}) {
       || !sendTarget.key || !sendLink) return false;
 
     const name = String(liveAccount.name || '') || key;
-    const overdue = now() >= scanAt + sendConfig.maintenanceCycleHours * 3600_000;
-    // 措辞不得声称账号此刻必然正常运行（无连接态证据），只说明参考语义。
-    const result = await sendBark(sendConfig, {
-      title: '微信扫码维护提醒',
-      body: `${overdue
-        ? `你设置的账号「${name}」扫码维护参考时间已到。这是维护参考提醒，不表示账号已失效；请方便时点开链接发送新的二维码完成重扫。`
-        : `你设置的账号「${name}」扫码维护参考时间将到。这是维护参考提醒，不表示账号已失效；请方便时点开链接准备/发送新的二维码（到时再生成，现在无需扫码）。`
-         }计划为自行设置的参考，非微信官方到期时间。`,
-      url: sendLink,
-    });
+    // 到点外发即推送一张当次生成的扫码二维码（仅图片，无标题/正文）。
+    // 资格守卫只捕获基线原语（代次/扫码时刻/属主/微信），触网前/注册前/
+    // 外发前复查：等待期间关提前开关/关总开关/暂停/换绑/新扫码都取消外
+    // 发且不暴露会话；已有可用扫码会话时让位不重发；跳过不消耗记录字段
+    // （sentAt/lastError 保持原状），生成/推送失败如实记录且不自动重试。
+    let pushed = false;
+    let pushErrorText = '';
+    let skipReason = '';
+    try {
+      const qrResult = await requestQrPush({
+        account: liveAccount,
+        origin: 'advance-plan',
+        automatic: {
+          mode: 'advance-plan',
+          guard: () => {
+            const data = loadRegistry();
+            if (registryBlocked) return false;
+            if ((Number(data.generations[key]) || 0) !== generation) return false;
+            const liveScan = data.acceptedScans[key];
+            if (!isPlainObject(liveScan) || Number(liveScan.at) !== scanAt
+              || Number(liveScan.generation) !== generation
+              || String(liveScan.owner || '') !== snapshot.owner
+              || String(liveScan.wxid || '') !== snapshot.wxid) return false;
+            const liveIncident = data.incidents[key];
+            if (liveIncident && (Number(liveIncident.generation) || 0) === generation) return false;
+            const liveNotice = data.advanceNotices[key];
+            if (!isPlainObject(liveNotice) || Number(liveNotice.generation) !== generation) return false;
+            const qrAccount = findAccount(key);
+            if (!qrAccount || String(qrAccount.platform || '') !== 'wx') return false;
+            if (String(qrAccount.username || '').trim() !== snapshot.owner
+              || String(qrAccount.wxid || '') !== snapshot.wxid) return false;
+            if (qrAccount.autoLogin === false) return false;
+            const qrConfig = normalizeUserConfig(
+              Object.prototype.hasOwnProperty.call(data.users, snapshot.owner)
+                ? data.users[snapshot.owner] : {},
+            );
+            if (qrConfig.enabled !== true || qrConfig.advanceEnabled !== true) return false;
+            if (!parseBarkTarget(qrConfig.deviceKey, qrConfig.barkServer).key) return false;
+            if (!buildHelpLink(qrConfig, key)) return false;
+            const liveReminderAt = scanAt + qrConfig.maintenanceCycleHours * 3600_000
+              - qrConfig.advanceMinutes * 60_000;
+            if (now() < liveReminderAt) return false;
+            return isRecentOtherTerminalLogin(
+              latestOtherTerminalLogin(data, key), snapshot.owner, snapshot.wxid, now());
+          },
+        },
+      });
+      if (!qrResult) skipReason = 'empty';
+      else if (qrResult.superseded === true) skipReason = 'superseded';
+      else if (qrResult.skipped === 'active-session') skipReason = 'active-session';
+      else if (qrResult.skipped === 'not-eligible') skipReason = 'not-eligible';
+      else {
+        pushed = qrResult.pushed === true;
+        pushErrorText = String(qrResult.pushError || '');
+      }
+    } catch (error) {
+      pushErrorText = sanitizeErrorText(error && error.message) || '二维码生成失败';
+    }
+    if (skipReason) {
+      log('系统', `微信扫码维护二维码未推送（${skipReason === 'active-session' ? '已有可用二维码' : '等待期间条件已变化'}）: ${name}`, { accountId: key });
+    }
     await commitRegistry((next) => {
       const entry = next.advanceNotices[key];
       if (!entry || (Number(entry.generation) || 0) !== generation) return false;
-      if (result.ok) {
+      if (pushed) {
         entry.sentAt = now();
         entry.lastError = '';
-        log('系统', `微信扫码维护提前提醒已发送: ${name}`, { accountId: key });
-      } else {
-        entry.lastError = sanitizeErrorText(result.error);
-        log('错误', `微信扫码维护提前提醒发送失败: ${name}`, { accountId: key, error: entry.lastError });
+        log('系统', `微信扫码维护二维码已推送: ${name}`, { accountId: key });
+      } else if (pushErrorText) {
+        entry.lastError = sanitizeErrorText(pushErrorText);
+        log('错误', `微信扫码维护二维码推送失败: ${name}`, { accountId: key, error: entry.lastError });
       }
-      return true;
+      return pushed || !!pushErrorText;
     });
     return true;
   }
@@ -711,8 +774,15 @@ function createWxLoginReminderService(deps = {}) {
     const config = normalizeUserConfig(userConfig);
     const target = parseBarkTarget(config.deviceKey, config.barkServer);
     if (!target.key) return { ok: false, error: '未配置 Bark 设备 Key' };
-    const body = String(payload.body || '').trim();
-    if (!body) return { ok: false, error: '通知内容为空' };
+    // 纯图片通知：可见标题/正文全空（正文仅一个空白字符满足上游必填），
+    // 只带 device_key/image/url/group 元数据。文字通知仍要求非空正文。
+    const imageOnly = payload.imageOnly === true;
+    const body = imageOnly ? ' ' : String(payload.body || '').trim();
+    if (!imageOnly && !body) return { ok: false, error: '通知内容为空' };
+    // 纯图片通知没有图片就是空通知（避免发出一条无附件的空白提醒）。
+    if (imageOnly && !String(payload.image || '').trim()) {
+      return { ok: false, error: '纯图片通知缺少二维码图片' };
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), sendTimeoutMs);
@@ -721,7 +791,7 @@ function createWxLoginReminderService(deps = {}) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
-          title: String(payload.title || '微信登录提醒').trim(),
+          title: imageOnly ? '' : String(payload.title || '微信登录提醒').trim(),
           body,
           device_key: target.key,
           group: String(payload.group || 'wx-login').trim() || 'wx-login',
@@ -841,32 +911,73 @@ function createWxLoginReminderService(deps = {}) {
       if (!owner || !liveAccount || String(liveAccount.username || '').trim() !== owner
         || String(liveAccount.wxid || '') !== String(account.wxid || '')
         || currentGeneration(key) !== generation) return false;
+      // 守卫基线原语：等待期间账号对象可变（wxid/暂停），不得持引用比对。
+      const expectedWxid = String(liveAccount.wxid || '');
 
       const ownerConfig = getUserConfig(owner);
       const link = buildHelpLink(ownerConfig, key);
       if (!ownerConfig.enabled || !link || !parseBarkTarget(ownerConfig.deviceKey, ownerConfig.barkServer).key) return false;
-      const result = await sendBark(ownerConfig, {
-        title: '微信授权失效提醒',
-        body: link
-          ? `账号「${name}」的微信登录已失效，需要重新扫码授权。点开链接即可自助完成；`
-            + '如二维码已过期，可在页面点「重新发送二维码」。'
-          : `账号「${name}」的微信登录已失效，请打开面板完成重新扫码授权。`,
-        ...(link ? { url: link } : {}),
-      });
+
+      // 外发改推一张当次生成的扫码二维码（仅图片，无标题/正文）。资格守卫
+      // 复查自身事件（代次/needsRescan/声明）与实时绑定/暂停/配置：等待期
+      // 间任何失配都取消外发且不暴露会话；已确认/保存中的用户会话绝不取
+      // 消；跳过不消耗记录字段，生成/推送失败如实记录（声明保留、不自动
+      // 重试），手动刷新永远可以重发。
+      let pushed = false;
+      let pushErrorText = '';
+      let skipReason = '';
+      try {
+        const qrResult = await requestQrPush({
+          account: liveAccount,
+          origin: 'credential-invalid',
+          automatic: {
+            mode: 'credential-invalid',
+            guard: () => {
+              const data = loadRegistry();
+              if (registryBlocked) return false;
+              if ((Number(data.generations[key]) || 0) !== generation) return false;
+              const liveIncident = data.incidents[key];
+              if (!isPlainObject(liveIncident) || Number(liveIncident.generation) !== generation
+                || liveIncident.needsRescan !== true || liveIncident.claimed !== true) return false;
+              const qrAccount = findAccount(key);
+              if (!qrAccount || String(qrAccount.platform || '') !== 'wx') return false;
+              if (String(qrAccount.username || '').trim() !== owner) return false;
+              if (String(qrAccount.wxid || '') !== expectedWxid) return false;
+              if (qrAccount.autoLogin === false) return false;
+              const qrConfig = getUserConfig(owner);
+              if (qrConfig.enabled !== true) return false;
+              if (!parseBarkTarget(qrConfig.deviceKey, qrConfig.barkServer).key) return false;
+              return !!buildHelpLink(qrConfig, key);
+            },
+          },
+        });
+        if (!qrResult) skipReason = 'empty';
+        else if (qrResult.superseded === true) skipReason = 'superseded';
+        else if (qrResult.skipped === 'active-session') skipReason = 'active-session';
+        else if (qrResult.skipped === 'not-eligible') skipReason = 'not-eligible';
+        else {
+          pushed = qrResult.pushed === true;
+          pushErrorText = String(qrResult.pushError || '');
+        }
+      } catch (error) {
+        pushErrorText = sanitizeErrorText(error && error.message) || '二维码生成失败';
+      }
+      if (skipReason) {
+        log('系统', `微信重扫二维码未推送（${skipReason === 'active-session' ? '已有可用二维码' : '等待期间条件已变化'}）: ${name}`, { accountId: key });
+      }
       // 迟到完成不得改写新代次的记录。
       await commitRegistry((data) => {
         const incident = data.incidents[key];
         if (!incident || (Number(incident.generation) || 0) !== generation) return false;
-        if (result.ok) {
+        if (pushed) {
           incident.sentAt = now();
           incident.lastError = '';
-          log('系统', `微信重扫提醒已发送: ${name}`, { accountId: key });
-        } else {
-          // 发送失败保留声明（claimed），不自动重试，避免风暴。
-          incident.lastError = sanitizeErrorText(result.error);
-          log('错误', `微信重扫提醒发送失败: ${name}`, { accountId: key, error: incident.lastError });
+          log('系统', `微信重扫二维码已推送: ${name}`, { accountId: key });
+        } else if (pushErrorText) {
+          incident.lastError = sanitizeErrorText(pushErrorText);
+          log('错误', `微信重扫二维码推送失败: ${name}`, { accountId: key, error: incident.lastError });
         }
-        return true;
+        return pushed || !!pushErrorText;
       });
       return true;
     } catch (error) {
@@ -937,6 +1048,8 @@ function createWxLoginReminderService(deps = {}) {
       state: entry.state,
       detail: entry.detail || '',
       qrBase64: entry.qrBase64 || '',
+      // 服务端按魔数嗅探出的真实图片类型（前端 dataURL 用；缺省回退 PNG）。
+      qrMimeType: entry.qrMimeType || 'image/png',
       pushed: entry.pushed === true,
       pushError: entry.pushError || '',
     };
@@ -972,16 +1085,39 @@ function createWxLoginReminderService(deps = {}) {
     try { adapter.cancelWxSession(entry.sessionId, entry.owner); } catch { /* 会话可能已被消费 */ }
   }
 
+  // 自动请求不得打断的「可用扫码会话」：未过期即在服务中（等待/已扫/保存/待重试）。
+  const ACTIVE_SESSION_STATES = ['pending', 'scanned', 'saving', 'confirmed_retry'];
+
   /**
-   * 用户显式点击「现在/重新发送二维码」：新建扫码会话（旧会话/守望/图片能力
-   * 立即作废），按账号属主的 Bark 配置即时推送带图通知，并启动有界服务端守望。
-   * 请求快照在每个 await 之后复验：更新的扫码/请求一旦发生，迟到产物
-   * （二维码/图片能力/推送）整体回滚，不覆盖新状态。
+   * 发送扫码二维码（手动点击或自动提醒到点共用）：新建扫码会话（旧会话/
+   * 守望/图片能力立即作废），按账号属主的 Bark 配置即时推送「纯二维码图片」
+   * 通知（无标题、正文仅一个空白字符），并启动有界服务端守望。请求快照在
+   * 每个 await 之后复验：更新的扫码/请求一旦发生，迟到产物（二维码/图片
+   * 能力/推送）整体回滚，不覆盖新状态（isSnapshotCurrent 请求代栅栏）。
+   *
+   * automatic（提前/终态自动提醒）：须携带稳定资格守卫（guard 闭包，捕获
+   * 基线原语而非可变账号引用），在触网前/注册前/外发前三道复查——任何一
+   * 道失配都取消「刚拿到的」二维码（不碰更新的请求），不注册 pending/
+   * 图片能力/守望（页面不可见、零轮询）。已有可用扫码会话时不取消、不重
+   * 复推送（让位于用户手上的二维码）；与手动在途请求合并为同一次。手动
+   * 请求无守卫、永远直接取代，且 Bark 未配置时仍照常在页面展示（旧行为）。
    */
-  async function requestQrPush({ account, origin }) {
+  async function requestQrPush({ account, origin, automatic = false }) {
     const accountId = String(account.id);
+    const eligibility = isPlainObject(automatic) && typeof automatic.guard === 'function'
+      ? automatic.guard : null;
     const existing = inFlightSend.get(accountId);
     if (existing) return existing;
+    if (automatic) {
+      // 检查点 A（触网/取代之前）：资格已失（关提前/关总开关/暂停/换绑/新
+      // 扫码）就不动任何现有会话、不生成二维码。
+      if (eligibility && !eligibility()) return { skipped: 'not-eligible' };
+      const pending = pendingByAccount.get(accountId);
+      if (pending && ACTIVE_SESSION_STATES.includes(pending.state)
+        && now() < pending.expiresAt && isSnapshotCurrent(pending.snapshot)) {
+        return { skipped: 'active-session', session: sessionPublicView(pending) };
+      }
+    }
 
     // 先作废旧会话（会推进请求代），再捕获本请求快照，避免自我失效。
     supersedePendingSessions(accountId);
@@ -1001,13 +1137,23 @@ function createWxLoginReminderService(deps = {}) {
       }
       const sessionId = String(qr.Data.Uuid);
       const qrBase64 = String(qr.Data.QrBase64 || '');
-      if (!isPngBuffer(Buffer.from(qrBase64, 'base64'))) {
+      // 上游真实返回 JPEG（线上事故：PNG-only 校验曾致 500）：按魔数嗅探
+      // PNG/JPEG，原样字节透传，拒绝 HTML/SVG/未知内容。
+      const qrMimeType = sniffImageMime(Buffer.from(qrBase64, 'base64'));
+      if (!qrMimeType) {
         try { adapter.cancelWxSession(sessionId, owner); } catch { /* 尽力清理 */ }
-        throw new Error('二维码内容不是有效的 PNG 图片');
+        throw new Error('二维码内容不是有效的 PNG/JPEG 图片');
       }
       if (!isSnapshotCurrent(snapshot)) {
         try { adapter.cancelWxSession(sessionId, owner); } catch { /* 尽力清理 */ }
         return { superseded: true };
+      }
+      // 检查点 B（注册之前）：等待期间资格被收回 → 取消刚拿到的二维码，
+      // 不注册 pending/图片能力/守望（页面不可见、零轮询）；更新的请求已由
+      // 上一步请求代栅栏拦下，这里只清理本次产物。
+      if (eligibility && !eligibility()) {
+        try { adapter.cancelWxSession(sessionId, owner); } catch { /* 尽力清理 */ }
+        return { skipped: 'not-eligible' };
       }
       // 会话真实起止来自 adapter（本地会话），不自造第二套时钟。
       const createdAt = Number(qr.Data.CreatedAt) || now();
@@ -1018,33 +1164,47 @@ function createWxLoginReminderService(deps = {}) {
       const entry = {
         accountId, sessionId, owner, snapshot,
         createdAt, expiresAt,
-        state: 'pending', detail: '', qrBase64, imageToken: token,
-        pushed: false, pushError: '', pushOrigin: String(origin || 'manual'),
+        state: 'pending', detail: '', qrBase64, qrMimeType, imageToken: token,
+        pushed: false, pushError: '',
+        pushOrigin: automatic
+          ? `automatic:${isPlainObject(automatic) && automatic.mode ? String(automatic.mode) : String(origin || '')}`
+          : String(origin || 'manual'),
       };
       pendingByAccount.set(accountId, entry);
       imageTokens.set(token, {
-        accountId, sessionId, owner, qrBase64, expiresAt, snapshot,
+        accountId, sessionId, owner, qrBase64, qrMimeType, expiresAt, snapshot,
       });
 
       let pushed = false;
       let pushError = '';
       const ownerConfig = getUserConfig(owner);
       const target = parseBarkTarget(ownerConfig.deviceKey, ownerConfig.barkServer);
-      if (ownerConfig.enabled && ownerConfig.serverUrl && target.key) {
+      // 检查点 C（外发之前）：注册与外发之间虽无 await，仍按同一守卫复核；
+      // 失配则整体回滚本次产物（与被取代同构），绝不留下半成品会话。
+      if (eligibility && !eligibility()) {
+        revokeImageTokensFor(accountId, sessionId);
+        if (pendingByAccount.get(accountId) === entry) pendingByAccount.delete(accountId);
+        try { adapter.cancelWxSession(sessionId, owner); } catch { /* 尽力清理 */ }
+        return { skipped: 'not-eligible' };
+      }
+      // 自动请求在二维码生成期间账号可能被暂停：外发前再拦一次，宁可不发。
+      const liveAccountForPush = automatic ? findAccount(accountId) : null;
+      const pausedDuringWait = automatic
+        && (!liveAccountForPush || liveAccountForPush.autoLogin === false);
+      if (!pausedDuringWait && ownerConfig.enabled && ownerConfig.serverUrl && target.key) {
         const link = buildHelpLink(ownerConfig, accountId);
+        // 通知只带一张二维码图片：标题空、正文仅一个空白字符（纯图模式）。
         const result = await sendBark(ownerConfig, {
-          title: '微信重新扫码',
-          body: `账号「${account.name || accountId}」的新扫码二维码已生成（本地会话约 `
-            + `${Math.round((expiresAt - createdAt) / 60000)} 分钟内有效，微信侧二维码可能提前失效）。`
-            + '请用微信扫码确认；如已过期，回到页面点「重新发送二维码」。',
+          imageOnly: true,
           ...(link ? { url: link } : {}),
           image: `${ownerConfig.serverUrl}/api/wx-login-qr-image/${token}`,
         });
         pushed = result.ok;
         pushError = result.ok ? '' : sanitizeErrorText(result.error);
       } else {
-        pushError = !ownerConfig.enabled ? '未启用 Bark 提醒'
-          : !target.key ? '未配置 Bark 设备 Key' : '未配置面板访问地址，无法生成图片链接';
+        pushError = pausedDuringWait ? '账号已暂停，未推送'
+          : !ownerConfig.enabled ? '未启用 Bark 提醒'
+            : !target.key ? '未配置 Bark 设备 Key' : '未配置面板访问地址，无法生成图片链接';
       }
       if (!isSnapshotCurrent(snapshot)) {
         // 推送期间已被更新请求/新扫码取代：回滚本次产物，不动新状态。
@@ -1230,7 +1390,10 @@ function createWxLoginReminderService(deps = {}) {
     };
   }
 
-  /** 图片能力读取：过期/被替换/已消费/账号已删或改绑一律视为吊销。只返回 PNG。 */
+  /**
+   * 图片能力读取：过期/被替换/已消费/账号已删或改绑一律视为吊销。
+   * 按服务端嗅探出的真实类型返回原样字节（png 字段为兼容保留的原始字节）。
+   */
   function getQrImage(token) {
     const entry = imageTokens.get(String(token || ''));
     if (!entry) return null;
@@ -1253,7 +1416,11 @@ function createWxLoginReminderService(deps = {}) {
       revokeImageTokensFor(entry.accountId);
       return null;
     }
-    return { png: Buffer.from(entry.qrBase64, 'base64'), accountId: entry.accountId };
+    return {
+      png: Buffer.from(entry.qrBase64, 'base64'),
+      contentType: entry.qrMimeType || 'image/png',
+      accountId: entry.accountId,
+    };
   }
 
   function getPendingSession(accountId) {

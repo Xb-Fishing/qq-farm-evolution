@@ -390,13 +390,14 @@ test('noteAcceptedScan(keepSessionId)：自身完成保留 saved 状态并推进
   // 代次已推进：同一账号的旧失效事件不得再命中（getIncident 已清）。
   assert.equal(h.service.getIncident('101'), null);
   assert.equal(h.service.getQrImage(first.imageToken), null, '代次推进后旧图片令牌按绑定检查吊销');
-  // 同账号再次失效 → 新代次允许重新提醒（外部代次推进证据）。
+  // 同账号再次失效 → 新代次允许重新提醒（外部代次推进证据）；
+  // 终态失效提醒到点即推送一张二维码（sess-2）。
   await h.service.noteCredentialInvalid('101');
   assert.equal(h.service.getIncident('101').needsRescan, true);
 
   // 外来/面板已接受的扫码：立即取代旧会话（不等注册表落盘）。
   const second = await h.service.requestQrPush({ account: h.accountList[0] });
-  assert.equal(second.session.sessionId, 'sess-2');
+  assert.equal(second.session.sessionId, 'sess-3', '终态提醒已生成过 sess-2，手动重发是新会话');
   await h.service.noteAcceptedScan('101');
   assert.equal(h.service.getPendingSession('101'), null, '外来已接受扫码必须清空旧 pending');
   assert.equal(h.service.getQrImage(second.imageToken), null);

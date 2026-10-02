@@ -126,13 +126,12 @@ test('默认 24h/60min：22h59m 不发，23h 恰好一条；措辞是参考提�
   assert.equal(h.sent.length, 1);
   const body = JSON.parse(h.sent[0].init.body);
   assert.equal(body.device_key, 'device-key-of-owner', '只发属主自己的 Key');
-  assert.equal(body.title, '微信扫码维护提醒');
-  assert.ok(body.body.includes('维护参考提醒'), body.body);
-  assert.ok(body.body.includes('不表示账号已失效'), '不得断言账号已失效');
-  assert.ok(!body.body.includes('正常运行'), '无连接态证据不得断言正常运行');
-  assert.ok(body.body.includes('非微信官方到期时间'), '必须声明非官方到期时间');
+  assert.equal(body.title, '', '提前提醒也是纯二维码通知：无标题');
+  assert.equal(body.body, ' ', '正文仅一个空白字符（无文字内容）');
+  assert.match(body.image, /^https:\/\/panel\.example\.com\/api\/wx-login-qr-image\/[0-9a-f]{64}$/, '推送内容就是当次生成的二维码图片');
   assert.match(body.url, /\/wx-login-help\?accountId=101$/);
-  assert.equal(h.adapterCalls.qr, 0, '提前提醒绝不生成二维码');
+  assert.deepEqual(Object.keys(body).sort(), ['body', 'device_key', 'group', 'image', 'title', 'url']);
+  assert.equal(h.adapterCalls.qr, 1, '到点即生成一张二维码');
   assert.equal(h.service.needsRescan('101'), false, '提前提醒不设置 needsRescan');
   assert.equal(h.service.getIncident('101'), null);
 
