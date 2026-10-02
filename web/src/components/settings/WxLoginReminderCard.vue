@@ -32,8 +32,8 @@ function openHelp(accountId: string) {
       微信重扫提醒（Bark）
     </h4>
     <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
-      仅当系统确认微信登录已失效、必须重新扫码时，向你的 iPhone 发一条提醒；
-      正常续期、临时网络波动、被踢下线都不会打扰。
+      凭据被系统确认失效、必须重新扫码时向你的 iPhone 发一条提醒（正常续期、临时网络波动不打扰）；
+      另可选按自设周期的「扫码维护参考计划」提前提醒，方便你提前准备重扫。
     </p>
 
     <div
@@ -87,6 +87,41 @@ function openHelp(accountId: string) {
         手机必须能访问这个地址（不能用 localhost / 127.0.0.1）。
         它用于提醒里的自助链接和二维码图片；发送二维码时手机无需已在面板页面。
       </p>
+
+      <div class="mt-3 border-t pt-3 space-y-3 dark:border-gray-700">
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-sm text-gray-700 font-medium dark:text-gray-300">扫码维护参考计划</span>
+          <BaseSwitch v-model="config.advanceEnabled" />
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+          以你上次成功扫码的时间为基线，按自设周期计算参考维护时间，并在到期前提前提醒你准备重扫。
+          这是你自行调整的计划参考，<b>不是</b>微信官方到期时间，也不能保证零断线。
+          同次扫码只自动提醒一次；若尚未提前提醒，实际失效时再提醒，成功重扫后开始下一轮。
+          仅当最近 24 小时内观察到「已在其他终端登录」的踢下线记录（作为手机进场参考）时才会发送
+          周期提醒；提前提醒不会自动生成二维码，也不会改动正在运行的账号。
+        </p>
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <BaseInput
+            v-model="config.maintenanceCycleHours"
+            label="维护周期（小时，4–168）"
+            type="number"
+            min="4"
+            max="168"
+            step="1"
+          />
+          <BaseInput
+            v-model="config.advanceMinutes"
+            label="提前提醒（分钟，≥5 且小于周期）"
+            type="number"
+            min="5"
+            step="1"
+          />
+        </div>
+        <p class="text-xs text-gray-400">
+          关闭后不发周期提前提醒；若该次扫码尚未提前提醒过，实际失效时仍会提醒一次。
+          计划进度可在账号的「微信重新扫码」页面查看。
+        </p>
+      </div>
     </div>
 
     <div class="mt-4 flex justify-end gap-2 border-t pt-3 dark:border-gray-700">

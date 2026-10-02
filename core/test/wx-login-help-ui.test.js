@@ -194,6 +194,7 @@ function helpStatusFixture(accountId, overrides = {}) {
     serverNow: 5_000_000,
     account: { id: accountId, name: `农场号${accountId}`, platform: 'wx' },
     incident: { needsRescan: true, lastError: '', sentAt: 1 },
+    plan: null, // 旧服务端不带 plan 字段：页面必须照常工作
     pending: {
       sessionId: `sess-${accountId}`,
       createdAt,
@@ -231,7 +232,7 @@ function helpHarness(initialAccountId = '301', responder = null) {
   };
   const filename = path.join(root, 'web/src/views/WxLoginHelp.vue');
   const { descriptor } = compiler.parse(
-    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending })\n</script>'),
+    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending, planSummary, planActivityLabel })\n</script>'),
     { filename },
   );
   const source = compiler.compileScript(descriptor, { id: 'wx-help-test' }).content;
@@ -421,4 +422,108 @@ test('卸载后轮询停止（无悬挂定时回调副作用）', async () => {
   assert.equal(h.interval.active, true);
   h.app.unmount();
   assert.equal(h.interval.active, false, 'unmount 必须停轮询');
+});
+
+// ---------- WxLoginHelp.vue：扫码维护参考计划卡片 ----------
+function planFixture(overrides = {}) {
+  const serverNow = 5_000_000;
+  return {
+    mode: 'reference',
+    advanceEnabled: true,
+    cycleHours: 24,
+    advanceMinutes: 60,
+    available: true,
+    waitingForScan: false,
+    acceptedScanAt: serverNow - 22 * 3_600_000,
+    maintenanceAt: serverNow + 2 * 3_600_000,
+    reminderAt: serverNow + 1 * 3_600_000,
+    remainingMs: 2 * 3_600_000,
+    overdue: false,
+    notified: false,
+    notificationSentAt: 0,
+    notificationError: '',
+    recentMobileActivityAt: serverNow - 3_600_000,
+    recentMobileActivityAvailable: true,
+    pauseReason: '',
+    ...overrides,
+  };
+}
+
+test('维护计划卡片：有效计划显示进度与信号状态；不把未送达说成已发送', async () => {
+  const h = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture() }) } }));
+  try {
+    await settle();
+    const summary = h.instance().planSummary;
+    assert.ok(summary.includes('下次维护参考时间'), summary);
+    assert.ok(summary.includes('周期 24 小时，提前 60 分钟提醒'), summary);
+    assert.ok(!summary.includes('已发送'), '未认领不得声称已发送');
+    const activity = h.instance().planActivityLabel;
+    assert.ok(activity.includes('其他终端登录'), activity);
+    assert.ok(activity.includes('24 小时窗口内'), activity);
+    assert.ok(activity.includes('手机进场参考'), activity);
+
+    // 已认领但发送失败：如实说「已尝试」，不说「已发送」。
+    h.getResponder.fn = () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture({ notified: true, notificationSentAt: 0, notificationError: 'Bark HTTP 502' }) }) } });
+    await h.interval.callback();
+    assert.ok(h.instance().planSummary.includes('已尝试'), h.instance().planSummary);
+    assert.ok(h.instance().planSummary.includes('不会重复自动发送'), h.instance().planSummary);
+    assert.ok(h.instance().planSummary.includes('502'), '失败原因要展示');
+
+    // 已送达：才可以说「已发送」。
+    h.getResponder.fn = () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture({ notified: true, notificationSentAt: 5_100_000, notificationError: '' }) }) } });
+    await h.interval.callback();
+    assert.ok(h.instance().planSummary.includes('已发送'), h.instance().planSummary);
+  }
+  finally { h.app.unmount(); }
+});
+
+test('维护计划卡片：到期/暂停/等待扫码的准确措辞', async () => {
+  // 参考时间已到：不得再显示「下次 + 剩 0 分钟」。
+  let h = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture({ overdue: true, remainingMs: -60_000 }) }) } }));
+  try {
+    await settle();
+    assert.ok(h.instance().planSummary.includes('维护参考时间已到'), h.instance().planSummary);
+    assert.ok(!h.instance().planSummary.includes('下次维护参考时间'), '到期后不得再显示「下次」');
+  }
+  finally { h.app.unmount(); }
+
+  // 无进场信号：显示暂停原因，不得暗示会发。
+  h = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture({
+    recentMobileActivityAt: 0,
+    recentMobileActivityAvailable: false,
+    pauseReason: '最近 24 小时未观察到其他终端登录（手机进场参考），暂不发送周期提醒',
+  }) }) } }));
+  try {
+    await settle();
+    assert.ok(h.instance().planSummary.includes('其他终端登录'), h.instance().planSummary);
+    assert.ok(h.instance().planSummary.includes('暂不发送周期提醒'), h.instance().planSummary);
+    assert.ok(h.instance().planActivityLabel.includes('未观察到'), h.instance().planActivityLabel);
+  }
+  finally { h.app.unmount(); }
+
+  // 无扫码基线：等待下一次扫码，不显示进度。
+  h = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', { plan: planFixture({
+    available: false,
+    waitingForScan: true,
+    acceptedScanAt: 0,
+    maintenanceAt: 0,
+    reminderAt: 0,
+    remainingMs: 0,
+    pauseReason: '完成下一次扫码后开始计算计划',
+  }) }) } }));
+  try {
+    await settle();
+    assert.equal(h.instance().planSummary, '完成下一次扫码后开始计算计划');
+  }
+  finally { h.app.unmount(); }
+
+  // 旧服务端无 plan 字段：页面照常工作，计划区为空。
+  h = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301') } }));
+  try {
+    await settle();
+    assert.equal(h.instance().planSummary, '');
+    assert.equal(h.instance().planActivityLabel, '');
+    assert.ok(typeof h.instance().sendQr === 'function', '扫码功能不受影响');
+  }
+  finally { h.app.unmount(); }
 });

@@ -8,6 +8,9 @@ export interface WxLoginReminderConfig {
   barkServer: string
   deviceKey: string
   serverUrl: string
+  advanceEnabled: boolean
+  maintenanceCycleHours: number
+  advanceMinutes: number
 }
 
 export interface NeedsRescanAccount {
@@ -20,6 +23,9 @@ const DEFAULT_CONFIG: WxLoginReminderConfig = {
   barkServer: 'https://api.day.app',
   deviceKey: '',
   serverUrl: '',
+  advanceEnabled: true,
+  maintenanceCycleHours: 24,
+  advanceMinutes: 60,
 }
 
 export function useWxLoginReminder(
