@@ -1,4 +1,5 @@
 const { PlantPhase } = require('../config/config');
+const { getPlantById } = require('../config/gameConfig');
 const { getPlantBlacklist, isAutomationOn } = require('../models/store');
 const { getUserState } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, sleep } = require('../utils/utils');
@@ -587,6 +588,34 @@ function fastLaneRipeLandIds(lands) {
   return ids;
 }
 
+/**
+ * 快车道 daily 记录文案（2026-10-04）：回包带 items 时用权威 getPlantByFruitId
+ * 映射的确认果实名+数量，写"偷取"。回包缺 items（或只剩杂物）时不能宣称偷到
+ * 任何果实：只如实写"已处理 N 块地"，推送地块上的作物名至多作为"观察作物"
+ * 引用，并明确标注"到手果实未确认"；作物也未知时不提作物名。
+ */
+function fastLaneDailyText(got, targets, lands) {
+  if (got && got.fruitSummary) {
+    return `快车道偷取 ${got.fruitSummary}（${targets.length} 块地，推送直达）`;
+  }
+  const names = [];
+  const seen = new Set();
+  for (const land of Array.isArray(lands) ? lands : []) {
+    const landId = toNum(land && land.id);
+    if (!targets.includes(landId)) continue;
+    const name = String(getPlantById(toNum(land && land.plant && land.plant.id))?.name || '').trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  if (names.length > 0) {
+    const label = names.length === 1 ? names[0] : `${names.slice(0, 2).join('、')}等`;
+    return `快车道已处理 ${targets.length} 块地（推送直达，观察作物：${label}，到手果实未确认）`;
+  }
+  return `快车道已处理 ${targets.length} 块地（推送直达，到手果实未确认）`;
+}
+
 async function fastLaneSteal(gid, lands) {
   const id = toNum(gid);
   if (!id || !isPriorityGid(id)) return;
@@ -616,10 +645,7 @@ async function fastLaneSteal(gid, lands) {
         actions: [`偷${targets.length}`], mode: 'fast_lane', result: 'ok',
         ...(got.detail ? { stealItems: got.detail } : {}),
       });
-      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
-        got.total > 0
-          ? `快车道偷取 ${got.total} 个（${targets.length} 块地，推送直达）`
-          : `快车道偷取 ${targets.length} 块（推送直达）`);
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal', fastLaneDailyText(got, targets, lands));
       void sellAllFruits().catch(() => {});
     } catch { /* 已被主人收走等预期失败，静默 */ }
   });

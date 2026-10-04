@@ -14,11 +14,19 @@ test('sumHarvestItemCount 只统计果实 id，杂物不计入', () => {
   ] });
   assert.equal(got.total, 89);
   assert.equal(got.detail, '40516x84,1028x2,1040516x5,1028x3');
-  assert.deepEqual(sumHarvestItemCount({ items: [] }), { total: 0, detail: '' });
-  assert.deepEqual(sumHarvestItemCount(null), { total: 0, detail: '' });
+  // 2026-10-04 附加字段：实际果实名+数量聚合（黄金· 变异带全名，杂物不进清单）。
+  assert.deepEqual(got.fruits, [
+    { name: '狗尾草', count: 84 },
+    { name: '黄金·狗尾草', count: 5 },
+  ]);
+  assert.equal(got.fruitSummary, '狗尾草×84，黄金·狗尾草×5');
+  assert.deepEqual(sumHarvestItemCount({ items: [] }),
+    { total: 0, detail: '', fruits: [], fruitSummary: '' });
+  assert.deepEqual(sumHarvestItemCount(null),
+    { total: 0, detail: '', fruits: [], fruitSummary: '' });
   // count=0 条目不进 detail，不贡献总量
   assert.deepEqual(sumHarvestItemCount({ items: [{ id: 40516, count: 0 }] }),
-    { total: 0, detail: '' });
+    { total: 0, detail: '', fruits: [], fruitSummary: '' });
 });
 
 // 编解码往返：proto 启用 items 字段后，wire 上带 items 的回包能解出来。

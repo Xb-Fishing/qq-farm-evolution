@@ -367,20 +367,35 @@ async function stealHarvest(gid, landIds) {
  * "果实+杂物"成对（如 40516x84,1028x2），杂物（1028 等）不计入数量。
  * 回包未携带 items 时返回 0，调用方回退块数。
  * detail 返回 "id xN" 串供日志核对 items 语义。
+ * fruits/fruitSummary（2026-10-04，附加字段）为按权威 getPlantByFruitId
+ * 映射出的实际果实名+数量聚合（黄金· 变异是独立植物配置，天然带全名），
+ * 供快车道 daily 记录写明偷到了什么；未知 id 不进名称清单，不编造数量。
  */
 function sumHarvestItemCount(reply) {
   const items = (reply && reply.items) || [];
   let total = 0;
   const detail = [];
+  const fruitCounts = new Map();
   for (const it of items) {
     const count = toNum(it && it.count);
     if (count > 0) {
       const id = toNum(it && it.id);
-      if (getPlantByFruitId(id)) total += count;
+      const plant = getPlantByFruitId(id);
+      if (plant) {
+        total += count;
+        const name = String(plant.name || '').trim() || `果实${id}`;
+        fruitCounts.set(name, (fruitCounts.get(name) || 0) + count);
+      }
       detail.push(`${id}x${count}`);
     }
   }
-  return { total, detail: detail.join(',') };
+  const fruits = [...fruitCounts.entries()].map(([name, count]) => ({ name, count }));
+  return {
+    total,
+    detail: detail.join(','),
+    fruits,
+    fruitSummary: fruits.map(({ name, count }) => `${name}×${count}`).join('，'),
+  };
 }
 
 /**

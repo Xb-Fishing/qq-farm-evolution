@@ -55,6 +55,61 @@ async function getActiveMysteryShop() {
   return normalizeNPC(types.GetActiveMysteryNPCReply.decode(body));
 }
 
+// ---- 面板神秘商人读取缓存（下游刷新不穿透腾讯上游，2026-10-03） ----
+// 面板横幅 3 小时固定刷新、商城页挂载与账号切换每次都拉 /api/shop/mystery，
+// 无缓存时每次直发 MysteryShopService.GetActiveNPC（固定间隔直发属机器指纹）。
+// 语义与 warehouse.getBagForPanel 相同：60s 成功缓存 + 在途合并 + 60s 失败
+// 冷却；Buy/Abandon 成功返回后在服务内部失效——面板手动购买与自动购买共用
+// 这两个写函数，自动买成交后面板缓存同样失效，一处覆盖全部调用方。只供
+// 面板读路径使用；自动购买 checkAndAutoBuyMysteryShop 仍走无缓存的
+// getActiveMysteryShop()（库存服务端随机、成交决策需要当前态）。
+const MYSTERY_PANEL_CACHE_MS = 60 * 1000;
+let panelMysteryCache = null;
+let panelMysteryCacheAt = 0;
+let panelMysteryInFlight = null;
+let panelMysteryRetryAfter = 0;
+
+async function getMysteryShopForPanel() {
+  const now = Date.now();
+  if (panelMysteryCache && now - panelMysteryCacheAt < MYSTERY_PANEL_CACHE_MS) {
+    return panelMysteryCache;
+  }
+  if (panelMysteryInFlight) return panelMysteryInFlight;
+  if (now < panelMysteryRetryAfter) {
+    throw new Error('神秘商人读取冷却中，请稍后再试');
+  }
+  const pending = (async () => {
+    try {
+      const shop = await getActiveMysteryShop();
+      if (panelMysteryInFlight === pending) {
+        panelMysteryCache = shop;
+        panelMysteryCacheAt = Date.now();
+        panelMysteryRetryAfter = 0;
+      }
+      return shop;
+    } catch (err) {
+      if (panelMysteryInFlight === pending) {
+        panelMysteryRetryAfter = Date.now() + MYSTERY_PANEL_CACHE_MS;
+      }
+      throw err;
+    }
+  })();
+  panelMysteryInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (panelMysteryInFlight === pending) panelMysteryInFlight = null;
+  }
+}
+
+function invalidatePanelMysteryCache() {
+  panelMysteryCache = null;
+  panelMysteryCacheAt = 0;
+  panelMysteryRetryAfter = 0;
+  // 在途读取也解除引用：其完成体检查 inFlight === pending 失败，不会写回旧数据
+  panelMysteryInFlight = null;
+}
+
 async function buyMysteryShopGoods(npcId) {
   const id = toNum(npcId);
   if (id <= 0) throw new Error('无效的神秘商人 ID');
@@ -63,6 +118,7 @@ async function buyMysteryShopGoods(npcId) {
     types.BuyMysteryShopRequest.create({ npc_id: id })
   ).finish();
   const { body } = await sendMsgAsync(SERVICE, 'Buy', request);
+  invalidatePanelMysteryCache();
   const reply = types.BuyMysteryShopReply.decode(body);
   return {
     reward: {
@@ -78,6 +134,7 @@ async function abandonMysteryShop() {
     types.AbandonMysteryShopRequest.create({})
   ).finish();
   const { body } = await sendMsgAsync(SERVICE, 'Abandon', request);
+  invalidatePanelMysteryCache();
   types.AbandonMysteryShopReply.decode(body);
   return { abandoned: true };
 }
@@ -124,6 +181,9 @@ module.exports = {
   AUTO_BUY_CHECK_INTERVAL_MS,
   nextAutoBuyCheckDelayMs,
   getActiveMysteryShop,
+  getMysteryShopForPanel,
+  invalidatePanelMysteryCache,
+  MYSTERY_PANEL_CACHE_MS,
   buyMysteryShopGoods,
   abandonMysteryShop,
   checkAndAutoBuyMysteryShop,
