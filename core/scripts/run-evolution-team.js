@@ -15,6 +15,68 @@ const {
 
 const repoRoot = path.resolve(__dirname, '../..');
 
+// 私有交接文档（owner 本地 git exclude 忽略，永不入库）。协调进程必须在
+// 运行开始时独立于 Git 记录它的存在/非空/内容哈希（只记哈希不记内容），
+// 验证时以"本地非空且与开始时相比真实变更"作为交接证据——修复此前只看
+// git 差异列表导致 ignored HANDOFF 永远 missing_handoff 的误判。
+const HANDOFF_FILE = 'docs/HANDOFF.md';
+
+function isGitIgnored(file) {
+  try {
+    // check-ignore 退出码：0=被忽略（含 .git/info/exclude），1=未忽略。
+    // --no-index：即使文件被强制 add 进了索引，也仍按忽略模式判定——被
+    // 暂存的私有 HANDOFF 不能因此伪装成"可见文档"绕过私有保护。
+    execFileSync('git', ['check-ignore', '--no-index', '--', file], {
+      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch (error) {
+    // 只认退出码 1（确实未被忽略）；128/其他状态码/无法执行 = 环境不可信。
+    if (error && error.status === 1) return false;
+    throw createTeamError('unsafe_worktree');
+  }
+}
+
+/** 运行开始快照：ignored 标记 + 非空内容哈希；不可读/非普通文件一律拒绝。 */
+function snapshotPrivateHandoff() {
+  const snapshot = { ignored: isGitIgnored(HANDOFF_FILE), sha256: null };
+  const full = path.join(repoRoot, HANDOFF_FILE);
+  let stat;
+  try { stat = fs.lstatSync(full); }
+  catch (error) { if (error.code !== 'ENOENT') throw createTeamError('unsafe_worktree'); }
+  if (stat) {
+    if (!stat.isFile()) throw createTeamError('unsafe_worktree');
+    try {
+      const content = fs.readFileSync(full);
+      if (content.length > 0) snapshot.sha256 = crypto.createHash('sha256').update(content).digest('hex');
+    } catch { throw createTeamError('unsafe_worktree'); }
+  }
+  return snapshot;
+}
+
+/**
+ * ignored HANDOFF 的交接证据：当前必须存在、可读、非空，且内容哈希与运行
+ * 开始时不同（开始时缺失、现在非空也算真实更新）。被 git 跟踪/可见的
+ * HANDOFF 仍走 git 差异列表语义，不进入本判定。
+ */
+function privateHandoffUpdated(baseline) {
+  if (!baseline.ignored) return false;
+  const current = snapshotPrivateHandoff();
+  return !!current.sha256 && current.sha256 !== baseline.sha256;
+}
+
+/**
+ * 运行中途忽略状态复核：verify 与 commit 各自重新快照，baseline 的
+ * ignored 标记不得漂移（双向）。被忽略的私有文档中途变「可见」= 有人改了
+ * exclude/ignore 规则或动过索引（绕私有保护的常见手法）；原本可见的文档
+ * 中途变「被忽略」= 想借忽略规则把文档从提交面里藏掉。两者都判不安全。
+ */
+function assertHandoffVisibilityStable(baseline) {
+  if (snapshotPrivateHandoff().ignored !== baseline.ignored) {
+    throw createTeamError('unsafe_worktree');
+  }
+}
+
 const ORCHESTRATION_FILES = new Set([
   'core/scripts/run-evolution-team.js', 'core/src/services/evolution-team.js',
 ]);
@@ -177,6 +239,7 @@ async function main(input) {
   };
   try {
     if (inspectWorktree().head !== baseCommit) throw createTeamError('head_changed');
+    const handoffBaseline = snapshotPrivateHandoff();
     await onProgress('research', settings.subAgent, {});
     const references = await collectPublicReferences({ dataDir });
     const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。`;
@@ -216,7 +279,20 @@ async function main(input) {
           if (isProtectedFile(file)) throw createTeamError('protected_change');
           if (ORCHESTRATION_FILES.has(file) && !reviewed.has(file)) throw createTeamError('protected_change');
         }
-        if (files.length && !files.includes('docs/HANDOFF.md')) throw createTeamError('missing_handoff');
+        // 运行开始判定为私有的 HANDOFF，全程不得变成 git 可见（中途删掉忽略
+        // 模式、或把它强制 add 进暂存区/索引都不行）：私有文档一旦进入差异
+        // 列表，后续任何提交都可能把它带进历史，只能整体判不安全。
+        if (handoffBaseline.ignored && files.includes(HANDOFF_FILE)) {
+          throw createTeamError('unsafe_worktree');
+        }
+        // 忽略状态中途漂移（任一方向）= 有人动了 ignore/exclude 规则或索引，
+        // 整个运行按不安全处理。
+        assertHandoffVisibilityStable(handoffBaseline);
+        // 交接证据：可见 HANDOFF 看 git 差异列表；ignored 私有 HANDOFF 看运行
+        // 开始快照之后的真实本地更新（缺失/未变/不可读一律不通过）。
+        if (files.length && !files.includes(HANDOFF_FILE) && !privateHandoffUpdated(handoffBaseline)) {
+          throw createTeamError('missing_handoff');
+        }
         try {
           const validation = await runEvolutionValidation({ repoRoot, dataDir, execute, env });
           validation.countercheck = await runBaselineChecks({ repoRoot, dataDir, baseCommit, checks: baselineChecks, env });
@@ -232,7 +308,23 @@ async function main(input) {
       },
       commit: async (approved) => {
         if (inspectWorktree().fingerprint !== approved.fingerprint) throw createTeamError('worktree_changed');
-        git(['add', '--', ...approved.files]);
+        // 提交前再复核忽略状态：verify 之后仍可能有人改 ignore/exclude。
+        assertHandoffVisibilityStable(handoffBaseline);
+        // ignored 私有 HANDOFF 永不进入提交；即使批准列表意外带上也过滤掉。
+        const commitFiles = approved.files.filter(file => file !== HANDOFF_FILE || !handoffBaseline.ignored);
+        if (commitFiles.length === 0) throw createTeamError('worktree_changed');
+        git(['add', '--', ...commitFiles]);
+        // 暂存区必须与预期完全一致：意外暂存的私有 HANDOFF 或无关文件一律拒绝。
+        const staged = git(['diff', '--cached', '--name-only', '--no-renames']).split('\n').filter(Boolean).sort();
+        const expected = [...commitFiles].sort();
+        if (staged.length !== expected.length || staged.some(file => !expected.includes(file))) {
+          throw createTeamError('unsafe_worktree');
+        }
+        // 双保险：运行开始判定私有的 HANDOFF 无论批准列表/暂存比对结果如何，
+        // 出现在暂存区就是不合格——绝不提交私有交接文档。
+        if (handoffBaseline.ignored && staged.includes(HANDOFF_FILE)) {
+          throw createTeamError('unsafe_worktree');
+        }
         git(['commit', '-m', task === 'safety' ? 'fix: apply reviewed safety evolution' : 'feat: apply reviewed activity evolution']);
         const completed = inspectWorktree();
         if (completed.dirty) throw createTeamError('worktree_changed');

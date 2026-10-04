@@ -143,7 +143,7 @@ const settings = defineModel<StrategySettings>('settings', { required: true })
           label="优先种植 2×2 作物"
         />
         <p class="mt-2 text-xs text-emerald-700/90 leading-5 dark:text-emerald-300/90">
-          开启后会根据背包中的四格种子预留完整 2×2 区域；预留区收获后暂不补种普通作物，四块全部空闲时自动种植。四格种子不会从商城购买。
+          开启后会根据背包中的四格种子优先种植完整 2×2 区域；残株预计 60 秒内清空时最多预留一个方块等待（等待上限 60 秒），超时或无法在 60 秒内清空的空地立即回到普通种植。四格种子不会从商城购买。
         </p>
       </div>
 

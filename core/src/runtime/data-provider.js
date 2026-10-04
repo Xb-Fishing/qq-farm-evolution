@@ -27,6 +27,7 @@ function createDataProvider(deps) {
         scheduleAutoCodeRefresh,
         stopAutoCodeRefresh,
         refreshAccountCode,
+        scheduleRescanRecovery,
         needsWxRescan
     } = deps;
 
@@ -293,6 +294,22 @@ function createDataProvider(deps) {
             return { ok };
         },
 
+        // 自助扫码「授权已保存但换码/启动未收口」时的自动恢复排程：沿既有
+        // scheduleRelogin（原 intervalMinutes 节奏 + 每日 5 次/连续失败 3 次的
+        // 既有预算与退避），只做接线，不改分类/预算/节奏。reason 原样上抛，
+        // 由 runtime-engine 接线统一包装为分类器已识别的
+        // refresh_failed:rescan:<stage>（裸阶段码不计预算会永远循环）。
+        // 预算耗尽或运行时未接线时如实返回 false，保留手动「重试登录农场」。
+        scheduleRescanRecovery: (ref, reason) => {
+            const id = resolveAccountId(ref);
+            if (!id || typeof scheduleRescanRecovery !== 'function') return false;
+            try {
+                return scheduleRescanRecovery(id, reason || 'rescan_recovery') === true;
+            } catch {
+                return false;
+            }
+        },
+
         setUITheme: async (theme) => {
             const result = store.setUITheme(theme);
             return { ui: result.ui || store.getUI() };
@@ -338,6 +355,8 @@ function createDataProvider(deps) {
         },
 
         // 自助扫码已换发并落盘新 Code，直接沿现有 Worker 路径恢复，避免再次换码。
+        // startWorker 是纯取值器（true=已拉起 / false=拒绝），必须如实透传：
+        // 不能把「新授权已保存」冒充成「账号已启动」（2026-10-04 授权后未登录事故）。
         startAccountFromSavedWxCode: (ref, expectedCode) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
@@ -345,8 +364,7 @@ function createDataProvider(deps) {
                 || !expectedCode || account.code !== expectedCode) return false;
             store.addOrUpdateAccount({ id: account.id, autoLogin: true });
             if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
-            startWorker(findAccount(id || ref) || account);
-            return true;
+            return startWorker(findAccount(id || ref) || account);
         },
 
         startAccount: async (ref) => {
@@ -386,8 +404,10 @@ function createDataProvider(deps) {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account) return false;
-            restartWorker(account);
-            return true;
+            // restartWorker：true/false = 同步 startWorker 的结果；undefined = 重启
+            // 已排队（等旧进程退出后拉起）。原样透传，调用方据此区分「已提交
+            // 重连」与「真正启动」，绝不把排队冒充已连接。
+            return restartWorker(account);
         },
 
         isAccountRunning: (ref) => {

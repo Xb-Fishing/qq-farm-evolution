@@ -23,10 +23,21 @@ const FARM_COLUMNS = 4;
 const FARM_ROWS = 6;
 let reserved2x2GroupKeys = [];
 let last2x2WaitingSignature = '';
+// 等待区预留期限：key -> 首次「实际圈住空地」的预留时刻 + 60s。轮询与清空
+// 进度都不续期，全生长中（一块空地都没有）的组合不拦 1x1、不消耗该期限，
+// 期限只在真的开始 withhold 空地时起算；到期即释放给普通 1x1 种植。
+// released 记录释放时「仍被占用地块的作物身份」（植物 + 播种时刻）：同一
+// 停滞作物（如已成熟却始终没人收）不得重新圈地；只有某块地被证明换了新
+// 种植周期/新占用（出现释放时不存在的作物身份）才作废重来——单纯收割掉
+// 一块旧作物、预测成熟时刻的抖动/进度推进都不算新周期。防止 1x1 补种把
+// 同一组合永久饿死。
+let waiting2x2Deadlines = new Map();
+let released2x2Keys = new Map();
 const failed2x2Retries = new Map();
 const TWO_BY_TWO_RETRY_DELAY_MS = 30_000;
-// 同一批种下的普通作物会因请求间隔产生少量成熟时间偏差。
-// 这类偏差不应让 2x2 预留区向后排漂移；一分钟内视为同时清空。
+// 2x2 等待预留的硬窗口：只有「剩余植株从现在起 60 秒内必然全部清空」的
+// 相邻方块才允许预留，远期成熟/未知数据/未到末季一律不预留，空地立即回到
+// 普通 1x1 策略。只做资格过滤，不作为并列组合间的排序容差。
 const TWO_BY_TWO_CLEAR_TIME_TOLERANCE_SEC = 60;
 
 // ─── 种植策略标签 ───
@@ -153,32 +164,93 @@ function selectMaximumNonOverlappingGroups(groups, limit) {
   return best;
 }
 
+/**
+ * 地块预计清空时刻（秒）。空地=0；成熟/生长中的植株返回
+ * max(服务器当前时间, 成熟时刻) + 剩余季数 × 单季生长时长。
+ * 任何未知（无阶段数据、成熟时刻缺失、植物配置缺失、多季但单季时长未知）
+ * 一律返回 MAX_SAFE_INTEGER：不能把无法证明 60 秒内清空的地块当成可预留。
+ */
 function getEstimatedLandClearAt(land, emptySet) {
   const landId = toNum(land?.id);
   if (emptySet.has(landId)) return 0;
 
   const plant = land?.plant;
   const phases = Array.isArray(plant?.phases) ? plant.phases : [];
-  if (phases.length === 0) return 0;
+  if (phases.length === 0) return Number.MAX_SAFE_INTEGER;
 
   const maturePhase = phases.find(phase => toNum(phase?.phase) === 6);
   const matureAt = toTimeSec(maturePhase?.begin_time);
   if (matureAt <= 0) return Number.MAX_SAFE_INTEGER;
 
   const plantConfig = getPlantById(toNum(plant.id));
+  if (!plantConfig) return Number.MAX_SAFE_INTEGER;
+
   const currentSeason = Math.max(1, toNum(plant.season) || 1);
   const totalSeasons = Math.max(currentSeason, toNum(plantConfig?.seasons) || currentSeason);
   const remainingSeasons = Math.max(0, totalSeasons - currentSeason);
   const growSeconds = Math.max(0, toNum(getPlantGrowTime(toNum(plant.id))));
+  if (remainingSeasons > 0 && growSeconds <= 0) return Number.MAX_SAFE_INTEGER;
 
   return Math.max(getServerTimeSec(), matureAt) + remainingSeasons * growSeconds;
 }
 
-/** 优先选择已完全空闲的组合，并且最多保留一个仍在等待清空的组合。 */
+function reset2x2WaitingState() {
+  reserved2x2GroupKeys = [];
+  last2x2WaitingSignature = '';
+  waiting2x2Deadlines = new Map();
+  released2x2Keys = new Map();
+}
+
+/**
+ * 组合内「仍被占用地块」的作物身份表：landId -> `植物ID|播种时刻`。
+ * 播种时刻只取 phase 1（播种阶段）的 begin_time——同一植株它永不变；
+ * 后续阶段（含成熟时刻）的服务器重算/抖动不进身份。缺播种时刻时记 '?'，
+ * 宁可认不出新周期也不把成熟时刻抖动当成新种植。收割（占用变空地）只会
+ * 让条目从表里消失，不会凭空造出新身份。
+ */
+function getGroupCropIdentities(group, landMap, emptySet) {
+  const identities = new Map();
+  for (const id of group.landIds) {
+    if (emptySet.has(id)) continue;
+    const plant = landMap.get(id)?.plant;
+    const phases = Array.isArray(plant?.phases) ? plant.phases : [];
+    const seedPhase = phases.find(phase => toNum(phase?.phase) === 1);
+    const plantedAt = toTimeSec(seedPhase?.begin_time);
+    identities.set(id, `${toNum(plant?.id)}|${plantedAt > 0 ? plantedAt : '?'}`);
+  }
+  return identities;
+}
+
+function sameCropCycle(released, current) {
+  if (released === current) return true;
+  const [releasedPlant, releasedAt] = String(released).split('|');
+  const [currentPlant, currentAt] = String(current).split('|');
+  if (releasedPlant !== currentPlant) return false;
+  // 播种时刻一侧未知：无法证明换了周期，按同一周期对待（宁可不放行）。
+  return releasedAt === '?' || currentAt === '?';
+}
+
+/** 释放后有地块出现了释放时不存在的作物身份 = 被证明的新种植/新占用。 */
+function hasProvenNewOccupation(releasedIdentities, currentIdentities) {
+  for (const [id, current] of currentIdentities) {
+    if (!sameCropCycle(releasedIdentities.get(id), current)) return true;
+  }
+  return false;
+}
+
+/**
+ * 优先选择已完全空闲的组合，并且最多保留一个仍在等待清空的组合。
+ * 等待组合必须满足硬窗口：从当前服务器时间起 60 秒内全部地块必然清空
+ * （空地或末季成熟），未知/远期/未到末季的组合不预留，其空地立即交给
+ * 普通 1x1 种植。等待期限自首次「实际圈住空地」起 60 秒，不因轮询或清空
+ * 进度续期；到期释放按占用地块作物身份记忆，同一停滞作物（含后续单纯
+ * 收割一块旧作物）不重圈，被证明的新种植/新占用才重来。
+ */
 function select2x2Reservations(groups, emptyLandIds, desiredCount, lands) {
   const emptySet = new Set((emptyLandIds || []).map(toNum).filter(Boolean));
   const landMap = buildLandMap(lands);
   const activeFootprints = getActive2x2Footprints(lands);
+  const nowSec = getServerTimeSec();
   const candidates = (groups || []).filter((group) => {
     return !activeFootprints.some(
       footprint => overlapsLandIds(group.landIds, footprint.landIds)
@@ -186,42 +258,86 @@ function select2x2Reservations(groups, emptyLandIds, desiredCount, lands) {
   });
   const ready = candidates
     .filter(group => group.landIds.every(id => emptySet.has(id)));
+  // 组合完全清空即进入立种路径：清掉等待期限与释放标记，下次等待从零起算。
+  for (const group of ready) {
+    waiting2x2Deadlines.delete(group.key);
+    released2x2Keys.delete(group.key);
+  }
   const selected = selectMaximumNonOverlappingGroups(ready, desiredCount);
   const occupied = new Set(selected.flatMap(group => group.landIds));
 
   const previousReservations = new Set(reserved2x2GroupKeys);
-  const waiting = candidates
-    .filter(group => !group.landIds.every(id => emptySet.has(id)))
-    .sort((a, b) => {
-      // 用户手动催熟/收获形成的区域应优先：三块已空、只等一块的组合，
-      // 必须允许它超过尚未形成同等清空进度的旧预留区域。
-      const emptyA = a.landIds.filter(id => emptySet.has(id)).length;
-      const emptyB = b.landIds.filter(id => emptySet.has(id)).length;
-      if (emptyA !== emptyB) return emptyB - emptyA;
-      // 清空进度相同时保持既有预留，避免仅因预计成熟时间波动而来回漂移。
-      const reservedA = previousReservations.has(a.key) ? 1 : 0;
-      const reservedB = previousReservations.has(b.key) ? 1 : 0;
-      if (reservedA !== reservedB) return reservedB - reservedA;
-      const clearAtA = Math.max(...a.landIds.map(id => getEstimatedLandClearAt(landMap.get(id), emptySet)));
-      const clearAtB = Math.max(...b.landIds.map(id => getEstimatedLandClearAt(landMap.get(id), emptySet)));
-      if (Math.abs(clearAtA - clearAtB) > TWO_BY_TWO_CLEAR_TIME_TOLERANCE_SEC) {
-        return clearAtA - clearAtB;
-      }
-      return a.masterLandId - b.masterLandId;
-    });
+  const windowEnd = nowSec + TWO_BY_TWO_CLEAR_TIME_TOLERANCE_SEC;
+  const waiting = [];
+  for (const group of candidates) {
+    if (group.landIds.every(id => emptySet.has(id))) continue;
+    // 硬窗口过滤：任一剩余地块无法在 60 秒内清空（含一切未知）就不预留。
+    let clearAt = nowSec;
+    let eligible = true;
+    for (const id of group.landIds) {
+      if (emptySet.has(id)) continue;
+      const est = getEstimatedLandClearAt(landMap.get(id), emptySet);
+      if (est > windowEnd) { eligible = false; break; }
+      clearAt = Math.max(clearAt, est);
+    }
+    if (!eligible) continue;
+    const currentIdentities = getGroupCropIdentities(group, landMap, emptySet);
+    const releasedIdentities = released2x2Keys.get(group.key);
+    if (releasedIdentities !== undefined) {
+      // 同一停滞作物不得重新圈地：只有出现释放时不存在的作物身份（新种植
+      // /新占用）才作废标记重来；单纯又收割掉一块旧作物不算。
+      if (!hasProvenNewOccupation(releasedIdentities, currentIdentities)) continue;
+      released2x2Keys.delete(group.key);
+    }
+    const deadline = waiting2x2Deadlines.get(group.key);
+    if (deadline !== undefined && deadline <= nowSec) {
+      // 等待期限到点：释放给普通种植，记下此刻仍占用地块的作物身份。
+      waiting2x2Deadlines.delete(group.key);
+      released2x2Keys.set(group.key, currentIdentities);
+      continue;
+    }
+    waiting.push({ group, clearAt });
+  }
+
+  waiting.sort((a, b) => {
+    // 按真实最早清空时刻严格升序：时间偏好就是优先级。曾经用 60 秒容差把
+    // 窗口内组合全部视为并列，早清空偏好被完全吞掉（2026-10-04 反例）。
+    if (a.clearAt !== b.clearAt) return a.clearAt - b.clearAt;
+    // 真正同一时刻并列才稳定：先保持既有预留避免并列间漂移，再按锚点排序。
+    const reservedA = previousReservations.has(a.group.key) ? 1 : 0;
+    const reservedB = previousReservations.has(b.group.key) ? 1 : 0;
+    if (reservedA !== reservedB) return reservedB - reservedA;
+    return a.group.masterLandId - b.group.masterLandId;
+  });
 
   // 已完整空闲的区域可以种植多组；需要等待的区域最多只预留一组。
-  for (const group of waiting) {
+  for (const { group } of waiting) {
     if (selected.length >= desiredCount) break;
     if (group.landIds.some(id => occupied.has(id))) continue;
     selected.push(group);
     group.landIds.forEach(id => occupied.add(id));
+    // 期限只在组合真的圈住空地时起算（全生长中不拦 1x1、不耗预算），
+    // 且只记首次起算时刻，之后轮询/清空进度都不改写。
+    if (!waiting2x2Deadlines.has(group.key)
+      && group.landIds.some(id => emptySet.has(id))) {
+      waiting2x2Deadlines.set(group.key, windowEnd);
+    }
     break;
   }
 
   reserved2x2GroupKeys = selected
     .filter(group => !group.landIds.every(id => emptySet.has(id)))
     .map(group => group.key);
+  // 期限与释放标记只对当前仍存在的组合有意义：组合消失（锁定/重叠/降级）
+  // 即作废，重新出现时从零起算，不残留跨轮次的旧预留痕迹。
+  const candidateKeys = new Set(candidates.map(group => group.key));
+  for (const key of waiting2x2Deadlines.keys()) {
+    if (!candidateKeys.has(key)) waiting2x2Deadlines.delete(key);
+  }
+  // released 是 Map（key -> 身份表）：按 .keys() 迭代，不能用 Set 的值迭代。
+  for (const key of released2x2Keys.keys()) {
+    if (!candidateKeys.has(key)) released2x2Keys.delete(key);
+  }
   return selected;
 }
 
@@ -265,8 +381,7 @@ async function plant2x2Seed(seedId, group) {
 
 async function plantPrioritized2x2Crops(emptyLandIds, lands, accountId) {
   if (!getPrioritize2x2Crops(accountId)) {
-    reserved2x2GroupKeys = [];
-    last2x2WaitingSignature = '';
+    reset2x2WaitingState();
     return { reservedLandIds: [], plantedMasterIds: [], plantedCount: 0, occupiedCount: 0 };
   }
 
@@ -302,8 +417,7 @@ async function plantPrioritized2x2Crops(emptyLandIds, lands, accountId) {
 
   const totalSeedCount = size2Seeds.reduce((sum, seed) => sum + seed.count, 0);
   if (totalSeedCount <= 0) {
-    reserved2x2GroupKeys = [];
-    last2x2WaitingSignature = '';
+    reset2x2WaitingState();
     return { reservedLandIds: [], plantedMasterIds: [], plantedCount: 0, occupiedCount: 0 };
   }
 

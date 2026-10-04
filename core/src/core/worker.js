@@ -1783,8 +1783,10 @@ async function handleApiCall(msg) {
                 break;
             }
             case 'getMysteryShop': {
-                const { getActiveMysteryShop } = require('../services/mystery-shop');
-                result = await getActiveMysteryShop();
+                // 面板读走 60s 缓存 + 在途合并（2026-10-03 收口）；自动购买
+                // 链 checkAndAutoBuyMysteryShop 仍直调无缓存的 getActiveMysteryShop。
+                const { getMysteryShopForPanel } = require('../services/mystery-shop');
+                result = await getMysteryShopForPanel();
                 break;
             }
             case 'buyMysteryShopGoods': {

@@ -16,6 +16,13 @@ interface HelpPendingSession {
   qrMimeType: string
 }
 
+interface HelpScanCheckpoint {
+  savedAt: number
+  generation: number
+  stage: string
+  error: string
+}
+
 interface HelpPlan {
   mode: string
   advanceEnabled: boolean
@@ -41,6 +48,7 @@ interface HelpStatus {
   account: { id: string, name: string, platform: string }
   incident: { needsRescan: boolean, lastError: string, sentAt: number }
   pending: HelpPendingSession | null
+  scanCheckpoint: HelpScanCheckpoint | null
   plan: HelpPlan | null
 }
 
@@ -68,7 +76,7 @@ const STATE_LABELS: Record<string, string> = {
   pending: '等待扫码',
   scanned: '已扫码，请在手机上确认登录',
   saving: '已确认，正在保存新授权…',
-  confirmed_retry: '已确认，但换取游戏登录码暂时失败',
+  code_pending: '新授权已保存，换取农场登录码暂时失败',
   saved: '重新扫码完成，账号已更新',
   expired: '二维码已过期，可点击「刷新二维码」',
   error: '保存失败',
@@ -132,8 +140,25 @@ const remainingLabel = computed(() => {
 })
 
 const canSend = computed(() => !sending.value && !forbidden.value && !!accountId.value)
-const canRetryLogin = computed(() =>
-  !retrying.value && !sending.value && !forbidden.value && status.value?.pending?.state === 'confirmed_retry')
+// 重试入口：扫码会话还在 code_pending，或持久检查点仍在（二维码已过期/
+// 进程重启后仍可用，重试从已保存凭据出发，不重发二维码、不重扫）。
+const canRetryLogin = computed(() => !retrying.value && !sending.value && !forbidden.value
+  && (status.value?.pending?.state === 'code_pending' || !!status.value?.scanCheckpoint))
+
+// 持久检查点文案：区分「授权已保存 / 码待换 / 启动已提交」与「农场实际
+// 已连接」——前者只是恢复在进行，不代表账号在线。
+const CHECKPOINT_STAGE_LABELS: Record<string, string> = {
+  code_pending: '新授权已保存，还差最后一步：换取农场登录码暂未完成',
+  start_pending: '新授权已保存并已换到登录码，账号启动暂未完成',
+}
+const checkpointLabel = computed(() => {
+  const checkpoint = status.value?.scanCheckpoint
+  if (!checkpoint)
+    return ''
+  // 未知阶段不回显内部 stage 码（产品文案不暴露实现术语）。
+  const stage = CHECKPOINT_STAGE_LABELS[checkpoint.stage] || '新授权已保存，账号登录暂未完全恢复'
+  return `${stage}。这不代表农场已实际连接，可在概览页确认在线状态；可点「重试完成登录」补完。`
+})
 
 // ── 扫码维护参考计划（与扫码会话独立；只读展示，不生成二维码） ──
 const DAY_MS = 86_400_000
@@ -215,9 +240,10 @@ async function retryCompleteLogin() {
     if (epoch !== viewEpoch)
       return
     if (data?.ok) {
+      // started 只代表「启动/重连已提交并被接受」，不冒充农场已实际连接。
       retryInfo.value = data.data.started
-        ? '重试成功，新授权已保存并恢复运行'
-        : `新授权已保存，但账号启动失败：${data.data.startError || '未知原因'}`
+        ? '重试成功：新授权已保存，启动/重连已提交（是否在线以概览页为准）'
+        : `新授权已保存，但账号启动未完成：${data.data.startError || '未知原因'}`
     }
     else {
       retryInfo.value = data?.error || '重试失败'
@@ -331,10 +357,11 @@ function backToDashboard() {
   router.push({ name: 'dashboard' })
 }
 
-// 终态（已保存/已过期/保存失败）不再有可观察变化：停轮询。
-// confirmed_retry 保留轮询：会话到期时按钮要随服务端状态正确失效。
-watch(() => status.value?.pending?.state, (state) => {
-  if (state === 'saved' || state === 'expired' || state === 'error')
+// 终态（已保存/已过期/保存失败）且无持久检查点才停轮询：saved+检查点仍有
+// 自动恢复可观测变化（恢复连接会清检查点并翻转状态），须轮询到 marker
+// 消失；code_pending 同理保留轮询（会话到期时按钮要随服务端状态失效）。
+watch(() => [status.value?.pending?.state, status.value?.scanCheckpoint ? 1 : 0] as const, ([state, hasCheckpoint]) => {
+  if ((state === 'saved' || state === 'expired' || state === 'error') && !hasCheckpoint)
     stopStatusPolling()
 })
 
@@ -465,8 +492,8 @@ onUnmounted(() => {
           <p v-if="status?.pending?.state === 'error'" class="text-center text-sm text-red-600">
             {{ status.pending.detail }}
           </p>
-          <p v-if="status?.pending?.state === 'confirmed_retry'" class="max-w-md text-center text-xs text-amber-600 dark:text-amber-400">
-            {{ status.pending.detail || '网络波动导致换码失败' }}。扫码确认仍然有效，可直接重试；若持续失败，请刷新二维码。
+          <p v-if="status?.pending?.state === 'code_pending'" class="max-w-md text-center text-xs text-amber-600 dark:text-amber-400">
+            {{ status.pending.detail || '网络波动导致换码失败' }}。新授权已保存，可直接重试，无需重复扫码；若提示授权失效，再刷新二维码重新扫码。
           </p>
         </div>
         <div v-else class="py-8 text-center text-sm text-gray-500">
@@ -503,13 +530,30 @@ onUnmounted(() => {
           v-if="status?.pending?.state === 'saved'"
           class="mt-3 border border-emerald-300 rounded bg-emerald-50 p-3 text-center text-sm text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
         >
-          新授权已保存。账号按既有流程恢复运行，可在概览页确认在线状态。
+          <!-- 启动失败（detail 非空）时不得笼统宣称「恢复运行」：只说事实。 -->
+          <template v-if="status?.pending?.detail">
+            新授权已保存，农场是否在线请查看概览。
+          </template>
+          <template v-else>
+            新授权已保存。账号按既有流程恢复运行，可在概览页确认在线状态。
+          </template>
           <div v-if="status?.pending?.detail" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
             {{ status.pending.detail }}
           </div>
           <BaseButton variant="secondary" size="sm" class="mt-2" @click="backToDashboard">
             返回概览
           </BaseButton>
+        </div>
+
+        <!-- 持久检查点（二维码过期/进程重启后仍在）：只读展示，重试走上面按钮。 -->
+        <div
+          v-if="status?.scanCheckpoint"
+          class="mt-3 border border-amber-300 rounded bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+        >
+          {{ checkpointLabel }}
+          <div v-if="status.scanCheckpoint.error" class="mt-1 text-xs opacity-80">
+            上次未完成原因：{{ status.scanCheckpoint.error }}
+          </div>
         </div>
       </div>
 

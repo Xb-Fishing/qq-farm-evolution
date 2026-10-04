@@ -204,6 +204,7 @@ function helpStatusFixture(accountId, overrides = {}) {
       detail: '',
       qrBase64: `qr-image-${accountId}`,
     },
+    scanCheckpoint: null,
     ...overrides,
   };
 }
@@ -232,7 +233,7 @@ function helpHarness(initialAccountId = '301', responder = null) {
   };
   const filename = path.join(root, 'web/src/views/WxLoginHelp.vue');
   const { descriptor } = compiler.parse(
-    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending, planSummary, planActivityLabel, qrImageSrc })\n</script>'),
+    fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ sendQr, retryCompleteLogin, remainingLabel, canRetryLogin, canSend, status, loading, forbidden, pushInfo, retryInfo, loadError, sending, planSummary, planActivityLabel, qrImageSrc, checkpointLabel })\n</script>'),
     { filename },
   );
   const source = compiler.compileScript(descriptor, { id: 'wx-help-test' }).content;
@@ -369,13 +370,21 @@ test('同账号重发取代旧状态读取：迟到的 saved 不得覆盖新二�
   finally { h.app.unmount(); }
 });
 
-test('confirmed_retry：按钮仅在可重试态出现，重试不带新二维码；启动失败如实展示', async () => {
-  const retryState = () => helpStatusFixture('301', { pending: { ...helpStatusFixture('301').pending, state: 'confirmed_retry', detail: '网络波动' } });
+test('code_pending / 持久检查点：按钮在可重试态出现，重试不带新二维码；启动结果不冒充在线', async () => {
+  const checkpoint = { savedAt: 4_950_000, generation: 3, stage: 'code_pending', error: '换取农场码失败: connect ETIMEDOUT' };
+  const retryState = () => helpStatusFixture('301', {
+    pending: { ...helpStatusFixture('301').pending, state: 'code_pending', detail: '网络波动' },
+    scanCheckpoint: checkpoint,
+  });
   const h = helpHarness('301', () => ({ data: { ok: true, data: retryState() } }));
   try {
     await settle();
     assert.equal(h.instance().canRetryLogin, true);
     assert.equal(h.instance().canSend, true, '持续失败仍可整段重新发码');
+    // 检查点文案：区分「授权已保存/码待换」与「农场实际连接」。
+    assert.ok(h.instance().checkpointLabel.includes('新授权已保存'), h.instance().checkpointLabel);
+    assert.ok(h.instance().checkpointLabel.includes('不代表农场已实际连接'), '不得把收口中冒充成已在线');
+    assert.ok(h.instance().checkpointLabel.includes('概览页'), h.instance().checkpointLabel);
 
     const retrying = h.instance().retryCompleteLogin();
     await vue.nextTick();
@@ -385,17 +394,44 @@ test('confirmed_retry：按钮仅在可重试态出现，重试不带新二维�
     await retrying;
     await vue.nextTick();
     await vue.nextTick();
-    assert.ok(h.instance().retryInfo.includes('启动失败'), h.instance().retryInfo);
+    assert.ok(h.instance().retryInfo.includes('启动未完成'), h.instance().retryInfo);
     assert.ok(h.instance().retryInfo.includes('worker boot failed'), '启动失败原因必须如实带回');
     const sendQrPosts = h.posts.filter(p => p.url.endsWith('send-qr'));
     assert.equal(sendQrPosts.length, 0);
 
-    // 非 confirmed_retry 状态：重试入口失效。
+    // 普通等待态（无检查点、非 code_pending）：重试入口失效。
     h.getResponder.fn = () => ({ data: { ok: true, data: helpStatusFixture('301') } });
     await h.interval.callback();
     assert.equal(h.instance().canRetryLogin, false);
+    assert.equal(h.instance().checkpointLabel, '', '无检查点不显示检查点文案');
   }
   finally { h.app.unmount(); }
+});
+
+test('二维码过期/进程重启后仅凭持久检查点仍可重试；启动提交≠已连接', async () => {
+  // 无 pending 会话（二维码早已过期/进程重启），只有持久检查点。
+  const restarted = helpHarness('301', () => ({ data: { ok: true, data: helpStatusFixture('301', {
+    pending: null,
+    scanCheckpoint: { savedAt: 4_950_000, generation: 3, stage: 'start_pending', error: '' },
+  }) } }));
+  try {
+    await settle();
+    assert.equal(restarted.instance().canRetryLogin, true, '检查点在即可显式重试');
+    assert.ok(restarted.instance().checkpointLabel.includes('账号启动暂未完成'), restarted.instance().checkpointLabel);
+    assert.ok(restarted.instance().checkpointLabel.includes('不代表农场已实际连接'));
+
+    const retrying = restarted.instance().retryCompleteLogin();
+    await vue.nextTick();
+    assert.equal(restarted.posts[0].url, '/api/wx-login-help/retry-login');
+    restarted.posts[0].resolve({ data: { ok: true, data: { started: true, startError: '' } } });
+    await retrying;
+    await vue.nextTick();
+    await vue.nextTick();
+    const info = restarted.instance().retryInfo;
+    assert.ok(info.includes('已提交'), info);
+    assert.ok(info.includes('概览页'), '「已提交启动」不得冒充农场已实际连接');
+  }
+  finally { restarted.app.unmount(); }
 });
 
 test('二维码 dataURL 用服务端嗅探的真实图片类型；旧服务端缺省回退 PNG', async () => {
@@ -443,6 +479,25 @@ test('卸载后轮询停止（无悬挂定时回调副作用）', async () => {
   assert.equal(h.interval.active, true);
   h.app.unmount();
   assert.equal(h.interval.active, false, 'unmount 必须停轮询');
+});
+
+test('saved+持久检查点期间保留轮询；检查点消失（自动恢复收口）后才停', async () => {
+  const savedWithCheckpoint = () => helpStatusFixture('301', {
+    pending: { ...helpStatusFixture('301').pending, state: 'saved' },
+    scanCheckpoint: { savedAt: 4_950_000, generation: 3, stage: 'start_pending', error: '' },
+  });
+  const h = helpHarness('301', () => ({ data: { ok: true, data: savedWithCheckpoint() } }));
+  try {
+    await settle();
+    assert.equal(h.interval.active, true, 'saved+检查点仍有自动恢复可观测变化，不得停轮询');
+    // 可信连接收口后：检查点被清（pending 仍为 saved）。
+    h.getResponder.fn = () => ({ data: { ok: true, data: helpStatusFixture('301', {
+      pending: { ...helpStatusFixture('301').pending, state: 'saved' },
+    }) } });
+    await h.interval.callback();
+    assert.equal(h.interval.active, false, 'marker 消失且终态 → 停轮询');
+  }
+  finally { h.app.unmount(); }
 });
 
 // ---------- WxLoginHelp.vue：扫码维护参考计划卡片 ----------

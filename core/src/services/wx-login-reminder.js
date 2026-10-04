@@ -125,6 +125,7 @@ function emptyRegistry() {
   return {
     users: {}, generations: {}, incidents: {},
     acceptedScans: {}, advanceNotices: {}, otherTerminalLogins: {},
+    scanCheckpoints: {},
   };
 }
 
@@ -140,6 +141,12 @@ function validateOptionalSections(parsed) {
       && typeof value.lastError === 'string',
     otherTerminalLogins: value => Number.isInteger(Number(value.at)) && Number(value.at) >= 0
       && typeof value.owner === 'string' && typeof value.wxid === 'string',
+    // 授权已保存/登录码待换的持久检查点：只有非秘密绑定字段（属主/wxid/
+    // 扫码代次/阶段码/短错误），绝不落凭据。
+    scanCheckpoints: value => Number.isInteger(Number(value.savedAt)) && Number(value.savedAt) >= 0
+      && Number.isInteger(Number(value.generation)) && Number(value.generation) >= 0
+      && typeof value.owner === 'string' && typeof value.wxid === 'string'
+      && typeof value.stage === 'string' && typeof value.error === 'string',
   };
   for (const [section, check] of Object.entries(shapes)) {
     if (parsed[section] === undefined) {
@@ -216,6 +223,8 @@ function createWxLoginReminderService(deps = {}) {
   const adapter = deps.adapter || require('./wx-login-adapter');
   const completeRescan = typeof deps.completeRescan === 'function'
     ? deps.completeRescan : null;
+  const retrySaved = typeof deps.retrySaved === 'function'
+    ? deps.retrySaved : null;
   const registryFile = deps.registryFile
     || (() => getDataFile(REGISTRY_FILENAME));
   // 本地巡检定时器（测试注入假时钟用）；默认 60s，只读本地状态，无外部探测。
@@ -268,6 +277,7 @@ function createWxLoginReminderService(deps = {}) {
         acceptedScans: cloneEntries('acceptedScans'),
         advanceNotices: cloneEntries('advanceNotices'),
         otherTerminalLogins: cloneEntries('otherTerminalLogins'),
+        scanCheckpoints: cloneEntries('scanCheckpoints'),
       };
       const changed = mutator(next) !== false;
       if (!changed) return data;
@@ -343,22 +353,68 @@ function createWxLoginReminderService(deps = {}) {
    * 同时作废该账号遗留的自助二维码（守望/图片能力/adapter 本地会话）。
    * 只有这里能让代次前进（服务端控制），轮换 token / 改备注 / 重启都不会。
    *
+   * keepSessionId（自助完成链）：显式携带属主/wxid/守卫绑定时，全部在
+   * 注册表互斥临界区内、真正落盘那一刻复验——锁外读到的 pending 结论会
+   * 在排队期间过期（新二维码请求的 supersede 是同步的）。迟到完成（会话
+   * 已被更新请求取代/守卫失配/绑定变化）一律不动：不取消新二维码、不推
+   * 进代次、不污染新请求的检查点，直接返回 false（不伪报已接受）。
+   *
    * 同时以服务端当前时间记录「真实接受扫码」基线（维护参考计划唯一合法
    * 起点，绝不用 lastSuccess/updatedAt/进程启动等推断），并作废该代次的
    * 提前提醒声明（新扫码是唯一重新武装方式）。「其他终端登录」信号在同
    * 属主/同微信绑定时保留真实旧时间戳，绝不改写成扫码时刻。
+   * 成功返回新代次（>=1），被取代返回 false。
    */
   async function noteAcceptedScan(accountId, options = {}) {
     const key = String(accountId || '');
     if (!key || !SAFE_KEY_RE.test(key)) return false;
+    const keepSessionId = String(options.keepSessionId || '');
+    const guard = typeof options.guard === 'function' ? options.guard : null;
+    const expectedOwner = String(options.owner || '').trim();
+    const expectedWxid = String(options.wxid || '');
     const pending = pendingByAccount.get(key);
-    const ownCompletion = options.keepSessionId && pending?.sessionId === String(options.keepSessionId);
+    // 锁外预检（快速路径）：自己的会话已明显让位就直接回绝；真实判定一律
+    // 以临界区内执行时的状态为准。
+    const ownCompletion = !!keepSessionId && !!pending && pending.sessionId === keepSessionId;
+    if (keepSessionId && !ownCompletion) {
+      // 迟到的自助完成：自己的一次性会话已让位给更新的二维码/新扫码。
+      // 不得取消新请求（supersedePendingSessions 会误杀）、不得推进代次。
+      return false;
+    }
     if (!ownCompletion) supersedePendingSessions(key);
+    let acceptedGeneration = 0;
     await commitRegistry((data) => {
+      // ── 临界区内复验：互斥队列真正执行时，锁外结论可能已被新请求推翻 ──
+      if (guard && !guard()) return false;
+      if (keepSessionId) {
+        // 自助完成只有当前会话仍是自己的才推进：排队期间被新二维码/新扫码
+        // 取代（pending 已删除/换会话）→ 迟到回调不推进、不取消、不污染。
+        const livePending = pendingByAccount.get(key);
+        if (!livePending || String(livePending.sessionId) !== keepSessionId) return false;
+      }
+      if (expectedOwner || expectedWxid) {
+        const bound = findAccount(key);
+        if (!bound) return false;
+        if (expectedOwner && String(bound.username || '').trim() !== expectedOwner) return false;
+        if (expectedWxid && String(bound.wxid || '') !== expectedWxid) return false;
+      }
       const nextGeneration = (Number(data.generations[key]) || 0) + 1;
+      acceptedGeneration = nextGeneration;
       data.generations[key] = nextGeneration;
+      // 代次推进与「自己那轮会话」的快照推进必须在同一临界区内原子完成：
+      // 若快照在 await 恢复后才刷新，两者之间的微任务窗口内任何
+      // getPendingSession 都会按快照过时误判并作废正在完成的会话。
+      if (keepSessionId) {
+        const self = pendingByAccount.get(key);
+        if (self && String(self.sessionId) === String(keepSessionId)) {
+          self.snapshot.generation = nextGeneration;
+        }
+      }
       delete data.incidents[key];
       delete data.advanceNotices[key];
+      // 每次真实接受的新扫码都让上一轮的「授权已保存/码待换」检查点作废：
+      // 本轮完成链如再遇换码失败会写回自己的检查点。
+      delete data.scanCheckpoints[key];
       const liveAccount = findAccount(key);
       const previousLogin = data.otherTerminalLogins[key];
       if (!liveAccount) {
@@ -378,12 +434,14 @@ function createWxLoginReminderService(deps = {}) {
       }
       data.acceptedScans[key] = { at: now(), generation: nextGeneration, owner, wxid };
     });
-    if (ownCompletion && pendingByAccount.get(key) === pending) {
-      // 本次自助保存推进代次，保留它的完成状态与启动守卫；其他扫码取消旧任务。
-      pending.snapshot.generation = currentGeneration(key);
+    if (!acceptedGeneration) return false;
+    const livePending = pendingByAccount.get(key);
+    if (keepSessionId && livePending === pending) {
+      // 本次自助保存推进代次，保留它的完成状态（快照代次已在临界区内
+      // 原子刷新）；会话标记已消费。其他扫码取消旧任务。
       noteSessionConsumed(pending.sessionId, key);
     }
-    return true;
+    return acceptedGeneration;
   }
 
   function needsRescan(accountId) {
@@ -419,6 +477,129 @@ function createWxLoginReminderService(deps = {}) {
       sentAt: Number(incident.sentAt) || 0,
       lastError: sanitizeErrorText(incident.lastError),
     };
+  }
+
+  // ── 「授权已保存 / 登录码待换」持久检查点（2026-10-04）──
+  // 已确认扫码的完整长凭据落盘后、农场 Code 尚未换成功或启动尚未被接受时
+  // 写入。只记非秘密绑定字段（属主/wxid/真实扫码代次/阶段码/短错误），进程
+  // 重启后仍在：状态页可如实展示「授权已保存、登录未完成」，显式「重试登录
+  // 农场」据此从持久凭据补一次，而不必让用户重新扫码。
+  //
+  // 检查点绑定「真实扫码代次」：写入/更新/清除都在注册表互斥区内比对调用
+  // 方捕获的期望代次与绑定字段——迟到的旧完成/旧重试既不能把新授权的检查
+  // 点改写成自己的，也不能把新授权的检查点清掉。getScanCheckpoint 只在
+  // 代次仍是当前代次、时间戳合法、账号绑定未变时可见。
+
+  /**
+   * 凭据已落盘、登录未收口：写入/更新检查点。options.generation 为调用方
+   * 捕获的期望扫码代次（缺省时以临界区内的当前代次为准，仅供测试替身）；
+   * 代次已前进（新扫码已接管）则拒绝写入。同代次重复调用只更新阶段与错误
+   * 描述（savedAt 不重写）。成功返回绑定的代次，失败返回 false。
+   */
+  function noteScanCodePending(accountId, options = {}) {
+    const key = String(accountId || '');
+    if (!key || !SAFE_KEY_RE.test(key)) return Promise.resolve(false);
+    const stage = String((options && options.stage) || 'code_pending');
+    const error = sanitizeErrorText(options && options.error);
+    const expectedGenerationRaw = Number(options && options.generation);
+    const hasExpected = Number.isFinite(expectedGenerationRaw) && expectedGenerationRaw > 0;
+    const guard = !options || typeof options.guard !== 'function' ? null : options.guard;
+    const expectedOwner = String((options && options.owner) || '').trim();
+    const expectedWxid = String((options && options.wxid) || '');
+    let boundGeneration = 0;
+    return commitRegistry((data) => {
+      // 临界区内复验守卫与显式绑定：迟到的旧完成/旧重试不得写入。
+      if (guard && !guard()) return false;
+      const live = findAccount(key);
+      if (!live || String(live.platform || '') !== 'wx') return false;
+      const owner = String(live.username || '').trim();
+      const wxid = String(live.wxid || '');
+      if (!owner || !wxid) return false;
+      if (expectedOwner && owner !== expectedOwner) return false;
+      if (expectedWxid && wxid !== expectedWxid) return false;
+      const liveGeneration = Number(data.generations[key]) || 0;
+      if (hasExpected && liveGeneration !== expectedGenerationRaw) return false;
+      const existing = data.scanCheckpoints[key];
+      boundGeneration = hasExpected ? expectedGenerationRaw : liveGeneration;
+      if (boundGeneration <= 0) return false;
+      if (isPlainObject(existing)) {
+        // 只允许同代次自更新（阶段/错误描述）；跨代次绝不可覆盖新授权的检查点。
+        if (Number(existing.generation) !== boundGeneration) return false;
+        existing.stage = stage;
+        existing.error = error;
+        return true;
+      }
+      data.scanCheckpoints[key] = { owner, wxid, savedAt: now(), generation: boundGeneration, stage, error };
+      return true;
+    }).then(() => boundGeneration || false, () => false);
+  }
+
+  /**
+   * 登录收口（Code 已换成且启动已提交，或授权被判定明确失效）：清除检查点。
+   * 只有绑定匹配（期望代次/属主/wxid 与检查点一致）才清除；不匹配（迟到的
+   * 旧结果想清掉新授权的检查点）时不动。真实清除返回 true。
+   *
+   * options.connected === true 仅限可信 runtime 的连接收口传（新恢复 worker
+   * 真实连上）：此时除清检查点外，还把同一扫码代次自己的内存 pending 收口
+   * 为 saved（code_pending / 带失败说明的 saved 清 detail）——否则自动恢复
+   * 后页面仍显示可重试，用户再点会多换一次 Code、重启健康农场。普通
+   * definitive 清除（保存链/重试链自己的收口）绝不冒充保存成功；pending/
+   * scanned/saving 的新二维码会话任何情况下都不碰。
+   */
+  function noteScanCodeResolved(accountId, options = {}) {
+    const key = String(accountId || '');
+    if (!key || !SAFE_KEY_RE.test(key)) return Promise.resolve(false);
+    const expectedGenerationRaw = Number(options && options.generation);
+    const hasExpected = Number.isFinite(expectedGenerationRaw) && expectedGenerationRaw > 0;
+    const expectedOwner = String((options && options.owner) || '').trim();
+    const expectedWxid = String((options && options.wxid) || '');
+    const observedConnected = !!(options && options.connected === true);
+    const guard = !options || typeof options.guard !== 'function' ? null : options.guard;
+    let resolved = false; // commitRegistry 以注册表对象 resolve，真实结果自持
+    return commitRegistry((data) => {
+      // 临界区内复验守卫：迟到的旧结果不得清掉新授权的检查点。
+      if (guard && !guard()) return false;
+      const entry = data.scanCheckpoints[key];
+      if (!isPlainObject(entry)) return false;
+      if (hasExpected && Number(entry.generation) !== expectedGenerationRaw) return false;
+      if (expectedOwner && String(entry.owner) !== expectedOwner) return false;
+      if (expectedWxid && String(entry.wxid) !== expectedWxid) return false;
+      delete data.scanCheckpoints[key];
+      resolved = true;
+      if (observedConnected) {
+        // 已真实删掉匹配检查点后才允许同步内存 pending：严格同代次 + 同属主，
+        // 且只动已完成授权那轮的收口状态（新二维码的 pending/scanned/saving
+        // 原样保留，绝不误标保存成功）。
+        const pending = pendingByAccount.get(key);
+        if (pending && Number(pending.snapshot && pending.snapshot.generation) === Number(entry.generation)
+          && String(pending.owner || '') === String(entry.owner)
+          && (pending.state === 'code_pending'
+            || (pending.state === 'saved' && String(pending.detail || '') !== ''))) {
+          pending.state = 'saved';
+          pending.detail = '';
+        }
+      }
+      return true;
+    }).then(() => resolved, () => false);
+  }
+
+  /** 只读视图：代次未过时、时间戳合法、账号绑定未变才可见；无任何秘密字段。 */
+  function getScanCheckpoint(accountId) {
+    const data = loadRegistry();
+    const entry = data.scanCheckpoints[String(accountId)];
+    if (!isPlainObject(entry)) return null;
+    const savedAt = Number(entry.savedAt);
+    const generation = Number(entry.generation);
+    const nowMs = now();
+    // 过时代次（新扫码已接管）或时间戳异常（非正数/未来值）一律视为不存在。
+    if (!Number.isInteger(savedAt) || savedAt <= 0 || savedAt > nowMs) return null;
+    if (!Number.isInteger(generation) || generation <= 0) return null;
+    if ((Number(data.generations[String(accountId)]) || 0) !== generation) return null;
+    const account = findAccount(accountId);
+    if (!account || String(account.platform || '') !== 'wx'
+      || String(account.username || '').trim() !== String(entry.owner)
+      || String(account.wxid || '') !== String(entry.wxid)) return null;
+    return { savedAt, generation, stage: String(entry.stage || 'code_pending'), error: sanitizeErrorText(entry.error) };
   }
 
   // ── 「其他终端登录」信号（用户手机进场参考；官方踢下线原因文本） ──
@@ -861,6 +1042,10 @@ function createWxLoginReminderService(deps = {}) {
         if (boundOwner && String(liveAccount.username || '') !== boundOwner) return false;
         if (boundWxid && String(liveAccount.wxid || '') !== boundWxid) return false;
         if ((Number(data.generations[key]) || 0) !== generation) return false;
+        // 凭据已明确失效：同代次的「授权已保存/码待换」检查点一并收口，
+        // 状态页回到「需要重新扫码」，重试入口不再假装还有可续授权。
+        const hadCheckpoint = !!data.scanCheckpoints[key];
+        delete data.scanCheckpoints[key];
         // 本代次已用过唯一一次自动提醒（提前维护提醒，含发送失败）：
         // 如实记录失效与 needsRescan，但不再外发第二条。
         const early = data.advanceNotices[key];
@@ -869,7 +1054,7 @@ function createWxLoginReminderService(deps = {}) {
         if (incident && (Number(incident.generation) || 0) === generation) {
           if (incident.claimed === true) {
             // 同一代次已声明（含上次发送失败）只补 needsRescan 标记，不重复外发。
-            if (incident.needsRescan === true) return false;
+            if (incident.needsRescan === true) return hadCheckpoint;
             data.incidents[key] = { ...incident, needsRescan: true };
             return true;
           }
@@ -882,7 +1067,7 @@ function createWxLoginReminderService(deps = {}) {
           const readyConfig = getUserConfig(String(liveAccount.username || ''));
           const ready = readyConfig.enabled === true && !!readyConfig.serverUrl
             && !!parseBarkTarget(readyConfig.deviceKey, readyConfig.barkServer).key;
-          if (!ready) return false;
+          if (!ready) return hadCheckpoint;
           data.incidents[key] = { ...incident, claimed: true, claimedAt: now() };
           shouldSend = true;
           return true;
@@ -1085,8 +1270,9 @@ function createWxLoginReminderService(deps = {}) {
     try { adapter.cancelWxSession(entry.sessionId, entry.owner); } catch { /* 会话可能已被消费 */ }
   }
 
-  // 自动请求不得打断的「可用扫码会话」：未过期即在服务中（等待/已扫/保存/待重试）。
-  const ACTIVE_SESSION_STATES = ['pending', 'scanned', 'saving', 'confirmed_retry'];
+  // 自动请求不得打断的「可用扫码会话」：未过期即在服务中（等待/已扫/保存中）。
+  // code_pending 阶段扫码已消费、凭据已持久化，新二维码可以正常取代。
+  const ACTIVE_SESSION_STATES = ['pending', 'scanned', 'saving'];
 
   /**
    * 发送扫码二维码（手动点击或自动提醒到点共用）：新建扫码会话（旧会话/
@@ -1250,16 +1436,17 @@ function createWxLoginReminderService(deps = {}) {
   function applyCompletionState(accountId, watcher, result, successLabel) {
     if (!result || result.superseded) return; // 已被更新操作接管，状态归新会话
     if (result.ok) {
-      // 保存成功为事实；启动失败作为附加说明如实展示，不掩盖为成功启动。
+      // 保存成功为事实；启动失败/被拒不冒充成功启动，如实附加说明。
       markPendingState(accountId, watcher.sessionId, 'saved',
         result.started === false && result.error ? result.error : '');
-      log('系统', `${successLabel}: ${watcher.accountName || accountId}`, { accountId });
+      log('系统', `${successLabel}${result.stage ? `（${result.stage}）` : ''}: ${watcher.accountName || accountId}`, { accountId });
     } else if (result.retryable) {
-      // 换码临时失败：保留已确认的一次性 OAuth 检查点，等用户显式重试。
-      markPendingState(accountId, watcher.sessionId, 'confirmed_retry', result.error || '');
+      // 凭据已持久化、换码临时失败：授权不再依赖扫码会话，检查点（持久）
+      // 接管后续，等显式重试或既有自动恢复调度。
+      markPendingState(accountId, watcher.sessionId, 'code_pending', result.error || '');
     } else {
       markPendingState(accountId, watcher.sessionId, 'error', result.error || '扫码结果保存失败');
-      log('错误', `自助重新扫码保存失败: ${watcher.accountName || accountId}`, {
+      log('错误', `自助重新扫码保存失败${result.stage ? `（${result.stage}）` : ''}: ${watcher.accountName || accountId}`, {
         accountId, error: sanitizeErrorText(result && result.error),
       });
     }
@@ -1350,34 +1537,57 @@ function createWxLoginReminderService(deps = {}) {
   }
 
   /**
-   * 显式「重试完成登录」：同一会话补一次换码+保存（不重发二维码、不重放
-   * OAuth 确认、不动扫码代次）。只服务可重试的已确认会话。
+   * 显式「重试登录农场」（2026-10-04 重设计）：授权已持久化（完成链换码
+   * 临时失败 / 启动失败 / 进程重启后凭持久检查点恢复）时，用当前账号凭据
+   * 再换一次全新 Code 并启动——不重发二维码、不重放 OAuth 确认、不推进
+   * 扫码代次、不依赖已消费或到期的扫码会话。并发点击合并为同一次。
    */
-  async function retryCompleteLogin(account) {
-    const accountId = String(account.id);
-    const pending = pendingByAccount.get(accountId);
-    if (!pending) return { ok: false, error: '当前没有待完成的扫码会话，请重新发送二维码' };
-    if (pending.state === 'saved') return { ok: true, started: !pending.detail, alreadySaved: true, error: pending.detail || '' };
-    // 只服务「换码临时失败」的已确认会话（守望已停）；其余状态交给守望或重新发送。
-    if (pending.state !== 'confirmed_retry') {
-      return { ok: false, error: '当前扫码会话不需要重试，请等待自动完成或重新发送二维码' };
-    }
-    if (now() >= pending.expiresAt || pending.state === 'expired') {
-      markPendingState(accountId, pending.sessionId, 'expired', '本地扫码会话已到期');
-      return { ok: false, error: '本地扫码会话已到期，请重新发送二维码' };
-    }
-    const info = adapter.getWxSessionInfo(pending.sessionId, pending.owner);
-    if (!info || info.confirmed !== true || !info.openid) {
-      return { ok: false, error: '扫码确认信息缺失，请重新发送二维码' };
-    }
-    const snapshot = pending.snapshot;
-    if (!isSnapshotCurrent(snapshot) || pendingByAccount.get(accountId) !== pending) {
-      return { ok: false, error: '扫码会话已被新的操作取代' };
-    }
-    markPendingState(accountId, pending.sessionId, 'saving');
-    const outcome = await runCompletion(accountId, pending.sessionId, info.openid, snapshot);
-    applyCompletionState(accountId, { ...watcherLike(accountId, pending, account) }, outcome, '重试完成登录');
-    return outcome;
+  const inFlightRetry = new Map(); // accountId -> Promise
+
+  function retryCompleteLogin(account) {
+    const accountId = String(account && account.id);
+    const existing = inFlightRetry.get(accountId);
+    if (existing) return existing;
+    const task = (async () => {
+      const pending = pendingByAccount.get(accountId);
+      const checkpoint = getScanCheckpoint(accountId);
+      // 判定本次重试是否有可做的活：有持久检查点（凭据已保存、码未换成或
+      // 启动未提交，含进程重启后）或上一轮保存后启动失败（detail 非空）才
+      // 动手；纯等待态交给守望，已完成的幂等返回。
+      const pendingNeedsRetry = !!pending
+        && (pending.state === 'code_pending' || (pending.state === 'saved' && pending.detail));
+      if (!checkpoint && !pendingNeedsRetry) {
+        if (!pending) return { ok: false, error: '当前没有待完成的登录，请重新发送二维码' };
+        if (pending.state === 'saved') return { ok: true, started: true, alreadySaved: true };
+        if (['pending', 'scanned', 'saving'].includes(pending.state)) {
+          return { ok: false, error: '当前扫码会话不需要重试，请等待自动完成或重新发送二维码' };
+        }
+        return { ok: false, error: '本地扫码会话已到期或失败，请重新发送二维码' };
+      }
+      if (!retrySaved) return { ok: false, error: '服务端未接入扫码保存流程' };
+      // 只读绑定快照（不推进请求代，避免误杀当前 pending 会话的守望）：
+      // 重试等待期间的新二维码/新扫码/暂停仍会被 isSnapshotCurrent 拦下。
+      const snapshot = {
+        accountId,
+        owner: String(account.username || '').trim(),
+        wxid: String(account.wxid || ''),
+        generation: currentGeneration(accountId),
+        epoch: requestEpochs.get(accountId) || 0,
+      };
+      const isCurrent = () => isSnapshotCurrent(snapshot)
+        && (!pendingByAccount.get(accountId) || pendingByAccount.get(accountId) === pending);
+      const generation = checkpoint ? checkpoint.generation : snapshot.generation;
+      if (pending && pending.sessionId) markPendingState(accountId, pending.sessionId, 'saving');
+      const outcome = await retrySaved({ accountId, isCurrent, generation, reminder: self });
+      if (pending && pending.sessionId && !(outcome && outcome.superseded)) {
+        applyCompletionState(accountId, { ...watcherLike(accountId, pending, account) }, outcome, '重试登录农场');
+      }
+      return outcome;
+    })();
+    inFlightRetry.set(accountId, task);
+    return task.finally(() => {
+      if (inFlightRetry.get(accountId) === task) inFlightRetry.delete(accountId);
+    });
   }
 
   function watcherLike(accountId, pending, account) {
@@ -1428,7 +1638,9 @@ function createWxLoginReminderService(deps = {}) {
     if (!entry) return null;
     if (!isSnapshotCurrent(entry.snapshot)) { abandonPending(entry); return null; }
     if (now() >= entry.expiresAt) {
-      if (['pending', 'scanned', 'confirmed_retry'].includes(entry.state)) {
+      // code_pending/saved 阶段扫码已消费、授权已持久化：到期不改判，交给
+      // 持久检查点与显式重试；只有纯等待/已扫未确认才因会话到期作废。
+      if (['pending', 'scanned'].includes(entry.state)) {
         entry.state = 'expired';
         revokeImageTokensFor(entry.accountId, entry.sessionId);
         stopWatcher(entry.accountId);
@@ -1456,12 +1668,15 @@ function createWxLoginReminderService(deps = {}) {
         ...pending,
         expiresAtLabel: '本地扫码会话截止（微信侧二维码可能提前失效）',
       } : null,
+      // 持久「授权已保存/登录未收口」检查点（无 pending 会话时仍可见，
+      // 支持进程重启后的显式重试）。无任何秘密字段。
+      scanCheckpoint: getScanCheckpoint(account.id),
       // 扫码维护参考计划（与扫码会话独立：不生成二维码、不改运行状态）。
       plan: buildPlanView(account),
     };
   }
 
-  return {
+  const self = {
     getUserConfig,
     setUserConfig,
     sendBark,
@@ -1472,6 +1687,9 @@ function createWxLoginReminderService(deps = {}) {
     shouldSuppressOfflineReminder,
     needsRescan,
     getIncident,
+    noteScanCodePending,
+    noteScanCodeResolved,
+    getScanCheckpoint,
     requestQrPush,
     retryCompleteLogin,
     getPendingSession,
@@ -1485,6 +1703,7 @@ function createWxLoginReminderService(deps = {}) {
     sweepMaintenanceOnce: sweepOnce,
     parseBarkTarget,
   };
+  return self;
 }
 
 // 运行时共享实例：runtime-engine 的注入回调与路由共用同一份状态。
@@ -1492,7 +1711,7 @@ let shared = null;
 function getSharedWxLoginReminder() {
   if (!shared) {
     const store = require('../models/store');
-    const { completeOwnedWxRescan } = require('./wx-rescan-save');
+    const { completeOwnedWxRescan, retrySavedWxScanLogin } = require('./wx-rescan-save');
     shared = createWxLoginReminderService({
       getAccounts: store.getAccounts,
       log: (level, message, extra) => {
@@ -1500,6 +1719,7 @@ function getSharedWxLoginReminder() {
         else barkLogger.info(message, extra || {});
       },
       completeRescan: completeOwnedWxRescan,
+      retrySaved: retrySavedWxScanLogin,
     });
   }
   return shared;

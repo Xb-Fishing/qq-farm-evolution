@@ -43,7 +43,7 @@ function baseAccount(overrides = {}) {
   };
 }
 
-function harness({ accounts, fetchResults, completeResults = [], completeRescan, clockStart = 1_000_000 } = {}) {
+function harness({ accounts, fetchResults, completeResults = [], completeRescan, retryResults = [], retrySaved, clockStart = 1_000_000 } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-wxlr-'));
   const registryFile = path.join(dataDir, 'wx-login-reminder.json');
   const sent = [];
@@ -51,6 +51,7 @@ function harness({ accounts, fetchResults, completeResults = [], completeRescan,
   const clock = { now: clockStart };
   const adapterCalls = { qr: 0, cancelled: [], checkQr: [], farmCode: [] };
   const completions = [];
+  const retries = [];
   let qrGate = null; // 非空时 getQRCode 挂起直至放行
   const accountList = accounts || [baseAccount()];
   const adapter = {
@@ -85,6 +86,13 @@ function harness({ accounts, fetchResults, completeResults = [], completeRescan,
     }
     return completeResults.shift() || { ok: true, started: true };
   };
+  const defaultRetrySaved = async (opts) => {
+    retries.push(opts);
+    if (typeof opts.isCurrent === 'function' && !opts.isCurrent()) {
+      return { ok: false, superseded: true };
+    }
+    return retryResults.shift() || { ok: true, started: true };
+  };
   const service = require('../src/services/wx-login-reminder').createWxLoginReminderService({
     getAccounts: () => ({ accounts: accountList.filter(Boolean) }),
     log: (level, message, extra) => logs.push({ level, message, extra }),
@@ -94,10 +102,11 @@ function harness({ accounts, fetchResults, completeResults = [], completeRescan,
     watcherPollMs: 5,
     adapter,
     completeRescan: completeRescan || defaultCompleteRescan,
+    retrySaved: retrySaved || defaultRetrySaved,
     registryFile: () => registryFile,
   });
   return {
-    dataDir, registryFile, service, sent, logs, clock, adapterCalls, completions,
+    dataDir, registryFile, service, sent, logs, clock, adapterCalls, completions, retries,
     accountList, adapter,
     setQrGate: gate => { qrGate = gate; },
   };
@@ -431,10 +440,9 @@ test('守望被更新的扫码取代：守卫失败不得改写新状态', async
     '新扫码已清空旧 pending；旧守望不得写入任何 saved/error 状态');
 });
 
-test('守望换码临时失败 → confirmed_retry（无自动重试循环），显式重试后完成', async () => {
+test('守望换码临时失败 → code_pending（无自动重试循环），显式重试后完成', async () => {
   const h = harness({ completeResults: [
     { ok: false, retryable: true, error: '换取农场码失败: 网络波动' },
-    { ok: true, started: true },
   ] });
   await enableBark(h);
   let authorized = false;
@@ -445,23 +453,198 @@ test('守望换码临时失败 → confirmed_retry（无自动重试循环），
     }
     return { Success: true, Data: { status: 0 } };
   };
-  h.adapter.getWxSessionInfo = () => ({
-    sessionId: 'sess-1', createdAt: h.clock.now, expiresAt: h.clock.now + 300_000,
-    confirmed: true, openid: 'openid-A',
-  });
   await h.service.requestQrPush({ account: h.accountList[0] });
-  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'confirmed_retry'),
-    '临时换码失败必须停在 confirmed_retry 检查点');
+  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'code_pending'),
+    '临时换码失败必须停在 code_pending（凭据已持久化、登录未收口）');
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(h.completions.length, 1, '不得自动循环重试换码');
 
+  // 显式重试走持久凭据链（不重发二维码、不重放确认、不推进代次）。
   const retry = await h.service.retryCompleteLogin(h.accountList[0]);
   assert.equal(retry.ok, true);
-  assert.equal(h.completions.length, 2, '显式重试复用同一会话再走一次保存链');
+  assert.equal(h.retries.length, 1, '显式重试必须落到 retrySaved');
+  assert.equal(typeof h.retries[0].isCurrent, 'function');
+  assert.equal(h.completions.length, 1, '重试不再走扫码完成链');
   assert.equal(h.service.getPendingSession('101').state, 'saved');
-  // 非可重试状态拒绝重试（不重发二维码、不重放确认）。
+  // 已保存且无待收口：幂等返回，不再发起新的重试。
   const again = await h.service.retryCompleteLogin(h.accountList[0]);
   assert.equal(again.ok, true, '已保存的会话幂等返回成功');
+  assert.equal(h.retries.length, 1);
+});
+
+// ── 可信连接收口同步内存 pending（2026-10-04 主审复现修复）──
+// 真实恢复 worker 连上后：检查点清了但内存 pending 还停在 code_pending，
+// 页面会继续显示「重试完成登录」，用户再点 = 多换一次 Code、重启健康农场。
+// completeRescan 桩按真实保存链起舞：noteAcceptedScan（推进代次+刷新
+// pending 快照）→ noteScanCodePending（检查点），再返回业务结果。
+function realDanceHarness(outcomes = []) {
+  const holder = { impl: null };
+  const queue = [...outcomes];
+  const h = harness({
+    completeRescan: async opts => holder.impl(opts),
+  });
+  let authorized = false;
+  h.adapter.checkQR = async () => {
+    if (!authorized) {
+      authorized = true;
+      return { Success: true, Data: { acctSectResp: { userName: 'openid-A' } } };
+    }
+    return { Success: true, Data: { status: 0 } };
+  };
+  holder.impl = async (opts) => {
+    const accepted = await h.service.noteAcceptedScan(opts.accountId, {
+      keepSessionId: opts.sessionId, owner: opts.owner, wxid: opts.openid,
+    });
+    if (accepted === false) return { ok: false, superseded: true };
+    await h.service.noteScanCodePending(opts.accountId, {
+      generation: accepted, stage: 'code_pending', error: '', owner: opts.owner, wxid: opts.openid,
+    });
+    return queue.shift() || { ok: false, retryable: true, error: '换取农场码失败: 网络波动' };
+  };
+  return h;
+}
+
+test('可信连接收口：检查点清除后同代次 code_pending 翻转为 saved，stale 重试入口消失', async () => {
+  const h = realDanceHarness();
+  await enableBark(h);
+  await h.service.requestQrPush({ account: h.accountList[0] });
+  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'code_pending'));
+  const checkpoint = h.service.getScanCheckpoint('101');
+  assert.ok(checkpoint, '换码临时失败必须留下持久检查点');
+
+  // 可信 runtime 的连接收口（connected:true，携带捕获代次/绑定）。
+  const cleared = await h.service.noteScanCodeResolved('101', {
+    generation: checkpoint.generation, owner: 'owner1', wxid: 'openid-A', connected: true,
+  });
+  assert.equal(cleared, true, '真实清除必须返回 true');
+  assert.equal(h.service.getScanCheckpoint('101'), null);
+  const pending = h.service.getPendingSession('101');
+  assert.equal(pending.state, 'saved', '自动恢复后不得再把该轮当需要补登录');
+  assert.equal(pending.detail, '', '旧的失败说明必须清掉');
+  // 页面重试入口判定（code_pending 或检查点存在才可重试）双双失效。
+  const help = h.service.getHelpStatus(h.accountList[0]);
+  assert.equal(help.pending.state, 'saved');
+  assert.equal(help.scanCheckpoint, null);
+
+  // 陈旧代次的清除请求：不动任何状态，返回真实 false。
+  const stale = await h.service.noteScanCodeResolved('101', {
+    generation: checkpoint.generation, owner: 'owner1', wxid: 'openid-A', connected: true,
+  });
+  assert.equal(stale, false);
+});
+
+test('可信连接收口：同代次新开的未确认二维码绝不被误标 saved', async () => {
+  const h = realDanceHarness();
+  await enableBark(h);
+  await h.service.requestQrPush({ account: h.accountList[0] });
+  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'code_pending'));
+
+  // 用户在自动恢复前又开了一张新二维码（新二维码不推进扫码代次）。
+  await h.service.requestQrPush({ account: h.accountList[0] });
+  const fresh = h.service.getPendingSession('101');
+  assert.equal(fresh.state, 'pending', '新二维码会话处于等待扫码');
+
+  const checkpoint = h.service.getScanCheckpoint('101');
+  assert.ok(checkpoint);
+  const cleared = await h.service.noteScanCodeResolved('101', {
+    generation: checkpoint.generation, owner: 'owner1', wxid: 'openid-A', connected: true,
+  });
+  assert.equal(cleared, true, '检查点本身按绑定合法清除');
+  assert.equal(h.service.getScanCheckpoint('101'), null);
+  const after = h.service.getPendingSession('101');
+  assert.equal(after.state, 'pending', '未确认的新二维码不得被连接收口标成 saved');
+  assert.equal(after.sessionId, fresh.sessionId);
+});
+
+test('definitive 清除（无 connected）：检查点清掉但 pending 不得被冒充保存成功', async () => {
+  const h = realDanceHarness();
+  await enableBark(h);
+  await h.service.requestQrPush({ account: h.accountList[0] });
+  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'code_pending'));
+  const checkpoint = h.service.getScanCheckpoint('101');
+  assert.ok(checkpoint);
+
+  // 保存链/重试链自己的收口不观察连接：只清检查点，不编造保存状态。
+  const cleared = await h.service.noteScanCodeResolved('101', {
+    generation: checkpoint.generation, owner: 'owner1', wxid: 'openid-A',
+  });
+  assert.equal(cleared, true);
+  assert.equal(h.service.getScanCheckpoint('101'), null);
+  const pending = h.service.getPendingSession('101');
+  assert.equal(pending.state, 'code_pending', '旧失效清除语义不变：不冒充保存成功');
+});
+
+test('可信连接收口：saved+启动失败说明（start_pending）同样清 detail', async () => {
+  const h = realDanceHarness([{ ok: true, started: false, error: '账号启动失败: worker boot failed' }]);
+  await enableBark(h);
+  await h.service.requestQrPush({ account: h.accountList[0] });
+  assert.ok(await waitFor(() => h.service.getPendingSession('101')?.state === 'saved'));
+  const pending = h.service.getPendingSession('101');
+  assert.equal(pending.detail, '账号启动失败: worker boot failed');
+  // 重试链换码成功但启动被拒：检查点停在 start_pending 阶段。
+  assert.ok(await h.service.noteScanCodePending('101', { stage: 'start_pending', error: '' }));
+  assert.equal(h.service.getScanCheckpoint('101').stage, 'start_pending');
+
+  const cleared = await h.service.noteScanCodeResolved('101', {
+    generation: h.service.getScanCheckpoint('101').generation,
+    owner: 'owner1', wxid: 'openid-A', connected: true,
+  });
+  assert.equal(cleared, true);
+  assert.equal(h.service.getScanCheckpoint('101'), null);
+  const after = h.service.getPendingSession('101');
+  assert.equal(after.state, 'saved');
+  assert.equal(after.detail, '', '自动恢复后旧的启动失败说明不再吓用户');
+});
+
+test('P1-B 回归：旧完成的 noteAcceptedScan 排队期间新二维码请求到来 → 旧接受回绝、新请求不受污染', async () => {
+  const h = harness();
+  await enableBark(h);
+  const first = await h.service.requestQrPush({ account: h.accountList[0] });
+  // 旧二维码的完成回调：锁外看自己的会话仍是当前会话（ownCompletion 成立），
+  // 但其注册表临界区要等互斥队列执行——期间用户同步发起了新二维码请求。
+  const acceptance = h.service.noteAcceptedScan('101', { keepSessionId: first.session.sessionId });
+  const newer = h.service.requestQrPush({ account: h.accountList[0] });
+  const [accepted, newResult] = await Promise.all([acceptance, newer]);
+  assert.equal(accepted, false, '被新请求取代的迟到完成不得推进代次（临界区内复验）');
+  assert.notEqual(newResult.superseded, true, '旧回调不得把新二维码请求污染成 superseded');
+  assert.equal(newResult.session.sessionId, 'sess-2');
+  assert.ok(newResult.imageToken, '新二维码正常注册图片能力');
+  // 新二维码才是当前会话：旧会话的图片能力已随取代吊销。
+  assert.equal(h.service.getQrImage(first.imageToken), null);
+});
+
+test('noteAcceptedScan 显式绑定：属主/微信失配或守卫拒绝 → false，不推进代次', async () => {
+  const h = harness();
+  await enableBark(h);
+  const first = await h.service.requestQrPush({ account: h.accountList[0] });
+  const sessionId = first.session.sessionId;
+  // 属主失配。
+  assert.equal(await h.service.noteAcceptedScan('101', {
+    keepSessionId: sessionId, owner: 'someone-else',
+  }), false);
+  // 微信失配。
+  assert.equal(await h.service.noteAcceptedScan('101', {
+    keepSessionId: sessionId, wxid: 'openid-OTHER',
+  }), false);
+  // 守卫拒绝（被更新操作取代）。
+  assert.equal(await h.service.noteAcceptedScan('101', {
+    keepSessionId: sessionId, guard: () => false,
+  }), false);
+  // 会话已让位（新二维码取代后）的迟到完成。
+  const second = await h.service.requestQrPush({ account: h.accountList[0] });
+  assert.equal(await h.service.noteAcceptedScan('101', {
+    keepSessionId: sessionId, guard: () => true,
+  }), false);
+  // 以上全部被拒：代次未推进，新二维码不受影响。
+  assert.equal(h.service.getQrImage(second.imageToken) !== null, true);
+  assert.ok(h.service.getPendingSession('101').sessionId === second.session.sessionId);
+  // 正确绑定 + 当前会话 → 推进并返回新代次（>=1）。
+  const generation = await h.service.noteAcceptedScan('101', {
+    keepSessionId: second.session.sessionId, owner: 'owner1', wxid: 'openid-A', guard: () => true,
+  });
+  assert.equal(typeof generation, 'number');
+  assert.ok(generation >= 1, '成功接受返回新代次');
+  assert.equal(h.service.getPendingSession('101').state, 'saved');
 });
 
 test('守望二维码过期 → expired 终态；轮询有界不越过本地会话截止', async () => {

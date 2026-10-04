@@ -392,6 +392,11 @@ async function issueFarmCode(openid, options = {}) {
     if (!openid) {
         return { Success: false, Message: '缺少 openid' };
     }
+    // 作用域守卫（可选）：换码意图在排队/await 期间被更新扫码取代后，后续
+    // 原生请求与凭据落盘全部停止——旧意图不得用新授权换码，也不得把旧
+    // 轮换结果写回覆盖新扫码的凭据。所有返回点前都复查。
+    const guard = typeof options.guard === 'function' ? options.guard : null;
+    const supersededByGuard = () => !guard || guard();
     try {
         // 扫码链路必须显式指定当前用户拥有的会话；后台刷新只使用目标账号的持久化凭证。
         let loginBuffer = '';
@@ -450,6 +455,9 @@ async function issueFarmCode(openid, options = {}) {
                     refreshtoken = refreshed.refreshtoken;
                     accesstoken = refreshed.accesstoken || accesstoken;
                     credentialMetadata = buildCredentialMetadata(refreshed, account || sessionEntry || {}, true);
+                    if (!supersededByGuard()) {
+                        return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+                    }
                     // Token rotation has already happened upstream. Persist the complete
                     // checkpoint before the independent Code exchange can fail.
                     if (account) persistCredentialFields(account.id, {
@@ -478,6 +486,9 @@ async function issueFarmCode(openid, options = {}) {
                 catch (refreshError) {
                     const rotatedError = asRotatedCredentialError(refreshError);
                     logger.warn('wx code credential stage failed', credentialFailureDiagnostic(rotatedError));
+                    if (!supersededByGuard()) {
+                        return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+                    }
                     // token 刷新成功后凭证已滚动；即使换 loginBuffer 失败，也必须保存新 token。
                     if (account && (rotatedError.refreshtoken || rotatedError.accesstoken)
                         && typeof addOrUpdateAccount === 'function') {
@@ -509,6 +520,9 @@ async function issueFarmCode(openid, options = {}) {
         }
         // 4. 成功后将 loginBuffer / refreshtoken / accesstoken / 头像持久化到账号（供自动重登/手动启动刷新 code）
         //    注意：refreshtoken/accesstoken 是滚动续期的（每次刷新返回新值），必须总是更新，否则旧 token 过期后续期断裂
+        if (!supersededByGuard()) {
+            return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+        }
         if (account) {
             const updates = {};
             if (loginBuffer && loginBuffer !== account.loginBuffer)
@@ -536,11 +550,21 @@ async function getFarmCode(openid, options = {}) {
     const targetOpenid = String(openid || '');
     if (!targetOpenid)
         return { Success: false, Message: '缺少 openid' };
-    const requestKey = `${targetOpenid}:${options.sessionId || `account:${options.accountId || ''}`}`;
+    // intentKey 区分同一账号的不同换码意图（自动保活 vs 手动扫码完成/重试）：
+    // 不共享在途 Promise，避免旧授权的在途请求把结果冒充给新授权的调用方。
+    const intentKey = options.intentKey ? `:${String(options.intentKey)}` : '';
+    const requestKey = `${targetOpenid}:${options.sessionId || `account:${options.accountId || ''}${intentKey}`}`;
     const inFlight = farmCodeRequests.get(requestKey);
     if (inFlight)
         return inFlight;
-    const operation = () => issueFarmCode(targetOpenid, options);
+    const operation = () => {
+        // 领到锁的第一件事就是复查守卫：排队期间请求已被更新扫码取代的，
+        // 不读账号、不发原生请求（旧意图绝不能拿新授权去换码）。
+        if (typeof options.guard === 'function' && !options.guard()) {
+            return Promise.resolve({ Success: false, superseded: true, Message: '请求已被更新的扫码取代' });
+        }
+        return issueFarmCode(targetOpenid, options);
+    };
     const request = (options.accountId
         ? withAccountCredentialLock(targetOpenid, options.accountId, operation)
         : operation()).finally(() => {
