@@ -108,6 +108,11 @@ function harness(t, options = {}) {
               if (args[1] === 'origin/main') return `${git.originMain}\n`;
               if (args[1] === 'HEAD') return `${git.head}\n`;
             }
+            // launch 信任脏树门走 worktreeChangeFiles（porcelain -z / NUL 分隔）：
+            // 与 execSync 的可读 porcelain 同源，这里按 -z 约定转换。
+            if (cmd === 'git' && args[0] === 'status') {
+              return git.dirty ? `${git.dirty.split('\n').join('\0')}\0` : '';
+            }
             throw new Error(`Unexpected execFileSync: ${cmd} ${args && args.join(' ')}`);
           },
           spawn: (bin, args) => { spawns[spawns.length - 1].bin = bin; spawns[spawns.length - 1].args = args; return fakeChild(); },

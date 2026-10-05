@@ -130,6 +130,7 @@ const safetyRunning = ref(false)
 const applying = ref(false)
 const syncingHead = ref(false)
 const togglingEvolution = ref(false)
+const togglingAutonomy = ref(false)
 const testingNotify = ref(false)
 const instructionDraft = ref('')
 const instructionSaving = ref(false)
@@ -574,6 +575,25 @@ async function toggleEvolutionEnabled() {
   }
 }
 
+async function toggleAutonomousEvolution() {
+  togglingAutonomy.value = true
+  error.value = ''
+  try {
+    const next = evolve.value?.autonomousEvolutionEnabled !== true
+    const { data } = await api.post('/api/activity/update/autonomous-evolution', { enabled: next })
+    if (!data.ok)
+      throw new Error(data.error || '切换失败')
+    syncEvolveState(data.evolve)
+    toast.success(next ? '自主进化已开启：失败自动返工、验收通过自动应用' : '自主进化已关闭：恢复人工确认应用')
+  }
+  catch (err: any) {
+    error.value = err?.response?.data?.error || err.message || '切换失败'
+  }
+  finally {
+    togglingAutonomy.value = false
+  }
+}
+
 async function syncEvolutionHead() {
   syncingHead.value = true
   error.value = ''
@@ -699,7 +719,7 @@ onUnmounted(() => evolutionStore.stopPolling())
             自动进化（活动 + 防封安全巡检）
           </h4>
           <p class="mt-1 text-xs text-purple-700/90 dark:text-purple-300/90">
-            每天北京时间 00:00-01:00 最多自动启动一轮，合并安全巡检和缓存活动核对。子 Agent 初检与实施，主 Agent 确认方案和最终验收；协调进程执行真实测试及批准的反向对照。完成后由你点「应用进化」生效。
+            每天北京时间 00:00-01:00 最多自动启动一轮，合并安全巡检和缓存活动核对。子 Agent 初检与实施，主 Agent 确认方案和最终验收；协调进程执行真实测试及批准的反向对照。{{ evolve?.autonomousEvolutionEnabled === true ? '完成的改动会自动应用生效。' : '完成后由你点「应用进化」生效。' }}
           </p>
         </div>
         <button
@@ -858,6 +878,24 @@ onUnmounted(() => evolutionStore.stopPolling())
         >
           {{ togglingEvolution ? '切换中…' : (evolve?.evolutionEnabled === false ? '自进化：关' : '自进化：开') }}
         </button>
+        <button
+          class="ml-2 rounded px-3 py-1.5 text-xs transition disabled:opacity-50"
+          :class="evolve?.autonomousEvolutionEnabled === true
+            ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+            : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400'"
+          :disabled="togglingAutonomy"
+          :title="evolve?.autonomousEvolutionEnabled === true
+            ? '自主进化运行中：失败自动返工，通过的改动自动应用并重启生效；点击关闭恢复人工确认应用'
+            : '自主进化已关闭，点击开启：通过的改动自动应用生效、失败自动返工重试（默认关闭）'"
+          @click="toggleAutonomousEvolution"
+        >
+          {{ togglingAutonomy ? '切换中…' : (evolve?.autonomousEvolutionEnabled === true ? '自主进化：开' : '自主进化：关') }}
+        </button>
+        <span
+          v-if="evolve?.autonomousEvolutionEnabled === true && evolve?.autonomy?.nextReworkAt"
+          class="ml-1 text-xs text-emerald-700 dark:text-emerald-300"
+          :title="'自主进化下一次自动重试/应用时刻（失败按间隔递增退避）'"
+        >下次自动处理 {{ formatTime(evolve.autonomy.nextReworkAt) }}</span>
       </div>
     </div>
 

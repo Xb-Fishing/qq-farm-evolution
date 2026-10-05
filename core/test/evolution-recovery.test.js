@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const {
   runTeamWorkflow, createTeamError, normalizeTeamFailure, parseStageResult, buildStageSchema,
 } = require('../src/services/evolution-team');
-const { describeTeamFailure, previousTeamFailure, markEvolutionAppliedAfterRestart,
+const { describeTeamFailure, previousTeamFailure,
   evolutionNotificationTitle, normalizePersistedState } = require('../src/services/activity-evolver');
 
 function setup() {
@@ -32,7 +32,7 @@ function setup() {
         ? { allowedFiles: override.decision === 'approve' ? ['core/src/example.js', 'docs/HANDOFF.md'] : [],
             acceptanceChecks: override.decision === 'approve' ? ['fixture behavior is correct'] : [], ...override } : override;
       return { decision: { research: 'researched', revise_plan: 'researched', plan: 'no_change', implement: 'implemented', review: 'approve',
-        diagnose: 'repair', repair: 'no_change', repair_review: 'approve' }[phase],
+        diagnose: 'repair', repair: 'no_change', repair_review: 'approve', patch_review: 'approve' }[phase],
       summary: 'verified fixture', ...(phase === 'diagnose' ? { allowedFiles: [] } : {}),
         ...(phase === 'plan' ? { allowedFiles: [], acceptanceChecks: [] } : {}) };
     },
@@ -161,20 +161,66 @@ test('编排修复独立验证和复核后待应用，不用仍在运行的旧�
   assert.equal(f.counts.implement, undefined);
   assert.equal(f.counts.research, 1);
   assert.equal(f.counts.plan, undefined);
-  assert.equal(f.counts.review, 1);
+  // repairOnly 的唯一最终验收是冻结契约 patch_review，不再走业务 review。
+  assert.equal(f.counts.review || 0, 0);
+  assert.equal(f.counts.patch_review, 1);
   assert.equal(f.verified(), 1);
 });
 
 test('仅应用编排修复不能清理原巡检问题，下一轮先核对恢复条件', () => {
-  const failure = normalizeTeamFailure({ code: 'invalid_output' }, 'research', 'claude');
-  const batch = [{ type: 'slowdown', count: 1 }];
-  const applied = markEvolutionAppliedAfterRestart({ status: 'applying', dualAgentEnabled: true,
-    collaboration: { repairOnly: true, lastFailure: failure }, runtimeIssueBatch: batch });
-  assert.equal(applied.acknowledgeIssues, false);
-  assert.deepEqual(applied.state.runtimeIssueBatch, batch);
-  assert.match(applied.state.summary, /原巡检将继续/);
-  assert.equal(previousTeamFailure(applied.state).code, 'invalid_output');
-  assert.equal(markEvolutionAppliedAfterRestart({ status: 'applying', collaboration: { repairOnly: false } }).acknowledgeIssues, true);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-applied-gate-'));
+  try {
+    const script = `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { execFileSync } = require('node:child_process');
+      const { normalizeTeamFailure } = require(${JSON.stringify(require.resolve('../src/services/evolution-team'))});
+      const service = require(process.argv[1]);
+      const failure = normalizeTeamFailure({ code: 'invalid_output' }, 'research', 'claude');
+      const batch = [{ type: 'slowdown', count: 1 }];
+      // 无回执：不宣称 applied 也不清问题批次，保持 applying 交限时回执确认收口。
+      const pending = service.markEvolutionAppliedAfterRestart({ status: 'applying', dualAgentEnabled: true,
+        collaboration: { repairOnly: true, lastFailure: failure }, runtimeIssueBatch: batch });
+      assert.equal(pending.changed, false);
+      assert.equal(pending.awaiting, true);
+      assert.equal(pending.state.status, 'applying');
+      assert.deepEqual(pending.state.runtimeIssueBatch, batch);
+      // ready 回执 + 本进程身份 + HEAD 一致才转 applied；repairOnly 摘要说明原巡检将继续，
+      // 且收口函数本身绝不清运行问题批次（销账只发生在 gated 服务确认里）。
+      const repoRoot = path.resolve(path.dirname(process.argv[1]), '..', '..', '..');
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+      const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+      const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+      fs.writeFileSync(path.join(process.env.FARM_DATA_DIR, 'evolution-apply-receipt.json'), JSON.stringify({
+        phase: 'ready', expectedHead: head, oldPid: 1, oldStarttime: '1', newPid: process.pid,
+        newStarttime: start, adminPort: 3007, startedAt: Date.now(), readyAt: Date.now() }));
+      const applied = service.markEvolutionAppliedAfterRestart({ status: 'applying', dualAgentEnabled: true,
+        commit: head, collaboration: { repairOnly: true, lastFailure: failure }, runtimeIssueBatch: batch });
+      assert.equal(applied.changed, true);
+      assert.equal(applied.state.status, 'applied');
+      assert.deepEqual(applied.state.runtimeIssueBatch, batch);
+      assert.match(applied.state.summary, /原巡检将继续/);
+      // 应用后的续接诊断上下文仍取原巡检失败，不因应用编排修复而丢失。
+      assert.equal(service.previousTeamFailure(applied.state).code, 'invalid_output');
+      // 自主来源要求 HEAD 严格等于已审提交：祖先提交即使有 ready 回执也退回待应用。
+      const parent = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+      fs.writeFileSync(path.join(process.env.FARM_DATA_DIR, 'evolution-apply-receipt.json'), JSON.stringify({
+        phase: 'ready', expectedHead: parent, oldPid: 1, oldStarttime: '1', newPid: process.pid,
+        newStarttime: start, adminPort: 3007, startedAt: Date.now(), readyAt: Date.now() }));
+      const strict = service.markEvolutionAppliedAfterRestart({ status: 'applying', applyingSource: 'autonomous',
+        dualAgentEnabled: true, commit: parent, runtimeIssueBatch: batch });
+      assert.equal(strict.changed, false);
+      assert.equal(strict.state.status, 'pending_apply');
+      // 人工来源保留祖先包含语义：HEAD~1 是 HEAD 祖先即可 applied。
+      const manual = service.markEvolutionAppliedAfterRestart({ status: 'applying', applyingSource: 'manual',
+        dualAgentEnabled: true, commit: parent, runtimeIssueBatch: batch });
+      assert.equal(manual.changed, true);
+    `;
+    execFileSync(process.execPath, ['-e', script, require.resolve('../src/services/activity-evolver')], {
+      env: { ...process.env, FARM_DATA_DIR: dir }, stdio: 'pipe',
+    });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('失败元信息不透传原错误、凭据、地址或任意未知字段', async () => {
@@ -198,6 +244,9 @@ test('修复范围不能包含隐私控制、认证文件或路径穿越', () =>
   for (const file of ['.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
     'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/daily-feedback.js',
     'core/src/services/evolution-references.js', 'core/src/controllers/admin-feedback-routes.js', 'web/src/utils/daily-feedback.ts',
+    // 自主策略与应用进程保护属于审批邻接控制文件（PRIVATE_CONTROLS/PROTECTED_FILES），
+    // 常规 Agent 修复一律不批（2026-10-05 复审批准）。
+    'core/src/services/evolution-autonomy.js', 'core/scripts/evolution-apply-process.js',
     'docs/../outside', 'docs/.codex/auth.json', 'docs/private-config.json']) {
     assert.throws(() => parseStageResult(JSON.stringify({ decision: 'repair', summary: 'bad scope', allowedFiles: [file] }), 'diagnose', new Set()), { code: 'repair_scope' });
   }

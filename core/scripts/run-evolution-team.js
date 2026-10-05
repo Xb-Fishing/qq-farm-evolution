@@ -11,6 +11,7 @@ const { collectPublicReferences } = require('../src/services/evolution-reference
 const {
   parseStageResult, runTeamWorkflow, teamJournalPath, buildStageSchema,
   createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
+  normalizeCheckpoint,
 } = require('../src/services/evolution-team');
 
 const repoRoot = path.resolve(__dirname, '../..');
@@ -89,6 +90,8 @@ const PROTECTED_FILES = new Set([
     'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',
     'web/src/utils/daily-feedback.ts',
+    // 自主策略与应用进程保护属于审批邻接控制文件，常规 Agent 修复不批。
+    'core/src/services/evolution-autonomy.js', 'core/scripts/evolution-apply-process.js',
 ]);
 const PROTECTED_HOOKS_PREFIX = 'scripts/evolution-hooks/';
 
@@ -108,8 +111,12 @@ function git(args) {
 function inspectWorktree() {
   const head = git(['rev-parse', 'HEAD']).trim();
   const status = git(['status', '--porcelain', '--untracked-files=normal']);
+  // 变更集合 = 工作区对 HEAD + 暂存区对 HEAD + 未跟踪三者并集（2026-10-05 复审
+  // R3：仅暂存（工作区已还原成 HEAD 内容）的文件不出现在 diff HEAD 里，漏掉它
+  // 就等于允许未经指纹核对的暂存内容混过续接校验）。
   const files = [...new Set([
     ...git(['diff', '--name-only', '-z', 'HEAD']).split('\0'),
+    ...git(['diff', '--cached', '--name-only', '-z']).split('\0'),
     ...git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
   ].filter(Boolean))].sort();
   const hash = crypto.createHash('sha256').update(head).update(status);
@@ -207,6 +214,77 @@ function readTeamStageOutput(outputFile) {
   }
 }
 
+// 续接凭据的双侧独立校验之 runner 侧：launcher 的判断不算数，以当前工作区实测为准。
+// in_run：基线未动、脏文件全部属于授权 UNION，且脏文件集合与凭据逐文件快照的键集
+// 完全一致（不多不少）、逐条内容/权限/暂存哈希一致、整体 worktreeFingerprint 一致
+// ——全部以当前实测为准，allowedFiles UNION 只证明"曾经授权过"，不能替代候选快照
+// （崩溃中途没有实测落盘的脏树不可信）。干净树 + 空快照是合法续接（内容由 HEAD 钉死）。
+// post_apply：树必须干净且补丁提交严格就是当前 HEAD（新进程加载/应用的正是它；
+// 只验祖先包含会让未审阅的后代提交借道 post_apply 跳过 research/plan）。
+function validateResumeInput(value, baseCommit) {
+  const checkpoint = normalizeCheckpoint(value);
+  if (!checkpoint) throw createTeamError('invalid_decision');
+  const now = inspectWorktree();
+  if (now.head !== baseCommit) throw createTeamError('head_changed');
+  if (checkpoint.kind === 'post_apply') {
+    if (now.dirty) throw createTeamError('unsafe_worktree');
+    if (!checkpoint.patchHead || checkpoint.patchHead !== now.head) throw createTeamError('head_changed');
+    try { git(['merge-base', '--is-ancestor', checkpoint.baselineHead, now.head]); } catch { throw createTeamError('head_changed'); }
+    return checkpoint;
+  }
+  if (checkpoint.baselineHead !== baseCommit) throw createTeamError('head_changed');
+  if (checkpoint.kind === 'in_run' && !checkpoint.completed.length) {
+    // 什么都没证明的凭据 = 凭据不完整：拒绝续接，按新轮重跑（research 本来也没完成）。
+    throw createTeamError('invalid_decision');
+  }
+  if (now.files.some(file => !checkpoint.allowedFiles.includes(file))) throw createTeamError('unsafe_worktree');
+  const recorded = Object.keys(checkpoint.fileFingerprints).sort();
+  if (now.files.length || recorded.length || checkpoint.worktreeFingerprint) {
+    const exactShape = recorded.length === now.files.length
+      && recorded.every((file, index) => file === now.files[index]);
+    if (!exactShape) throw createTeamError('worktree_changed');
+    for (const [file, digest] of Object.entries(checkpoint.fileFingerprints)) {
+      if (now.fileFingerprints[file] !== digest) throw createTeamError('worktree_changed');
+    }
+    if (checkpoint.worktreeFingerprint !== now.fingerprint) throw createTeamError('worktree_changed');
+  }
+  return checkpoint;
+}
+
+// 任务身份：task + 原始 prompt 摘要（originalPrompt：续接轮可追加新实时证据，但
+// 原始任务的 digest 必须核实）+ 反馈批次水位 + GitHub 批次摘要 + 活动计划摘要 +
+// 每日名额日期 + 自动/综合标记。任一字段有记录就不允许悄悄换掉。
+function buildTaskIdentity(input) {
+  return {
+    task: input.task === 'activity' ? 'activity' : 'safety',
+    promptDigest: crypto.createHash('sha256')
+      .update(String(input.originalPrompt ?? input.prompt ?? '')).digest('hex'),
+    feedbackThroughAt: Math.max(0, Math.floor(Number(input.feedbackThroughAt) || 0)),
+    activityPlanDigest: /^[0-9a-f]{64}$/.test(String(input.activityPlanDigest || ''))
+      ? String(input.activityPlanDigest) : '',
+    githubBatchDigest: /^[0-9a-f]{64}$/.test(String(input.githubBatchDigest || ''))
+      ? String(input.githubBatchDigest) : '',
+    quotaDate: /^\d{4}-\d{2}-\d{2}$/.test(String(input.quotaDate || '')) ? String(input.quotaDate) : '',
+    automatic: input.automatic === true,
+    combinedDaily: input.combinedDaily === true,
+  };
+}
+
+function assertTaskIdentityMatches(recorded, current) {
+  // 逐字段比对：有记录（非空）就必须一致；全部为空的旧凭据才整体放行（不伪造）。
+  const mismatches = [
+    recorded.task !== current.task,
+    !!recorded.promptDigest && recorded.promptDigest !== current.promptDigest,
+    recorded.feedbackThroughAt !== current.feedbackThroughAt,
+    !!recorded.activityPlanDigest && recorded.activityPlanDigest !== current.activityPlanDigest,
+    !!recorded.githubBatchDigest && recorded.githubBatchDigest !== current.githubBatchDigest,
+    !!recorded.quotaDate && recorded.quotaDate !== current.quotaDate,
+    recorded.automatic !== current.automatic,
+    recorded.combinedDaily !== current.combinedDaily,
+  ];
+  if (mismatches.some(Boolean)) throw createTeamError('invalid_decision');
+}
+
 async function main(input) {
   process.umask(0o077);
   const { runId, baseCommit, settings, logDir, bins, prompt, task, dataDir, initialFailure, initialReviewFeedback } = input;
@@ -239,12 +317,31 @@ async function main(input) {
   };
   try {
     if (inspectWorktree().head !== baseCommit) throw createTeamError('head_changed');
-    const handoffBaseline = snapshotPrivateHandoff();
+    // 续接入口：checkpoint 由协调进程生成并随 journal 0600 落盘，此处独立实测
+    // 当前工作区；身份不一致（换任务/换批次/换名额）一律拒绝，绝不重开广泛调研。
+    const taskIdentity = buildTaskIdentity(input);
+    const resume = input.resume ? validateResumeInput(input.resume, baseCommit) : null;
+    if (resume) assertTaskIdentityMatches(resume.taskIdentity, taskIdentity);
+    // 私有 HANDOFF 基线：续接轮沿用原轮开始时（或原基线）的内容哈希——已验证
+    // 候选在原轮已真实更新过文档，不得因重启换基线后被要求凭空再改一次。
+    // '' = 原轮开始时不存在/为空（届时新内容即真实更新）；ignored 每次实测，
+    // 规则漂移双向都按不安全处理。
+    const liveHandoff = snapshotPrivateHandoff();
+    const handoffBaseline = resume
+      ? { ignored: liveHandoff.ignored, sha256: resume.handoffSha256 || null }
+      : liveHandoff;
+    // phase 标签保持合法枚举（'resume' 不在 PHASES 内，写入会让 journal 不可读）。
     await onProgress('research', settings.subAgent, {});
-    const references = await collectPublicReferences({ dataDir });
-    const enrichedPrompt = `${prompt}\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。`;
+    const references = resume ? null : await collectPublicReferences({ dataDir });
+    const enrichedPrompt = `${prompt}${references ? `\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。` : ''}`;
     const result = await runTeamWorkflow({
       settings, prompt: enrichedPrompt, inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback, verifyBaseline: true, dailyBrain: false, efficientMode: true,
+      resume, taskIdentity, preferDiagnosis: input.preferDiagnosis === true,
+      // roundId 由协调进程（evolver）生成并随轮次持久：同轮崩溃恢复恢复剩余预算，
+      // 退避后的新轮换新 id 才重置有界 2 次预算。runner 只透传，不自行生成。
+      roundId: typeof input.roundId === 'string' ? input.roundId.slice(0, 100) : '',
+      // checkpoint 落盘时并入本轮 HANDOFF 基线哈希：续接轮据此还原原基线。
+      onCheckpoint: async (value) => persist({ checkpoint: { ...value, handoffSha256: handoffBaseline.sha256 || '' } }),
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
         const command = buildEvolutionAgentCommand(agent, stagePrompt);
@@ -340,7 +437,12 @@ async function main(input) {
     for (const key of ['recoveryAttempt', 'runtimeRecoveryAttempt', 'reviewRecoveryAttempt', 'planRevision']) {
       if (Number.isInteger(info[key])) counters[key] = Math.min(2, Math.max(0, info[key]));
     }
-    persist({ ...counters, phase: 'failed', status: 'failed', activeAgent: '', failure,
+    // 外层终止码独立落盘：normalizeTeamFailure 取 error.failure（底层失败），
+    // recovery/plan_exhausted 会被吞掉——协调进程若只看 failure.code 会拿旧
+    // roundId 在 2/2 预算上永远续跑。终止码只在固定白名单内透传。
+    const terminationCode = ['recovery_exhausted', 'plan_exhausted'].includes(String(error?.code))
+      ? String(error.code) : '';
+    persist({ ...counters, ...(terminationCode ? { terminationCode } : {}), phase: 'failed', status: 'failed', activeAgent: '', failure,
       ...(info.recoveryKind ? { recoveryKind: info.recoveryKind } : {}),
       reviewFeedback: safeReviewFeedback(info.reviewFeedback || journal.reviewFeedback, runtimeTerms), completedAt: Date.now() });
     process.stderr.write(`Team evolution failed: ${failure.code}\n`);

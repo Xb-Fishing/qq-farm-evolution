@@ -259,6 +259,14 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
     res.json({ ok: true, ...result, evolve: activityEvolver.getEvolveState() });
   });
 
+  // 自主进化开关（默认关闭）：开启后待应用自动应用（严格同提交 + 远端实测 + 主
+  // Agent 批准凭据）、失败/验收未通过按退避自动返工、repairOnly 应用后自动续接
+  // 原任务；关闭立即撤定时器并恢复人工确认应用。
+  app.post('/api/activity/update/autonomous-evolution', requireAdminToken, requireEvolutionConfigAdmin, (req, res) => {
+    const result = activityEvolver.setAutonomousEvolution(req.body?.enabled === true);
+    res.json({ ok: true, ...result, evolve: activityEvolver.getEvolveState() });
+  });
+
   // 面板手动同步待应用提交到当前 HEAD（本地推进后 web 不知道导致无法应用的自助修复）
   app.post('/api/activity/update/sync-head', requireAdminToken, (req, res) => {
     const result = activityEvolver.syncEvolutionHead();

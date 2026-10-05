@@ -1522,6 +1522,8 @@ module.exports = {
   stopGithubFeedbackCollector,
   collectGithubFeedback,
   captureFeedbackBatch,
+  // 读取已持久化批次（自主返工沿用原批次时用；不重新采集、不覆盖文件）。
+  readCapturedBatch: options => readBatchFile(resolveDataDir(options)),
   summarizeBatch,
   buildGithubFeedbackSection,
   buildPublicReply,

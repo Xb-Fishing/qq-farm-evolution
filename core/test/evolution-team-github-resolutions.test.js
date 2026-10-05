@@ -60,10 +60,38 @@ test('review 阶段交接保留并校验 githubResolutions；无效映射按决�
     { decision: 'approve', summary: 'ok', githubResolutions: 'fixed' },
     { decision: 'approve', summary: 'ok', githubResolutions: [{ issue: 2 }] },
     { decision: 'approve', summary: 'ok', githubResolutions: [{ issue: 2, status: 'fixed' }] },
+    // fixed 不允许用 null 指纹冒充（新契约下 null 只属于非 fixed）。
+    { decision: 'approve', summary: 'ok', githubResolutions: [{ issue: 2, status: 'fixed', fingerprint: null, note: '' }] },
+    // 非 hex / 非法长度指纹一律拒绝，即使状态不是 fixed。
+    { decision: 'approve', summary: 'ok', githubResolutions: [{ issue: 2, status: 'in_progress', fingerprint: 'zz', note: '' }] },
+    { decision: 'approve', summary: 'ok', githubResolutions: [{ issue: 2, status: 'in_progress', fingerprint: FP.slice(0, 63), note: '' }] },
   ]) {
     assert.throws(() => parseStageResult(JSON.stringify(bad), 'review', new Set()), { code: 'invalid_decision' },
       JSON.stringify(bad));
   }
+
+  // 新契约完整形式：空批次、非 fixed 的 null 指纹 + 空 note 均为合法输出，
+  // 解析侧归一为历史形状（省略空值字段），历史省略字段形式继续兼容。
+  const emptyBatch = parseStageResult(JSON.stringify({
+    decision: 'approve', summary: 'ok', githubResolutions: [],
+  }), 'review', new Set());
+  assert.deepEqual(emptyBatch.githubResolutions, []);
+  const strictForm = parseStageResult(JSON.stringify({
+    decision: 'approve', summary: 'ok',
+    githubResolutions: [
+      { issue: 2, status: 'fixed', fingerprint: FP, note: '启动崩溃已修复' },
+      { issue: 7, status: 'in_progress', fingerprint: null, note: '' },
+    ],
+  }), 'review', new Set());
+  assert.deepEqual(strictForm.githubResolutions, [
+    { issue: 2, status: 'fixed', fingerprint: FP, note: '启动崩溃已修复' },
+    { issue: 7, status: 'in_progress' },
+  ]);
+  const legacyOmitted = parseStageResult(JSON.stringify({
+    decision: 'approve', summary: 'ok',
+    githubResolutions: [{ issue: 9, status: 'wont_fix', note: '不采纳' }],
+  }), 'review', new Set());
+  assert.deepEqual(legacyOmitted.githubResolutions, [{ issue: 9, status: 'wont_fix', note: '不采纳' }]);
 
   // note 过隐私检查：命中运行时隐私词被替换（先断言数组存在，避免旧代码上 TypeError）。
   const sanitized = parseStageResult(JSON.stringify({
@@ -73,16 +101,43 @@ test('review 阶段交接保留并校验 githubResolutions；无效映射按决�
   assert.equal(sanitized.githubResolutions[0].note.includes('zhang-san'), false);
 });
 
-test('review 阶段 schema 契约：数组可选、条目白名单、fingerprint 64hex、不暴露提交哈希', () => {
+test('review 阶段 schema 契约：数组必填、条目四字段齐全、fingerprint 可 null 且 64hex 严格', () => {
   const reviewSchema = buildStageSchema('review');
   // 基线对照点：旧 schema 没有 githubResolutions，此断言行为化失败。
   assert.ok(reviewSchema.properties.githubResolutions, 'review schema 必须声明 githubResolutions');
+  // 结构化输出契约：声明了属性就必须必填（无结论输出空数组，不允许省略字段）。
+  assert.ok(reviewSchema.required.includes('githubResolutions'), 'githubResolutions 必须列入顶层必填');
   const items = reviewSchema.properties.githubResolutions.items;
   assert.equal(items.additionalProperties, false);
+  assert.deepEqual([...items.required].sort(), ['fingerprint', 'issue', 'note', 'status'], '条目四字段必须全部必填');
   assert.equal(items.properties.status.enum.includes('fixed'), true);
-  assert.equal(items.properties.fingerprint.pattern, '^[0-9a-f]{64}$');
+  const branches = items.properties.fingerprint.anyOf;
+  assert.equal(branches.some(branch => branch.type === 'string' && branch.pattern === '^[0-9a-f]{64}$'), true,
+    '字符串指纹分支必须保持 64 位十六进制严格校验');
+  assert.equal(branches.some(branch => branch.type === 'null'), true, '非 fixed 结论必须能用 null 指纹');
   assert.equal(Object.hasOwn(items.properties, 'revision'), false, '映射不暴露提交哈希字段');
   assert.equal(Object.hasOwn(buildStageSchema('plan').properties, 'githubResolutions'), false);
+});
+
+test('全阶段 schema 结构契约：封闭对象必填覆盖全部声明属性（防结构化输出契约回归）', () => {
+  const walk = (node, where) => {
+    if (Array.isArray(node.anyOf)) {
+      node.anyOf.forEach((branch, index) => walk(branch, `${where}.anyOf[${index}]`));
+      return;
+    }
+    if (node.properties) {
+      // 基线对照点：旧 review 条目 required 缺 fingerprint/note、顶层缺 githubResolutions，
+      // 以下断言以真实 AssertionError 失败，不用缺失属性访问冒充。
+      assert.equal(node.additionalProperties, false, `${where} 必须封闭额外属性`);
+      assert.deepEqual([...(node.required || [])].sort(), Object.keys(node.properties).sort(),
+        `${where} 的必填必须覆盖全部声明属性`);
+      for (const [key, sub] of Object.entries(node.properties)) walk(sub, `${where}.${key}`);
+    }
+    if (node.items) walk(node.items, `${where}[]`);
+  };
+  for (const phase of ['triage', 'research', 'revise_plan', 'plan', 'implement', 'review', 'diagnose', 'repair', 'repair_review', 'patch_review']) {
+    walk(buildStageSchema(phase), phase);
+  }
 });
 
 test('journal 读取：仅最终 approve 保留映射；无效映射与拒绝轮一律清空', () => {
@@ -134,7 +189,7 @@ function workflowFixture(overrides = {}) {
           files: ['core/src/example.js', 'docs/HANDOFF.md'],
           fileFingerprints: { 'core/src/example.js': 'changed', 'docs/HANDOFF.md': 'recorded' } };
       }
-      return { decision: { research: 'researched', revise_plan: 'researched', plan: 'approve', implement: 'implemented', review: 'approve' }[phase], summary: 'approved scope',
+      return { decision: { research: 'researched', revise_plan: 'researched', plan: 'approve', implement: 'implemented', review: 'approve', patch_review: 'approve' }[phase], summary: 'approved scope',
         ...(phase === 'plan' ? { allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'], acceptanceChecks: ['example behavior verified'] } : {}),
         ...(phase === 'review' ? { feedbackReviewed: true, lessons: [], githubResolutions: RESOLUTIONS } : {}) };
     },

@@ -1518,6 +1518,18 @@ const FRIEND_PANEL_ENTRY_METHODS = new Set([
     'syncFriendsFromGids',
 ]);
 
+// 背包面板入口的就绪闸门（2026-10-04 启动窗口 500 收口）：getBag/getBagSeeds
+// 用同一组就绪条件，但单独成集合——上方集合与 isFriendSync 三入口绑定不得扩散。
+// 未就绪照发时，协议加载窗口内 types.BagRequest 尚未原地发布（proto.js 启动
+// 竞态语义），getBag() 以无关键字的 TypeError 失败并污染面板背包 60s 失败冷却
+// （warehouse.panelBagRetryAfter），路由侧又按未知错误回 HTTP 500。未就绪就地
+// 返回下方固定本地拒绝：零上游请求、零 Bag 编码、不等待登录、不重试、
+// 不设置好友同步暂停；就绪后读取立即可用（拒绝不写失败冷却）。
+const BAG_PANEL_ENTRY_METHODS = new Set([
+    'getBag',
+    'getBagSeeds',
+]);
+
 // 萌宠手动操作的业务错误元数据（2026-09-20 跨 Worker 丢失修复）：
 // pet-diary-operate 抛出的业务拒绝带 business 标记 + 固定 code，旧管理通道
 // 只回传 error 字符串导致下游一律按 502 服务故障处理。此处只收集严格布尔
@@ -1604,7 +1616,7 @@ async function handleApiCall(msg) {
     let error = null;
     let errorMeta = null;
 
-    if (FRIEND_PANEL_ENTRY_METHODS.has(method)) {
+    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({

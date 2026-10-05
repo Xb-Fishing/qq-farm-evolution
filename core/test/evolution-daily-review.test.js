@@ -45,7 +45,11 @@ function workflowFixture(stageOverride) {
             if (phase === 'implement') files['core/src/example.js'] = 'implemented';
             return {
                 decision: { triage: 'triaged', research: 'researched', plan: 'approve', implement: 'implemented',
-                    review: 'approve', diagnose: 'repair', repair: 'implemented', repair_review: 'approve' }[phase],
+                    review: 'approve', diagnose: 'repair', repair: 'implemented', repair_review: 'approve',
+                    // repairOnly 的唯一最终验收是冻结契约 patch_review（仅 decision+summary）；
+                    // 夹具返回的 lessons/feedbackReviewed 由 result() 在 repairOnly 路径强制置空，
+                    // 下方断言仍验证补丁不得代原巡检收口。
+                    patch_review: 'approve' }[phase],
                 summary: 'Behavioral review evidence.',
                 ...(phase === 'plan' ? { allowedFiles: ['core/src/example.js'], acceptanceChecks: ['Verify observable behavior.'] } : {}),
                 ...(phase === 'diagnose' ? { allowedFiles: ['core/src/example.js'] } : {}),

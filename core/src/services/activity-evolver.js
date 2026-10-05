@@ -14,11 +14,12 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
 const { execFile, execFileSync, execSync, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const { getDataFile } = require('../config/runtime-paths');
 const { getDailyFeedback } = require('./daily-feedback');
-const { getValidationSummary } = require('./evolution-validation');
+const { getValidationSummary, logicSnapshot } = require('./evolution-validation');
 const { getPublicReferenceSummary } = require('./evolution-references');
 const { recordApprovedLessons, readLearningSummary, buildLearningContext } = require('./evolution-learning');
 const { createModuleLogger } = require('./logger');
@@ -28,6 +29,10 @@ const {
   normalizeAgentSettings, validateAgentSettings, readTeamJournal, isTeamResultApproved,
   normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
 } = require('./evolution-team');
+const {
+  normalizeAutonomy, computeReworkDelayMs, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
+  NO_PROGRESS_DIAGNOSIS_ATTEMPTS,
+} = require('./evolution-autonomy');
 // GitHub issues 反馈路由：模块加载零副作用；未启用 owner 私有配置时全部入口直接返回。
 const githubFeedback = require('./evolution-github-feedback');
 const {
@@ -48,7 +53,10 @@ const logger = createModuleLogger('activity-evolver');
 const STATE_FILE = getDataFile('activity-evolve-state.json');
 const EVOLVE_LOG_DIR = path.join(path.dirname(STATE_FILE), 'logs');
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const APPLY_SCRIPT = path.join(REPO_ROOT, 'scripts', 'apply-evolution.sh');
+// 应用进程 helper（2026-10-05 合同）：只停已证明的 Bot 子树（排除 updater 自身
+// 祖先分支），结构化 spawn 重启，0600 应用回执 + 端口就绪实测。
+const APPLY_PROCESS_SCRIPT = path.join(REPO_ROOT, 'core/scripts/evolution-apply-process.js');
+const APPLY_RECEIPT_FILE = 'evolution-apply-receipt.json';
 // 进程被杀/卡死时，超过该时长的 running 状态视为失败，避免永久卡住每日闸门
 const STALE_RUN_MS = 2 * 60 * 60 * 1000;
 const EVOLUTION_WATCH_POLL_MS = 30 * 1000;
@@ -153,6 +161,12 @@ function defaultState() {
     // 手动运行只写 lastManualRunDate，不消费自动名额。
     lastAutomaticEvolveDate: '',
     lastManualRunDate: '',
+    // 自主策略（默认关闭=旧行为）：最近一轮是否自动窗口发起（决定自动应用的严格
+    // 同提交校验与失败后的自动返工资格）；autonomy 为退避/续接/去重通知的持久记录。
+    lastRunAutomatic: false,
+    autonomy: null,
+    // 本次应用的来源（autonomous/manual）：重启收口据此选择严格同提交或祖先包含核对。
+    applyingSource: 'manual',
     pendingActivity: null,
     // 面板可展示的固定自动调度说明；UI 未接也可正常工作。
     automaticPolicy: '每天最多自动启动一轮综合巡检（北京时间 00:00-01:00，安全巡检 + 缓存活动增量交给同一 Agent 团队）；失败不自动重跑，重启不重跑；手动按钮独立执行，不消费自动名额',
@@ -261,6 +275,9 @@ function normalizePersistedState(value, now = Date.now()) {
   }
   state.lastAutomaticEvolveDate = normalizeDateKey(state.lastAutomaticEvolveDate);
   state.lastManualRunDate = normalizeDateKey(state.lastManualRunDate);
+  state.lastRunAutomatic = state.lastRunAutomatic === true;
+  state.applyingSource = state.applyingSource === 'autonomous' ? 'autonomous' : 'manual';
+  state.autonomy = state.autonomy ? normalizeAutonomy(state.autonomy) : null;
   state.pendingActivity = normalizePendingActivity(state.pendingActivity);
   state.userInstruction = normalizeEvolutionInstruction(state.userInstruction);
   state.revisionContext = normalizeRevisionContext(state.revisionContext);
@@ -429,13 +446,46 @@ function gitRefHead(ref) {
 
 function worktreeChanges() {
   try {
+    // trimEnd 只去尾部换行：首行 ' M file' 的前导空格是 porcelain 固定列的一部分，
+    // 整体 trim 会把它吃掉，下游按列切片就会得到 'ore/src/…'（2026-10-05 复审 R3
+    // 真实 Parent 卡死根因）。
     return execSync('git status --porcelain --untracked-files=normal', {
       cwd: REPO_ROOT,
       encoding: 'utf8',
-    }).trim();
+    }).trimEnd();
   } catch {
     return 'git_status_failed';
   }
+}
+
+/** 变更文件路径数组（含仅暂存/仅工作区/未跟踪/重命名取新路径；porcelain -z 按
+ * NUL 分隔、不经任何 trim，路径从固定第 4 列起取）；git 不可用或出现无法解析的
+ * 路径时返回 null（调用方按"无法证明"处理，不当作干净）。用于续接授权比对与
+ * 信任脏树判定。 */
+function worktreeChangeFiles(root = REPO_ROOT) {
+  let raw;
+  try {
+    raw = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=normal'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+  const fields = raw.split('\0');
+  const files = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const entry = fields[i];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    // 暂存的重命名/复制在 -z 下紧跟第二个 NUL 字段（原路径）：取新路径，跳过旧路径。
+    if (status[0] === 'R' || status[0] === 'C') i += 1;
+    const file = entry.slice(3);
+    if (!file || /[\0\r\n]/.test(file)) return null;
+    files.push(file);
+  }
+  return [...new Set(files)];
 }
 
 function changedPathsSince(baseCommit, head = gitHead()) {
@@ -843,15 +893,168 @@ function isModelUnavailableFailure(logFile) {
   return /model[^\n]*(?:expired|not found|invalid|unavailable|does not exist)|(?:expired|invalid|unavailable)[^\n]*model/.test(reason);
 }
 
+/** /proc starttime（字段 22）：pid 身份的一部分，防 PID 复用。 */
+function ownStarttime(pid = process.pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const close = stat.lastIndexOf(')');
+    if (close < 0) return '';
+    return stat.slice(close + 2).split(' ')[19] || '';
+  } catch { return ''; }
+}
+
+/** 应用回执（evolution-apply-process.js 0600 写入）：新进程身份 + 期望提交 +
+ * 端口就绪的唯一权威记录。任何普通重启都写不出合法回执。 */
+function readApplyReceipt(dataDir = path.dirname(STATE_FILE)) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(dataDir, APPLY_RECEIPT_FILE), 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return {
+      phase: ['stopping', 'starting', 'started', 'ready', 'ready-timeout', 'failed'].includes(value.phase) ? value.phase : '',
+      expectedHead: /^[0-9a-f]{40}$/.test(String(value.expectedHead || '')) ? String(value.expectedHead) : '',
+      oldPid: Math.max(0, Math.floor(Number(value.oldPid) || 0)),
+      oldStarttime: /^\d+$/.test(String(value.oldStarttime || '')) ? String(value.oldStarttime) : '',
+      newPid: Math.max(0, Math.floor(Number(value.newPid) || 0)),
+      newStarttime: /^\d+$/.test(String(value.newStarttime || '')) ? String(value.newStarttime) : '',
+      adminPort: Math.max(0, Math.floor(Number(value.adminPort) || 0)),
+      startedAt: Math.max(0, Math.floor(Number(value.startedAt) || 0)),
+      readyAt: Math.max(0, Math.floor(Number(value.readyAt) || 0)),
+    };
+  } catch { return null; }
+}
+
 function markEvolutionAppliedAfterRestart(value) {
   const state = { ...defaultState(), ...(value || {}) };
   if (state.status !== 'applying') return { changed: false, state };
-  state.status = 'applied';
-  state.summary = state.commit
-    ? `进化提交 ${String(state.commit).slice(0, 8)} 已随本次重启应用`
-    : '进化提交已随本次重启应用';
-  if (state.collaboration?.repairOnly) state.summary += '，故障修复已生效，原巡检将继续执行';
-  return { changed: true, acknowledgeIssues: !state.collaboration?.repairOnly, state };
+  // 应用不信任手写状态（2026-10-05 复审 R1#6）：自主应用（applyingSource=
+  // 'autonomous'）要求当前 HEAD 严格等于已审提交；人工路径保留祖先包含语义
+  // （维护会话叠提交是正常节奏）。
+  if (state.commit) {
+    const headNow = gitHead();
+    if (!headNow) return { changed: false, awaiting: true, state };
+    let headOk = false;
+    if (state.applyingSource === 'autonomous') headOk = headNow === state.commit;
+    else {
+      try {
+        execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow],
+          { cwd: REPO_ROOT, stdio: 'ignore' });
+        headOk = true;
+      } catch { headOk = false; }
+    }
+    if (!headOk) {
+      state.status = 'pending_apply';
+      state.summary = `重启后未在当前 HEAD 核对到待应用提交 ${String(state.commit).slice(0, 8)}，已退回待应用；请人工核对仓库`;
+      return { changed: false, state };
+    }
+  }
+  // 本进程必须就是应用回执指定的新进程（newPid + newStarttime 完全一致）且期望
+  // 提交一致；回执必须已到 ready（helper 端口 socket 归属 + /api/health 实测通过
+  // 后才写）。started/未写出 = 应用尚未闭环，保持 applying 由限时确认收口，绝不
+  // 提前宣称 applied（settleDailyReview/续接会跑早）。
+  const receipt = readApplyReceipt();
+  const selfStart = ownStarttime();
+  const identityOk = !!(receipt && receipt.expectedHead && receipt.expectedHead === state.commit
+    && receipt.newPid && receipt.newPid === process.pid
+    && selfStart && receipt.newStarttime === selfStart);
+  if (identityOk && receipt.phase === 'ready') {
+    state.status = 'applied';
+    state.summary = state.commit
+      ? `进化提交 ${String(state.commit).slice(0, 8)} 已随本次重启应用`
+      : '进化提交已随本次重启应用';
+    if (state.collaboration?.repairOnly) state.summary += '，故障修复已生效，原巡检将继续执行';
+    // applied 通知/反馈确认必须等端口 API 实测可读（scheduleAppliedServiceConfirmation）：
+    // 进化器启动在 app.listen 之前，新进程刚启动不能凭自身存活声称面板健康。
+    return { changed: true, serviceConfirm: receipt, state };
+  }
+  if (identityOk && ['failed', 'ready-timeout'].includes(receipt.phase)) {
+    state.status = 'pending_apply';
+    state.summary = '本次重启的应用回执未闭环（failed/就绪超时），已退回待应用；请人工核对后重新应用';
+    return { changed: false, state };
+  }
+  // 回执尚未写出（新进程模块加载与 helper 写回执的竞态）或仍在 stopping/
+  // starting/started：不立即退回 pending（会造成应用循环），保持 applying 由
+  // scheduleApplyReceiptConfirmation 限时收口，超时才诚实退回并按真实失败退避。
+  return { changed: false, awaiting: true, state };
+}
+
+/** applying 的限时回执闭环（新进程模块先于回执 ready 启动的竞态收口）：轮询
+ * markEvolutionAppliedAfterRestart，ready 即转 applied 并进服务确认；超时或回执
+ * 失败则诚实退回待应用，并按真实失败次数记退避（自主开时自动重试，绝不重启循环）。 */
+function scheduleApplyReceiptConfirmation(source) {
+  const deadline = Date.now() + 120_000;
+  const poll = () => {
+    const live = readState();
+    if (live.status !== 'applying' || live.commit !== source.commit) return; // 已被人工/流程改写
+    const reconciled = markEvolutionAppliedAfterRestart(live);
+    if (reconciled.changed) {
+      settleDailyReview(reconciled.state);
+      writeState(reconciled.state);
+      scheduleAppliedServiceConfirmation(reconciled.state.commit, reconciled.serviceConfirm);
+      scheduleAutonomyFromState(reconciled.state);
+      return;
+    }
+    if (reconciled.state.status !== 'applying') {
+      // HEAD 不符或回执 failed/ready-timeout：诚实退回，真实失败计数 + 退避。
+      autonomyDefer(reconciled.state, `apply-receipt:${source.commit}`, reconciled.state.summary);
+      return;
+    }
+    if (Date.now() > deadline) {
+      live.status = 'pending_apply';
+      live.summary = '应用回执在限时内未闭环（新进程身份或就绪证明缺失），已退回待应用；请人工核对后重新应用';
+      autonomyDefer(live, `apply-receipt:${source.commit}`, live.summary);
+      return;
+    }
+    scheduler.setTimeoutTask('evolution_apply_receipt', 2000, poll);
+  };
+  scheduler.setTimeoutTask('evolution_apply_receipt', 2000, poll);
+}
+
+/** applied 的服务就绪闭环：等回执 ready（helper 在新进程端口 HTTP 实测通过后写）
+ * 再通知与确认反馈；超时则本进程自测端口，自测也不通就退回待应用等人工。 */
+function scheduleAppliedServiceConfirmation(commit, receipt) {
+  const port = receipt.adminPort || Number(process.env.ADMIN_PORT) || 3007;
+  const deadline = Date.now() + 90_000;
+  const poll = async () => {
+    const live = readState();
+    if (live.status !== 'applied' || live.commit !== commit) return; // 状态已被人工/流程改写
+    const latest = readApplyReceipt();
+    const ready = (latest && latest.phase === 'ready' && latest.expectedHead === receipt.expectedHead)
+      || await portApiReadable(port);
+    if (ready) {
+      // 运行问题批次只能由「真实逐类复盘过反馈」的双 Agent 主 Agent 销账
+      // （feedbackReviewed + 非 repairOnly）；未复盘/单 Agent/修复轮一律保留事件。
+      if (live.dualAgentEnabled === true && live.collaboration?.feedbackReviewed === true
+        && !live.collaboration?.repairOnly) {
+        acknowledgeRuntimeIssues(live.runtimeIssueBatch);
+        live.runtimeIssueBatch = [];
+      }
+      live.summary += '；应用回执闭环（新进程 pid/start/HEAD 与端口 API 已实测）';
+      writeState(live);
+      await notify('农场 bot 进化已应用', [live.summary, live.changeSummary].filter(Boolean).join('\n'));
+      scheduleAutonomyFromState(live);
+      return;
+    }
+    if (Date.now() > deadline) {
+      live.status = 'pending_apply';
+      live.summary = '应用重启已执行但未取得端口就绪证明，已退回待应用；请人工确认面板状态后重新应用或同步';
+      autonomyDefer(live, `apply-unready:${commit}`, live.summary);
+      return;
+    }
+    scheduler.setTimeoutTask('evolution_apply_confirm', 2000, () => { void poll(); });
+  };
+  scheduler.setTimeoutTask('evolution_apply_confirm', 2000, () => { void poll(); });
+}
+
+/** 本进程自测面板端口 API 可读（回执未闭环时的兜底证据，仍以实测为准）。 */
+function portApiReadable(port) {
+  return new Promise(resolve => {
+    const request = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2500 }, response => {
+      response.resume();
+      resolve(true);
+    });
+    request.once('error', () => resolve(false));
+    request.once('timeout', () => { request.destroy(); resolve(false); });
+  });
 }
 
 function describeActivity(id, actById, groupById) {
@@ -1229,8 +1432,11 @@ function launchEvolution(task, payload = {}) {
   // review_blocked 的人工重试出口（2026-09-26 死锁修复）：仅 retryReviewBlockedEvolution
   // 这一个内部调用点显式携带 manualReviewRetry 放行该状态；后续 clean/sync 检查照常执行，
   // automatic 与其它手动路径永不携带该参数，BLOCKING_STATUSES 语义不变。
+  // autonomyResume（2026-10-05 自主返工）：仅自主策略携带，且必须交由 runner 对
+  // checkpoint 实测（基线/授权 UNION/指纹）后才会续接；无凭据时 runner 直接拒绝。
   if (BLOCKING_STATUSES.has(current.status)
-      && !(current.status === 'review_blocked' && payload.manualReviewRetry === true)) {
+      && !(current.status === 'review_blocked'
+        && (payload.manualReviewRetry === true || payload.autonomyResume === true))) {
     return {
       ok: false,
       reason: 'blocked',
@@ -1248,8 +1454,42 @@ function launchEvolution(task, payload = {}) {
     return { ok: false, reason: 'blocked', error: current.summary };
   }
 
-  const dirty = worktreeChanges();
-  if (dirty) {
+  // ---- 原任务上下文捕获（必须在任何状态改写之前；2026-10-05 复审第 1 条）----
+  // 下文会把 collaboration/status 改写成 running；续接凭据、原批次水位、原
+  // prompt/轮次/名额身份都必须先从 current 拷贝，否则 spawn 时读到的全是空值。
+  const autonomyBefore = normalizeAutonomy(current.autonomy);
+  const previousCheckpoint = current.collaboration?.checkpoint || null;
+  const resumeCheckpoint = payload.resume === 'continuation' ? continuationCheckpoint(current)
+    : payload.resume === 'checkpoint' ? previousCheckpoint : null;
+  const preserveBatch = payload.resume === 'continuation' || payload.resume === 'checkpoint'
+    || payload.preserveFeedbackBatch === true;
+  // 链条身份（私有 0600 状态文件）：原 prompt（digest 来源）+ 原名额日期。
+  // 续接轮可向 live prompt 追加新实时证据，但这些原身份字段不得漂移。
+  const chainPrompt = preserveBatch && autonomyBefore.originalPrompt ? autonomyBefore.originalPrompt : '';
+  // 返工轮 id：仅当前一轮确实耗尽有界预算（recovery/plan_exhausted）才换新 id
+  // 重置预算；崩溃/中止续跑沿用同轮 id（预算连续，防崩溃循环刷预算）。
+  // 判定优先用 runner journal 独立落盘的外层 terminationCode：failure/lastFailure
+  // 记录的是被吞掉前的底层失败（review_rejected/cli_exit 等），只看它们会在 2/2
+  // 预算上永远同轮续跑。checkpoint 计数器到达上限同样视为已耗尽（双保险）。
+  const collaboration = current.collaboration || {};
+  const checkpointCounters = collaboration.checkpoint?.counters || {};
+  const exhaustedRound = ['recovery_exhausted', 'plan_exhausted'].includes(collaboration.terminationCode || '')
+    || (Number(collaboration.runtimeRecoveryAttempt) || 0) >= 2
+    || (Number(collaboration.reviewRecoveryAttempt) || 0) >= 2
+    || (Number(collaboration.planRevision) || 0) >= 2
+    || (Number(checkpointCounters.runtimeRecoveryAttempt) || 0) >= 2
+    || (Number(checkpointCounters.reviewRecoveryAttempt) || 0) >= 2
+    || (Number(checkpointCounters.planRevision) || 0) >= 2;
+  const roundId = !autonomyBefore.roundId || exhaustedRound
+    ? `${getLocalDateKey()}-${crypto.randomUUID().slice(0, 8)}` : autonomyBefore.roundId;
+  const quotaDate = payload.automatic === true
+    ? (preserveBatch && autonomyBefore.quotaDate ? autonomyBefore.quotaDate : getLocalDateKey()) : '';
+  const dirtyFiles = worktreeChangeFiles();
+  // 信任脏树（2026-10-05 复审第 3 条）：最常见的 review_rejected 失败会留下改动，
+  // 一律延期 = 永远无法返工。续接凭据存在且脏文件全部落在授权 UNION 内时放行，
+  // 由 runner 对当前工作区逐文件指纹独立实测；无凭据/越权脏文件仍延期等人工。
+  if (dirtyFiles === null || (dirtyFiles.length
+      && !(resumeCheckpoint && dirtyFiles.every(file => (resumeCheckpoint.allowedFiles || []).includes(file))))) {
     lastTask = task;
     const deferred = current;
     deferred.status = 'deferred';
@@ -1263,7 +1503,9 @@ function launchEvolution(task, payload = {}) {
 
   // 每次自动/手动任务都读取持久化默认值；不是仅对某一次手动任务生效。
   const settings = normalizeAgentSettings(current);
-  const initialFailure = previousTeamFailure(current);
+  // 续接轮不做重复诊断（凭据中的已完成阶段/意见是权威上下文）；initialFailure
+  // 只服务无凭据的新轮（fresh 的真实诊断入口）。
+  const initialFailure = resumeCheckpoint ? null : previousTeamFailure(current);
   const initialReviewFeedback = safeReviewFeedback(current.collaboration?.reviewFeedback);
   const agent = settings.mainAgent;
   const agentLabel = settings.dualAgentEnabled
@@ -1291,7 +1533,48 @@ function launchEvolution(task, payload = {}) {
 
   running = true;
   lastTask = task;
-  const runtimeIssues = task === 'safety' ? getRuntimeIssueSnapshot() : [];
+  // 批次与计划（2026-10-05 复审第 2 条）：续接/返工沿用原 runtime/github/daily
+  // 三批与活动计划（不重采不重算——批内水位与计划是任务身份的一部分）；只有
+  // 全新任务轮才切新批次。prompt 依赖批次水位（fresh 轮用新批次），故先取批次
+  // 与上下文，再改写状态。
+  const runtimeIssues = preserveBatch ? (task === 'safety' ? (current.runtimeIssueBatch || []) : [])
+    : (task === 'safety' ? getRuntimeIssueSnapshot() : []);
+  payload.newUnknown = Array.isArray(payload.newUnknown) ? payload.newUnknown : [];
+  payload.newEnded = Array.isArray(payload.newEnded) ? payload.newEnded : [];
+  payload.reviewIds = Array.isArray(payload.reviewIds) ? payload.reviewIds : [];
+  // GitHub 反馈批次：全新轮同步切收集器私有缓存快照（无网络），失败返回显式
+  // incomplete 批次；续接轮重读已持久化批次文件（不重采不覆盖）。
+  const githubBatch = preserveBatch
+    ? githubFeedback.readCapturedBatch({ dataDir: path.dirname(STATE_FILE) })
+    : githubFeedback.captureFeedbackBatch();
+  const nextFeedbackBatch = preserveBatch ? (current.feedbackBatch || null) : getDailyFeedback().captureBatch();
+  const nextGithubSummary = preserveBatch ? (current.githubFeedbackBatch || null)
+    : githubFeedback.summarizeBatch(githubBatch);
+  const incrementalContext = buildIncrementalReviewContext(
+    { ...current, feedbackBatch: nextFeedbackBatch }, task, payload.report, githubBatch);
+  const prompt = task === 'safety'
+    ? buildSafetyPrompt(
+        current.userInstruction,
+        current.revisionContext,
+        runtimeIssues,
+        incrementalContext,
+        payload.combinedDaily
+          ? buildCachedActivityContext({
+              activityPlan: payload.activityPlan || null,
+              pendingActivity: current.pendingActivity,
+              reportAvailable: !!payload.report,
+            })
+          : '',
+      )
+    : buildPrompt(
+        payload.report,
+        payload.newUnknown,
+        payload.newEnded,
+        current.userInstruction,
+        current.revisionContext,
+        payload.reviewIds,
+        incrementalContext,
+      );
   const state = current;
   state.status = 'running';
   state.lastRunAt = Date.now();
@@ -1308,11 +1591,25 @@ function launchEvolution(task, payload = {}) {
     : null;
   // 手动运行只记手动日期，不消费/改写自动名额字段。
   if (payload.automatic !== true) state.lastManualRunDate = getLocalDateKey();
-  state.runtimeIssueBatch = task === 'safety' ? toRuntimeIssueBatch(runtimeIssues) : [];
-  state.feedbackBatch = getDailyFeedback().captureBatch();
-  // GitHub 反馈批次：同步切收集器私有缓存快照（无网络），失败返回显式 incomplete 批次。
-  const githubBatch = githubFeedback.captureFeedbackBatch();
-  state.githubFeedbackBatch = githubFeedback.summarizeBatch(githubBatch);
+  state.lastRunAutomatic = payload.automatic === true;
+  state.runtimeIssueBatch = task === 'safety'
+    ? (preserveBatch ? (current.runtimeIssueBatch || []) : toRuntimeIssueBatch(runtimeIssues))
+    : [];
+  state.feedbackBatch = nextFeedbackBatch;
+  state.githubFeedbackBatch = nextGithubSummary;
+  // 链条身份落盘（0600 状态文件，private）：续接轮据此核原任务不漂移。
+  state.autonomy = {
+    ...autonomyBefore,
+    originalPrompt: chainPrompt || prompt,
+    roundId,
+    quotaDate,
+    githubBatchDigest: preserveBatch && autonomyBefore.githubBatchDigest ? autonomyBefore.githubBatchDigest
+      : (nextGithubSummary
+        ? crypto.createHash('sha256').update(JSON.stringify(nextGithubSummary)).digest('hex') : ''),
+    activityPlanDigest: preserveBatch && autonomyBefore.activityPlanDigest ? autonomyBefore.activityPlanDigest
+      : (payload.activityPlan && typeof payload.activityPlan === 'object'
+        ? crypto.createHash('sha256').update(JSON.stringify(payload.activityPlan)).digest('hex') : ''),
+  };
   state.feedbackCleanupPending = false;
   state.learningReceipt = '';
   if (task === 'safety') {
@@ -1341,30 +1638,6 @@ function launchEvolution(task, payload = {}) {
   const evidenceFingerprint = task === 'activity'
     ? activityEvidenceFingerprint(payload.report)
     : (payload.combinedDaily ? String(payload.activityPlan?.fingerprint || '') : '');
-  const incrementalContext = buildIncrementalReviewContext(current, task, payload.report, githubBatch);
-  const prompt = task === 'safety'
-    ? buildSafetyPrompt(
-        current.userInstruction,
-        current.revisionContext,
-        runtimeIssues,
-        incrementalContext,
-        payload.combinedDaily
-          ? buildCachedActivityContext({
-              activityPlan: payload.activityPlan || null,
-              pendingActivity: current.pendingActivity,
-              reportAvailable: !!payload.report,
-            })
-          : '',
-      )
-    : buildPrompt(
-        payload.report,
-        payload.newUnknown,
-        payload.newEnded,
-        current.userInstruction,
-        current.revisionContext,
-        payload.reviewIds,
-        incrementalContext,
-      );
   const runId = `${Date.now()}-${crypto.randomUUID()}`;
   // 单 Agent Claude 轮用 JSON stdout 捕获 session_id（重做时可 --resume 续接原对话）；
   // 其余模式沿用原全量日志输出。JSON 结果文本在收尾时回写日志，审计链不受影响。
@@ -1375,6 +1648,20 @@ function launchEvolution(task, payload = {}) {
         args: [path.join(REPO_ROOT, 'core/scripts/run-evolution-team.js')],
         stdin: JSON.stringify({ runId, baseCommit: headBefore, settings, bins, prompt, task, initialFailure,
           initialReviewFeedback,
+          // 自主续接：checkpoint 在状态改写前捕获（in_run 原样传入；repairOnly 应用
+          // 后的续接转为 post_apply 并带 patchHead），由 runner 对当前工作区独立实测。
+          ...(resumeCheckpoint ? { resume: resumeCheckpoint } : {}),
+          preferDiagnosis: payload.preferDiagnosis === true,
+          // 任务身份：原 prompt（digest 来源，live prompt 可追加新实时证据）+ 反馈
+          // 水位 + github 批次/活动计划摘要 + 原自动名额日期 + 返工轮 id。
+          originalPrompt: chainPrompt || prompt,
+          roundId,
+          quotaDate,
+          feedbackThroughAt: Math.max(0, Math.floor(Number(state.feedbackBatch?.throughAt) || 0)),
+          ...(state.autonomy.githubBatchDigest ? { githubBatchDigest: state.autonomy.githubBatchDigest } : {}),
+          ...(state.autonomy.activityPlanDigest ? { activityPlanDigest: state.autonomy.activityPlanDigest } : {}),
+          automatic: payload.automatic === true,
+          combinedDaily: payload.combinedDaily === true,
           logDir: EVOLVE_LOG_DIR, dataDir: path.dirname(STATE_FILE) }),
       }
     : buildEvolutionAgentCommand(agent, prompt, {
@@ -1480,7 +1767,9 @@ function launchEvolution(task, payload = {}) {
     }
     next.status = outcome;
     next.summary = outcome === 'pending_apply'
-      ? `${tag}（${agentLabel}）完成并已核对 GitHub origin/main，待确认应用（提交 ${headAfter.slice(0, 8)}）。满意则点「应用进化」；不满意就在面板填写修改要求并点「拒绝本次并按要求重做」`
+      ? (next.autonomousEvolutionEnabled === true
+        ? `${tag}（${agentLabel}）完成并已核对 GitHub origin/main（提交 ${headAfter.slice(0, 8)}），将自动应用生效；如需调整可在面板填写修改要求`
+        : `${tag}（${agentLabel}）完成并已核对 GitHub origin/main，待确认应用（提交 ${headAfter.slice(0, 8)}）。满意则点「应用进化」；不满意就在面板填写修改要求并点「拒绝本次并按要求重做」`)
       : outcome === 'privacy_blocked' || outcome === 'privacy_blocked_local'
         ? `${tag}（${agentLabel}）被隐私闸门拦截，未向 GitHub 推送；${privacyRollback ? `本轮自动提交已安全丢弃（提交 ${headAfter.slice(0, 8)} 保留在本地 git）` : '本地提交已保留并阻止后续自动任务，请人工检查'}。可在面板填写修改要求并点「拒绝本次并按要求重做」，Agent 将续接原会话修复后重新提交`
       : outcome === 'push_failed'
@@ -1488,7 +1777,7 @@ function launchEvolution(task, payload = {}) {
         : outcome === 'no_change'
           ? `${tag}（${agentLabel}）完成：agent 判断无需代码改动`
           : retryableAgentFailure
-            ? `${tag}（${agentLabel}）${capacityFailure ? '执行器模型暂时满载' : '执行器临时失败'}，已中止本轮${agentFailureReason ? `：${agentFailureReason}` : ''}；自动轮当天名额已消费，不再自动重跑，详见 ${path.basename(logFile)}`
+            ? `${tag}（${agentLabel}）${capacityFailure ? '执行器模型暂时满载' : '执行器临时失败'}，已中止本轮${agentFailureReason ? `：${agentFailureReason}` : ''}；${next.autonomousEvolutionEnabled === true ? '将按自主进化自动安排返工' : '自动轮当天名额已消费，不再自动重跑'}，详见 ${path.basename(logFile)}`
           : interrupted
             ? `${tag}（${agentLabel}）已中止（${signal || `退出码 ${code}`}），未标记为审计失败、未应用代码；可在工作区空闲时重新执行`
             : `${tag}（${agentLabel}）执行失败（${launchError || `退出码 ${code}`}），详见 ${path.basename(logFile)}`;
@@ -1511,7 +1800,12 @@ function launchEvolution(task, payload = {}) {
         head: evolved ? headAfter : headBefore,
       });
     }
-    if (task === 'safety' && outcome === 'no_change') {
+    if (task === 'safety' && outcome === 'no_change'
+      // 运行问题批次只能由「真实逐类复盘过反馈」的双 Agent 主 Agent 销账
+      // （feedbackReviewed + 非 repairOnly）；未复盘就销账 = 无法归因的事件被静默
+      // 丢弃。单 Agent/修复轮保持保留（72 小时自然过期兜底）。
+      && settings.dualAgentEnabled && teamJournal?.feedbackReviewed === true
+      && !teamJournal?.repairOnly) {
       acknowledgeRuntimeIssues(next.runtimeIssueBatch);
       next.runtimeIssueBatch = [];
     }
@@ -1527,6 +1821,20 @@ function launchEvolution(task, payload = {}) {
     }
     if (outcome === 'pending_apply' && teamJournal?.repairOnly) {
       next.summary = `${tag}的编排故障修复已通过测试和主 Agent 验收，并已推送，待确认应用。原巡检尚未完成，应用后继续。`;
+      // repairOnly 应用后的续接上下文：同任务/同自动标记/同综合巡检语义 + 原活动
+      // 计划原样复用（不重算替换），由自主策略在 applied 后按 checkpoint(post_apply)
+      // 续跑，不占第二个每日名额。
+      next.autonomy = { ...normalizeAutonomy(next.autonomy),
+        continuation: {
+          task,
+          automatic: payload.automatic === true,
+          combinedDaily: payload.combinedDaily === true,
+          ...(payload.activityPlan && typeof payload.activityPlan === 'object'
+            ? { activityPlan: payload.activityPlan } : {}),
+        } };
+    } else if (next.autonomy?.continuation) {
+      // 非修复轮收口后旧续接记录已消费/失效：清掉，避免 applied 状态误续接。
+      next.autonomy = { ...normalizeAutonomy(next.autonomy), continuation: null };
     }
     settleDailyReview(next);
     writeState(next);
@@ -1537,6 +1845,8 @@ function launchEvolution(task, payload = {}) {
         : `${notificationContent}\n新活动: ${payload.newUnknown.join(',') || '无'}；结束: ${payload.newEnded.join(',') || '无'}；复核: ${payload.reviewIds.join(',') || '无'}`,
     );
     if (outcome === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
+    // 自主策略：pending_apply 自动应用；失败/验收未通过进入退避返工（含 repairOnly 续接）。
+    scheduleAutonomyFromState();
     // pending_apply = 已推送 + 远端核对 + 隐私扫描通过；只在该边界进入反馈回复链路。
     // 异步收口不阻塞 finalize；编排修复轮（repairOnly）没有原巡检结论，不回复 issue。
     if (outcome === 'pending_apply' && !teamJournal?.repairOnly) {
@@ -1804,26 +2114,52 @@ function syncEvolutionHead() {
   return { ok: true, commit: head };
 }
 
-/** 半自动应用：仅当有待确认的进化提交时，脱离重启 bot。 */
-function applyEvolution() {
+/** 自主应用的内容验证门（2026-10-05 终检 #5）：离线回归记录必须真实 passed 且
+ * backend/frontend 全项完成（记录只由真实 runner 的 runEvolutionValidation 写入，
+ * 不信 agent 自报），且记录指纹等于当前仓库实测逻辑指纹（logicSnapshot 直读当前
+ * 工作区）。任何缺失/漂移都自动延期重新等待，绝不带着未验证内容停服应用。
+ * 返回空串=通过，否则为拒绝原因键。 */
+function autonomousApplyValidationGate() {
+  const summary = getValidationSummary(path.dirname(STATE_FILE));
+  if (summary.state !== 'passed') return `validation-${summary.state || 'unknown'}`;
+  const expectedChecks = fs.existsSync(path.join(REPO_ROOT, 'web', 'package.json'))
+    ? 'backend,frontend' : 'backend';
+  if (summary.checks.join(',') !== expectedChecks) return 'validation-checks-incomplete';
+  try {
+    if (summary.fingerprint !== logicSnapshot(REPO_ROOT).fingerprint) return 'validation-fingerprint-drift';
+  } catch {
+    return 'validation-snapshot-unreadable';
+  }
+  return '';
+}
+
+/** 半自动应用：仅当有待确认的进化提交时，脱离重启 bot。
+ * source：'manual'（面板按钮，HEAD 祖先包含即可）或 'autonomous'（自主轮，
+ * 要求 HEAD 严格等于已审提交，且 helper 停服前复核自主开关未被关闭）。 */
+function applyEvolution(source = 'manual') {
   const state = readState();
   if (state.status !== 'pending_apply') {
     return { ok: false, error: `当前没有待应用的进化（状态：${state.status}）` };
   }
+  const autonomous = source === 'autonomous';
   // 2026-09-23 反复"待应用提交已变化"根因：维护会话在进化待应用提交之上叠新提交
   // 是正常节奏（修复/功能都会进），只要待应用提交仍是 HEAD 祖先（内容已包含），
   // 就允许部署当前 HEAD；逐字相等反而永远撞墙。已跟踪文件改动仍然阻断。
+  // 自主应用路径要求 HEAD 严格等于已审提交（内容以提交哈希钉死，不接受祖先）。
   const headNow = gitHead();
   let auditedIncluded = false;
-  try {
-    execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow], { cwd: REPO_ROOT, stdio: 'ignore' });
-    auditedIncluded = true;
-  } catch { /* 不是祖先或命令失败 */ }
+  if (autonomous) auditedIncluded = !!headNow && headNow === state.commit;
+  else {
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow], { cwd: REPO_ROOT, stdio: 'ignore' });
+      auditedIncluded = true;
+    } catch { /* 不是祖先或命令失败 */ }
+  }
   if (!state.commit || !headNow || !auditedIncluded || worktreeChanges()) {
     return { ok: false, error: '待应用提交或工作区已变化，请先核对，当前未部署任何改动' };
   }
-  if (!fs.existsSync(APPLY_SCRIPT)) {
-    return { ok: false, error: `缺少重启脚本 ${APPLY_SCRIPT}` };
+  if (!fs.existsSync(APPLY_PROCESS_SCRIPT)) {
+    return { ok: false, error: `缺少应用进程脚本 ${APPLY_PROCESS_SCRIPT}` };
   }
   const tmuxTarget = resolveTmuxPaneForProcess(process.pid);
   if (!tmuxTarget) {
@@ -1837,10 +2173,29 @@ function applyEvolution() {
   } catch {
     return { ok: false, error: `当前 Bot 所属 tmux 窗格 ${tmuxTarget} 不可用，已取消重启（不会新建窗口或后台进程）` };
   }
+  const botStarttime = ownStarttime();
+  if (!botStarttime) {
+    return { ok: false, error: '无法读取当前 Bot 进程的启动身份（/proc starttime），已取消重启' };
+  }
   state.status = 'applying';
+  // 应用来源持久落盘：重启收口据此选择「严格同提交」（自主）或「祖先包含」（人工）
+  // 的 HEAD 核对口径；helper 的自主停服前复核只在自主来源时启用。
+  state.applyingSource = autonomous ? 'autonomous' : 'manual';
   state.summary = `正在当前 Bot 所属 tmux 窗格 ${tmuxTarget} 重启应用进化…`;
   writeState(state);
-  const child = spawn('bash', [APPLY_SCRIPT], {
+  // 应用 helper 本身是 Bot 后代：它只停已证明的 Bot 子树并排除自身祖先分支，
+  // 结构化 spawn 重启 + 0600 应用回执 + 端口就绪确认（见 evolution-apply-process.js）。
+  const child = spawn(process.execPath, [
+    APPLY_PROCESS_SCRIPT,
+    '--bot-pid', String(process.pid),
+    '--bot-starttime', botStarttime,
+    '--expected-head', headNow,
+    '--tmux-target', tmuxTarget,
+    '--data-dir', path.dirname(STATE_FILE),
+    '--admin-port', String(Number(process.env.ADMIN_PORT) || 3007),
+    '--node-bin-dir', path.dirname(process.execPath),
+    ...(autonomous ? ['--autonomy', '1'] : []),
+  ], {
     cwd: REPO_ROOT,
     detached: true,
     stdio: 'ignore',
@@ -1851,8 +2206,7 @@ function applyEvolution() {
     if (failed.status !== 'applying') return;
     failed.status = 'pending_apply';
     failed.summary = `应用进化启动失败：${error.message}`;
-    writeState(failed);
-    void notify('农场 bot 应用进化失败', failed.summary);
+    autonomyDefer(failed, `apply-launch:${state.commit}`, failed.summary);
   });
   child.once('exit', (code) => {
     if (code === 0) return;
@@ -1860,7 +2214,7 @@ function applyEvolution() {
     if (failed.status !== 'applying' || failed.commit !== state.commit) return;
     failed.status = 'pending_apply';
     failed.summary = '应用准备失败，待应用提交已保留；请检查本机应用构建日志后重试';
-    writeState(failed);
+    autonomyDefer(failed, `apply-launch:${state.commit}`, failed.summary);
   });
   child.unref();
   return { ok: true, commit: state.commit };
@@ -1894,6 +2248,12 @@ function attemptDailyEvolution(dateKey, allowBusyRetry = true) {
     return;
   }
   const state = (deps.readState || readState)();
+  // 跨日竞态保护（2026-10-05 终检 #9）：旧自动任务仍在自主收口队列（待应用/应用中/
+  // 失败待返工/等条件），或 applied+repairOnly 待续接时，不得因为「今天名额还没用」
+  // 就开新每日任务——那会覆盖原批次/原 quotaDate。旧任务先收口（自主策略自动推进），
+  // 收口后的下一个每日窗口才合法开新任务；本分支不消费今天的名额。
+  if (state.autonomousEvolutionEnabled === true
+    && ['apply', 'launch', 'wait'].includes(planAutonomy(state, { now: nowFn() }).action)) return;
   if (isAutomaticQuotaUsed(state, dateKey, nowFn())) return;
   if (BLOCKING_STATUSES.has(state.status)) return; // 等下个每日窗口，不重试
   if ((deps.worktreeChanges || worktreeChanges)()) return; // 工作区未收口，等下个窗口
@@ -1932,16 +2292,34 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
     const state = readState();
     if (state.status !== 'push_failed' || state.commit !== commit) return;
     if (gitHead() !== commit) {
-      await notify('农场 bot 进化推送仍未收口', '本地 HEAD 已变化，为避免推错提交已停止自动重推，请人工核对仓库');
+      // HEAD 漂移=条件等待，不是终止：开启自主时周期重查条件（收口后继续推同已审
+      // 提交，不发布任何新内容）；关闭时一次性告知后停表。
+      if (state.autonomousEvolutionEnabled === true) {
+        schedulePushRetry(commit, PUSH_RETRY_DELAY_MS);
+      } else {
+        await notify('农场 bot 进化推送仍未收口', '本地 HEAD 已变化，为避免推错提交已停止自动重推，请人工核对仓库');
+      }
       return;
     }
     const result = await ensureHeadPushed(commit, '', state.collaboration);
     const latest = readState();
     if (latest.status !== 'push_failed' || latest.commit !== commit) return;
     if (!result.ok) {
-      latest.summary = `进化提交 ${commit.slice(0, 8)} 自动重推仍失败（${result.error}），禁止应用；请人工检查 SSH/GitHub`;
+      // 失败不永久停表（2026-10-05 终检补充）：开启自主时按真实失败次数持久退避
+      // 重排（apply@<commit> 键计数，重启沿用剩余时间）；关闭时撤定时器转人工。
+      latest.summary = latest.autonomousEvolutionEnabled === true
+        ? `进化提交 ${commit.slice(0, 8)} 自动重推仍失败（${result.error}），禁止应用；将按退避自动重试`
+        : `进化提交 ${commit.slice(0, 8)} 自动重推仍失败（${result.error}），禁止应用；请人工检查 SSH/GitHub`;
       writeState(latest);
-      await notify('农场 bot 进化推送失败', [latest.summary, latest.changeSummary].filter(Boolean).join('\n'));
+      if (latest.autonomousEvolutionEnabled === true) {
+        // autonomyDefer 持久化真实失败计数 + 去重通知；重推定时器按剩余退避续排。
+        autonomyDefer(latest, `apply-push:${commit}`, latest.summary);
+        const autonomy = normalizeAutonomy(readState().autonomy);
+        schedulePushRetry(commit, Math.max(autonomy.nextReworkAt - Date.now(), DAILY_RETRY_MS));
+      } else {
+        scheduler.clear('github_push_retry');
+        await notify('农场 bot 进化推送失败', [latest.summary, latest.changeSummary].filter(Boolean).join('\n'));
+      }
       return;
     }
     latest.status = 'pending_apply';
@@ -1950,6 +2328,7 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
       : `进化提交 ${commit.slice(0, 8)} 已在自动重试后核对到 GitHub origin/main，待确认应用`;
     settleDailyReview(latest);
     writeState(latest);
+    scheduleAutonomyFromState();
     await notify('农场 bot 进化推送已恢复', [latest.summary, latest.changeSummary].filter(Boolean).join('\n'));
     // 重推收口后同样进入反馈回复链路（发布核对在发送前还会再做一次）。
     void githubFeedback.handlePublishedEvolution({
@@ -1962,6 +2341,237 @@ function schedulePushRetry(commit, delayMs = PUSH_RETRY_DELAY_MS) {
       changeSummary: latest.changeSummary,
     }).catch(() => {});
   });
+}
+
+// ---------------------------------------------------------------------------
+// 自主策略执行层（判定在 evolution-autonomy.js，此处只做调度/启动/通知）。
+// 单一定时器槽位（autonomy_rework），每次重设前先清：不并发、不叠加。
+// ---------------------------------------------------------------------------
+function autonomyDeps() {
+  return {
+    gitHead: () => gitHead(),
+    worktreeFiles: () => worktreeChangeFiles(),
+    now: (deps.now || Date.now)(),
+  };
+}
+
+/** 按当前状态安排（或取消）自主动作；关闭/运行中/无动作时清空定时器。
+ * 退避剩余时间持久在 autonomy.nextReworkAt（2026-10-05 复审 R2#7）：重启后按
+ * 剩余时长续等，不重置成新的整段延迟。
+ * 退避只对「同一目标」有效（R2#2）：正常复核通过的待应用提交与 repairOnly 应用
+ * 后的续接都立即执行（delay 0）；同一目标的真实失败次数决定重试间隔 10min→60min
+ * 递增。目标键由 autonomyTargetKey 统一产生（R4）：defer 侧写入什么键，这里就
+ * 比对什么键——reason 文本/失败类别/复核意见措辞变化不换目标、不重置退避；新
+ * 提交/新任务才立即执行一次。返回本次安排的延迟毫秒（0=未安排或立即）。 */
+function scheduleAutonomyFromState(source = readState()) {
+  scheduler.clear('autonomy_rework');
+  const state = source;
+  if (state.autonomousEvolutionEnabled !== true || running) return 0;
+  const plan = planAutonomy(state, autonomyDeps());
+  if (plan.action !== 'apply' && plan.action !== 'launch' && plan.action !== 'wait') return 0;
+  const autonomy = normalizeAutonomy(state.autonomy);
+  const now = (deps.now || Date.now)();
+  const sameTarget = plan.action === 'apply'
+    ? autonomy.lastApplyKey === autonomyTargetKey(state, 'apply')
+    : autonomy.deferredTarget === autonomyTargetKey(state, 'rework');
+  const attempts = plan.action === 'apply'
+    ? (sameTarget ? autonomy.applyAttempts : 0)
+    : (sameTarget ? autonomy.reworkAttempts : 0);
+  const remaining = sameTarget ? autonomy.nextReworkAt - now : 0;
+  const delay = remaining > 0 ? remaining : attempts > 0 ? computeReworkDelayMs(attempts) : 0;
+  scheduler.setTimeoutTask('autonomy_rework', delay, () => { void runAutonomyStep(); });
+  return delay;
+}
+
+/** 自主动作统一入口：重新实测状态后执行 plan；异常与拒绝都进入退避重排，不抛出。 */
+async function runAutonomyStep() {
+  try {
+    if (running) {
+      scheduler.setTimeoutTask('autonomy_rework', DAILY_RETRY_MS, () => { void runAutonomyStep(); });
+      return;
+    }
+    const state = readState();
+    if (state.autonomousEvolutionEnabled !== true) return; // 开关已关：定时器到此为止
+    const plan = planAutonomy(state, autonomyDeps());
+    if (plan.action === 'none') return;
+
+    if (plan.action === 'apply') {
+      // 自主应用一律严格同提交（2026-10-05 复审 R1#6/R2#6：不分候选的手动/自动
+      // 来源；祖先包含语义只属于人工按钮路径）。内容以提交哈希钉死。
+      const headNow = gitHead();
+      if (headNow !== state.commit) {
+        autonomyDefer(state, `apply-head-drift:${headNow || 'none'}`,
+          `待应用提交 ${state.commit.slice(0, 8)} 与当前 HEAD 不一致，自主应用已暂停；待仓库收口后自动重查`);
+        return;
+      }
+      // 双 Agent 候选必须有主 Agent 真实最终批准证据（journal completed + approve
+      // + 同提交）；单 Agent 轮没有团队 journal，按既有推送/隐私边界执行。
+      if (state.dualAgentEnabled && !isTeamResultApproved(state.collaboration, state.commit)) {
+        autonomyDefer(state, 'apply-approval', '待应用提交缺少主 Agent 最终批准记录，自主应用暂缓；请人工核对');
+        return;
+      }
+      // 内容验证门：真实 runner 验证记录 passed + 全项 + 指纹等于当前仓库实测，
+      // 缺一自动延期（下一轮验证通过后继续），不启动停服。
+      const gateBefore = autonomousApplyValidationGate();
+      if (gateBefore) {
+        autonomyDefer(state, `apply-${gateBefore}`,
+          '待应用提交的离线回归验证未通过或已过期，自主应用暂缓，待重新验证通过后自动继续');
+        return;
+      }
+      // 远端核对必须实测远端（gitRefHead 只读本地跟踪引用，fetch 之前是旧值）。
+      const remote = await remoteMainHead();
+      // 远端核对有网络耗时：期间 owner 可能经 API 关闭自主或状态被改写，
+      // 停服决策前必须重读实测，不用 await 前的旧状态。
+      const latest = readState();
+      if (latest.autonomousEvolutionEnabled !== true
+        || latest.status !== 'pending_apply' || latest.commit !== state.commit) return;
+      // await 期间仓库/验证记录也可能变化：停服前再核一次内容指纹。
+      const gateAfter = autonomousApplyValidationGate();
+      if (gateAfter) {
+        autonomyDefer(latest, `apply-${gateAfter}`,
+          '待应用提交的离线回归验证在启动前发生变化，自主应用暂缓，待重新验证通过后自动继续');
+        return;
+      }
+      if (remote !== state.commit) {
+        autonomyDefer(latest, `apply-remote:${remote || 'none'}`,
+          `远端 origin/main 与待应用提交不一致，自主应用暂缓（不推送、不改仓库），稍后自动重查`);
+        return;
+      }
+      const result = applyEvolution('autonomous');
+      if (result.ok === false) {
+        autonomyDefer(latest, 'apply-rejected', `自主应用未启动：${result.error}`);
+      }
+      return; // 成功 = applying，重启后由启动收口/限时回执确认/续接接管
+    }
+
+    if (plan.action === 'wait') {
+      // privacy_blocked_local 是定义好的条件等待：每跳先复核本地自愈条件（HEAD 与
+      // origin/main 一致 + 工作区干净），恢复即转 interrupted 交给下一跳合法返工。
+      if (state.status === 'privacy_blocked_local') {
+        const recovered = reconcileSynchronizedPrivacyBlock(state);
+        if (recovered.status !== state.status) {
+          writeState(recovered);
+          scheduleAutonomyFromState(recovered);
+          return;
+        }
+      }
+      autonomyDefer(state, `wait:${plan.reason}`,
+        `自主进化等待条件恢复（${plan.reason}）：保持 pending 并按退避自动重查，不改动工作区`);
+      return;
+    }
+
+    // launch：先记一次返工尝试（持久化，重启不清零），再真实启动。目标键与
+    // defer/schedule 同源（autonomyTargetKey）：同一任务的"缺条件等待 → 真实启动"
+    // 共享同一退避计数，reason 措辞变化不重置。
+    const target = autonomyTargetKey(state, 'rework');
+    const autonomy = normalizeAutonomy(state.autonomy);
+    autonomy.reworkAttempts = autonomy.deferredTarget === target ? autonomy.reworkAttempts + 1 : 1;
+    autonomy.deferredTarget = target;
+    autonomy.lastReworkAt = (deps.now || Date.now)();
+    // 重复无进展 → 强制真实 diagnose，禁止永远复用旧 review 意见空转。
+    autonomy.preferDiagnosis = autonomy.reworkAttempts >= NO_PROGRESS_DIAGNOSIS_ATTEMPTS;
+    // 运行进行中不需要退避定时器；收口时按新状态重排。
+    autonomy.nextReworkAt = 0;
+    state.autonomy = autonomy;
+    if (!writeState(state)) return;
+    const automaticPayload = {
+      automatic: true,
+      combinedDaily: true,
+      preserveFeedbackBatch: true,
+      preferDiagnosis: autonomy.preferDiagnosis,
+    };
+    let result;
+    if (plan.kind === 'continue') {
+      const continuation = plan.payload || {};
+      // 活动计划沿用原批次记录（不重算替换）；report 按任务需要重读实时值。
+      const continueTask = continuation.task === 'activity' ? 'activity' : 'safety';
+      const report = readLatestReport();
+      const reportUsable = !!report && report.status !== 'unavailable' && report?.online?.available !== false;
+      result = launchEvolution(continueTask, {
+        ...automaticPayload,
+        combinedDaily: continuation.combinedDaily !== false,
+        report: reportUsable ? report : null,
+        activityPlan: continuation.activityPlan || null,
+        resume: 'continuation',
+        autonomyResume: true,
+      });
+    } else if (plan.kind === 'resume') {
+      result = launchEvolution('safety', { ...automaticPayload, resume: 'checkpoint', autonomyResume: true });
+    } else if (state.status === 'review_blocked') {
+      // 无 checkpoint 的旧阻断轮：沿用已批准的 retryReviewBlocked 语义从新基线重验。
+      result = (deps.retryReviewBlockedEvolution || retryReviewBlockedEvolution)();
+    } else {
+      result = launchEvolution('safety', automaticPayload);
+    }
+    if (result && result.ok === false) {
+      autonomyDefer(readState(), `launch:${result.reason || 'failed'}`,
+        `自主返工启动未成功（${result.reason || ''}）：${result.error || ''}；已按退避安排下次重试`);
+    }
+  } catch (error) {
+    logger.warn(`自主进化步骤异常：${error.message}`);
+    scheduler.clear('autonomy_rework');
+    const latest = readState();
+    latest.autonomy = { ...normalizeAutonomy(latest.autonomy),
+      reworkAttempts: normalizeAutonomy(latest.autonomy).reworkAttempts + 1 };
+    writeState(latest);
+    scheduleAutonomyFromState();
+  }
+}
+
+/** 缺条件不硬闯：去重通知 + 退避重排，状态保持 pending（绝不 reset/stash/伪造）。
+ * apply-* 键按「同一待应用提交」独立计数（换提交即换键重计）；返工/等待按
+ * autonomyTargetKey 的「同一已审任务」计数（R4：与 schedule 用同一函数，reason
+ * 文本/失败类别/复核意见措辞变化不换目标不重置退避；defer 写的键 = schedule
+ * 比对的键）。通知去重仍按 reason 键独立判定。 */
+function autonomyDefer(state, key, message) {
+  const autonomy = normalizeAutonomy(state.autonomy);
+  const now = (deps.now || Date.now)();
+  const notifyNow = shouldNotify(autonomy, key, now);
+  if (key.startsWith('apply-')) {
+    const applyKey = autonomyTargetKey(state, 'apply');
+    autonomy.applyAttempts = autonomy.lastApplyKey === applyKey ? autonomy.applyAttempts + 1 : 1;
+    autonomy.lastApplyKey = applyKey;
+    autonomy.nextReworkAt = now + computeReworkDelayMs(autonomy.applyAttempts);
+  } else {
+    const target = autonomyTargetKey(state, 'rework');
+    autonomy.reworkAttempts = autonomy.deferredTarget === target ? autonomy.reworkAttempts + 1 : 1;
+    autonomy.deferredTarget = target;
+    autonomy.lastReworkKey = key; // 仅诊断留痕；调度比对一律走 deferredTarget
+    autonomy.lastReworkAt = now;
+    // 同一任务连续无进展 → 之后的真实返工强制走 diagnose（不复用旧意见空转）。
+    autonomy.preferDiagnosis = autonomy.preferDiagnosis
+      || autonomy.reworkAttempts >= NO_PROGRESS_DIAGNOSIS_ATTEMPTS;
+    autonomy.nextReworkAt = now + computeReworkDelayMs(autonomy.reworkAttempts);
+  }
+  if (notifyNow) {
+    autonomy.notifiedKey = key;
+    autonomy.notifiedAt = now;
+  }
+  state.autonomy = autonomy;
+  writeState(state);
+  if (notifyNow) {
+    void notify(key.startsWith('apply-') ? '农场 bot 应用进化待重试' : '农场 bot 自主进化待条件', message);
+  }
+  scheduleAutonomyFromState(state);
+}
+
+/** 面板开关：自主应用/返工（默认关闭）。关闭立即撤定时器（含延迟应用/续接调度），
+ * 不强杀有实际写入的运行；两个方向都只在原摘要后追加一行开关说明，绝不覆盖
+ * 真实失败/诊断摘要（enable 擦掉失败原因 = 丢失诊断上下文）。 */
+function setAutonomousEvolution(enabled) {
+  const state = readState();
+  state.autonomousEvolutionEnabled = enabled === true;
+  const toggleNote = state.autonomousEvolutionEnabled
+    ? '[自主进化已开启：失败将按退避自动返工，验收通过后自动应用生效；原结果摘要保留在上方]'
+    : '[自主进化已关闭：恢复人工确认应用，暂停自动返工；原结果摘要保留在上方]';
+  state.summary = state.summary ? `${state.summary}\n${toggleNote}` : toggleNote.slice(1, -1);
+  if (!state.autonomousEvolutionEnabled) {
+    // 只撤自主定时器；正在执行的进化（有真实写入）不强停，按原流程收口。
+    scheduler.clear('autonomy_rework');
+  }
+  writeState(state);
+  if (state.autonomousEvolutionEnabled) scheduleAutonomyFromState(state);
+  return { ok: true, enabled: state.autonomousEvolutionEnabled };
 }
 
 /** 每日窗口调度：每天窗口内最多自动启动一轮综合巡检。 */
@@ -2022,9 +2632,15 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
       : `${tag}恢复时存在未提交文件，已阻止推送；请检查本地进化日志和工作区后重试`;
     if (task === 'safety') current.lastSafetyEvolveDate = '';
     else current.lastEvolveDate = '';
+    // 早退分支同样接自主收口（2026-10-05 终检补充）：review_blocked/interrupted 在
+    // 开关开启时按策略排返工续接，不因崩溃恢复路径停摆；私有说明只追加不覆盖。
+    if (current.autonomousEvolutionEnabled === true && ['review_blocked', 'interrupted'].includes(current.status)) {
+      current.summary = `${current.summary}\n[自主进化已开启：该恢复失败将按退避自动返工续接，无需人工收口]`;
+    }
     writeState(current);
     running = false;
     await notify(`农场 bot ${tag}需人工收口`, current.summary);
+    if (current.autonomousEvolutionEnabled === true) scheduleAutonomyFromState(current);
     return;
   }
 
@@ -2056,12 +2672,31 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
           ? `${tag}双 Agent 流程已恢复收口：主 Agent 确认无需代码改动`
           : `${tag}（${agentLabel}）因主进程重启中止，未产生提交，可稍后重试`;
 
-  if (task === 'safety' && outcome === 'no_change') {
+  if (task === 'safety' && outcome === 'no_change'
+    // 与 finalize 同口径：仅真实复盘过反馈的双 Agent 主 Agent 可销账运行问题批次。
+    && active.dualAgentEnabled && teamJournal?.feedbackReviewed === true
+    && !teamJournal?.repairOnly) {
     acknowledgeRuntimeIssues(next.runtimeIssueBatch);
     next.runtimeIssueBatch = [];
   }
   if (outcome === 'pending_apply' && teamJournal?.repairOnly) {
     next.summary = `${tag}的编排修复已恢复收口并推送，待确认应用；原巡检尚未完成，应用后继续`;
+    // 恢复收口同样保留续接上下文；活动计划按 activeRun 检查点重建（身份 digest
+    // 以 autonomy 持久值为准，不因重建对象漂移）。
+    next.autonomy = { ...normalizeAutonomy(next.autonomy),
+      continuation: {
+        task,
+        automatic: current.lastRunAutomatic === true,
+        combinedDaily: active.combinedDaily === true,
+        activityPlan: {
+          newUnknown: active.newUnknown || [],
+          newEnded: active.newEnded || [],
+          reviewIds: active.reviewIds || [],
+          fingerprint: active.evidenceFingerprint || '',
+        },
+      } };
+  } else if (next.autonomy?.continuation) {
+    next.autonomy = { ...normalizeAutonomy(next.autonomy), continuation: null };
   }
 
   if (!COMPLETED_STATUSES.has(next.status) || teamJournal?.repairOnly) {
@@ -2097,6 +2732,7 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
   await notify(`农场 bot ${tag}恢复结果`, [next.summary, next.changeSummary, ...next.privacyFindings]
     .filter(Boolean).join('\n'));
   if (next.status === 'push_failed') schedulePushRetry(headAfter, PUSH_RETRY_DELAY_MS);
+  scheduleAutonomyFromState();
   if (next.status === 'pending_apply' && !teamJournal?.repairOnly) {
     void githubFeedback.handlePublishedEvolution({
       status: 'pending_apply',
@@ -2213,22 +2849,20 @@ function startActivityEvolver(options = {}) {
   // apply-evolution.sh 只有在旧进程退出后才能生效，新进程启动就是可靠的已应用边界。
   const initial = reconcileSynchronizedPrivacyBlock(reconcileLegacyRunningState(readState()));
   const reconciled = markEvolutionAppliedAfterRestart(initial);
-  if (reconciled.changed) {
-    if (reconciled.acknowledgeIssues) {
-      acknowledgeRuntimeIssues(reconciled.state.runtimeIssueBatch);
-      reconciled.state.runtimeIssueBatch = [];
-    }
-  }
   settleDailyReview(reconciled.state);
   writeState(reconciled.state);
   if (reconciled.state.status === 'running' && reconciled.state.activeRun) {
     watchRecoveredEvolution(reconciled.state.activeRun);
   }
-  if (reconciled.changed) {
-    void notify(
-      '农场 bot 进化已应用',
-      [reconciled.state.summary, reconciled.state.changeSummary].filter(Boolean).join('\n'),
-    );
+  if (reconciled.serviceConfirm) {
+    // applied 三重已核（HEAD 同/祖先 + 应用回执 ready + 本进程 pid/starttime 身份）；
+    // 通知与反馈确认再等端口 API 实测可读（进化器启动在 app.listen 之前，
+    // 新进程刚启动不能凭自身存活声称面板健康）。
+    scheduleAppliedServiceConfirmation(reconciled.state.commit, reconciled.serviceConfirm);
+  } else if (reconciled.awaiting && reconciled.state.status === 'applying' && reconciled.state.commit) {
+    // 回执尚未 ready（新进程模块与 helper 写回执的竞态）：保持 applying 诚实状态，
+    // 限时轮询等 ready 闭环，超时才退回待应用并按真实失败退避。
+    scheduleApplyReceiptConfirmation(reconciled.state);
   }
 
   scheduleDailyEvolution();
@@ -2244,6 +2878,9 @@ function startActivityEvolver(options = {}) {
   } else if (!isAutomaticQuotaUsed(reconciled.state, dateKey) && !BLOCKING_STATUSES.has(reconciled.state.status)) {
     scheduleAutomaticCatchup(dateKey);
   }
+  // 自主策略启动接管：applied+repairOnly 续接原任务；pending_apply 自动应用；
+  // failed/review_blocked 退避返工（开关未开时该调用零动作）。
+  scheduleAutonomyFromState(reconciled.state);
 }
 
 /** Successful master review releases only this batch; failures and newer events survive. */
@@ -2285,16 +2922,36 @@ function getEvolveState() {
   const nextAutoRunAt = (schedule && schedule.tasks || [])
     .filter(task => task.nextRunAt > Date.now())
     .reduce((earliest, task) => !earliest || task.nextRunAt < earliest ? task.nextRunAt : earliest, 0);
+  // 私有上下文不出 API（2026-10-05 终检 #17）：autonomy（原 prompt 全文/续接活动
+  // 计划/退避内部键）、原始反馈批次、运行问题明细只留在 0600 状态文件供内部
+  // launch/apply 使用；面板/客户端只拿产品级计数字段。
+  const {
+    autonomy: _autonomy, feedbackBatch: _batch, githubFeedbackBatch: _githubBatch,
+    runtimeIssueBatch: _issues, ...publicFields
+  } = state;
+  const collaboration = readTeamJournal(EVOLVE_LOG_DIR, state.activeRun) || state.collaboration;
+  const autonomy = normalizeAutonomy(state.autonomy);
   return {
     running,
     lastTask,
-    ...state,
+    ...publicFields,
+    // 面板需要的自主进度：计数与下次动作时刻；不含 originalPrompt/批次/凭据。
+    autonomy: state.autonomy ? {
+      reworkAttempts: autonomy.reworkAttempts,
+      applyAttempts: autonomy.applyAttempts,
+      nextReworkAt: autonomy.nextReworkAt,
+    } : null,
+    // 自主开启时不得再宣称「失败不自动重跑」（终检 #3）：固定文案按开关切换。
+    automaticPolicy: state.autonomousEvolutionEnabled === true
+      ? '每天最多自动启动一轮综合巡检（北京时间 00:00-01:00）；自主进化开启期间，失败自动返工、验收通过后自动应用生效'
+      : publicFields.automaticPolicy,
     // 综合巡检的活动侧复核不写 lastEvolveDate（防封去重语义保留），单独暴露完成日供面板展示，
     // 否则活动进化卡片在每日合并轮后永远显示“未跑”。
     lastActivityReviewDate: getLocalDateKey(
       Number(normalizeEvolutionMemory(state.evolutionMemory).activity?.reviewedAt) || 0,
     ) || state.lastEvolveDate || '',
-    collaboration: readTeamJournal(EVOLVE_LOG_DIR, state.activeRun) || state.collaboration,
+    // checkpoint 是 0600 私有续接凭据（授权 UNION/指纹/任务身份），不随 API 下发。
+    collaboration: collaboration ? { ...collaboration, checkpoint: null } : collaboration,
     nextAutoRunAt,
     dailyFeedback: getDailyFeedback().snapshot(),
     learning: (() => { const { count, updatedAt } = readLearningSummary(path.dirname(STATE_FILE)); return { count, updatedAt }; })(),
@@ -2488,6 +3145,9 @@ async function reviseEvolution(value) {
 
 module.exports = {
   setEvolutionEnabled,
+  setAutonomousEvolution,
+  scheduleAutonomyFromState,
+  runAutonomyStep,
   syncEvolutionHead,
   startActivityEvolver,
   getEvolveState,
@@ -2512,6 +3172,7 @@ module.exports = {
   buildEvolutionAgentEnv,
   formatEvolutionChangeSummary,
   markEvolutionAppliedAfterRestart,
+  scheduleApplyReceiptConfirmation,
   setEvolutionAgent,
   setEvolutionAgents,
   setEvolutionInstruction,
@@ -2529,6 +3190,7 @@ module.exports = {
   planActivityEvolution,
   planDailyActivityEvolution,
   evolutionWatchDecision,
+  worktreeChangeFiles,
   buildRuntimeIssuePrompt,
   buildSafetyPrompt,
   resolveTmuxPaneForProcess,

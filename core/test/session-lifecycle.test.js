@@ -743,23 +743,28 @@ test('飞书进化通知摘要列出提交说明、文件和增删行数', () =>
 });
 
 test('应用进化重启后从 applying 收口为 applied', () => {
-  const result = markEvolutionAppliedAfterRestart({
-    status: 'applying',
-    commit: '1234567890abcdef',
-  });
-  assert.equal(result.changed, true);
-  assert.equal(result.state.status, 'applied');
-  assert.match(result.state.summary, /12345678/);
+  // 新合同：回执未就绪/身份不符绝不冒充 applied（保持 applying 交限时回执确认
+  // 收口）；ready+身份匹配才转 applied（完整闭环行为见 evolution-recovery 用例）。
+  const pending = markEvolutionAppliedAfterRestart({ status: 'applying', commit: '' });
+  assert.equal(pending.changed, false);
+  assert.equal(pending.awaiting, true);
+  assert.equal(pending.state.status, 'applying');
   assert.equal(markEvolutionAppliedAfterRestart({ status: 'pending_apply' }).changed, false);
 });
 
 test('应用进化只复用既有 farm tmux pane', () => {
-  const script = fs.readFileSync(path.join(__dirname, '../../scripts/apply-evolution.sh'), 'utf8');
-  assert.match(script, /FARM_TMUX_TARGET:-farm:0\.0/);
-  assert.match(script, /tmux display-message/);
-  assert.match(script, /tmux send-keys/);
-  assert.doesNotMatch(script, /tmux new(?:-session)?/);
-  assert.doesNotMatch(script, /nohup bash start\.sh/);
+  const shim = fs.readFileSync(path.join(__dirname, '../../scripts/apply-evolution.sh'), 'utf8');
+  const helper = fs.readFileSync(path.join(__dirname, '../scripts/evolution-apply-process.js'), 'utf8');
+  // 薄壳只传参；pane 定位、送键与重启全部在受审 helper 内完成。
+  assert.match(shim, /FARM_TMUX_TARGET:\?missing tmux target/);
+  assert.match(helper, /'display-message', '-p', '-t', target, '#\{pane_pid\}'/);
+  assert.match(helper, /'send-keys', '-t', tmuxTarget, '-l'/);
+  assert.match(helper, /'send-keys', '-t', tmuxTarget, 'Enter'/);
+  // 只在原 pane 内启动重启分支：不新建会话/窗口，不向 pane 发中断键。
+  assert.doesNotMatch(helper, /new-session|new-window/);
+  assert.doesNotMatch(helper, /'C-c'/);
+  assert.doesNotMatch(shim, /tmux new(?:-session)?/);
+  assert.doesNotMatch(shim, /nohup bash start\.sh/);
 });
 
 test('自动进化子进程的 Git hook 明确拒绝直接推送', () => {
@@ -821,8 +826,11 @@ test('自动进化暴露下次调度并按完成边界清理短期问题', () =>
   assert.match(source, /nextAutoRunAt/);
   assert.match(source, /pendingRuntimeIssueCount/);
   assert.match(source, /task === 'safety' && outcome === 'no_change'/);
-  assert.match(source, /acknowledgeRuntimeIssues\(next\.runtimeIssueBatch\)/);
-  assert.match(source, /if \(reconciled\.changed\)[\s\S]*acknowledgeRuntimeIssues\(reconciled\.state\.runtimeIssueBatch\)/);
+  // 运行问题批次销账必须被「真实复盘过反馈」闸住：feedbackReviewed + 非 repairOnly
+  // 才允许 acknowledge，启动收口不再无条件销账。
+  assert.match(source, /feedbackReviewed === true[\s\S]{0,400}acknowledgeRuntimeIssues\(next\.runtimeIssueBatch\)/);
+  assert.match(source, /feedbackReviewed === true[\s\S]{0,400}acknowledgeRuntimeIssues\(live\.runtimeIssueBatch\)/);
+  assert.doesNotMatch(source, /acknowledgeRuntimeIssues\(reconciled\.state\.runtimeIssueBatch\)/);
   assert.match(panel, /下次自动进化/);
   assert.match(panel, /待 Agent 复盘的运行问题/);
   assert.match(activityView, /下次自动：/);

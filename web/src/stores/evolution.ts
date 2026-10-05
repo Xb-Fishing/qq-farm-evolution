@@ -23,6 +23,10 @@ export interface EvolutionState {
   status?: string
   /** 自进化总开关：false=跳过每日自动进化（手动触发不受限） */
   evolutionEnabled?: boolean
+  /** 自主进化开关 + 面板展示用进度计数（服务端不下发私有上下文） */
+  autonomousEvolutionEnabled?: boolean
+  autonomy?: { reworkAttempts: number, applyAttempts: number, nextReworkAt: number } | null
+  automaticPolicy?: string
   summary?: string
   commit?: string
   lastRunAt?: number

@@ -163,6 +163,11 @@ function harness(t, options = {}) {
             if (cmd === 'git' && args[0] === 'diff') return '1\t1\tcore/src/example.js\n';
             if (cmd === 'git' && args[0] === 'merge-base') return '';
             if (cmd === 'git' && args[0] === 'reset') { git.head = args[2]; return ''; }
+            // launch 信任脏树门走 worktreeChangeFiles（git status --porcelain -z，NUL 分隔，
+            // 含暂存/未跟踪）：与 execSync 的可读 porcelain 同源，按 -z 约定转换。
+            if (cmd === 'git' && args[0] === 'status') {
+              return git.dirty ? `${git.dirty.split('\n').join('\0')}\0` : '';
+            }
             throw new Error(`Unexpected execFileSync: ${cmd} ${(args || []).join(' ')}`);
           },
           execFile: fakeExecFile,
