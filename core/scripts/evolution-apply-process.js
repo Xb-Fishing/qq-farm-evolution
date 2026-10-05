@@ -235,17 +235,30 @@ function autonomyStillEnabled(dataDir) {
 
 /**
  * 只停 Bot 已证明的后代（排除本 helper 自身的祖先分支——我杀我自己 = 没有人执行
- * 重启）。每个目标按采集时的 starttime 守卫：TERM 有宽限，僵尸视为已停，宽限后
+ * 重启）。祖先豁免以「helper 实测是目标 Bot 后代」为前提：是，才豁免 helper 到
+ * Bot 之间的更新链祖先；不是（兄弟/独立拓扑），只豁免 helper 自身子树，绝不把
+ * 公共宿主祖先（tmux server/宿主进程）的子树误放。每个目标按采集时的 starttime 守卫：TERM 有宽限，僵尸视为已停，宽限后
  * 仍存活才 KILL，且 KILL 前再次核对身份，绝不误杀复用 PID。Bot 本体最后停。
  */
 async function stopBotTree(botPid, botStarttime, table) {
   const spared = new Set([process.pid]);
   const chainSeen = new Set([process.pid]);
   let cursor = table.get(process.pid);
-  while (cursor && cursor.ppid !== botPid && cursor.ppid > 1 && !chainSeen.has(cursor.ppid)) {
+  let helperUnderBot = false;
+  while (cursor && cursor.ppid > 1 && !chainSeen.has(cursor.ppid)) {
+    if (cursor.ppid === botPid) { helperUnderBot = true; break; }
     chainSeen.add(cursor.ppid);
     spared.add(cursor.ppid);
     cursor = table.get(cursor.ppid);
+  }
+  // 公共祖先守卫（2026-10-05 真实回归）：只有 helper 的祖先链实测能走到目标
+  // Bot（helper 确是其后代，生产 updater 拓扑）时，沿途祖先才是可信的「更新链」
+  // 而豁免。兄弟/独立拓扑下（如 helper 与被测 Bot 同 tmux server 的不同 pane），
+  // 这条链会一路爬过公共祖先（tmux server/宿主进程）——其子树展开会把目标 Bot
+  // 的子进程一并误放。此时只豁免 helper 自身及其子树，任何宿主祖先都不豁免。
+  if (!helperUnderBot) {
+    spared.clear();
+    spared.add(process.pid);
   }
   const sparedSubtree = new Set(spared);
   const expand = [...spared];

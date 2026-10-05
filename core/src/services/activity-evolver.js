@@ -2421,8 +2421,41 @@ function scheduleAutonomyFromState(source = readState()) {
     ? (sameTarget ? autonomy.applyAttempts : 0)
     : (sameTarget ? autonomy.reworkAttempts : 0);
   const remaining = sameTarget ? autonomy.nextReworkAt - now : 0;
-  const delay = remaining > 0 ? remaining : attempts > 0 ? computeReworkDelayMs(attempts) : 0;
+  // 已接受维护部署后的新基线立即装载（2026-10-05 Main 终检补充）：干净树 + in_run
+  // 凭据基线 ≠ 当前 HEAD（planAutonomy 已判 fresh）不背旧代码失败的退避——立即
+  // 放行一次 fresh 装载新代码；launch 成功后 checkpoint 基线移到新 HEAD，后续
+  // 失败共享普通退避。同一基线（含策略关开）绝不跳过既有未来期限；刚 defer 过
+  // launch 失败（lastReworkKey 为 launch:* 且期限未到）时尊重退避，防立即重试成
+  // 紧循环。脏树/未同步 HEAD 的阻断仍在 Parent/runner 既有守卫里，此处不放宽。
+  const proofs = autonomyDeps();
+  const filesProof = proofs.worktreeFiles();
+  const headProof = proofs.gitHead();
+  const checkpoint = state.collaboration?.checkpoint || null;
+  const newBaselineFresh = plan.action === 'launch' && plan.kind === 'fresh'
+    && Array.isArray(filesProof) && filesProof.length === 0
+    && headProof && checkpoint?.kind === 'in_run' && checkpoint.baselineHead
+    && headProof !== checkpoint.baselineHead
+    && !(sameTarget && remaining > 0 && String(autonomy.lastReworkKey || '').startsWith('launch:'));
+  const delay = newBaselineFresh ? 0
+    : remaining > 0 ? remaining : attempts > 0 ? computeReworkDelayMs(attempts) : 0;
   scheduler.setTimeoutTask('autonomy_rework', delay, () => { void runAutonomyStep(); });
+  // 期限持久化（2026-10-05 Main 终检：调度缺陷修复）：正延迟此前只存在于
+  // registry、不落状态文件——finalize 失败与 API 开启路径的 nextReworkAt==0，
+  // 重启会重排整段间隔且面板无截止时刻。经 canonical writeState 把真实期限写回，
+  // registry 与 nextReworkAt 必须一致；只延后不提前（既有未来期限原样保留），
+  // 目标键/计数/失败史/defer reason 一律不动，不伪造审批、不重置过往预算。
+  if (delay > 0) {
+    const live = readState();
+    if (live.autonomousEvolutionEnabled === true && !running
+        && live.status === state.status && live.lastTask === state.lastTask) {
+      const liveAutonomy = normalizeAutonomy(live.autonomy);
+      const deadline = now + delay;
+      if (liveAutonomy.nextReworkAt < deadline) {
+        live.autonomy = { ...liveAutonomy, nextReworkAt: deadline };
+        writeState(live);
+      }
+    }
+  }
   return delay;
 }
 

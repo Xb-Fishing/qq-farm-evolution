@@ -400,3 +400,79 @@ test('旁观端口持有者、脏工作区与自主关闭都在停服前如实�
   assert.ok(botAlive());
   assert.equal(fs.readFileSync(path.join(f.root, 'web/dist/index.html'), 'utf8'), 'old UI', '候选与旧服务保留');
 });
+
+// 兄弟拓扑宿主脚本（2026-10-05 真实回归）：H 在目标 pane 后台运行，Bot 是 H 的
+// 子进程；helper 由 H 的另一条分支（cmd 文件就绪后）启动——helper 与目标 Bot 是
+// 兄弟而非其后代。公共祖先 H 的子树绝不能被「排除自身祖先」逻辑误放。
+const HOST_SIBLING_SCRIPT = `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const [botScript, port, evidence, pidFile, hostPidFile, cmdFile, errFile] = process.argv.slice(2);
+const bot = cp.spawn(process.execPath, [botScript, port, evidence],
+  { env: process.env, stdio: ['ignore', 'ignore', 'ignore'] });
+fs.writeFileSync(pidFile, String(bot.pid));
+fs.writeFileSync(hostPidFile, String(process.pid));
+const err = fs.openSync(errFile, 'a');
+(function watch() {
+  setTimeout(() => {
+    if (fs.existsSync(cmdFile) && fs.statSync(cmdFile).size > 0) {
+      cp.spawn('sh', ['-c', fs.readFileSync(cmdFile, 'utf8')], { stdio: ['ignore', err, err] });
+    } else watch();
+  }, 150);
+})();
+setInterval(() => {}, 1e9);
+`;
+
+test('helper 与目标 Bot 为兄弟拓扑时不得豁免公共宿主祖先：TERM 忽略子进程照常被停', async (t) => {
+  const f = buildFixture(t);
+  t.after(() => f.killEvidencePids());
+  const port = await freePort();
+  // 宿主脚本放 gitignored dataDir：写进仓库根会成为未跟踪文件，让 helper 的
+  // 干净工作区前置门合法拒绝（早期失败不写回执，测试只能超时）。
+  const hostScript = path.join(f.dataDir, 'host-sibling.cjs');
+  const pidFile = path.join(f.dataDir, 'sibling-bot.pid');
+  const hostPidFile = path.join(f.dataDir, 'sibling-host.pid');
+  const cmdFile = path.join(f.dataDir, 'sibling-cmd');
+  const errLog = path.join(f.dataDir, 'helper-sibling.err');
+  const receiptFile = path.join(f.dataDir, 'evolution-apply-receipt.json');
+  fs.writeFileSync(hostScript, HOST_SIBLING_SCRIPT);
+  fs.writeFileSync(cmdFile, '');
+  t.after(() => {
+    try { process.kill(Number(fs.readFileSync(hostPidFile, 'utf8')), 'SIGKILL'); } catch {}
+  });
+  // Bot 带 TERM 忽略子进程（正是旧 bug 存活的那类），由宿主 H 启动。
+  const command = [
+    'BOT_IGNORE_TERM_CHILD=1',
+    shq(process.execPath), shq(hostScript), shq(f.botScript), String(port),
+    shq(path.join(f.dataDir, 'bot-evidence.jsonl')), shq(pidFile), shq(hostPidFile), shq(cmdFile), shq(errLog),
+  ].join(' ');
+  tmux(['send-keys', '-t', f.target, '-l', `${command} &`]);
+  tmux(['send-keys', '-t', f.target, 'Enter']);
+  await waitFor(async () => fs.existsSync(pidFile) && await healthOk(port), 10_000, '兄弟拓扑 Bot 启动');
+  const botPid = Number(fs.readFileSync(pidFile, 'utf8'));
+  const botStart = helper.processStarttime(botPid);
+  const panePid = Number(tmux(['display-message', '-p', '-t', f.target, '#{pane_pid}']));
+  const evidence = path.join(f.dataDir, 'bot-evidence.jsonl');
+  const termChildPid = readEvidence(evidence).find(entry => Number.isInteger(entry.childPid))?.childPid || 0;
+  const termChildStart = termChildPid ? helper.processStarttime(termChildPid) : '';
+  assert.ok(termChildPid > 0, 'Bot 必须产生 TERM 忽略子进程');
+  assert.equal(helper.isDescendantOf(botPid, panePid), true, 'Bot 仍在目标 pane 树内（helper 前置门要求）');
+
+  // helper 由 H 启动：与 Bot 同父（兄弟），非 Bot 后代——这正是测试进程直启 helper
+  // 在真实宿主上的拓扑，且不依赖测试进程自身 ancestry，完全确定。
+  fs.writeFileSync(cmdFile,
+    `${shq(process.execPath)} ${shq(f.helper)} ${helperArgs(f, { botPid, botStarttime: botStart, port }).map(shq).join(' ')}`);
+  await waitFor(() => {
+    try { return ['ready', 'failed', 'ready-timeout'].includes(JSON.parse(fs.readFileSync(receiptFile, 'utf8')).phase); }
+    catch { return false; }
+  }, 120_000, '兄弟拓扑应用收口');
+  const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+  assert.equal(receipt.phase, 'ready', fs.readFileSync(errLog, 'utf8'));
+  assert.equal(alive(botPid, 'x'), false, '旧 Bot 已停');
+  // 旧 bug 的精确反例：公共祖先 H 子树被误豁免 ⇒ TERM 忽略子进程活过整个宽限。
+  assert.equal(alive(termChildPid, termChildStart), false, 'Bot 的 TERM 忽略子进程必须被 KILL 兜底停掉');
+  const newPid = receipt.newPid;
+  assert.ok(Number.isInteger(newPid) && newPid > 0 && newPid !== botPid);
+  assert.equal(helper.isDescendantOf(newPid, panePid), true, '新 Bot 仍是原 pane 后代');
+  assert.ok(await healthOk(port));
+});

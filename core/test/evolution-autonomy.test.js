@@ -92,6 +92,47 @@ test('planAutonomy：开关与状态到动作的映射（纯决策，无副作�
   assert.ok(NO_PROGRESS_DIAGNOSIS_ATTEMPTS >= 2);
 });
 
+// in_run 基线漂移路由（2026-10-05 Main 附录）。已观察到的状态：原任务 in_run
+// checkpoint 钉在旧 HEAD（completed diagnose/repair、filesFingerprints={} 零写入、
+// 验证失败、无脏候选）；在隔离仓库的新 HEAD 上做策略回归，实证旧 planReworkLaunch
+// 对「干净树 + 空指纹」选 resume 而 runner 会按 baselineHead !== baseCommit 判
+// head_changed 拒绝（隔离反例，非线上重复观测）。新合同：只有 worktreeFiles
+// 实证 [] 且 gitHead 实证非空且异于 in_run baselineHead 才选 fresh（走 Parent
+// 既有 fresh 重试，批次/任务身份保留，重新经过主 Agent 诊断（适用时）/研究和
+// 方案批准链，不沿用旧批准）；脏树永不弃凭据/换范围/选 fresh；post_apply 语义
+// 不变；gitHead 未注入或为空 = 无证明，保守 resume 交 runner 实测拒绝。
+test('planReworkLaunch：干净树+in_run 基线漂移选 fresh；同 HEAD resume；脏树不弃候选；post_apply 不变', () => {
+  const base = { autonomousEvolutionEnabled: true, status: 'review_blocked', lastRunAutomatic: true };
+  const oldHead = 'a'.repeat(40);
+  const newHead = 'b'.repeat(40);
+  const stale = { ...base, collaboration: { checkpoint: { kind: 'in_run', baselineHead: oldHead,
+    allowedFiles: [], fileFingerprints: {}, completed: [{ phase: 'diagnose' }, { phase: 'repair' }] } } };
+  // 1) 干净树 + HEAD 已前进（维护发布）→ fresh：真实新基线诊断链，不伪造续接。
+  assert.deepEqual(planAutonomy(stale, { worktreeFiles: () => [], gitHead: () => newHead }),
+    { action: 'launch', kind: 'fresh', payload: {} });
+  // 2) 干净树 + 同 HEAD → resume：凭据仍真实可用，跳过已完成阶段。
+  assert.equal(planAutonomy(stale, { worktreeFiles: () => [], gitHead: () => oldHead }).kind, 'resume');
+  // 3) gitHead 未注入/为空 = 无证明，不得凭空选 fresh（runner 继续实测拒绝）。
+  assert.equal(planAutonomy(stale, { worktreeFiles: () => [] }).kind, 'resume');
+  assert.equal(planAutonomy(stale, { worktreeFiles: () => [], gitHead: () => '' }).kind, 'resume');
+  // 4) 脏树（授权内）+ HEAD 已漂移：绝不弃 checkpoint/不换范围/不选 fresh——
+  //    resume 交 runner，runner 的 head_changed 拒绝保留候选等待人工/发布收口。
+  const dirty = { ...stale, collaboration: { checkpoint: { kind: 'in_run', baselineHead: oldHead,
+    allowedFiles: ['core/src/a.js'], fileFingerprints: {}, completed: [] } } };
+  assert.equal(planAutonomy(dirty, { worktreeFiles: () => ['core/src/a.js'], gitHead: () => newHead }).kind, 'resume');
+  // 脏树越权照旧 wait（未被漂移规则改变）。
+  assert.deepEqual(planAutonomy(dirty, { worktreeFiles: () => ['core/src/zz.js'], gitHead: () => newHead }),
+    { action: 'wait', reason: 'dirty-worktree' });
+  // 5) post_apply：patchHead 精确匹配语义不参与基线漂移 fresh（只按原规则 resume）。
+  const postApply = { ...base, collaboration: { checkpoint: { kind: 'post_apply', baselineHead: oldHead,
+    patchHead: oldHead, allowedFiles: [], fileFingerprints: {} } } };
+  assert.equal(planAutonomy(postApply, { worktreeFiles: () => [], gitHead: () => newHead }).kind, 'resume');
+  // 6) 既有规则不回退：干净树 + 非空 fileFingerprints（半成品已被收走）仍 fresh。
+  const collected = { ...base, collaboration: { checkpoint: { kind: 'in_run', baselineHead: newHead,
+    allowedFiles: [], fileFingerprints: { 'core/src/a.js': 'x' } } } };
+  assert.equal(planAutonomy(collected, { worktreeFiles: () => [], gitHead: () => newHead }).kind, 'fresh');
+});
+
 // 隔离仓库里的真实调度子进程：拷贝 Parent 源码 + 依赖 re-export shim（与 Main 的
 // Parent+CLI 复核 harness 同构），REPO_ROOT 落在 fixture，git 状态受控。
 const CHILD_SOURCE = [
@@ -135,8 +176,9 @@ const CHILD_SOURCE = [
   'const base = git(["rev-parse", "HEAD"]);',
   'process.env.FARM_DATA_DIR = path.join(dir, "core/data");',
   'write("core/data/.keep", "");',
-  '// 未授权脏文件：没有任何 checkpoint 授权过它。',
-  'write("unauthorized.txt", "local edit\\n");',
+  '// 未授权脏文件：没有任何 checkpoint 授权过它（仅 main 阶段需要脏树；persist/',
+  '// newbaseline 阶段要求干净树）。',
+  'if (phase === "main") write("unauthorized.txt", "local edit\\n");',
   'const statePath = path.join(dir, "core/data/activity-evolve-state.json");',
   'const prompt = "Original fixture prompt";',
   'const target = "rework@safety|" + crypto.createHash("sha256").update(prompt).digest("hex").slice(0, 16) + "|";',
@@ -158,6 +200,60 @@ const CHILD_SOURCE = [
   '};',
   'const out = { phase };',
   '(async () => {',
+  '  if (phase === "persist") {',
+  '    // 期限持久化缺陷（2026-10-05 Main 终检）：失败退避调度（无既有 nextReworkAt）',
+  '    // 的正延迟此前只进 registry 不落盘——重启重排整段间隔、UI 无截止时刻。',
+  '    writeState(blockedState({ deferredTarget: target, reworkAttempts: 1, nextReworkAt: 0 }));',
+  '    const t0 = Date.now();',
+  '    out.delay = service.scheduleAutonomyFromState();',
+  '    out.registryIn = nextAutonomyRunAt() - t0;',
+  '    out.persistedIn = readState().autonomy.nextReworkAt - t0;',
+  '    const counters = readState().autonomy;',
+  '    out.countersKept = counters.reworkAttempts === 1 && counters.deferredTarget === target;',
+  '    out.repoClean = git(["status", "--porcelain"]) === "";',
+  '    // 重启语义（同进程再调度 = 新进程读同一状态文件）：按剩余时间续等，',
+  '    // 不延长成新整段、不归零、不清计数。',
+  '    out.rescheduleDelay = service.scheduleAutonomyFromState();',
+  '    out.rescheduleAttempts = readState().autonomy.reworkAttempts;',
+  '    // 同基线关/开：未来期限必须原样保留，不得被任何立即通道跳过。',
+  '    service.setAutonomousEvolution(false);',
+  '    out.toggleOffTimerCleared = nextAutonomyRunAt() === 0;',
+  '    const deadlineOff = readState().autonomy.nextReworkAt;',
+  '    service.setAutonomousEvolution(true);',
+  '    out.reopenIn = nextAutonomyRunAt() - Date.now();',
+  '    out.deadlinePreservedAcrossToggle = readState().autonomy.nextReworkAt === deadlineOff;',
+  '    process.stdout.write(JSON.stringify(out));',
+  '    return;',
+  '  }',
+  '  if (phase === "newbaseline") {',
+  '    // 已接受维护部署：前进 HEAD + 干净树 + in_run 凭据基线 != HEAD → fresh 立即',
+  '    // 一跳装载新代码；旧失败退避（未来 20min 期限）不得推迟。fixture 无',
+  '    // origin/main，0 延迟 timer 触发的 runAutonomyStep 会诚实 launch 失败 defer',
+  '    // （launch:* 键）——随后调度必须尊重退避（立即通道不得变成紧循环）。',
+  '    write("core/src/deployed.js", "module.exports = 2;\\n");',
+  '    git(["add", "."]);',
+  '    git(["commit", "-qm", "accepted maintenance deployment"]);',
+  '    writeState({ status: "review_blocked", lastTask: "safety", lastRunAutomatic: true,',
+  '      autonomousEvolutionEnabled: true,',
+  '      collaboration: { status: "failed", phase: "failed",',
+  '        failure: { code: "verification_failed", phase: "verify", recoverable: true },',
+  '        checkpoint: { kind: "in_run", baselineHead: base, allowedFiles: [], fileFingerprints: {} } },',
+  '      autonomy: { originalPrompt: prompt, roundId: "r1", deferredTarget: target,',
+  '        reworkAttempts: 1, nextReworkAt: Date.now() + 20 * 60 * 1000 } });',
+  '    out.freshDelay = service.scheduleAutonomyFromState();',
+  '    out.freshRegistryImmediate = nextAutonomyRunAt() > 0 && nextAutonomyRunAt() - Date.now() <= 2000;',
+  '    out.repoClean = git(["status", "--porcelain"]) === "";',
+  '    await new Promise(resolve => setTimeout(resolve, 500));',
+  '    const after = readState();',
+  '    out.launchDeferred = String(after.autonomy.lastReworkKey || "").startsWith("launch:");',
+  '    out.afterFailDelay = service.scheduleAutonomyFromState();',
+  '    out.countersKept = after.autonomy.reworkAttempts >= 2;',
+  '    out.noAgentRun = !after.activeRun;',
+  '    out.checkpointPreserved = !!after.collaboration.checkpoint',
+  '      && after.collaboration.checkpoint.baselineHead === base;',
+  '    process.stdout.write(JSON.stringify(out));',
+  '    return;',
+  '  }',
   '  if (phase === "restart") {',
   '    // 重启续等：持久 nextReworkAt 还剩 ~5min，同目标 ⇒ 按剩余排，不延长不归零。',
   '    writeState(blockedState({ deferredTarget: target, reworkAttempts: 3, nextReworkAt: Date.now() + 5 * 60 * 1000 }));',
@@ -272,6 +368,43 @@ test('真实 scheduler registry：不安全脏树两跳退避增长、措辞变�
   assert.equal(out.leaksCheckpoint, false);
 });
 
+// 调度期限持久化 + 新基线立即 fresh（真实 Parent scheduler registry + 真实 git
+// 子进程夹具，非 fake dueAt 元数据）：registry 与持久 nextReworkAt 必须一致；
+// 重启按剩余续等；同基线关开不跳期限；干净新基线 fresh 立即一跳且不伪造任何
+// 审批/checkpoint，launch 失败后立即通道退回普通退避（防紧循环）。
+test('scheduleAutonomyFromState：正延迟期限落盘、剩余续等、关开保留、新基线立即 fresh', () => {
+  const persist = runChild('persist');
+  assert.equal(persist.status, 0, persist.stderr);
+  assert.equal(persist.candidateUntouched, true, '子进程不得改动候选仓源码或工作区');
+  const p = JSON.parse(persist.stdout.trim().split('\n').pop());
+  assert.ok(p.delay >= 10 * MIN && p.delay <= 10 * MIN + 90 * 1000 + 2000,
+    `失败退避首跳应排 ~10min，实际 ${p.delay}`);
+  assert.ok(p.persistedIn >= 10 * MIN, `真实期限必须落盘（nextReworkAt 未来），实际 ${p.persistedIn}`);
+  assert.ok(Math.abs(p.registryIn - p.persistedIn) < 5000,
+    `registry 与持久期限必须一致：registry ${p.registryIn} vs 持久 ${p.persistedIn}`);
+  assert.equal(p.countersKept, true, '期限落盘不得重置计数/目标键');
+  assert.equal(p.repoClean, true);
+  assert.ok(p.rescheduleDelay > 5 * MIN && p.rescheduleDelay <= p.delay,
+    `重启（再调度）按剩余续等不延长：${p.rescheduleDelay} vs 首跳 ${p.delay}`);
+  assert.equal(p.rescheduleAttempts, 1, '续等不清计数');
+  assert.equal(p.toggleOffTimerCleared, true, '关闭必须撤销真实 timer');
+  assert.ok(p.reopenIn > 5 * MIN, `同基线重开不得跳过既有未来期限，实际 ${p.reopenIn}`);
+  assert.equal(p.deadlinePreservedAcrossToggle, true, '关开不得改写持久期限');
+
+  const nb = runChild('newbaseline');
+  assert.equal(nb.status, 0, nb.stderr);
+  assert.equal(nb.candidateUntouched, true, '子进程不得改动候选仓源码或工作区');
+  const n = JSON.parse(nb.stdout.trim().split('\n').pop());
+  assert.equal(n.freshDelay, 0, `干净新基线 fresh 必须立即（不背旧退避），实际 ${n.freshDelay}`);
+  assert.equal(n.freshRegistryImmediate, true, 'registry 必须排出立即执行');
+  assert.equal(n.repoClean, true);
+  assert.equal(n.launchDeferred, true, 'fixture 无 origin 时 launch 必须诚实失败 defer');
+  assert.ok(n.afterFailDelay > 5 * MIN, `launch 失败后的调度必须尊重退避（防紧循环），实际 ${n.afterFailDelay}`);
+  assert.equal(n.countersKept, true, '立即通道保留计数/失败史');
+  assert.equal(n.noAgentRun, true, '不得启动真实 Agent');
+  assert.equal(n.checkpointPreserved, true, '不得伪造/改写 checkpoint 审批状态');
+});
+
 test('重启按剩余退避续等：不延长成新整段、不归零', () => {
   const child = runChild('restart');
   assert.equal(child.status, 0, child.stderr);
@@ -300,6 +433,16 @@ const LEGACY_CHILD_SOURCE = [
   'const assert = require("node:assert/strict");',
   'const { execFileSync } = require("node:child_process");',
   'const candidate = process.argv[2];',
+  // 夹具内环境隔离（2026-10-05 真实失败，仅本进程）：生产 runner 经 GIT_CONFIG_*
+  // 注入 core.hooksPath=进化 pre-push（agent 推送被真 hook 拒绝：'automatic
+  // evolution agents cannot push'）。测试进程若继承该注入，夹具对本地 bare 的一切
+  // git push（初始化与 Parent 隐私门发布）都会被拒。先记录注入形态再删除——
+  // 隔离边界=本合成夹具进程，绝不改测试进程/全局 env 或 hooks 本体。
+  'const injectedHook = process.env.GIT_CONFIG_VALUE_0 || "";',
+  'for (const key of Object.keys(process.env)) {',
+  '  if (/^GIT_CONFIG_(COUNT|KEY_\\d+|VALUE_\\d+)$/.test(key)) delete process.env[key];',
+  '}',
+  'const envClean = !process.env.GIT_CONFIG_COUNT;',
   'const dir = fs.mkdtempSync(path.join(os.tmpdir(), "farm-autonomy-legacy-"));',
   'let externalBare = null;',
   'const write = (file, data, mode) => {',
@@ -386,7 +529,7 @@ const LEGACY_CHILD_SOURCE = [
   'process.env.CODEX_BIN = path.join(dir, "core/data/fake-cli");',
   'process.env.CLAUDE_BIN = path.join(dir, "core/data/fake-cli");',
   'const service = require(path.join(dir, parentFile));',
-  'const out = { legacyThroughAt };',
+  'const out = { legacyThroughAt, injectedHook, envClean };',
   '(async () => {',
   '  await service.runAutonomyStep();',
   '  const state = await wait(() => {',
@@ -428,6 +571,22 @@ const LEGACY_CHILD_SOURCE = [
   '    process.stderr.write(String(error && error.stack || error)); process.exit(1); });',
 ].join('\n');
 
+// 夹具 spawn 环境隔离（只构造合成 env，绝不改 process.env）：先剥离测试进程
+// 可能继承的 GIT_CONFIG_*（Main 协调器环境实测存在），再显式注入生产 runner 的
+// 真实形态（core.hooksPath 指向真实 evolution-hooks 目录的只读引用，hooks 本体
+// 不修改、不推真实远端）——证明夹具在 hook 注入环境下仍能完成 Parent→CLI→bare
+// 的合法发布，而非碰巧 ambient 干净。
+function isolatedHookInjectedEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) delete env[key];
+  }
+  env.GIT_CONFIG_COUNT = '1';
+  env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
+  env.GIT_CONFIG_VALUE_0 = path.join(CANDIDATE_ROOT, 'scripts', 'evolution-hooks');
+  return env;
+}
+
 function runLegacyChild() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-autonomy-legacy-runner-'));
   const before = candidateFingerprint();
@@ -435,7 +594,7 @@ function runLegacyChild() {
     const script = path.join(dir, 'legacy-child.cjs');
     fs.writeFileSync(script, LEGACY_CHILD_SOURCE);
     const child = spawnSync(process.execPath, [script, CANDIDATE_ROOT],
-      { encoding: 'utf-8', timeout: 180_000, env: { ...process.env, FARM_DATA_DIR: dir } });
+      { encoding: 'utf-8', timeout: 180_000, env: { ...isolatedHookInjectedEnv(), FARM_DATA_DIR: dir } });
     return { status: child.status, stdout: child.stdout, stderr: child.stderr,
       candidateUntouched: candidateFingerprint() === before };
   } finally {
@@ -444,10 +603,20 @@ function runLegacyChild() {
 }
 
 test('legacy review_blocked 自主接管：真实 Parent+runner 首跳新诊断，批次/水位/名额身份全程保持', () => {
+  // 注入守卫必须留在夹具之外：测试进程 env 前后一致（隔离只发生在合成夹具内）。
+  const guardBefore = { count: process.env.GIT_CONFIG_COUNT,
+    key: process.env.GIT_CONFIG_KEY_0, value: process.env.GIT_CONFIG_VALUE_0 };
   const child = runLegacyChild();
+  // 失败也必须先证候选仓未被动过（指纹断言先于结果断言）。
+  assert.equal(child.candidateUntouched, true, '子进程不得改动候选仓源码或工作区（含失败路径）');
   assert.equal(child.status, 0, child.stderr);
-  assert.equal(child.candidateUntouched, true, '子进程不得改动候选仓源码或工作区');
+  assert.deepEqual({ count: process.env.GIT_CONFIG_COUNT,
+    key: process.env.GIT_CONFIG_KEY_0, value: process.env.GIT_CONFIG_VALUE_0 }, guardBefore,
+  '夹具隔离不得改写测试进程/全局环境（进化 pre-push 守卫在夹具外原样保留）');
   const out = JSON.parse(child.stdout.trim().split('\n').pop());
+  assert.ok(String(out.injectedHook).includes('evolution-hooks'),
+    '子进程必须真实运行在生产形态的 hook 注入环境下');
+  assert.equal(out.envClean, true, '夹具进程内的 GIT_CONFIG_* 必须在首个 git 调用前隔离');
   // 首跳 = 主 Agent 对旧底层失败（cli_exit review，diagnosis_stopped 回退）的
   // 真实新诊断，不是 research 盲跑，也不是把旧 stop 翻成 approve。
   assert.equal(out.firstCall, 'diagnose:codex');

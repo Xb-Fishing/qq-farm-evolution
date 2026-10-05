@@ -680,7 +680,11 @@ async function runTeamWorkflow({ settings, prompt, runStage, inspect, verify, co
       // preferDiagnosis：持久返工连续无进展时，由主 Agent 真实重新诊断，禁止
       // 永远复用同一条旧 review 意见走快捷通道空转。
       const reuseReview = !preferDiagnosis && failure.code === 'review_rejected' && approvedScope && latestReview;
-      const scopedValidationRepair = !preferDiagnosis && efficientMode && approvedScope && ['verification_failed', 'missing_handoff'].includes(failure.code);
+      // 空范围快捷修复（2026-10-05 真实失败路由缺陷）：approvedScope=[] 曾被当真值，
+      // 只读零文件修复后的新验证失败被静默路由回同一空范围——只读再修永远无法
+      // 收口，直到耗尽。必须要求非空写入范围；无写入范围的新验证失败走真实主
+      // Agent diagnose 批准最小受影响文件。
+      const scopedValidationRepair = !preferDiagnosis && efficientMode && approvedScope && approvedScope.length > 0 && ['verification_failed', 'missing_handoff'].includes(failure.code);
       const diagnosis = reuseReview || scopedValidationRepair
         ? { decision: 'repair', allowedFiles: approvedScope, summary: reuseReview ? latestReview.summary
           : '协调进程验证未通过。子 Agent 在主 Agent 已批准的范围内读取真实验证失败并修复，不扩大范围；再次验证通过后由主 Agent 最终验收。' }

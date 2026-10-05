@@ -187,6 +187,21 @@ function planReworkLaunch(state, deps) {
     && Object.keys(checkpoint.fileFingerprints || {}).length) {
     return { action: 'launch', kind: 'fresh', payload: {} };
   }
+  // in_run 基线漂移（2026-10-05 Main 附录）：原任务凭据钉在旧 HEAD（如零写入
+  // 验证失败轮）；基线一旦前进而凭据未跟上，旧逻辑对「干净树+空指纹」一律
+  // resume，runner 会按 baselineHead !== baseCommit 判 head_changed 拒绝（隔离
+  // 反例实证旧路由 resume vs 期望 fresh）。只有两侧都实证（worktreeFiles 证明
+  // 干净 + gitHead 非空且异于凭据基线）才选 fresh（Parent 既有 fresh 重试保留
+  // 批次/任务身份，重新经过主 Agent 诊断（适用时）/研究和方案批准链，不沿用旧
+  // 批准、不伪造续接）；脏树已在上文返回，永不弃凭据/换范围；gitHead 未注入或
+  // 为空 = 无证明，保守 resume 交 runner 实测拒绝。post_apply（patchHead 精确
+  // 匹配）不参与此判定。
+  if (files && !files.length && checkpoint && checkpoint.kind !== 'post_apply') {
+    const head = typeof deps.gitHead === 'function' ? String(deps.gitHead() || '') : '';
+    if (head && checkpoint.baselineHead && head !== checkpoint.baselineHead) {
+      return { action: 'launch', kind: 'fresh', payload: {} };
+    }
+  }
   return checkpoint
     ? { action: 'launch', kind: 'resume', payload: {} }
     : { action: 'launch', kind: 'fresh', payload: {} };

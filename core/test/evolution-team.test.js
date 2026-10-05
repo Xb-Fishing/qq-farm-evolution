@@ -7,6 +7,7 @@ const { test } = require('node:test');
 const {
   normalizeAgentSettings, validateAgentSettings, parseStageResult,
   teamJournalPath, readTeamJournal, isTeamResultApproved, runTeamWorkflow,
+  createTeamError, normalizeTeamFailure,
 } = require('../src/services/evolution-team');
 const { normalizePersistedState, normalizeActiveRun } = require('../src/services/activity-evolver');
 const { requireEvolutionConfigAdmin } = require('../src/controllers/admin-activity-update-routes');
@@ -587,4 +588,57 @@ test('worktreeChangeFiles：前导空格、仅暂存、重命名、未跟踪、�
     assert.ok(worktreeChangeFiles(dir).includes('core/src/untracked.js'));
     assert.equal(worktreeChangeFiles(path.join(dir, 'nonexistent')), null, 'git 失败按不可证明返回 null');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 空写入范围后的新验证失败必须真实重新诊断（2026-10-05 真实失败路由缺陷）：
+// scopedValidationRepair 旧实现把 approvedScope=[] 当真值，只读零文件修复后的
+// verification_failed 被静默路由回同一空范围——永远无法修复。新合同：无写入
+// 范围时的验证失败必须由主 Agent 真实诊断并批准最小受影响文件；不自动扩范围，
+// 不把 stop 翻成 approve，最终只走一次业务复核。
+test('初始 CLI 失败→只读修复→验证失败：必须新诊断给出写入范围后才修复提交', async () => {
+  const calls = [];
+  const files = {};
+  let committed = 0;
+  let diagnoseCount = 0;
+  let diagnoseScope = [];
+  const deps = {
+    settings: { mainAgent: 'codex', subAgent: 'claude', dualAgentEnabled: true },
+    prompt: 'fixture task', efficientMode: true, verifyBaseline: true,
+    initialFailure: normalizeTeamFailure({ code: 'cli_exit', exitCode: 1 }, 'research', 'claude'),
+    inspect: async () => ({ head: 'a'.repeat(40), dirty: Object.keys(files).length > 0,
+      fingerprint: JSON.stringify(files), files: Object.keys(files), fileFingerprints: { ...files } }),
+    onProgress: async () => {},
+    runStage: async (phase, agent) => {
+      calls.push([phase, agent]);
+      if (phase === 'diagnose') {
+        diagnoseCount += 1;
+        diagnoseScope = diagnoseCount === 1 ? [] : ['core/src/example.js'];
+        return diagnoseCount === 1
+          ? { decision: 'repair', summary: '先只读核对验证失败', allowedFiles: [] }
+          : { decision: 'repair', summary: '批准最小受影响文件的写入范围', allowedFiles: diagnoseScope };
+      }
+      if (phase === 'repair') {
+        if (diagnoseScope.length) files['core/src/example.js'] = 'fixed';
+        return { decision: diagnoseScope.length ? 'implemented' : 'no_change',
+          summary: diagnoseScope.length ? 'fixed real file' : 'readonly verified' };
+      }
+      if (phase === 'plan') return { decision: 'approve', summary: 'approved scope',
+        allowedFiles: ['core/src/example.js'], acceptanceChecks: ['example behavior'] };
+      if (phase === 'implement') { files['core/src/example.js'] = 'implemented'; return { decision: 'implemented', summary: 'implemented' }; }
+      if (phase === 'review') return { decision: 'approve', summary: 'final review', githubResolutions: [] };
+      return { decision: 'researched', summary: 'researched' };
+    },
+    // 文件未被真正修复前，验证始终失败——空范围循环必须被真实诊断打破。
+    verify: async () => { if (!files['core/src/example.js']) throw createTeamError('verification_failed'); },
+    commit: async () => { committed += 1; return 'b'.repeat(40); },
+  };
+  const result = await runTeamWorkflow(deps);
+  assert.equal(result.decision, 'approve');
+  assert.deepEqual(calls.map(call => call[0]), [
+    'diagnose', 'repair', 'diagnose', 'repair', 'research', 'plan', 'implement', 'review',
+  ]);
+  assert.equal(diagnoseCount, 2, '第二次验证失败必须触发新的主 Agent 诊断（不得复用空范围）');
+  assert.equal(calls.filter(([phase]) => phase === 'review').length, 1, '最终业务复核只走一次');
+  assert.equal(calls.some(([phase]) => phase === 'repair_review' || phase === 'patch_review'), false);
+  assert.equal(committed, 1);
 });
