@@ -163,4 +163,4 @@ async function runEvolutionValidation({ repoRoot, dataDir, execute, env = proces
     }
 }
 
-module.exports = { runEvolutionValidation, getValidationSummary };
+module.exports = { runEvolutionValidation, getValidationSummary, logicSnapshot };

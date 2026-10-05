@@ -88,9 +88,16 @@ function createAdminRouteHelpers({ store, userStore, logger, getProvider }) {
     }
   }
 
+  // Worker 面板就绪闸门的固定本地拒绝（worker.js handleApiCall），逐字精确
+  // 匹配才按预期错误放行 HTTP 200 + ok:false（反馈分类未就绪）；相似但不一致
+  // 的错误——含面板读取失败冷却提示——仍按原失败语义回 500，不按关键词放宽。
+  const PANEL_NOT_READY_ERROR = '账号未就绪（未登录或连接未打开），请稍后重试';
+
   function isExpectedProviderError(err) {
     const message = String((err && err.message) || '');
-    return message === '账号未运行' || message === 'API Timeout';
+    return message === '账号未运行'
+      || message === 'API Timeout'
+      || message === PANEL_NOT_READY_ERROR;
   }
 
   function sendProviderError(res, err) {
