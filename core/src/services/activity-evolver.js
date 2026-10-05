@@ -834,6 +834,22 @@ function readAgentSessionResult(sessionFile, logFile) {
   }
 }
 
+/** 自主 legacy 续接的旧底层失败（2026-10-05 上线前检查）：review_blocked 状态被
+ * previousTeamFailure 天然排除（人工重试按设计从新基线全新重验），但自主接管
+ * 旧阻断轮的合同要求第一跳先真实诊断旧底层失败、由主 Agent 独立判断 repair/stop
+ * ——绝不把旧的 stop 结论翻成 approve。判定与 previousTeamFailure 同语义：
+ * 可恢复的 failure 优先；diagnosis_stopped 属上轮人工配置结论，回退其 lastFailure。 */
+function legacyBlockedInitialFailure(state) {
+  if (!state?.dualAgentEnabled || !state.collaboration?.failure) return null;
+  const failure = normalizeTeamFailure(state.collaboration.failure);
+  if (failure.recoverable) return failure;
+  if (failure.code === 'diagnosis_stopped' && state.collaboration.lastFailure) {
+    const previous = normalizeTeamFailure(state.collaboration.lastFailure);
+    if (previous.recoverable) return previous;
+  }
+  return null;
+}
+
 function previousTeamFailure(state) {
   if (state.dualAgentEnabled && state.status === 'applied' && state.collaboration?.repairOnly) {
     const failure = normalizeTeamFailure(state.collaboration.lastFailure);
@@ -1482,8 +1498,14 @@ function launchEvolution(task, payload = {}) {
     || (Number(checkpointCounters.planRevision) || 0) >= 2;
   const roundId = !autonomyBefore.roundId || exhaustedRound
     ? `${getLocalDateKey()}-${crypto.randomUUID().slice(0, 8)}` : autonomyBefore.roundId;
+  // 原名额日期（legacy 续接，2026-10-05 上线前检查）：链条已记 quotaDate 优先；
+  // 旧格式状态没有该字段但原轮确实是自动轮（lastRunAutomatic）时，沿用
+  // lastAutomaticEvolveDate——返工/续接属于原名额的同一链条，不另占新名额；
+  // 全新链/手动轮才取今天。
   const quotaDate = payload.automatic === true
-    ? (preserveBatch && autonomyBefore.quotaDate ? autonomyBefore.quotaDate : getLocalDateKey()) : '';
+    ? (preserveBatch && (autonomyBefore.quotaDate
+        || (current.lastRunAutomatic === true ? current.lastAutomaticEvolveDate : ''))
+      || getLocalDateKey()) : '';
   const dirtyFiles = worktreeChangeFiles();
   // 信任脏树（2026-10-05 复审第 3 条）：最常见的 review_rejected 失败会留下改动，
   // 一律延期 = 永远无法返工。续接凭据存在且脏文件全部落在授权 UNION 内时放行，
@@ -1504,8 +1526,14 @@ function launchEvolution(task, payload = {}) {
   // 每次自动/手动任务都读取持久化默认值；不是仅对某一次手动任务生效。
   const settings = normalizeAgentSettings(current);
   // 续接轮不做重复诊断（凭据中的已完成阶段/意见是权威上下文）；initialFailure
-  // 只服务无凭据的新轮（fresh 的真实诊断入口）。
-  const initialFailure = resumeCheckpoint ? null : previousTeamFailure(current);
+  // 只服务无凭据的新轮（fresh 的真实诊断入口）。自主 legacy 续接可显式注入旧
+  // 底层失败（review_blocked 被 previousTeamFailure 排除）：仅内部入口构造、经
+  // normalizeTeamFailure 归一只认可恢复类别——不可恢复的旧结论不注入，仍按
+  // 全新轮从 research 重开。
+  const injectedFailure = payload.legacyInitialFailure
+    ? normalizeTeamFailure(payload.legacyInitialFailure) : null;
+  const initialFailure = resumeCheckpoint ? null
+    : ((injectedFailure && injectedFailure.recoverable) ? injectedFailure : previousTeamFailure(current));
   const initialReviewFeedback = safeReviewFeedback(current.collaboration?.reviewFeedback);
   const agent = settings.mainAgent;
   const agentLabel = settings.dualAgentEnabled
@@ -2015,7 +2043,13 @@ function readLatestReport() {
  * 旧轮 failure/日志/反馈全部保留，只归档为追溯字段，不送入 recover——新轮从
  * research 开始并须重新走主 Agent 审批与最终验收。
  */
-function retryReviewBlockedEvolution() {
+function retryReviewBlockedEvolution(opts = {}) {
+  // 自主模式（2026-10-05 上线前检查）：runAutonomyStep 接管无 checkpoint 的旧
+  // review_blocked 轮时以 {autonomous:true} 调用——保留原 feedback/runtime/GitHub
+  // 批次与水位、原名额日期与任务身份（不重采批次、不另记手动日期、不占新名额），
+  // 并把旧底层可恢复失败注入为首跳诊断上下文；前置硬门（干净/已同步 HEAD）与
+  // 归档语义不变。面板人工按钮（无参调用）默认语义保持：从新基线全新综合重验。
+  const autonomous = opts.autonomous === true;
   if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
   const state = readState();
   if (state.status !== 'review_blocked') {
@@ -2077,8 +2111,17 @@ function retryReviewBlockedEvolution() {
     if (activityPlan.reviewIds.length) activityPlan.shouldRun = true;
   }
   const launch = deps.launchEvolution || launchEvolution;
+  // 自主 legacy 续接：保留原批次（preserveFeedbackBatch → 三批/水位/原名额日期
+  // 沿用，quotaDate 由 launchEvolution 回退到 lastAutomaticEvolveDate）；automatic
+  // 身份不写手动日期；活动计划沿用缓存报告推导（不重扫描、digest 按链条保留）。
+  const legacyFailure = autonomous ? legacyBlockedInitialFailure(state) : null;
   const result = launch('safety', {
     manualReviewRetry: true,
+    ...(autonomous ? {
+      automatic: true,
+      preserveFeedbackBatch: true,
+      ...(legacyFailure ? { legacyInitialFailure: legacyFailure } : {}),
+    } : {}),
     combinedDaily: true,
     report: reportUsable ? report : null,
     activityPlan,
@@ -2498,8 +2541,10 @@ async function runAutonomyStep() {
     } else if (plan.kind === 'resume') {
       result = launchEvolution('safety', { ...automaticPayload, resume: 'checkpoint', autonomyResume: true });
     } else if (state.status === 'review_blocked') {
-      // 无 checkpoint 的旧阻断轮：沿用已批准的 retryReviewBlocked 语义从新基线重验。
-      result = (deps.retryReviewBlockedEvolution || retryReviewBlockedEvolution)();
+      // 无 checkpoint 的旧阻断轮（legacy）：以自主模式走 retryReviewBlocked 入口——
+      // 前置硬门（干净/已同步）沿用，批次/水位/名额身份保留，旧底层失败注入首跳
+      // 诊断；人工按钮的无参语义（全新综合重验）不变。
+      result = (deps.retryReviewBlockedEvolution || retryReviewBlockedEvolution)({ autonomous: true });
     } else {
       result = launchEvolution('safety', automaticPayload);
     }

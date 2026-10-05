@@ -282,3 +282,197 @@ test('重启按剩余退避续等：不延长成新整段、不归零', () => {
   assert.ok(out.restartRegistryIn > 4 * MIN && out.restartRegistryIn <= 5 * MIN + 5000,
     `registry 应挂同一剩余时间，实际 ${out.restartRegistryIn}`);
 });
+
+// ---------------------------------------------------------------------------
+// Legacy 自主续接（2026-10-05 上线前检查）：旧格式 review_blocked 状态（无
+// checkpoint、无 autonomy 链条字段、failure=diagnosis_stopped + lastFailure=
+// cli_exit review）由 runAutonomyStep 接管时，必须走 retryReviewBlocked 的自主
+// 模式：真实 Parent+runner+CLI 全链路（不 stub launch），首跳 = 主 Agent 新诊断
+// 旧底层失败（diagnose:codex 先行），随后走全新 plan 批准链合法写入；原
+// feedback 水位/名额日期/GitHub 批次摘要全程保持（runner journal 的 taskIdentity
+// 是 Parent 实际喂入的持久凭据），不另记手动日期、不重采批次、发布到远端后
+// pending_apply。人工按钮无参语义由 evolution-review-retry 既有用例守护。
+// ---------------------------------------------------------------------------
+const LEGACY_CHILD_SOURCE = [
+  'const fs = require("node:fs");',
+  'const os = require("node:os");',
+  'const path = require("node:path");',
+  'const assert = require("node:assert/strict");',
+  'const { execFileSync } = require("node:child_process");',
+  'const candidate = process.argv[2];',
+  'const dir = fs.mkdtempSync(path.join(os.tmpdir(), "farm-autonomy-legacy-"));',
+  'let externalBare = null;',
+  'const write = (file, data, mode) => {',
+  '  const full = path.resolve(dir, file);',
+  '  // 外穿硬拒：解析后落在 fixture 之外的写入目标，必须在写任何数据前抛错。',
+  '  if (full !== dir && !full.startsWith(dir + path.sep)) throw new Error("fixture_escape:" + file);',
+  '  fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, data, { mode: mode || 0o600 });',
+  '};',
+  'const git = args => execFileSync("git", args, { cwd: dir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();',
+  'const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));',
+  'async function wait(predicate, label) {',
+  '  for (let i = 0; i < 400; i++) { const value = predicate(); if (value) return value; await sleep(150); }',
+  '  throw new Error("timeout_" + label);',
+  '}',
+  // 真实 Parent 源码 + re-export shim（依赖指回候选仓真实模块；scheduler 同实例）。
+  'const parentFile = "core/src/services/activity-evolver.js";',
+  'const parentText = fs.readFileSync(path.join(candidate, parentFile), "utf-8");',
+  'write(parentFile, parentText);',
+  'for (const match of parentText.matchAll(/require\\([\'"](\\.[^\'"]+)[\'"]\\)/g)) {',
+  '  const actual = require.resolve(path.resolve(path.dirname(path.join(candidate, parentFile)), match[1]));',
+  '  const relative = path.relative(candidate, actual);',
+  '  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("unexpected_dependency:" + match[1]);',
+  '  write(relative, "module.exports=require(" + JSON.stringify(actual) + ");\\n");',
+  '}',
+  'write("core/scripts/run-evolution-team.js", fs.readFileSync(path.join(candidate, "core/scripts/run-evolution-team.js")));',
+  // runner 独有依赖：countercheck 用真实模块；references 需要脱敏发现桩（不联网）。
+  'write("core/src/services/evolution-countercheck.js", "module.exports=require("',
+  '  + JSON.stringify(path.join(candidate, "core/src/services/evolution-countercheck.js")) + ");\\n");',
+  'write("core/src/services/evolution-references.js", "module.exports={...require("',
+  '  + JSON.stringify(path.join(candidate, "core/src/services/evolution-references.js"))',
+  '  + "),collectPublicReferences:async()=>({state:\\"complete\\",discoveryComplete:true})};\\n");',
+  'write(".gitignore", "core/data/\\n");',
+  'write("docs/HANDOFF.md", "Fixture constraints\\n");',
+  'write("core/src/example.js", "module.exports = 1;\\n");',
+  'write("core/test/example.test.js", "require(\\"node:test\\")(\\"fixture\\",()=>require(\\"node:assert/strict\\").ok([1,2].includes(require(\\"../src/example\\"))));\\n");',
+  // 真实 CLI 桩：initialFailure 恢复链 diagnose→repair→repair_review 后全新
+  // research→plan→implement→review；plan 给出真实批准范围，implement 真实写文件。
+  'const cli = `#!/usr/bin/env node',
+  'const fs=require("node:fs");let prompt="";',
+  'process.stdin.on("data",c=>prompt+=c);',
+  'process.stdin.on("end",()=>{',
+  ' const phase=prompt.match(/只完成 (\\\\w+) 阶段/)[1];',
+  ' fs.appendFileSync("core/data/calls.log",phase+":"+(process.argv.includes("exec")?"codex":"claude")+"\\\\n");',
+  ' const decisions={research:"researched",revise_plan:"researched",plan:"approve",implement:"implemented",review:"approve",diagnose:"repair",repair:"no_change",repair_review:"approve",patch_review:"approve"};',
+  ' const result={decision:decisions[phase],summary:"Legacy synthetic stage"};',
+  ' if(phase==="plan"){result.allowedFiles=["core/src/example.js","docs/HANDOFF.md"];result.acceptanceChecks=["example stays within synthetic values"];result.baselineChecks=[];}',
+  ' if(phase==="diagnose")result.allowedFiles=[];',
+  ' if(["plan","review"].includes(phase)){result.feedbackReviewed=false;result.lessons=[];}',
+  ' if(phase==="review")result.githubResolutions=[];',
+  ' if(phase==="implement"){fs.writeFileSync("core/src/example.js","module.exports = 2;\\\\n");fs.appendFileSync("docs/HANDOFF.md","Legacy chain update\\\\n");}',
+  ' if(process.argv.includes("exec"))fs.writeFileSync(process.argv[process.argv.indexOf("--output-last-message")+1],JSON.stringify(result));',
+  ' else process.stdout.write(JSON.stringify({subtype:"success",is_error:false,structured_output:result}));',
+  '});`;',
+  'write("core/data/fake-cli", cli, 0o700);',
+  'git(["init", "-q", "-b", "main"]);',
+  'git(["config", "user.name", "Legacy autonomy fixture"]);',
+  'git(["config", "user.email", "fixture@users.noreply.github.com"]);',
+  'git(["add", "."]);',
+  'git(["commit", "-qm", "fixture"]);',
+  // 远端 bare 放 fixture 目录外（不落在被测工作树里）。
+  'const bareHere = path.join(dir, "remote.git");',
+  'execFileSync("git", ["init", "--bare", "-q", bareHere]);',
+  'externalBare = path.join(os.tmpdir(), "farm-autonomy-legacy-bare-" + path.basename(dir));',
+  'fs.renameSync(bareHere, externalBare);',
+  'git(["remote", "add", "origin", externalBare]);',
+  'git(["push", "-q", "-u", "origin", "main"]);',
+  // 旧格式状态：无 checkpoint、无 autonomy 链条字段（真实 Root 2026-10-05 形态）。
+  'const legacyThroughAt = Date.now() - 3600_000;',
+  'const legacyGithub = { capturedAt: Date.now() - 7200_000, complete: true, issueNumbers: [101],',
+  '  fingerprint: "a".repeat(64), payloadDigest: "b".repeat(64) };',
+  'const statePath = path.join(dir, "core/data/activity-evolve-state.json");',
+  'write(statePath, JSON.stringify({',
+  '  status: "review_blocked", lastTask: "safety", lastRunAutomatic: true,',
+  '  autonomousEvolutionEnabled: true, dualAgentEnabled: true, mainAgent: "codex", subAgent: "claude",',
+  '  lastAutomaticEvolveDate: "2026-10-04", lastManualRunDate: "",',
+  '  feedbackBatch: { throughAt: legacyThroughAt }, githubFeedbackBatch: legacyGithub,',
+  '  collaboration: { status: "failed", phase: "failed",',
+  '    failure: { code: "diagnosis_stopped", phase: "diagnose", agent: "codex", recoverable: false },',
+  '    lastFailure: { code: "cli_exit", phase: "review", agent: "codex", exitCode: 1, recoverable: true },',
+  '    reviewFeedback: "旧复核意见：示例候选未满足验收合同，保持原样", checkpoint: null },',
+  '}));',
+  'process.env.FARM_DATA_DIR = path.join(dir, "core/data");',
+  'delete process.env.FARM_PRIVATE_CONFIG_FILE;',
+  'process.env.CODEX_BIN = path.join(dir, "core/data/fake-cli");',
+  'process.env.CLAUDE_BIN = path.join(dir, "core/data/fake-cli");',
+  'const service = require(path.join(dir, parentFile));',
+  'const out = { legacyThroughAt };',
+  '(async () => {',
+  '  await service.runAutonomyStep();',
+  '  const state = await wait(() => {',
+  '    const value = JSON.parse(fs.readFileSync(statePath, "utf-8"));',
+  '    return value.status === "pending_apply" && !value.activeRun ? value : false;',
+  '  }, "pending_apply");',
+  // 拿到结果立即关自主（撤定时器，绝不让后续 apply 步骤在测试环境里跑停服助手）。
+  '  service.setAutonomousEvolution(false);',
+  '  out.status = state.status;',
+  '  out.calls = fs.readFileSync(path.join(dir, "core/data/calls.log"), "utf-8").trim().split("\\n");',
+  '  out.firstCall = out.calls[0];',
+  '  out.feedbackThroughAt = state.feedbackBatch ? state.feedbackBatch.throughAt : 0;',
+  '  out.lastAutomaticEvolveDate = state.lastAutomaticEvolveDate;',
+  '  out.lastManualRunDate = state.lastManualRunDate;',
+  '  out.autonomyQuotaDate = state.autonomy ? state.autonomy.quotaDate : "";',
+  '  out.githubPreserved = state.githubFeedbackBatch',
+  '    && state.githubFeedbackBatch.issueNumbers.join(",") === "101"',
+  '    && state.githubFeedbackBatch.fingerprint === "a".repeat(64);',
+  '  out.archivedCode = state.lastReviewBlockedFailure ? state.lastReviewBlockedFailure.code : "";',
+  '  out.archivedFeedback = state.lastReviewBlockedFailure ? state.lastReviewBlockedFailure.reviewFeedback : "";',
+  '  out.commit = state.commit;',
+  '  out.published = git(["ls-remote", "origin", "refs/heads/main"]).split(/\\s+/)[0];',
+  '  out.cleanTree = git(["status", "--porcelain"]) === "";',
+  // runner journal 的 taskIdentity 是 Parent 实际喂入的持久凭据（不是自报）。
+  '  const journals = fs.readdirSync(path.join(dir, "core/data/logs"))',
+  '    .filter(file => /^evolve-team-[\\w-]+\\.json$/.test(file));',
+  '  assert.equal(journals.length, 1);',
+  '  const journal = JSON.parse(fs.readFileSync(path.join(dir, "core/data/logs", journals[0]), "utf-8"));',
+  '  out.taskIdentity = journal.taskIdentity || journal.checkpoint?.taskIdentity || null;',
+  '  const publicState = service.getEvolveState();',
+  '  out.leaksOriginalPrompt = Object.hasOwn(publicState.autonomy || {}, "originalPrompt");',
+  '  out.leaksCheckpoint = publicState.collaboration ? publicState.collaboration.checkpoint != null : false;',
+  // 人工按钮无参语义不变：自主 opts 不影响手动调用签名（无参可正常调用并被前置门拦截）。
+  '  out.manualCallStillWorks = service.retryReviewBlockedEvolution().ok === false;',
+  '  process.stdout.write(JSON.stringify(out));',
+  // 真实 timer 会挂住事件循环：断言完成后必须显式退出。
+  '})().then(() => { fs.rmSync(externalBare, { recursive: true, force: true }); process.exit(0); })',
+  '  .catch(error => { try { fs.rmSync(externalBare, { recursive: true, force: true }); } catch {}',
+  '    process.stderr.write(String(error && error.stack || error)); process.exit(1); });',
+].join('\n');
+
+function runLegacyChild() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-autonomy-legacy-runner-'));
+  const before = candidateFingerprint();
+  try {
+    const script = path.join(dir, 'legacy-child.cjs');
+    fs.writeFileSync(script, LEGACY_CHILD_SOURCE);
+    const child = spawnSync(process.execPath, [script, CANDIDATE_ROOT],
+      { encoding: 'utf-8', timeout: 180_000, env: { ...process.env, FARM_DATA_DIR: dir } });
+    return { status: child.status, stdout: child.stdout, stderr: child.stderr,
+      candidateUntouched: candidateFingerprint() === before };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('legacy review_blocked 自主接管：真实 Parent+runner 首跳新诊断，批次/水位/名额身份全程保持', () => {
+  const child = runLegacyChild();
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.candidateUntouched, true, '子进程不得改动候选仓源码或工作区');
+  const out = JSON.parse(child.stdout.trim().split('\n').pop());
+  // 首跳 = 主 Agent 对旧底层失败（cli_exit review，diagnosis_stopped 回退）的
+  // 真实新诊断，不是 research 盲跑，也不是把旧 stop 翻成 approve。
+  assert.equal(out.firstCall, 'diagnose:codex');
+  for (const stage of ['research', 'plan', 'implement', 'review']) {
+    assert.ok(out.calls.some(call => call.startsWith(`${stage}:`)),
+      `无旧 checkpoint 的 legacy 轮必须走全新批准链（缺 ${stage}）：${out.calls}`);
+  }
+  assert.equal(out.status, 'pending_apply');
+  assert.equal(out.published, out.commit, '真实提交必须已发布到远端');
+  assert.equal(out.cleanTree, true);
+  // 原批次/水位/名额身份：不重采、不覆盖、不占新名额、不记手动日期。
+  assert.equal(out.feedbackThroughAt, out.legacyThroughAt, 'feedback 水位必须保持原值');
+  assert.equal(out.lastAutomaticEvolveDate, '2026-10-04', '原自动名额日期不得改写');
+  assert.equal(out.lastManualRunDate, '', '自主接管不得另记手动日期');
+  assert.equal(out.autonomyQuotaDate, '2026-10-04', '链条名额身份沿用原自动名额日期');
+  assert.equal(out.githubPreserved, true, 'GitHub 批次摘要不得被新采集覆盖');
+  assert.equal(out.archivedCode, 'diagnosis_stopped', '旧失败归档保留原结论');
+  assert.match(out.archivedFeedback, /旧复核意见/);
+  // Parent 实际喂入 runner 的任务身份（runner journal 持久凭据）与状态一致。
+  assert.ok(out.taskIdentity, 'runner journal 必须落盘 taskIdentity');
+  assert.equal(out.taskIdentity.feedbackThroughAt, out.legacyThroughAt);
+  assert.equal(out.taskIdentity.quotaDate, '2026-10-04');
+  assert.equal(out.taskIdentity.automatic, true);
+  assert.equal(out.taskIdentity.combinedDaily, true);
+  assert.equal(out.leaksOriginalPrompt, false);
+  assert.equal(out.leaksCheckpoint, false);
+  assert.equal(out.manualCallStillWorks, true, '人工按钮无参调用语义保持（busy 前置门）');
+});
