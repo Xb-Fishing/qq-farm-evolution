@@ -217,6 +217,11 @@ function auditGitRange(repoRoot, base, head, options = {}) {
     'core/src/services/evolution-team.js',
     'core/scripts/run-evolution-team.js',
     'scripts/evolution-hooks/pre-push',
+    // 2026-10-07 R6 owner 授权新增（仅此两条路径，不放宽任何扫描/豁免）：
+    // worktree 指纹与原生会话登记是完整性控制面，提交面出现即报 privacy-control-changed。
+    'core/src/services/evolution-worktree.js',
+    'core/src/services/evolution-sessions.js',
+    'core/src/services/evolution-publish.js',
   ]);
   const privatePath = /(?:^|\/)(?:core\/data|logs?|tmp|temp|\.tmp|\.codex|\.claude)(?:\/|$)|(?:^|\/)(?:\.env(?:\.|$)|\.claude\.json$|auth\.json$|\.?credentials\.json$|private-config\.json$)|\.(?:log|pem|key|p12|pfx)$/i;
   const git = args => execFileSync('git', args, {

@@ -126,8 +126,8 @@ function panePidOf(target) {
   } catch { return 0; }
 }
 
-function git(args) {
-  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).trim();
+function git(args, root = REPO_ROOT) {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).trim();
 }
 
 // ---- 端口归属与健康 ----
@@ -377,6 +377,13 @@ async function main() {
   const adminPort = Number(arg('admin-port')) || 3007;
   const nodeBinDir = path.resolve(arg('node-bin-dir') || path.dirname(process.execPath));
   const autonomyRequired = arg('autonomy') === '1';
+  // 隔离候选（Stage C）：--target-root = 已接受公开提交上的干净运行时工作区。
+  // 提供时部署/构建/HEAD 核对全部落在目标根；原库保留物只做「未被触碰」证明，
+  // 绝不部署原库内容。未提供时保持既有同根路径（REPO_ROOT）语义不变。
+  const targetRootArg = arg('target-root');
+  const targetRoot = targetRootArg ? path.resolve(targetRootArg) : '';
+  // 仅隔离候选模式加载发布模块（同根 legacy 部署的极简环境没有这些源文件）。
+  const evolutionPublish = targetRoot ? require('../src/services/evolution-publish') : null;
   for (const [label, ok] of [['bot-pid', botPid > 0], ['bot-starttime', /^\d+$/.test(botStarttime)],
     ['expected-head', /^[0-9a-f]{40}$/.test(expectedHead)], ['tmux-target', !!tmuxTarget]]) {
     if (!ok) return fail(`缺少或非法参数：${label}`);
@@ -398,10 +405,77 @@ async function main() {
     }
     return { table, panePid };
   };
+  const deployRoot = targetRoot || REPO_ROOT;
   const assertDeployable = () => {
-    if (git(['rev-parse', 'HEAD']) !== expectedHead) throw new Error('HEAD 已漂移');
-    if (git(['status', '--porcelain', '--untracked-files=normal'])) throw new Error('工作区不干净');
+    if (git(['rev-parse', 'HEAD'], deployRoot) !== expectedHead) throw new Error('HEAD 已漂移');
+    if (git(['status', '--porcelain', '--untracked-files=normal'], deployRoot)) throw new Error('工作区不干净');
   };
+  // 目标根全链证明（停服前失败 = 旧服务保持在线）：运行时根绑定/源内容指纹
+  // （logicSnapshot：当前内容+权限，非 HEAD/status 哈希）/验证记录（真实 runner
+  // 的 backend+frontend 通过证据，非空且指纹一致）/原库保留物未动/任务区
+  // provenance（对照受信提交，不再拿建区 HEAD 硬套已提交候选）/远端身份/运行时
+  // 资源就绪（tmp 可写、依赖可用），全部不可证明即取消。
+  let targetRecord = null;
+  let targetSourceRoot = '';
+  const assertTargetProven = () => {
+    if (!targetRoot) return;
+    const record = evolutionPublish.readApplyTarget(dataDir);
+    if (!record || record.commit !== expectedHead
+      || path.resolve(record.runtimeRoot) !== targetRoot) {
+      throw new Error('运行时目标记录与参数不符（提交/目标根漂移），取消应用');
+    }
+    if (!/^[0-9a-f]{64}$/.test(record.sourceFingerprint || '')) {
+      throw new Error('应用目标记录缺少内容指纹（sourceFingerprint），取消应用');
+    }
+    const provenance = evolutionPublish.readProvenance(dataDir);
+    const verified = provenance
+      ? evolutionPublish.verifyTaskWorkspace(REPO_ROOT, provenance, { expectedHead }) : { ok: false };
+    if (!verified.ok || provenance.runId !== record.runId) {
+      throw new Error(`任务工作区 provenance 不可证明（${verified.reason || 'missing'}），取消应用`);
+    }
+    // 被证明的源仓库根（原库）：Bot 上下文映射用它做前缀合同（cwd 常在 <根>/core，
+    // 不能把 cwd 当仓库根——那会把 client.js 映射到目标根根下）。
+    targetSourceRoot = provenance.repoRootReal;
+    const manifest = evolutionPublish.readHoldManifest(dataDir);
+    // 保留物按清单记录的原始仓库根核对（Bot 换根运行后 REPO_ROOT 不再是原库）。
+    const hold = evolutionPublish.verifyHoldUnchanged(manifest?.repoRootReal || REPO_ROOT, manifest);
+    if (!hold.ok || evolutionPublish.holdDigest(manifest) !== record.holdDigest) {
+      throw new Error(`原库保留物已变化（${hold.reason || '摘要不符'}），取消应用`);
+    }
+    if (evolutionPublish.remoteMainHead(targetRoot) !== expectedHead) {
+      throw new Error('远端 origin/main 与待应用提交不一致，取消应用');
+    }
+    // 运行时源内容身份：当前内容+权限指纹（logicSnapshot）必须等于记录值——
+    // 干净树上的权限改动（如 chmod 644→600）HEAD/status 指纹捕获不到。
+    const validation = require('../src/services/evolution-validation');
+    if (validation.logicSnapshot(targetRoot).fingerprint !== record.sourceFingerprint) {
+      throw new Error('运行时内容指纹与记录不符，取消应用');
+    }
+    // 内容验证证据（真实协调器 backend+frontend）：记录必须 passed、全项完成、
+    // 且其指纹就是这个源内容——缺失/空/漂移一律停服前拒绝。
+    const summary = validation.getValidationSummary(dataDir);
+    const expectedChecks = fs.existsSync(path.join(targetRoot, 'web', 'package.json'))
+      ? 'backend,frontend' : 'backend';
+    if (summary.state !== 'passed' || summary.checks.join(',') !== expectedChecks
+      || summary.fingerprint !== record.sourceFingerprint) {
+      throw new Error('离线回归验证记录缺失/未通过/指纹不符，取消应用');
+    }
+    // 运行时资源就绪：tmp 必须可写（构建/收尾都落在这里），依赖目录可用。
+    const probe = path.join(targetRoot, 'tmp', `probe.${process.pid}`);
+    fs.mkdirSync(path.join(targetRoot, 'tmp'), { recursive: true, mode: 0o700 });
+    try {
+      fs.writeFileSync(probe, 'x');
+      fs.unlinkSync(probe);
+    } catch (error) {
+      throw new Error(`运行时 tmp 不可写，取消应用（${error.code || error.message}）`);
+    }
+    const inspected = require('../src/services/evolution-worktree').inspectWorktree(targetRoot);
+    if (inspected.head !== expectedHead || inspected.dirty) {
+      throw new Error('运行时工作区已漂移（HEAD/干净度），取消应用');
+    }
+    targetRecord = record;
+  };
+  try { assertTargetProven(); } catch (error) { return fail(`应用前置校验失败（服务保持运行）：${error.message}`); }
   let { table, panePid } = verifyContext();
   if (!firstPaneStart || panePid !== firstPanePid || processStarttime(panePid) !== firstPaneStart) {
     return fail('pane 进程身份不稳定（PID 复用或 pane 已重建），取消应用');
@@ -416,12 +490,16 @@ async function main() {
 
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true, mode: 0o700 });
   const buildLog = path.join(dataDir, 'logs', 'evolve-apply.log');
-  const buildRoot = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp', 'evolution-apply.XXXXXX'));
+  const buildRoot = fs.mkdtempSync(path.join(deployRoot, 'tmp', 'evolution-apply.XXXXXX'));
   let contextFile = '';
   const receiptFile = path.join(dataDir, 'evolution-apply-receipt.json');
   const writeReceipt = (fields) => {
     fs.writeFileSync(receiptFile, `${JSON.stringify({
-      expectedHead, oldPid: botPid, oldStarttime: botStarttime, adminPort, startedAt: Date.now(), ...fields,
+      expectedHead, oldPid: botPid, oldStarttime: botStarttime, adminPort, startedAt: Date.now(),
+      ...(targetRoot ? { runtimeRoot: targetRoot,
+        sourceFingerprint: targetRecord ? targetRecord.sourceFingerprint : '',
+        holdDigest: targetRecord ? targetRecord.holdDigest : '' } : {}),
+      ...fields,
     })}\n`, { mode: 0o600 });
     try { fs.chmodSync(receiptFile, 0o600); } catch {}
   };
@@ -430,7 +508,7 @@ async function main() {
     await new Promise((resolve, reject) => {
       const out = fs.openSync(buildLog, 'a', 0o600);
       const child = spawn('npm', ['run', 'build', '--', '--outDir', path.join(buildRoot, 'dist'), '--emptyOutDir'], {
-        cwd: path.join(REPO_ROOT, 'web'),
+        cwd: path.join(deployRoot, 'web'),
         env: { ...process.env, PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH || ''}` },
         stdio: ['ignore', out, out],
       });
@@ -450,6 +528,7 @@ async function main() {
       throw new Error('自主进化已被关闭，取消本次自动应用（候选与旧服务保留）');
     }
     assertDeployable();
+    assertTargetProven();
 
     // 私有捕获 Bot 原始启动上下文（0600；重启完成或失败后即删，绝不入库）。
     contextFile = path.join(dataDir, 'evolution-apply-context.json');
@@ -471,6 +550,16 @@ async function main() {
       adminPort,
       expectedHead,
     };
+    // 隔离候选：Bot 上下文按「被证明的源仓库根（provenance.repoRootReal）→ 目标根」
+    // 映射。真实脚本形态是 argv=[node,'client.js']、cwd=<源根>/core——cwd 不是仓库
+    // 根；入口从原始 cwd 解析后落在源根内才可映射。只映射被证明的 Node 入口与
+    // cwd，其余 argv（旗标/普通参数）原样保留；映射不可证明在停服前失败。
+    // FARM_DATA_DIR 强制指向实际原数据目录（运行时共享原数据）。
+    if (targetRoot) {
+      const { argv, argv0, exe, cwd, env } = evolutionPublish
+        .mapBotContextToTarget(botContext, targetSourceRoot, targetRoot, dataDir);
+      Object.assign(botContext, { argv, argv0, exe, cwd, env });
+    }
     fs.writeFileSync(contextFile, `${JSON.stringify(botContext)}\n`, { mode: 0o600 });
     try { fs.chmodSync(contextFile, 0o600); } catch {}
 
@@ -481,7 +570,7 @@ async function main() {
     const released = await waitFor(() => portFree(adminPort), 15_000, `端口 ${adminPort} 释放`);
     if (!released) throw new Error(`端口 ${adminPort} 在旧进程退出后仍未释放，取消重启（请人工检查）`);
 
-    const distDir = path.join(REPO_ROOT, 'web', 'dist');
+    const distDir = path.join(deployRoot, 'web', 'dist');
     const previousDist = path.join(buildRoot, 'previous-dist');
     if (fs.existsSync(distDir)) fs.renameSync(distDir, previousDist);
     try {
@@ -513,10 +602,19 @@ async function main() {
     // LISTEN socket + /api/health 返回 ok:true。任意 TCP 应答不算成功。
     const ready = await waitFor(async () => {
       if (!aliveNonZombie(newBot, newStarttime)) return false;
-      if (git(['rev-parse', 'HEAD']) !== expectedHead) return false;
+      if (git(['rev-parse', 'HEAD'], deployRoot) !== expectedHead) return false;
       if (!holdsSocket(newBot, listeningInodes(adminPort))) return false;
       return await healthOk(adminPort);
     }, 90_000, `新 Bot 端口 ${adminPort} 监听与健康检查`);
+    // ready 之后、落盘回执之前再全量重证一次：健康进程不能掩盖「源内容/保留物/
+    // 远端在重启窗口内被改写」——此时仍可诚实 failed，而不是把错误对象标记 ready。
+    if (ready && targetRoot) {
+      try { assertTargetProven(); } catch (error) {
+        writeReceipt({ phase: 'failed', newPid: newBot, newStarttime: processStarttime(newBot) || '',
+          error: `就绪后复核失败：${String(error.message || '').slice(0, 240)}` });
+        return fail(error.message || '就绪后复核失败');
+      }
+    }
     writeReceipt({ phase: ready ? 'ready' : 'ready-timeout', newPid: newBot,
       newStarttime: processStarttime(newBot) || '', readyAt: ready ? Date.now() : 0 });
     // 私有上下文用后即删（environ 含凭据，不留存）。
