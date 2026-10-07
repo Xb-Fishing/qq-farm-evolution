@@ -10,13 +10,73 @@
 // - helper 作为 Bot 后代运行（生产拓扑）：其祖先分支（含同分支的 updater 类
 //   常驻进程）被排除在停止集合外，其余 Bot 子树照常停止；
 // - 旁观端口持有者、脏工作区、自主开关关闭三类失败都必须发生在停服之前。
-const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const http = require('node:http');
-const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
+
+// ---------------------------------------------------------------------------
+// 生产形态钩子注入下的夹具隔离（2026-10-07 修复，与 evolution-autonomy 轮同类）：
+// 协调进程环境注入 GIT_CONFIG_COUNT/KEY_*/VALUE_*（core.hooksPath=scripts/
+// evolution-hooks，真实 pre-push 无条件拒绝推送）。本文件目标根切换夹具的
+// bare 远端推送、任务区推送与被测服务/apply helper 的内部 git 调用都继承
+// process.env，注入会把它们全部误杀。处理：被 runner 直接执行时，先在净化后的
+// 环境副本中重执行自身（专属子进程，覆盖夹具初始化、两次连续目标根切换与全部
+// 推送）；宿主进程 env、协调进程注入与 no-push 钩子本身零改动。成功与失败路径
+// 的收尾都核对宿主 GIT_CONFIG_* 快照、候选源码与工作区指纹不变。
+// ---------------------------------------------------------------------------
+const SANDBOX_ENV = 'FARM_EVOLUTION_TEST_GIT_SANDBOX';
+const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+function sanitizeGitConfigEnv(env) {
+  const clean = { ...env };
+  for (const key of Object.keys(clean)) { if (GIT_CONFIG_ENV_RE.test(key)) delete clean[key]; }
+  return clean;
+}
+function gitConfigSnapshot() {
+  const entries = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (GIT_CONFIG_ENV_RE.test(key)) entries[key] = value;
+  }
+  return entries;
+}
+const GUARD_ROOT = path.join(__dirname, '..', '..');
+const GUARD_SOURCES = [
+  'core/scripts/evolution-apply-process.js',
+  'core/src/services/evolution-publish.js',
+  'core/src/services/evolution-validation.js',
+];
+function candidateFingerprint() {
+  const hash = crypto.createHash('sha256');
+  const gitRaw = args => execFileSync('git', args,
+    { cwd: GUARD_ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  hash.update(gitRaw(['rev-parse', 'HEAD']));
+  // porcelain 原始输出：首列是固定状态位，绝不做整体 trim（既有硬门）。
+  hash.update(gitRaw(['status', '--porcelain', '-z', '--untracked-files=normal']));
+  for (const rel of GUARD_SOURCES) hash.update(fs.readFileSync(path.join(GUARD_ROOT, rel)));
+  return hash.digest('hex');
+}
+if (require.main === module && process.env[SANDBOX_ENV] !== '1') {
+  const envBefore = JSON.stringify(gitConfigSnapshot());
+  const fingerprintBefore = candidateFingerprint();
+  let code = 1;
+  try {
+    const child = spawnSync(process.execPath, [...process.execArgv, __filename], {
+      env: { ...sanitizeGitConfigEnv(process.env), [SANDBOX_ENV]: '1' }, stdio: 'inherit',
+    });
+    code = child.status === 0 ? 0 : 1;
+  } finally {
+    if (JSON.stringify(gitConfigSnapshot()) !== envBefore || candidateFingerprint() !== fingerprintBefore) {
+      process.stderr.write('host GIT_CONFIG_* env or candidate fingerprint changed during fixtures\n');
+      code = 1;
+    }
+  }
+  process.exit(code);
+}
+
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const net = require('node:net');
 const { test } = require('node:test');
 const helper = require('../scripts/evolution-apply-process');
 
@@ -702,4 +762,63 @@ test('helper 与目标 Bot 为兄弟拓扑时不得豁免公共宿主祖先：TE
   assert.ok(Number.isInteger(newPid) && newPid > 0 && newPid !== botPid);
   assert.equal(helper.isDescendantOf(newPid, panePid), true, '新 Bot 仍是原 pane 后代');
   assert.ok(await healthOk(port));
+});
+
+// 与目标根切换夹具同型的最小真实 Git 序列（init/config/commit/remote/push），
+// 供夹具隔离回归在两种环境形态下分别执行。
+const SANDBOX_FIXTURE_SCRIPT = `'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const base = path.resolve(process.argv[2]);
+const write = (file, text) => {
+  const full = path.resolve(base, file);
+  if (full !== base && !full.startsWith(base + path.sep)) throw new Error(\`fixture_escape:\${file}\`);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, text);
+};
+const git = args => execFileSync('git', args,
+  { cwd: path.join(base, 'repo'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+write('repo/file.txt', 'fixture\\n');
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', path.join(base, 'remote.git')]);
+git(['init', '-q', '-b', 'main']);
+git(['config', 'user.name', 'fixture']);
+git(['config', 'user.email', 'fixture@users.noreply.github.com']);
+git(['add', '.']);
+git(['commit', '-qm', 'fixture']);
+git(['remote', 'add', 'origin', path.join(base, 'remote.git')]);
+git(['push', '-q', 'origin', 'main']);
+`;
+
+test('夹具隔离回归：生产形态钩子注入下真实 Git 夹具推送仅在净化环境成功', () => {
+  const hostBefore = gitConfigSnapshot();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-apply-git-sandbox-'));
+  try {
+    // 写边界硬拒：脚本与两个夹具根都必须落在本 mkdtemp 目录内（外穿事故硬门）。
+    const write = (file, text) => {
+      const full = path.resolve(dir, file);
+      if (full !== dir && !full.startsWith(dir + path.sep)) throw new Error(`fixture_escape:${file}`);
+      fs.writeFileSync(full, text);
+    };
+    write('fixture.cjs', SANDBOX_FIXTURE_SCRIPT);
+    // 生产形态注入（与协调进程 buildEvolutionAgentEnv 同形，hooksPath 指向本仓
+    // 真实 scripts/evolution-hooks，只读引用）。
+    const injected = {
+      ...sanitizeGitConfigEnv(process.env),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: path.join(GUARD_ROOT, 'scripts', 'evolution-hooks'),
+    };
+    // 负对照：注入存在而未净化 → 真实 pre-push 必须拒绝夹具推送。
+    const raw = spawnSync(process.execPath, [path.join(dir, 'fixture.cjs'), path.join(dir, 'raw')],
+      { env: injected, encoding: 'utf8' });
+    assert.notEqual(raw.status, 0, '未净化环境下的夹具推送必须被真实钩子拒绝');
+    assert.match(raw.stderr || '', /automatic evolution agents cannot push/);
+    // 正例：同一夹具序列在净化后的环境副本中成功（本文件顶部沙箱同款净化）。
+    const clean = spawnSync(process.execPath, [path.join(dir, 'fixture.cjs'), path.join(dir, 'clean')],
+      { env: sanitizeGitConfigEnv(injected), encoding: 'utf8' });
+    assert.equal(clean.status, 0, clean.stderr || '净化环境下的夹具推送应成功');
+    // 宿主环境未被夹具触碰。
+    assert.deepEqual(gitConfigSnapshot(), hostBefore);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
