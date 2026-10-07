@@ -32,7 +32,8 @@ const fs = require('node:fs');
 const port = Number(process.argv[2]);
 const evidence = process.argv[3];
 const record = entry => fs.appendFileSync(evidence, JSON.stringify(entry) + '\\n');
-record({ pid: process.pid, ppid: process.ppid, special: process.env.BOT_SPECIAL || '' });
+record({ pid: process.pid, ppid: process.ppid, special: process.env.BOT_SPECIAL || '',
+  farm: process.env.FARM_DATA_DIR || '' });
 if (process.env.BOT_IGNORE_TERM_CHILD === '1') {
   const child = require('node:child_process').spawn(process.execPath, ['-e',
     'process.on("SIGTERM", () => {});process.stdout.write(String(process.pid));setInterval(() => {}, 1000);'],
@@ -422,6 +423,232 @@ const err = fs.openSync(errFile, 'a');
 })();
 setInterval(() => {}, 1e9);
 `;
+
+// ---------------------------------------------------------------------------
+// 隔离候选目标根切换 e2e（Stage C/B1-B7）：真实 bare 远端 + 任务/运行时工作区 +
+// 真实 tmux pane。fake Bot 入口提交在 fixture 的 core/client.js，按正式脚本形态
+// （cwd=<原库>/core、argv=[node,'client.js',...]）由 pane 前台启动；helper 走
+// --target-root 全链证明 → 构建/切换都落在运行时根，原库保留物（脏树）逐字节
+// 不动、旁观不受伤、两次连续切换各有独立运行时根。
+// ---------------------------------------------------------------------------
+function buildTargetFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-apply-target-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const root = path.join(dir, 'repo');
+  const remote = `${root}-remote.git`;
+  const dataDir = path.join(root, 'core', 'data');
+  const session = `farmtgt${process.pid}${Date.now().toString(36)}`;
+  fs.mkdirSync(path.join(root, 'core', 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'core', 'src'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'web', 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.gitignore'), 'tmp/\ncore/data/\nweb/dist/\n');
+  fs.copyFileSync(HELPER_SOURCE, path.join(root, 'core/scripts/evolution-apply-process.js'));
+  fs.writeFileSync(path.join(root, 'core/client.js'), BOT_SCRIPT);
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  // helper 的服务依赖经 re-export shim 指回候选仓真实模块（依赖链保持真实，
+  // fixture 只提供落点；与 autonomy 子进程夹具同构）。
+  fs.mkdirSync(path.join(root, 'core/src/services'), { recursive: true });
+  for (const name of ['evolution-publish', 'evolution-validation', 'evolution-worktree']) {
+    fs.writeFileSync(path.join(root, 'core/src/services', `${name}.js`),
+      `module.exports=require(${JSON.stringify(path.join(__dirname, `../src/services/${name}.js`))});\n`);
+  }
+  fs.writeFileSync(path.join(root, 'core/src/example.js'), 'module.exports = 1;\n');
+  fs.writeFileSync(path.join(root, 'docs/HANDOFF.md'), 'Fixture constraints\n');
+  fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ name: 'web', private: true, scripts: { build: 'node build.cjs' } }));
+  fs.writeFileSync(path.join(root, 'web/build.cjs'),
+    "const fs=require('fs');let out='dist';for(let i=2;i<process.argv.length;i++){if(process.argv[i]==='--outDir')out=process.argv[i+1];}"
+    + "fs.mkdirSync(out,{recursive:true});fs.writeFileSync(require('path').join(out,'index.html'),'rebuilt');\n");
+  fs.writeFileSync(path.join(root, 'web/dist/index.html'), 'old UI');
+  const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).trim();
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+  git(['init', '-q', '-b', 'main']);
+  git(['config', 'user.name', 'fixture']);
+  git(['config', 'user.email', 'fixture@invalid']);
+  git(['add', '.']);
+  git(['commit', '-qm', 'fixture base']);
+  git(['remote', 'add', 'origin', remote]);
+  git(['push', '-q', 'origin', 'main']);
+  // 原库三类保留物之一：已跟踪未暂存改动 + 未跟踪文件（原库从此是脏树，Bot 在
+  // 脏原库上运行——这正是 Stage C 要保护的真实形态）。
+  fs.writeFileSync(path.join(root, 'core/src/example.js'), 'module.exports = 2; // dirty hold\n');
+  fs.writeFileSync(path.join(root, 'core/src/untracked-hold.js'), 'module.exports = "untracked";\n');
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', session, '-c', root, '-x', '200', '-y', '50']);
+  t.after(() => { try { tmux(['kill-session', '-t', session]); } catch {} });
+  return {
+    root, dataDir, session, target: `${session}:0.0`, git,
+    helper: path.join(root, 'core/scripts/evolution-apply-process.js'),
+    killEvidencePids() {
+      try {
+        for (const entry of readEvidence(path.join(dataDir, 'bot-evidence.jsonl'))) {
+          for (const pid of [entry.pid, entry.childPid].filter(Number.isInteger)) {
+            try { process.kill(pid, 'SIGKILL'); } catch {}
+          }
+        }
+      } catch {}
+    },
+  };
+}
+
+/** 写入离线回归验证记录（真实 runner 落盘格式：passed + backend/frontend + 指纹）。 */
+function writeValidationRecord(dataDir, fingerprint) {
+  fs.writeFileSync(path.join(dataDir, 'evolution-validation.json'), `${JSON.stringify({
+    version: 1, state: 'passed', checkedAt: Date.now(), fingerprint, checks: ['backend', 'frontend'],
+  })}\n`, { mode: 0o600 });
+}
+
+test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形态、两次连续切换、原库脏保留物不动', async (t) => {
+  const f = buildTargetFixture(t);
+  t.after(() => f.killEvidencePids());
+  const publish = require('../src/services/evolution-publish');
+  const { logicSnapshot } = require('../src/services/evolution-validation');
+  const port = await freePort();
+
+  const manifest = publish.ensureHoldManifest(f.dataDir, f.root);
+  const holdsBefore = {
+    example: fs.readFileSync(path.join(f.root, 'core/src/example.js'), 'utf8'),
+    untracked: fs.readFileSync(path.join(f.root, 'core/src/untracked-hold.js'), 'utf8'),
+    status: f.git(['status', '--porcelain', '-z', '--untracked-files=normal']),
+  };
+  const provenance = publish.createTaskWorkspace({
+    repoRoot: f.root, dataDir: f.dataDir, runId: 'run-e2e-1',
+  });
+
+  // 候选 1：任务区真实提交 + 发布到 bare 远端。
+  const task = provenance.taskRoot;
+  fs.writeFileSync(path.join(task, 'core/src/example.js'), 'module.exports = 10;\n');
+  f.git(['add', '.'], task);
+  f.git(['commit', '-qm', 'candidate 1'], task);
+  const head1 = f.git(['rev-parse', 'HEAD'], task);
+  f.git(['push', '-q', 'origin', 'HEAD:main'], task);
+  const rt1 = publish.prepareRuntimeWorkspace({
+    repoRoot: f.root, runId: 'run-e2e-1', commit: head1, dataDir: f.dataDir,
+  });
+  publish.recordApplyTarget(f.dataDir, {
+    runId: 'run-e2e-1', commit: head1, runtimeRoot: rt1.runtimeRoot,
+    sourceFingerprint: rt1.logicFingerprint, holdDigest: publish.holdDigest(manifest),
+    createdAt: Date.now(),
+  });
+
+  // 旁观实例：同 pane 后台 + 其他 pane（都不属于停止集合）。
+  const bgPidFile = path.join(f.dataDir, 'bg-instance.pid');
+  const markerScript = "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1e9)";
+  tmux(['send-keys', '-t', f.target, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(bgPidFile)} &`]);
+  tmux(['send-keys', '-t', f.target, 'Enter']);
+  const otherSession = `${f.session}-other`;
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', otherSession, '-c', f.root, '-x', '80', '-y', '24']);
+  t.after(() => { try { tmux(['kill-session', '-t', otherSession]); } catch {} });
+  const otherPidFile = path.join(f.dataDir, 'other-pane.pid');
+  tmux(['send-keys', '-t', `${otherSession}:0.0`, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(otherPidFile)}`]);
+  tmux(['send-keys', '-t', `${otherSession}:0.0`, 'Enter']);
+  await waitFor(() => fs.existsSync(bgPidFile) && fs.existsSync(otherPidFile), 10_000, '旁观实例启动');
+  const bgPid = Number(fs.readFileSync(bgPidFile, 'utf8'));
+  const otherPid = Number(fs.readFileSync(otherPidFile, 'utf8'));
+  const bgStart = helper.processStarttime(bgPid);
+  const otherStart = helper.processStarttime(otherPid);
+
+  // 正式脚本形态启动 Bot：cwd=<原库>/core、argv=[node,'client.js',port,evidence]。
+  const evidence = path.join(f.dataDir, 'bot-evidence.jsonl');
+  tmux(['send-keys', '-t', f.target, '-l', `cd core && ${shq(process.execPath)} client.js ${port} ${shq(evidence)}`]);
+  tmux(['send-keys', '-t', f.target, 'Enter']);
+  await waitFor(() => healthOk(port), 10_000, 'fake Bot 启动（正式形态）');
+  const panePid = Number(tmux(['display-message', '-p', '-t', f.target, '#{pane_pid}']));
+  const paneStart = helper.processStarttime(panePid);
+  const first = readEvidence(evidence)[0];
+  assert.equal(first.ppid, panePid, '初始 Bot 必须长在目标 pane 的 shell 里');
+  assert.equal(first.farm, '', '原库上的旧 Bot 尚无 FARM_DATA_DIR（legacy 形态）');
+  const botStart = helper.processStarttime(first.pid);
+
+  const runTarget = async (targetRoot, head, botPid, botStarttime) => {
+    const args = ['--bot-pid', String(botPid), '--bot-starttime', botStarttime, '--expected-head', head,
+      '--tmux-target', f.target, '--data-dir', f.dataDir, '--admin-port', String(port),
+      '--target-root', targetRoot];
+    const child = spawn(process.execPath, [f.helper, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const code = await new Promise(resolve => child.once('exit', resolve));
+    let receipt = null;
+    try { receipt = JSON.parse(fs.readFileSync(path.join(f.dataDir, 'evolution-apply-receipt.json'), 'utf8')); } catch {}
+    return { code, stderr, receipt };
+  };
+  const assertOriginalRootUntouched = () => {
+    assert.equal(fs.readFileSync(path.join(f.root, 'core/src/example.js'), 'utf8'), holdsBefore.example);
+    assert.equal(fs.readFileSync(path.join(f.root, 'core/src/untracked-hold.js'), 'utf8'), holdsBefore.untracked);
+    assert.equal(f.git(['status', '--porcelain', '-z', '--untracked-files=normal']), holdsBefore.status);
+    assert.equal(fs.readFileSync(path.join(f.root, 'web/dist/index.html'), 'utf8'), 'old UI');
+    assert.equal(publish.verifyHoldUnchanged(f.root, publish.readHoldManifest(f.dataDir)).ok, true);
+  };
+
+  // 反例（B3）：验证记录指纹与运行时内容不符 → 停服前失败，旧服务保持在线。
+  writeValidationRecord(f.dataDir, '0'.repeat(64));
+  const bad = await runTarget(rt1.runtimeRoot, head1, first.pid, botStart);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /离线回归验证记录缺失\/未通过\/指纹不符/);
+  assert.ok(alive(first.pid, botStart), '验证门失败必须发生在停服之前');
+  assertOriginalRootUntouched();
+
+  // 正例：真实内容指纹的验证记录 → 全链切换成功。
+  writeValidationRecord(f.dataDir, rt1.logicFingerprint);
+  const run1 = await runTarget(rt1.runtimeRoot, head1, first.pid, botStart);
+  assert.equal(run1.code, 0, run1.stderr);
+  assert.equal(run1.receipt.phase, 'ready');
+  assert.equal(run1.receipt.runtimeRoot, rt1.runtimeRoot);
+  assert.equal(run1.receipt.sourceFingerprint, rt1.logicFingerprint);
+  const newPid1 = run1.receipt.newPid;
+  assert.ok(Number.isInteger(newPid1) && newPid1 > 0 && newPid1 !== first.pid);
+  assert.equal(alive(first.pid, 'x'), false, '旧 Bot 已停');
+  assert.equal(helper.isDescendantOf(newPid1, panePid), true, '新 Bot 必须仍是原 pane 后代');
+  assert.equal(helper.processStarttime(panePid), paneStart, 'pane shell 未被重启');
+  assert.ok(helper.holdsSocket(newPid1, helper.listeningInodes(port)), '新 Bot 真实持有端口');
+  assert.ok(await healthOk(port));
+  // B1 映射实测：新 Bot 的 cwd/入口都落在运行时根内，普通参数（evidence 绝对路径）原样。
+  assert.equal(fs.readlinkSync(`/proc/${newPid1}/cwd`), path.join(rt1.runtimeRoot, 'core'));
+  const cmdline1 = fs.readFileSync(`/proc/${newPid1}/cmdline`, 'utf8').split('\0').filter(Boolean);
+  assert.equal(cmdline1[1], path.join(rt1.runtimeRoot, 'core', 'client.js'));
+  assert.equal(cmdline1[2], String(port));
+  assert.equal(cmdline1[3], evidence);
+  const gen2 = readEvidence(evidence).find(entry => entry.pid === newPid1);
+  assert.equal(gen2.farm, f.dataDir, 'FARM_DATA_DIR 必须强制映射到实际原数据目录');
+  // dist 切换发生在运行时根；原库（含脏保留物）逐字节不动。
+  assert.equal(fs.readFileSync(path.join(rt1.runtimeRoot, 'web/dist/index.html'), 'utf8'), 'rebuilt');
+  assert.equal(logicSnapshot(rt1.runtimeRoot).fingerprint, rt1.logicFingerprint, '运行时内容身份在切换后保持');
+  assertOriginalRootUntouched();
+  assert.equal(alive(bgPid, bgStart), true, '同 pane 后台实例不被误伤');
+  assert.equal(alive(otherPid, otherStart), true, '其他 pane 实例不被误伤');
+  assert.equal(fs.existsSync(path.join(f.dataDir, 'evolution-apply-context.json')), false, '私有上下文用后即删');
+
+  // 第二次连续切换：新候选 → 独立运行时根（不覆盖/不嵌套），对运行时根上的新 Bot
+  // 再次应用（cwd=旧运行时根/core、入口为映射后的绝对路径——仍在原库边界内）。
+  fs.writeFileSync(path.join(task, 'core/src/example.js'), 'module.exports = 20;\n');
+  f.git(['add', '.'], task);
+  f.git(['commit', '-qm', 'candidate 2'], task);
+  const head2 = f.git(['rev-parse', 'HEAD'], task);
+  f.git(['push', '-q', 'origin', 'HEAD:main'], task);
+  const rt2 = publish.prepareRuntimeWorkspace({
+    repoRoot: f.root, runId: 'run-e2e-1', commit: head2, dataDir: f.dataDir,
+  });
+  assert.notEqual(rt2.runtimeRoot, rt1.runtimeRoot);
+  publish.recordApplyTarget(f.dataDir, {
+    runId: 'run-e2e-1', commit: head2, runtimeRoot: rt2.runtimeRoot,
+    sourceFingerprint: rt2.logicFingerprint, holdDigest: publish.holdDigest(manifest),
+    createdAt: Date.now(),
+  });
+  writeValidationRecord(f.dataDir, rt2.logicFingerprint);
+  const run2 = await runTarget(rt2.runtimeRoot, head2, newPid1, helper.processStarttime(newPid1));
+  assert.equal(run2.code, 0, run2.stderr);
+  assert.equal(run2.receipt.phase, 'ready');
+  const newPid2 = run2.receipt.newPid;
+  assert.ok(Number.isInteger(newPid2) && newPid2 > 0 && newPid2 !== newPid1);
+  assert.equal(helper.isDescendantOf(newPid2, panePid), true);
+  assert.equal(fs.readlinkSync(`/proc/${newPid2}/cwd`), path.join(rt2.runtimeRoot, 'core'));
+  const cmdline2 = fs.readFileSync(`/proc/${newPid2}/cmdline`, 'utf8').split('\0').filter(Boolean);
+  assert.equal(cmdline2[1], path.join(rt2.runtimeRoot, 'core', 'client.js'));
+  assert.ok(await healthOk(port));
+  assert.ok(fs.existsSync(path.join(rt1.runtimeRoot, 'core/client.js')), '旧运行时根不被删除');
+  assertOriginalRootUntouched();
+  assert.equal(alive(bgPid, bgStart), true, '两次切换后旁观实例仍在');
+  assert.equal(alive(otherPid, otherStart), true);
+});
 
 test('helper 与目标 Bot 为兄弟拓扑时不得豁免公共宿主祖先：TERM 忽略子进程照常被停', async (t) => {
   const f = buildFixture(t);

@@ -129,6 +129,14 @@ function harness(t, options = {}) {
     module, exports: module.exports, __dirname: path.dirname(SOURCE_FILE), __filename: SOURCE_FILE,
     Buffer, Date: Clock, URL, console, crypto, process,
     require: (name) => {
+      if (name === './evolution-publish') {
+        return {
+          ...sourceRequire(name),
+          ensureHoldManifest() { throw new Error('isolated_legacy_fixture'); },
+          ownerStorageRoot: (_dataDir, root) => root,
+          createTaskWorkspace() { throw new Error('isolated_legacy_fixture'); },
+        };
+      }
       if (name === './evolution-github-feedback') {
         return {
           captureFeedbackBatch: (...args) => { feedback.captured.push(args); return feedback.batch; },

@@ -211,7 +211,7 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
   const git = args => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
     write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
-    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation', 'evolution-countercheck']) {
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation', 'evolution-countercheck', 'evolution-sessions', 'evolution-worktree']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
     write('core/src/services/evolution-references.js', 'module.exports.collectPublicReferences = async () => ({state:"complete", discoveryComplete:true});\n');
@@ -236,11 +236,50 @@ test('隔离 Git 仓库跑真实协调进程：CLI 交接、独立测试、复�
     write('web/dist/index.html', 'approved UI');
     const fakeCli = `#!/usr/bin/env node
 const fs = require('node:fs');
+// 原生会话感知夹具 CLI：codex app-server 子协议（thread/read→resume→compact/start
+// + item/started/completed contextCompaction）、claude 原生 /compact（compact_boundary
+// + 成功 result）、首轮 session_id/thread.started 捕获与 resume 参数接受。
+const SESSION = { claude: 'aaaa1111-2222-3333-4444-555566667777', codex: 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee' };
+if (process.argv[2] === 'app-server') {
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\\n')) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let value; try { value = JSON.parse(line); } catch { continue; }
+      if (value.id === undefined || !value.method) continue;
+      const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: value.id, result }) + '\\n');
+      if (value.method === 'thread/read' || value.method === 'thread/resume') {
+        fs.appendFileSync('core/data/appserver.log', value.method + '\\n');
+        reply({ thread: { id: value.params.threadId } });
+      } else if (value.method === 'thread/compact/start') {
+        fs.appendFileSync('core/data/appserver.log', 'thread/compact/start\\n');
+        reply({});
+        for (const method of ['item/started', 'item/completed']) {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method, params: { threadId: value.params.threadId, item: { type: 'contextCompaction' } } }) + '\\n');
+        }
+      } else reply({});
+    }
+  });
+  return;
+}
 let prompt = '';
 process.stdin.on('data', c => { prompt += c; });
 process.stdin.on('end', () => {
-  const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   const agent = process.argv.includes('exec') ? 'codex' : 'claude';
+  // 实测参数合同：该 codex 二进制的 exec resume 子命令不支持 --color（仅 exec 有）；
+  // claude print/stream-json 模式必须带 --verbose 才输出事件流。
+  if (agent === 'codex' && process.argv.includes('resume') && process.argv.includes('--color')) process.exit(2);
+  if (prompt === '/compact') {
+    if (!process.argv.includes('--verbose')) process.exit(2);
+    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: SESSION.claude }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: SESSION.claude }) + '\\n');
+    return;
+  }
+  const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   fs.appendFileSync('core/data/calls.log', phase + ':' + agent + '\\n');
   if (phase === 'implement') {
     fs.writeFileSync('core/src/example.js', 'module.exports = 2;\\n');
@@ -303,9 +342,12 @@ process.stdin.on('end', () => {
   if (agent === 'claude') {
     if (phase === 'research' && fs.existsSync('core/data/invalid-research-once')) {
       fs.unlinkSync('core/data/invalid-research-once');
-      process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result:'unstructured report'}));
-    } else process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result:'completed', structured_output:result}));
+      process.stdout.write(JSON.stringify({subtype:'success', is_error:false, session_id: SESSION.claude, result:'unstructured report'}));
+    } else process.stdout.write(JSON.stringify({subtype:'success', is_error:false, session_id: SESSION.claude, result:'completed', structured_output:result}));
   } else {
+    if (process.argv.includes('--json')) {
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
+    }
     fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
   }
 });
@@ -412,11 +454,44 @@ test('真实 runner 跨进程：run1 真实 checkpoint，run2 按精确合同续
   const git = args => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   const fakeCli = `#!/usr/bin/env node
 const fs = require('node:fs');
+const SESSION = { claude: 'aaaa1111-2222-3333-4444-555566667777', codex: 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee' };
+if (process.argv[2] === 'app-server') {
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\\n')) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let value; try { value = JSON.parse(line); } catch { continue; }
+      if (value.id === undefined || !value.method) continue;
+      const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: value.id, result }) + '\\n');
+      if (value.method === 'thread/read' || value.method === 'thread/resume') reply({ thread: { id: value.params.threadId } });
+      else if (value.method === 'thread/compact/start') {
+        reply({});
+        for (const method of ['item/started', 'item/completed']) {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method, params: { threadId: value.params.threadId, item: { type: 'contextCompaction' } } }) + '\\n');
+        }
+      } else reply({});
+    }
+  });
+  return;
+}
 let prompt = '';
 process.stdin.on('data', c => { prompt += c; });
 process.stdin.on('end', () => {
-  const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   const agent = process.argv.includes('exec') ? 'codex' : 'claude';
+  // 实测参数合同：该 codex 二进制的 exec resume 子命令不支持 --color（仅 exec 有）；
+  // claude print/stream-json 模式必须带 --verbose 才输出事件流。
+  if (agent === 'codex' && process.argv.includes('resume') && process.argv.includes('--color')) process.exit(2);
+  if (prompt === '/compact') {
+    if (!process.argv.includes('--verbose')) process.exit(2);
+    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: SESSION.claude }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: SESSION.claude }) + '\\n');
+    return;
+  }
+  const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   fs.appendFileSync('core/data/calls.log', phase + ':' + agent + '\\n');
   if (phase === 'implement') {
     fs.writeFileSync('core/src/example.js', 'module.exports = 2;\\n');
@@ -428,13 +503,15 @@ process.stdin.on('end', () => {
     ...(phase === 'plan' ? { allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md', 'web/src/example.js', 'core/test/behavior.test.js'], acceptanceChecks: ['example returns expected value'], baselineChecks: [] } : {}),
     ...(['plan', 'review'].includes(phase) ? { feedbackReviewed: true, lessons: [] } : {}),
     ...(phase === 'review' ? { githubResolutions: [] } : {}) };
-  if (agent === 'codex') fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
-  else process.stdout.write(JSON.stringify({ subtype: 'success', is_error: false, result: 'completed', structured_output: result }));
+  if (agent === 'codex') {
+    if (process.argv.includes('--json')) process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
+    fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
+  } else process.stdout.write(JSON.stringify({ subtype: 'success', is_error: false, session_id: SESSION.claude, result: 'completed', structured_output: result }));
 });
 `;
   try {
     write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
-    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team']) {
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-sessions', 'evolution-worktree']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});\n`);
     }
     // 验证/反证只关心续接合同，不重复覆盖真实验证链路（上文真实 fixture 已覆盖）。
@@ -641,4 +718,256 @@ test('初始 CLI 失败→只读修复→验证失败：必须新诊断给出写
   assert.equal(calls.filter(([phase]) => phase === 'review').length, 1, '最终业务复核只走一次');
   assert.equal(calls.some(([phase]) => phase === 'repair_review' || phase === 'patch_review'), false);
   assert.equal(committed, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 真实 runner 原生会话证据与事件流容错（2026-10-07 R5 复审）：
+// - codex exec resume 参数合同：resume 子命令不支持 --color（实测该二进制帮助），
+//   claude /compact 的 stream-json 模式必须 --verbose——夹具按真实合同拒绝错误参数。
+// - 单条 >1MB 事件只丢弃该事件本身：继续解析后续 thread.started 与最终输出文件，
+//   绝不判 output_limit 杀进程。
+// - 同一阶段事件流出现多个不同原生线程 id = 会话漂移，安全停（session_failed）。
+// - 续接阶段必须实证同一原生 id：没有任何 thread.started 证据同样失败。
+// - 首轮 CLI 失败但已真实建立会话：id 私有持久化，重试经 resume 复用同一会话。
+// ---------------------------------------------------------------------------
+test('真实 runner：大事件容忍、会话漂移/无证据拒绝、失败后持久化 id 复用', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-team-session-'));
+  const write = (file, data) => {
+    const full = path.resolve(dir, file);
+    if (full !== dir && !full.startsWith(dir + path.sep)) throw new Error(`fixture_escape:${file}`);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, data);
+  };
+  const git = args => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const fakeCli = `#!/usr/bin/env node
+const fs = require('node:fs');
+const SESSION = { claude: 'aaaa1111-2222-3333-4444-555566667777', codex: 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee' };
+const DRIFT = 'dddd7777-8888-9999-aaaa-bbbbccccdddd';
+const mode = f => fs.existsSync(f);
+if (process.argv[2] === 'app-server') {
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\\n')) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let value; try { value = JSON.parse(line); } catch { continue; }
+      if (value.id === undefined || !value.method) continue;
+      const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: value.id, result }) + '\\n');
+      if (value.method === 'thread/read' || value.method === 'thread/resume') reply({ thread: { id: value.params.threadId } });
+      else if (value.method === 'thread/compact/start') {
+        reply({});
+        for (const method of ['item/started', 'item/completed']) {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method, params: { threadId: value.params.threadId, item: { type: 'contextCompaction' } } }) + '\\n');
+        }
+      } else reply({});
+    }
+  });
+  return;
+}
+let prompt = '';
+process.stdin.on('data', c => { prompt += c; });
+process.stdin.on('end', () => {
+  const agent = process.argv.includes('exec') ? 'codex' : 'claude';
+  if (agent === 'codex' && process.argv.includes('resume') && process.argv.includes('--color')) process.exit(2);
+  if (prompt === '/compact') {
+    if (!process.argv.includes('--verbose')) process.exit(2);
+    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: SESSION.claude }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: SESSION.claude }) + '\\n');
+    return;
+  }
+  const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
+  fs.appendFileSync('core/data/calls.log', phase + ':' + agent + '\\n');
+  if (phase === 'implement') {
+    fs.writeFileSync('core/src/example.js', 'module.exports = 2;\\n');
+    fs.appendFileSync('docs/HANDOFF.md', 'Verified implementation\\n');
+  }
+  const decision = { research: 'researched', plan: 'approve', implement: 'implemented', review: 'approve', diagnose: 'repair', repair: 'no_change', repair_review: 'approve' }[phase];
+  const result = { decision, summary: 'Fixture stage summary',
+    ...(phase === 'diagnose' ? { allowedFiles: [] } : {}),
+    ...(phase === 'plan' ? { allowedFiles: ['core/src/example.js', 'docs/HANDOFF.md'], acceptanceChecks: ['example returns expected value'], baselineChecks: [] } : {}),
+    ...(['plan', 'review'].includes(phase) ? { feedbackReviewed: true, lessons: [] } : {}),
+    ...(phase === 'review' ? { githubResolutions: [] } : {}) };
+  if (agent === 'codex') {
+    if (mode('core/data/giant-events')) process.stdout.write('x'.repeat(2500000) + '\\n');
+    const resumeIndex = process.argv.indexOf('resume');
+    if (resumeIndex >= 0) {
+      if (process.argv[resumeIndex + 1] !== SESSION.codex) process.exit(3);
+      fs.appendFileSync('core/data/resume.log', process.argv[resumeIndex + 1] + '\\n');
+    }
+    if (mode('core/data/plan-fail-once') && resumeIndex < 0) {
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
+      fs.unlinkSync('core/data/plan-fail-once');
+      process.exit(1);
+    }
+    if (mode('core/data/drift')) {
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: DRIFT }) + '\\n');
+    } else if (!mode('core/data/no-thread-events') && process.argv.includes('--json')) {
+      process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
+    }
+    fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
+  } else process.stdout.write(JSON.stringify({ subtype: 'success', is_error: false, session_id: SESSION.claude, result: 'completed', structured_output: result }));
+});
+`;
+  try {
+    write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-sessions', 'evolution-worktree']) {
+      write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});\n`);
+    }
+    write('core/src/services/evolution-validation.js', 'module.exports.runEvolutionValidation = async () => ({ state: "passed", checks: ["backend"] });\n');
+    write('core/src/services/evolution-countercheck.js', 'module.exports.runBaselineChecks = async () => ({ state: "passed", checks: [] });\n');
+    write('core/src/services/evolution-references.js', 'module.exports.collectPublicReferences = async () => ({ state: "complete", discoveryComplete: true });\n');
+    write('.gitignore', 'core/data/\n');
+    write('docs/HANDOFF.md', 'Fixture constraints\n');
+    write('core/src/example.js', 'module.exports = 1;\n');
+    write('core/data/fake-agent', fakeCli);
+    fs.chmodSync(path.join(dir, 'core/data/fake-agent'), 0o700);
+    fs.mkdirSync(path.join(dir, 'core/data/logs'), { recursive: true });
+    git(['init', '-q']);
+    git(['config', 'user.name', 'Test']);
+    git(['config', 'user.email', ['test', 'users.noreply.github.com'].join('@')]);
+    git(['add', '.']);
+    git(['commit', '-qm', 'fixture']);
+    const baseCommit = git(['rev-parse', 'HEAD']);
+    const run = (runId) => {
+      const input = {
+        runId, baseCommit, task: 'safety', prompt: 'Fixture task',
+        settings: { mainAgent: 'codex', subAgent: 'claude', dualAgentEnabled: true },
+        bins: { codex: path.join(dir, 'core/data/fake-agent'), claude: path.join(dir, 'core/data/fake-agent') },
+        logDir: path.join(dir, 'core/data/logs'), dataDir: path.join(dir, 'core/data'),
+      };
+      return spawnSync(process.execPath, ['core/scripts/run-evolution-team.js'], {
+        cwd: dir, input: JSON.stringify(input), encoding: 'utf8', timeout: 90_000,
+        env: { ...process.env, FARM_DATA_DIR: path.join(dir, 'core/data') },
+      });
+    };
+    const journalOf = runId => JSON.parse(fs.readFileSync(path.join(dir, `core/data/logs/evolve-team-${runId}.json`), 'utf8'));
+    const registry = () => JSON.parse(fs.readFileSync(path.join(dir, 'core/data/evolution-sessions/registry.json'), 'utf8'));
+
+    // S1：单条 2.5MB 事件不杀进程——后续 thread.started 仍被解析，运行照常完成。
+    write('core/data/giant-events', '1');
+    const giant = run('giant');
+    assert.equal(giant.status, 0, giant.stderr);
+    assert.notEqual(git(['rev-parse', 'HEAD']), baseCommit, '大事件不得阻止正常提交');
+    fs.unlinkSync(path.join(dir, 'core/data/giant-events'));
+    git(['reset', '--hard', baseCommit]);
+    git(['clean', '-fdq']);
+    assert.ok(fs.existsSync(path.join(dir, 'core/data/evolution-sessions/registry.json')), '会话登记必须私有落盘');
+
+    // S2：同一阶段出现两个不同原生线程 id = 会话漂移，安全停且不提交。
+    write('core/data/calls.log', '');
+    write('core/data/drift', '1');
+    const drift = run('drift');
+    assert.equal(drift.status, 1);
+    assert.equal(git(['rev-parse', 'HEAD']), baseCommit, '漂移运行不得提交');
+    assert.equal(journalOf('drift').failure.code, 'session_failed');
+    fs.unlinkSync(path.join(dir, 'core/data/drift'));
+
+    // S3：续接阶段没有任何 thread.started 证据 = 无法证明同一会话，拒绝（fail closed）。
+    write('core/data/calls.log', '');
+    write('core/data/no-thread-events', '1');
+    const noid = run('noid');
+    assert.equal(noid.status, 1);
+    assert.equal(git(['rev-parse', 'HEAD']), baseCommit);
+    assert.equal(journalOf('noid').failure.code, 'session_failed');
+    assert.equal(registry().entries.main.sessionId, 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee', '失败不得换 id 顶替');
+    fs.unlinkSync(path.join(dir, 'core/data/no-thread-events'));
+
+    // S4：首轮 CLI 失败但已真实建立会话：id 私有持久化，重试经 resume 复用同一会话。
+    fs.rmSync(path.join(dir, 'core/data/evolution-sessions'), { recursive: true, force: true });
+    write('core/data/calls.log', '');
+    write('core/data/resume.log', '');
+    write('core/data/plan-fail-once', '1');
+    const failonce = run('failonce');
+    assert.equal(failonce.status, 0, failonce.stderr);
+    assert.notEqual(git(['rev-parse', 'HEAD']), baseCommit, '复用会话后运行必须完成');
+    assert.equal(registry().entries.main.sessionId, 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee', '失败时已捕获的 id 必须持久化');
+    const resumeLog = fs.readFileSync(path.join(dir, 'core/data/resume.log'), 'utf8').split('\n').filter(Boolean);
+    assert.ok(resumeLog.length > 0, '重试必须经 resume 复用同一原生会话');
+    assert.ok(resumeLog.every(id => id === 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee'));
+    const failonceJournal = journalOf('failonce');
+    assert.equal(failonceJournal.lastFailure.code, 'cli_exit', '首轮失败按执行失败真实记录');
+    assert.ok(failonceJournal.recoveryAttempt >= 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// executeStreaming（2026-10-07 R6）：丢弃模式内存有界 + 后续有效事件照常解析 +
+// onLine 异常时先有界清杀自己启动的子进程、等真实退出后才 reject（候选 id 已在
+// 调用方手中保留）。直接驱动导出的真实实现（非手写探针等价物）。
+// ---------------------------------------------------------------------------
+const { executeStreaming } = require('../scripts/run-evolution-team');
+
+test('executeStreaming：多块无换行超限流有界丢弃，换行后有效事件/最终消息照常解析', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-stream-'));
+  try {
+    // 夹具 CLI：先正常行，再 3×600KB 无换行块（累计 >1MB 触发丢弃模式），
+    // 换行后发两条有效事件；再来 1.2MB 无换行块（二次进入丢弃模式），换行后
+    // 发最终消息行；退出码 0。若实现仍在缓冲无换行字节，事件顺序/完成语义都会破。
+    const script = `
+      process.stdin.resume();
+      process.stdin.on('end', () => {
+        const out = (s) => process.stdout.write(s);
+        out('{"seq":0}\\n');
+        for (const filler of ['A', 'B', 'C']) out(filler.repeat(600000));
+        out('\\n{"seq":1}\\n{"seq":2}\\n');
+        out('D'.repeat(1200000));
+        out('\\n');
+        out('{"seq":3,"final":true}\\n');
+      });
+    `;
+    const seen = [];
+    await executeStreaming(process.execPath, ['-e', script], {
+      cwd: dir, env: process.env, eventLog: path.join(dir, 'events.log'),
+      onLine: (line) => {
+        seen.push(JSON.parse(line).seq);
+      },
+    });
+    assert.deepEqual(seen, [0, 1, 2, 3], '超限丢弃不得吞掉换行后的有效事件与最终消息');
+    const stat = fs.statSync(path.join(dir, 'events.log'));
+    assert.equal(stat.mode & 0o777, 0o600, '原始事件流日志必须 0600');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('executeStreaming：onLine 异常先清杀子进程等真实退出再 reject；候选源保留', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-stream-fail-'));
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    // 夹具 CLI：落盘自己的 pid，发首条原生事件（候选 id 来源），2 秒后发漂移事件，
+    // 然后挂住不退出——验证 TERM 清杀而不是放任残留。
+    const script = `
+      const fs = require('node:fs');
+      const pidFile = process.argv[process.argv.length - 1];
+      process.stdin.resume();
+      process.stdin.on('end', () => {
+        fs.writeFileSync(pidFile, String(process.pid));
+        process.stdout.write('{"id":"aaaa1111-2222-3333-4444-555566667777"}\\n');
+        setTimeout(() => process.stdout.write('{"id":"bbbb8888-9999-aaaa-bbbb-ccccddddeeee"}\\n'), 200);
+        setInterval(() => {}, 1000);
+      });
+    `;
+    const pidFile = path.join(dir, 'cli.pid');
+    let candidate = '';
+    const started = Date.now();
+    await assert.rejects(
+      executeStreaming(process.execPath, ['-e', script, pidFile], {
+        cwd: dir, env: process.env,
+        onLine: (line) => {
+          const value = JSON.parse(line);
+          if (!value.id) return;
+          if (!candidate) { candidate = value.id; return; }
+          if (value.id !== candidate) throw Object.assign(new Error('drift'), { code: 'session_failed' });
+        },
+      }),
+      (error) => error.code === 'session_failed',
+    );
+    // 候选源在 reject 前已保留在调用方（重试续接依据），且 settle 时子进程已死。
+    assert.equal(candidate, 'aaaa1111-2222-3333-4444-555566667777');
+    const cliPid = Number(fs.readFileSync(pidFile, 'utf8'));
+    assert.equal(alive(cliPid), false, 'reject 前必须已真实杀死自己启动的子进程');
+    assert.ok(Date.now() - started < 8000, '清杀必须有界（8s 硬上限内 settle）');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

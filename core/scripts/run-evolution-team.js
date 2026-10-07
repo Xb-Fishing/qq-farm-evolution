@@ -11,10 +11,14 @@ const { collectPublicReferences } = require('../src/services/evolution-reference
 const {
   parseStageResult, runTeamWorkflow, teamJournalPath, buildStageSchema,
   createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
-  normalizeCheckpoint,
+  normalizeCheckpoint, FULL_HANDOFF_MANDATE,
 } = require('../src/services/evolution-team');
+const { createStageSessions, validNativeId } = require('../src/services/evolution-sessions');
 
 const repoRoot = path.resolve(__dirname, '../..');
+
+// 阶段所有权 → 会话角色（与 provider 无关：主/子允许同为 claude 或同为 codex）。
+const MAIN_PHASES = new Set(['triage', 'plan', 'diagnose', 'review', 'repair_review', 'patch_review']);
 
 // 私有交接文档（owner 本地 git exclude 忽略，永不入库）。协调进程必须在
 // 运行开始时独立于 Git 记录它的存在/非空/内容哈希（只记哈希不记内容），
@@ -22,13 +26,13 @@ const repoRoot = path.resolve(__dirname, '../..');
 // git 差异列表导致 ignored HANDOFF 永远 missing_handoff 的误判。
 const HANDOFF_FILE = 'docs/HANDOFF.md';
 
-function isGitIgnored(file) {
+function isGitIgnored(file, root = repoRoot) {
   try {
     // check-ignore 退出码：0=被忽略（含 .git/info/exclude），1=未忽略。
     // --no-index：即使文件被强制 add 进了索引，也仍按忽略模式判定——被
     // 暂存的私有 HANDOFF 不能因此伪装成"可见文档"绕过私有保护。
     execFileSync('git', ['check-ignore', '--no-index', '--', file], {
-      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     });
     return true;
   } catch (error) {
@@ -39,13 +43,25 @@ function isGitIgnored(file) {
 }
 
 /** 运行开始快照：ignored 标记 + 非空内容哈希；不可读/非普通文件一律拒绝。 */
-function snapshotPrivateHandoff() {
-  const snapshot = { ignored: isGitIgnored(HANDOFF_FILE), sha256: null };
-  const full = path.join(repoRoot, HANDOFF_FILE);
+function snapshotPrivateHandoff(root = repoRoot) {
+  const snapshot = { ignored: isGitIgnored(HANDOFF_FILE, root), sha256: null };
+  const full = path.join(root, HANDOFF_FILE);
   let stat;
   try { stat = fs.lstatSync(full); }
   catch (error) { if (error.code !== 'ENOENT') throw createTeamError('unsafe_worktree'); }
   if (stat) {
+    if (stat.isSymbolicLink()) {
+      try {
+        const common = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+          cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        const ownerRoot = path.dirname(fs.realpathSync(path.resolve(root, common)));
+        const canonical = path.join(ownerRoot, HANDOFF_FILE);
+        if (!snapshot.ignored || !fs.lstatSync(canonical).isFile()
+          || fs.realpathSync(full) !== fs.realpathSync(canonical)) throw createTeamError('unsafe_worktree');
+        stat = fs.statSync(full);
+      } catch { throw createTeamError('unsafe_worktree'); }
+    }
     if (!stat.isFile()) throw createTeamError('unsafe_worktree');
     try {
       const content = fs.readFileSync(full);
@@ -92,6 +108,9 @@ const PROTECTED_FILES = new Set([
     'web/src/utils/daily-feedback.ts',
     // 自主策略与应用进程保护属于审批邻接控制文件，常规 Agent 修复不批。
     'core/src/services/evolution-autonomy.js', 'core/scripts/evolution-apply-process.js',
+    // 完整性/审批邻接新 helper（2026-10-07 R6 owner 授权）：与 team 侧保护集合同步。
+    'core/src/services/evolution-worktree.js', 'core/src/services/evolution-sessions.js',
+    'core/src/services/evolution-publish.js',
 ]);
 const PROTECTED_HOOKS_PREFIX = 'scripts/evolution-hooks/';
 
@@ -108,46 +127,17 @@ function git(args) {
   }
 }
 
-function inspectWorktree() {
-  const head = git(['rev-parse', 'HEAD']).trim();
-  const status = git(['status', '--porcelain', '--untracked-files=normal']);
-  // 变更集合 = 工作区对 HEAD + 暂存区对 HEAD + 未跟踪三者并集（2026-10-05 复审
-  // R3：仅暂存（工作区已还原成 HEAD 内容）的文件不出现在 diff HEAD 里，漏掉它
-  // 就等于允许未经指纹核对的暂存内容混过续接校验）。
-  const files = [...new Set([
-    ...git(['diff', '--name-only', '-z', 'HEAD']).split('\0'),
-    ...git(['diff', '--cached', '--name-only', '-z']).split('\0'),
-    ...git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
-  ].filter(Boolean))].sort();
-  const hash = crypto.createHash('sha256').update(head).update(status);
-  const fileFingerprints = {};
-  for (const file of files) {
-    const digest = hashWorktreeFile(file);
-    fileFingerprints[file] = digest;
-    hash.update(`\n${file}:${digest}`);
-  }
-  return { head, dirty: !!status.trim(), files, fingerprint: hash.digest('hex'), fileFingerprints };
-}
+// 工作区实测与逐文件指纹（内容+权限+暂存）与协调进程丢失恢复核验共用同一实现。
+const { inspectWorktree: inspectWorktreeAt } = require('../src/services/evolution-worktree');
 
-// 逐文件指纹只含哈希：内容 + 权限 + 暂存状态，不把文件正文写进运行状态。
-function hashWorktreeFile(file) {
-  const fileHash = crypto.createHash('sha256');
+function inspectWorktree() {
   try {
-    const full = path.join(repoRoot, file);
-    let stat;
-    try { stat = fs.lstatSync(full); }
-    catch (error) { if (error.code !== 'ENOENT') throw createTeamError('unsafe_worktree'); }
-    if (stat) {
-      if (!stat.isFile()) throw createTeamError('unsafe_worktree');
-      fileHash.update(`mode=${stat.mode.toString(8)};`);
-      fileHash.update(fs.readFileSync(full));
-    }
-    fileHash.update(git(['diff', '--cached', '--binary', '--', file]));
+    return inspectWorktreeAt(repoRoot);
   } catch (error) {
-    if (error?.code) throw error;
-    throw createTeamError('unsafe_worktree');
+    // 共享模块固定抛 unsafe_worktree；保持既有 createTeamError 类别契约。
+    if (error?.code === 'unsafe_worktree') throw createTeamError('unsafe_worktree');
+    throw error;
   }
-  return fileHash.digest('hex');
 }
 
 function execute(bin, args, options = {}) {
@@ -187,6 +177,112 @@ function execute(bin, args, options = {}) {
       else resolve(stdout);
     });
   });
+}
+
+// Codex --json 事件流执行：stdout 逐行有界解析（thread.started 携带真实线程 id），
+// 不整段缓冲——单条超限事件（真实工具输出可达数 MB）只丢弃该事件本身：丢到下一
+// 个换行为止（丢弃期间不保留任何字节，内存恒有界），继续解析后续原生线程 id 与
+// 最终输出文件，绝不因此杀进程。原始流只落私有 0600 日志；onLine 异常（会话漂移
+// 等）先有界 TERM/KILL 清理自己启动的子进程、等它真实退出后才 reject——调用方
+// 释放角色锁时不可能还有旧 Agent 进程在写（不吞掉再当成功）。
+function executeStreaming(bin, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(bin, args, {
+        cwd: options.cwd || repoRoot,
+        env: options.env || buildEvolutionAgentEnv(),
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+    } catch {
+      reject(createTeamError('cli_spawn'));
+      return;
+    }
+    let logFd = null;
+    if (options.eventLog) {
+      try { logFd = fs.openSync(options.eventLog, 'a', 0o600); } catch { logFd = null; }
+    }
+    const LINE_CAP = 1024 * 1024;
+    let buffer = '';
+    let discarding = false;
+    let spawnFailed = false;
+    let rejected = false;
+    const closeLog = () => { if (logFd != null) { try { fs.closeSync(logFd); } catch {} logFd = null; } };
+    const failLine = (error) => {
+      if (rejected) return;
+      rejected = true;
+      // 只停自己启动的这一个子进程：TERM→有界 KILL，等真实退出（8s 硬上限）后
+      // 才 settle，失败绝无第二个执行器与本阶段重叠。
+      try { child.kill('SIGTERM'); } catch {}
+      const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 3000);
+      const done = () => {
+        clearTimeout(killTimer);
+        closeLog();
+        reject(error?.code ? error : createTeamError('output_parse'));
+      };
+      child.once('close', done);
+      if (child.exitCode != null || child.signalCode) done();
+      else setTimeout(done, 8000);
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      if (logFd != null) { try { fs.writeSync(logFd, chunk); } catch {} }
+      if (discarding) {
+        // 丢弃模式：本块内没有换行就整块丢弃（一个字节都不保留）；遇到换行，其
+        // 前的尾段属于超限事件一并丢弃，其后的数据恢复正常解析。
+        const newline = chunk.indexOf('\n');
+        if (newline < 0) return;
+        buffer = chunk.slice(newline + 1);
+        discarding = false;
+      } else buffer += chunk;
+      for (;;) {
+        const index = buffer.indexOf('\n');
+        if (index < 0) break;
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        // 超限整行（单块内自带换行）只丢弃该行，尾部碎片绝不当作事件解释。
+        if (line.length > LINE_CAP) continue;
+        if (options.onLine) {
+          try { options.onLine(line); } catch (error) { failLine(error); return; }
+        }
+      }
+      if (!discarding && buffer.length > LINE_CAP) {
+        // 无换行的部分行已超限：进入丢弃模式，内存保持有界。
+        discarding = true;
+        buffer = '';
+      }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(options.stdin || '');
+    child.once('error', () => {
+      spawnFailed = true;
+      closeLog();
+      reject(createTeamError('cli_spawn'));
+    });
+    child.once('close', (code, signal) => {
+      closeLog();
+      if (spawnFailed || rejected) return;
+      if (code !== 0 || signal) reject(createTeamError('cli_exit', { exitCode: code, signal }));
+      else resolve();
+    });
+  });
+}
+
+// 只认 CLI 事件流里的原生线程标识（exec --json 事件形 / JSON-RPC 通知形），
+// 绝不把模型输出文本中伪装的 id 当真。
+function codexThreadIdFromLine(line) {
+  if (!line || line.length > 262144) return '';
+  let value;
+  try { value = JSON.parse(line); } catch { return ''; }
+  if (!value || typeof value !== 'object') return '';
+  const candidates = value.type === 'thread.started'
+    ? [value.thread_id, value.thread?.id]
+    : value.method === 'thread/started' ? [value.params?.thread_id, value.params?.thread?.id, value.params?.id] : [];
+  for (const candidate of candidates) {
+    const id = validNativeId(candidate);
+    if (id) return id;
+  }
+  return '';
 }
 
 // Claude 外层 envelope 成功时优先 structured_output；result 必须是可严格解析的 JSON 文本。
@@ -300,6 +396,13 @@ async function main(input) {
   // PATH 前置当前 Node，避免 npm/vite 从系统旧 Node 启动。
   const env = buildEvolutionAgentEnv();
   env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${env.PATH || ''}`;
+  // 原生会话登记（私有 0600，仅本地数据目录）：角色/仓库绑定 + 原生压缩 + 私有
+  // HANDOFF 增量快照全部经同一驱动；dataDir 缺失时退回 logDir（同为 ignored 目录）。
+  const sessions = createStageSessions({
+    dataDir: dataDir || logDir,
+    repoRoot,
+    handoffFile: path.join(repoRoot, HANDOFF_FILE),
+  });
   const onProgress = async (phase, activeAgent, details) => {
     const fields = { phase, activeAgent: activeAgent || '', status: 'running', updatedAt: Date.now() };
     if (details && typeof details === 'object') {
@@ -344,30 +447,93 @@ async function main(input) {
       onCheckpoint: async (value) => persist({ checkpoint: { ...value, handoffSha256: handoffBaseline.sha256 || '' } }),
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
-        const command = buildEvolutionAgentCommand(agent, stagePrompt);
-        const schema = JSON.stringify(buildStageSchema(phase));
-        const args = [...command.args];
-        let response;
-        if (agent === 'codex') {
-          const schemaFile = path.join(logDir, `evolve-team-${runId}-${phase}-schema.json`);
-          const outputFile = path.join(logDir, `evolve-team-${runId}-${phase}.log`);
-          try {
-            fs.rmSync(outputFile, { force: true });
-            fs.writeFileSync(schemaFile, `${schema}\n`, { mode: 0o600 });
-          } catch { throw createTeamError('unknown'); }
-          args.splice(args.length - 1, 0, '--output-schema', schemaFile, '--output-last-message', outputFile);
-          try {
-            await execute(bins[agent], args, { env, stdin: command.stdin });
-            response = readTeamStageOutput(outputFile);
-          } finally {
-            for (const temp of [schemaFile, outputFile]) { try { fs.unlinkSync(temp); } catch {} }
+        // 原生会话连续性（2026-10-07 owner 要求）：同角色首轮捕获真实原生 id（Claude
+        // envelope.session_id / Codex --json thread.started），此后每阶段先原生压缩同一
+        // 会话再续接；压缩失败/跨库/id 不符保留登记并安全停，绝不静默换新 id。
+        // 角色按阶段所有权判定（2026-10-07 R6）：合法配置允许主/子选同一执行器，
+        // 按 provider 相等判角色会把两个角色并成一个登记键。
+        const role = MAIN_PHASES.has(phase) ? 'main' : 'sub';
+        const stage = sessions.beginStage({ role, provider: agent });
+        try {
+          // 新原生会话（首轮/换执行器）不得继承旧会话快照的"已读"记忆：强制完整首读。
+          const handoff = sessions.handoffDirectiveFor(role, { forceRefresh: !stage.entry });
+          // 私有 HANDOFF 缺失是硬边界：research 只读阶段可如实报告，其余阶段没有
+          // 交接上下文就不得继续（更不得据此解析出 approve——不允许凭猜测状态放行）。
+          if (handoff.mode === 'missing' && phase !== 'research') throw createTeamError('missing_handoff');
+          // 增量指令必须覆盖提示里所有完整重读硬性要求（首行模板之外，原任务/守则
+          // 文本里也可能嵌着同一句），不能只替换第一处。
+          const effectivePrompt = handoff.directive
+            ? stagePrompt.replaceAll(FULL_HANDOFF_MANDATE, handoff.directive) : stagePrompt;
+          if (stage.entry) {
+            await sessions.compactBeforeResume({ entry: stage.entry, role, provider: agent, bins, env, logDir, runId });
           }
-        } else {
-          args.push('--output-format', 'json', '--json-schema', schema);
-          const stdout = await execute(bins[agent], args, { env, stdin: command.stdin, capture: true });
-          response = claudeStageResponse(stdout);
+          sessions.noteRunBoundary({ role, runId });
+          const command = buildEvolutionAgentCommand(agent, effectivePrompt,
+            agent === 'codex'
+              ? { jsonEvents: true, ...(stage.entry ? { resumeSessionId: stage.entry.sessionId } : {}) }
+              : (stage.entry ? { resumeSessionId: stage.entry.sessionId } : {}));
+          const schema = JSON.stringify(buildStageSchema(phase));
+          const args = [...command.args];
+          let response;
+          let capturedId = '';
+          if (agent === 'codex') {
+            const schemaFile = path.join(logDir, `evolve-team-${runId}-${phase}-schema.json`);
+            const outputFile = path.join(logDir, `evolve-team-${runId}-${phase}.log`);
+            try {
+              fs.rmSync(outputFile, { force: true });
+              fs.writeFileSync(schemaFile, `${schema}\n`, { mode: 0o600 });
+            } catch { throw createTeamError('unknown'); }
+            args.splice(args.length - 1, 0, '--output-schema', schemaFile, '--output-last-message', outputFile);
+            try {
+              await executeStreaming(bins[agent], args, {
+                env, stdin: command.stdin,
+                eventLog: path.join(logDir, `evolve-team-${runId}-${phase}-events.log`),
+                onLine: (line) => {
+                  const id = codexThreadIdFromLine(line);
+                  if (!id) return;
+                  if (!capturedId) { capturedId = id; return; }
+                  // 同一阶段事件流出现多个不同原生线程 id = 会话漂移，安全停。
+                  if (id !== capturedId) throw createTeamError('session_failed');
+                },
+              }).catch((error) => {
+                // 首轮 CLI/schema 失败也可能已经真实建立会话：私有持久化已确认的 id，
+                // 重试据此续接同一会话，而不是每次失败都另起新会话。
+                if (!stage.entry && capturedId) {
+                  try { sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId }); } catch {}
+                }
+                throw error;
+              });
+              // 流结束且拿到真实 id：立即私有登记（后续 parse 失败也保留，重试可续接）。
+              if (!stage.entry && capturedId) {
+                sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId });
+              }
+              response = readTeamStageOutput(outputFile);
+            } finally {
+              for (const temp of [schemaFile, outputFile]) { try { fs.unlinkSync(temp); } catch {} }
+            }
+          } else {
+            args.push('--output-format', 'json', '--json-schema', schema);
+            const stdout = await execute(bins[agent], args, { env, stdin: command.stdin, capture: true });
+            try { capturedId = validNativeId(JSON.parse(stdout)?.session_id); } catch { capturedId = ''; }
+            if (!stage.entry && capturedId) {
+              sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId });
+            }
+            response = claudeStageResponse(stdout);
+          }
+          if (stage.entry) {
+            // 每个续接阶段都必须实证仍是同一原生会话：没有 id 证明同样失败（fail closed）。
+            if (capturedId !== stage.entry.sessionId) throw createTeamError('session_failed');
+          } else if (!capturedId) {
+            // 没有真实原生 id 就没有会话连续性（无 ephemeral 兜底）：安全停。
+            throw createTeamError('session_failed');
+          }
+          const parsed = parseStageResult(response, phase, runtimeTerms);
+          // 私有交接读水位只在真实成功阶段后推进；失败/压缩异常不前移。
+          handoff.commit();
+          return parsed;
+        } finally {
+          stage.release();
         }
-        return parseStageResult(response, phase, runtimeTerms);
       },
       verify: async ({ reviewedOrchestrationFiles, baselineChecks = [] } = {}) => {
         const { files } = inspectWorktree();
@@ -463,4 +629,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { inspectWorktree, main };
+module.exports = { inspectWorktree, validateResumeInput, main, executeStreaming, snapshotPrivateHandoff };

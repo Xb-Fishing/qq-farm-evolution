@@ -27,8 +27,11 @@ const { createScheduler, getSchedulerRegistrySnapshot } = require('./scheduler')
 const { sendFeishuText } = require('./feishu-notify');
 const {
   normalizeAgentSettings, validateAgentSettings, readTeamJournal, isTeamResultApproved,
-  normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
+  normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback, normalizeCheckpoint,
 } = require('./evolution-team');
+const { inspectWorktree: inspectWorktreeAt } = require('./evolution-worktree');
+// 隔离任务/运行时工作区 + 私有保留源清单 + 发布门（2026-10-07 Stage C）。
+const evolutionPublish = require('./evolution-publish');
 const {
   normalizeAutonomy, computeReworkDelayMs, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
   NO_PROGRESS_DIAGNOSIS_ATTEMPTS,
@@ -254,6 +257,9 @@ function normalizeActiveRun(value) {
     launchedAt: Math.max(0, Number(value.launchedAt) || 0),
     baseCommit,
     logFile: String(value.logFile || '').trim().slice(0, 1000),
+    // 隔离任务工作区（Stage C）：空串 = 同根 legacy 路径；非空必须后续经
+    // verifyTaskWorkspace 证明，才允许任何基于它的 Git 操作。
+    taskRoot: String(value.taskRoot || '').trim().slice(0, 1000),
     newUnknown: normalizeIds(value.newUnknown),
     newEnded: normalizeIds(value.newEnded),
     reviewIds: normalizeIds(value.reviewIds),
@@ -287,6 +293,12 @@ function normalizePersistedState(value, now = Date.now()) {
     : [];
   state.agentSessionId = /^[a-f0-9-]{8,64}$/i.test(String(state.agentSessionId || ''))
     ? String(state.agentSessionId) : '';
+  // 待应用候选的来源绑定（B2）：非空 = 隔离任务区候选（apply 必须在登记的任务
+  // 树上核验，不可证明即如实失败，绝不回退按原库处理）；空 = legacy 同根路径。
+  state.candidateTaskRoot = String(state.candidateTaskRoot || '').trim().slice(0, 1000);
+  // 顶层综合巡检位（2026-10-07 R6）：只有真实启动落盘过才存在；缺位不是 false——
+  // legacy 推导只在 reconcileLostCollaboration 内凭精确内部标记 + journal 身份做。
+  if (Object.hasOwn(state, 'combinedDaily')) state.combinedDaily = state.combinedDaily === true;
   state.privacyBlockedCommit = /^[0-9a-f]{7,64}$/i.test(String(state.privacyBlockedCommit || ''))
     ? String(state.privacyBlockedCommit) : '';
   state.privacyBlockedBase = /^[0-9a-f]{7,64}$/i.test(String(state.privacyBlockedBase || ''))
@@ -340,7 +352,11 @@ function normalizePersistedState(value, now = Date.now()) {
     state.summary = `${state.summary || ''}（执行超时，状态已重置）`.slice(0, 500);
   }
   if (state.status !== 'running' && state.collaboration?.status === 'running') {
-    state.collaboration = { phase: 'failed', status: 'failed', activeAgent: '' };
+    // 字段保留式降级（2026-10-07 修复）：此处曾整体替换成 3 键对象，把 checkpoint/
+    // 预算/身份证据一并抹掉——父进程一重启，finalizeRecoveredEvolution（要求
+    // status==='running'）永远够不着，续接凭据就此丢失。降级只改 phase/status/
+    // activeAgent，其余字段原样保留；凭据真伪由 runner 对当前工作区独立实测。
+    state.collaboration = { ...state.collaboration, phase: 'failed', status: 'failed', activeAgent: '' };
   }
   return state;
 }
@@ -424,18 +440,18 @@ function isAutomaticQuotaUsed(state, dateKey = getLocalDateKey()) {
   return lastRunAt > 0 && getLocalDateKey(lastRunAt) === key;
 }
 
-function gitHead() {
+function gitHead(root = REPO_ROOT) {
   try {
-    return execSync('git rev-parse HEAD', { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+    return execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
   } catch {
     return '';
   }
 }
 
-function gitRefHead(ref) {
+function gitRefHead(ref, root = REPO_ROOT) {
   try {
     return execFileSync('git', ['rev-parse', ref], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
@@ -444,13 +460,13 @@ function gitRefHead(ref) {
   }
 }
 
-function worktreeChanges() {
+function worktreeChanges(root = REPO_ROOT) {
   try {
     // trimEnd 只去尾部换行：首行 ' M file' 的前导空格是 porcelain 固定列的一部分，
     // 整体 trim 会把它吃掉，下游按列切片就会得到 'ore/src/…'（2026-10-05 复审 R3
     // 真实 Parent 卡死根因）。
     return execSync('git status --porcelain --untracked-files=normal', {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
     }).trimEnd();
   } catch {
@@ -488,16 +504,16 @@ function worktreeChangeFiles(root = REPO_ROOT) {
   return [...new Set(files)];
 }
 
-function changedPathsSince(baseCommit, head = gitHead()) {
+function changedPathsSince(baseCommit, head = gitHead(), root = REPO_ROOT) {
   const base = String(baseCommit || '').trim();
   if (!base || !head || base === head) return [];
   try {
     execFileSync('git', ['merge-base', '--is-ancestor', base, head], {
-      cwd: REPO_ROOT,
+      cwd: root,
       stdio: 'ignore',
     });
     return execFileSync('git', ['diff', '--name-only', `${base}..${head}`], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).split('\n').map(item => item.trim()).filter(Boolean).slice(0, 200);
@@ -613,15 +629,15 @@ function formatEvolutionChangeSummary(subject, numstat, commit = '') {
   ].join('\n').slice(0, 3500);
 }
 
-function readEvolutionChangeSummary(headBefore, headAfter) {
+function readEvolutionChangeSummary(headBefore, headAfter, root = REPO_ROOT) {
   if (!headBefore || !headAfter || headBefore === headAfter) return '';
   try {
     const subject = execFileSync('git', ['show', '-s', '--format=%s', headAfter], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
     });
     const numstat = execFileSync('git', ['diff', '--numstat', `${headBefore}..${headAfter}`], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
     });
     return formatEvolutionChangeSummary(subject, numstat, headAfter);
@@ -685,21 +701,31 @@ function resolveCodexBin(options = {}) {
 
 function buildEvolutionAgentCommand(agentValue, prompt, options = {}) {
   const agent = normalizeEvolutionAgent(agentValue);
+  const resumeSessionId = String(options.resumeSessionId || '').trim();
+  const hasResume = /^[a-f0-9-]{8,64}$/i.test(resumeSessionId);
   if (agent === 'codex') {
+    // exec resume <id>：官方非交互续接同一原生线程；--json 让 stdout 输出事件流
+    // （thread.started 携带真实线程 id），最终结构化结果仍走 --output-last-message。
+    // 实测安装版二进制：`codex exec resume --help` 无 --color 旗标（仅 `codex exec`
+    // 支持），resume 子命令带上会被拒——只在新会话时传。
+    const args = ['exec'];
+    if (hasResume) args.push('resume', resumeSessionId);
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+    if (!hasResume) args.push('--color', 'never');
+    if (options.jsonEvents === true) args.push('--json');
+    args.push('-');
     return {
       agent,
       label: AGENT_LABELS[agent],
       bin: resolveCodexBin(options),
-      // 官方稳定非交互入口；权限等价于既有 Claude 自动进化权限。
-      args: ['exec', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-'],
+      args,
       stdin: String(prompt || ''),
     };
   }
   // --output-format json：stdout 输出单条 JSON（含 session_id），父进程据此持久化会话，
   // 隐私拦截/用户拒绝重做时用 --resume 续接原对话上下文而不是从零重来。
   const args = ['-p', '--dangerously-skip-permissions', '--output-format', 'json'];
-  const resumeSessionId = String(options.resumeSessionId || '').trim();
-  if (/^[a-f0-9-]{8,64}$/i.test(resumeSessionId)) args.push('--resume', resumeSessionId);
+  if (hasResume) args.push('--resume', resumeSessionId);
   return {
     agent,
     label: AGENT_LABELS[agent],
@@ -709,7 +735,7 @@ function buildEvolutionAgentCommand(agentValue, prompt, options = {}) {
   };
 }
 
-function buildEvolutionAgentEnv(source = process.env) {
+function buildEvolutionAgentEnv(source = process.env, root = REPO_ROOT) {
   const names = [
     'HOME', 'PATH', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR',
     'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
@@ -723,14 +749,14 @@ function buildEvolutionAgentEnv(source = process.env) {
   env.GIT_TERMINAL_PROMPT = '0';
   env.GIT_CONFIG_COUNT = '1';
   env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
-  env.GIT_CONFIG_VALUE_0 = path.join(REPO_ROOT, 'scripts', 'evolution-hooks');
+  env.GIT_CONFIG_VALUE_0 = path.join(root, 'scripts', 'evolution-hooks');
   return env;
 }
 
-async function remoteMainHead() {
+async function remoteMainHead(root = REPO_ROOT) {
   try {
     const { stdout } = await execFileAsync('git', ['ls-remote', 'origin', 'refs/heads/main'], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
       timeout: 30 * 1000,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -742,20 +768,27 @@ async function remoteMainHead() {
   }
 }
 
-/** Agent 只创建本地提交；父进程通过隐私闸门后才允许推送并核对远端 main。 */
-async function ensureHeadPushed(head, auditBase = '', collaboration = null) {
+/** Agent 只创建本地提交；父进程通过隐私闸门后才允许推送并核对远端 main。
+ * root：提交所在工作区（隔离任务区或原库）。expectedBase：隔离任务区的公开基线
+ * ——提供时远端必须仍是该基线，漂移即拒绝推送（绝不 force、绝不带漂移发布）。 */
+async function ensureHeadPushed(head, auditBase = '', collaboration = null, root = REPO_ROOT, expectedBase = '') {
   if (!head) return { ok: false, error: '本地提交为空' };
-  const remoteHead = await remoteMainHead();
+  const remoteHead = await remoteMainHead(root);
   // 已在远端 = 该提交已被推送通道放行（通常是 Agent 运行期间运维插入的提交）。
   // 此时审计无意义（拦不住已公开内容），回滚本地只会制造本地/远端分叉。
   if (remoteHead === head) return { ok: true };
+  // 隔离任务区：远端必须仍是建区时核验过的公开基线（含已发布维护提交的漂移都
+  // 视为待复核状态，本轮不推、不 force，交由有界重查/重诊断）。
+  if (expectedBase && remoteHead !== expectedBase) {
+    return { ok: false, error: `远端 origin/main 已从任务基线漂移（${remoteHead.slice(0, 8)}），本轮不推送，待重新核对` };
+  }
   const base = String(auditBase || remoteHead || '').trim();
   if (!base || base === head) {
     return { ok: false, privacyBlocked: true, error: '隐私闸门无法确定安全基线，已禁止推送' };
   }
   const reviewedOrchestrationFiles = isTeamResultApproved(collaboration, head)
     ? normalizeOrchestrationFiles(collaboration.reviewedOrchestrationFiles) : [];
-  const privacyAudit = auditGitRange(REPO_ROOT, base, head, { reviewedOrchestrationFiles });
+  const privacyAudit = auditGitRange(root, base, head, { reviewedOrchestrationFiles });
   if (!privacyAudit.ok) {
     return {
       ok: false,
@@ -768,7 +801,7 @@ async function ensureHeadPushed(head, auditBase = '', collaboration = null) {
   let pushError = '';
   try {
     await execFileAsync('git', ['push', 'origin', 'HEAD:main'], {
-      cwd: REPO_ROOT,
+      cwd: root,
       encoding: 'utf8',
       timeout: 2 * 60 * 1000,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -776,7 +809,7 @@ async function ensureHeadPushed(head, auditBase = '', collaboration = null) {
   } catch (error) {
     pushError = redactExternalText(String(error.stderr || error.message || error)).trim().slice(0, 500);
   }
-  if (await remoteMainHead() === head) return { ok: true };
+  if (await remoteMainHead(root) === head) return { ok: true };
   return { ok: false, error: pushError || 'origin/main 未指向本地进化提交' };
 }
 
@@ -935,6 +968,12 @@ function readApplyReceipt(dataDir = path.dirname(STATE_FILE)) {
       adminPort: Math.max(0, Math.floor(Number(value.adminPort) || 0)),
       startedAt: Math.max(0, Math.floor(Number(value.startedAt) || 0)),
       readyAt: Math.max(0, Math.floor(Number(value.readyAt) || 0)),
+      // 隔离候选回执字段（B3）必须保留：重启收口据此复核运行时根/源内容指纹/
+      // 保留摘要——丢弃这些字段会让「记录里有 runtimeRoot」退化成唯一证据。
+      runtimeRoot: String(value.runtimeRoot || '').trim().slice(0, 1000),
+      sourceFingerprint: /^[0-9a-f]{64}$/.test(String(value.sourceFingerprint || ''))
+        ? String(value.sourceFingerprint) : '',
+      holdDigest: /^[0-9a-f]{64}$/.test(String(value.holdDigest || '')) ? String(value.holdDigest) : '',
     };
   } catch { return null; }
 }
@@ -944,16 +983,36 @@ function markEvolutionAppliedAfterRestart(value) {
   if (state.status !== 'applying') return { changed: false, state };
   // 应用不信任手写状态（2026-10-05 复审 R1#6）：自主应用（applyingSource=
   // 'autonomous'）要求当前 HEAD 严格等于已审提交；人工路径保留祖先包含语义
-  // （维护会话叠提交是正常节奏）。
+  // （维护会话叠提交是正常节奏）。隔离候选（B3）：必须实测「本进程」真实运行在
+  // 私有应用目标记录的运行时根上（仓库根/cwd/入口都在根内、HEAD 等于记录提交、
+  // 当前内容 logicSnapshot 等于记录源指纹、原库保留物摘要一致且未动）——健康的
+  // 旧源进程或错误入口进程绝不能凭记录里的 runtimeRoot 被标记 applied。
+  // legacy 同根路径仍查原库。
+  const applyTarget = evolutionPublish.readApplyTarget(path.dirname(STATE_FILE));
+  const headRoot = applyTarget && applyTarget.commit === state.commit ? applyTarget.runtimeRoot : REPO_ROOT;
+  if (applyTarget && applyTarget.commit === state.commit) {
+    const running = evolutionPublish.verifyRunningRuntime({
+      record: applyTarget,
+      repoRoot: REPO_ROOT,
+      cwd: process.cwd(),
+      entry: process.argv[1] || '',
+      dataDir: path.dirname(STATE_FILE),
+    });
+    if (!running.ok) {
+      state.status = 'pending_apply';
+      state.summary = `本进程未证明运行在应用目标运行时根上（${running.reason}），已退回待应用；请人工核对`;
+      return { changed: false, state };
+    }
+  }
   if (state.commit) {
-    const headNow = gitHead();
+    const headNow = gitHead(headRoot);
     if (!headNow) return { changed: false, awaiting: true, state };
     let headOk = false;
     if (state.applyingSource === 'autonomous') headOk = headNow === state.commit;
     else {
       try {
         execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow],
-          { cwd: REPO_ROOT, stdio: 'ignore' });
+          { cwd: headRoot, stdio: 'ignore' });
         headOk = true;
       } catch { headOk = false; }
     }
@@ -1271,15 +1330,19 @@ ${lines.join('\n')}
 }
 
 /**
- * 每日自动综合巡检附带的「缓存活动增量上下文」小段：只汇总脱敏 ID、指纹与提示，
+ * 每日自动综合巡检附带的「缓存活动增量上下文」小节：只汇总脱敏 ID、指纹与提示，
  * 让子 Agent 读现成扫描报告；不重复拼一份活动大 Prompt，不新增游戏请求。
+ * 首行标题是内部精确标记：只有 combinedDaily=true 的启动才会注入原 prompt——
+ * legacy 状态缺少顶层综合位时，reconcileLostCollaboration 只凭它 + journal 原
+ * prompt digest 推导 true（缺位 ≠ false）。
  */
+const CACHED_ACTIVITY_CONTEXT_HEADER = '【缓存活动增量上下文（本轮综合巡检附带，不单独开启活动轮）】';
 function buildCachedActivityContext({ activityPlan = null, pendingActivity = null, reportAvailable = false } = {}) {
   const plan = activityPlan && typeof activityPlan === 'object' ? activityPlan : null;
   const pending = normalizePendingActivity(pendingActivity);
   const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(id => id > 0).join('、') || '无';
   const lines = [
-    '【缓存活动增量上下文（本轮综合巡检附带，不单独开启活动轮）】',
+    CACHED_ACTIVITY_CONTEXT_HEADER,
     `- 最新活动扫描报告：${reportAvailable ? '可用；先读取现成 core/data/activity-update-report.json，不为本轮新增任何游戏请求' : '不可用；本轮只完成安全巡检部分，不为了等待报告重试'}`,
   ];
   if (plan) {
@@ -1460,7 +1523,63 @@ function launchEvolution(task, payload = {}) {
     };
   }
 
-  if (trackedMain && gitHead() !== trackedMain) {
+  // ---- 续接凭据捕获（必须在任何状态改写之前；2026-10-05 复审第 1 条）----
+  // 下文会把 collaboration/status 改写成 running；续接凭据、原批次水位、原
+  // prompt/轮次/名额身份都必须先从 current 拷贝，否则 spawn 时读到的全是空值。
+  const autonomyBefore = normalizeAutonomy(current.autonomy);
+  const previousCheckpoint = current.collaboration?.checkpoint || null;
+  const resumeCheckpoint = payload.resume === 'continuation' ? continuationCheckpoint(current)
+    : payload.resume === 'checkpoint' ? previousCheckpoint : null;
+
+  // ---- 隔离任务工作区（2026-10-07 Stage C）----
+  // fresh 任务先在「独立验证的公开远端 HEAD」上建分离 worktree：原库物理不动
+  // （只发生 fetch 移动追踪引用），脏保留物即刻绑定进私有 hold manifest；此后
+  // 原库允许长期冻结（HEAD 落后远端 + 脏保留物都合法）。建区失败（无远端/离线/
+  // 目录异常）回退既有同根路径，原守卫全部保留。续接必须复用已登记任务区且通过
+  // 全量核验（runId/路径边界/common-dir/HEAD），不可证明即拒绝启动——绝不在
+  // 原库或新树上伪造续接。
+  const dataDir = path.dirname(STATE_FILE);
+  const runId = `${Date.now()}-${crypto.randomUUID()}`;
+  let taskRoot = '';
+  let taskPublicBase = '';
+  let taskWorkspace = false;
+  if (resumeCheckpoint) {
+    const provenance = evolutionPublish.readProvenance(dataDir);
+    // 已提交候选（B2）：续接核验对照「受信 checkpoint 提交」，不是建区 HEAD——
+    // 真实提交发生后任务 HEAD 必然离开建区基线，旧口径会把合法续接全部误拒。
+    const expectedHead = resumeCheckpoint.kind === 'post_apply'
+      ? resumeCheckpoint.patchHead : resumeCheckpoint.baselineHead;
+    const verified = provenance
+      ? evolutionPublish.verifyTaskWorkspace(REPO_ROOT, provenance, { expectedHead }) : { ok: false };
+    if (!verified.ok) {
+      return {
+        ok: false,
+        reason: 'workspace_unverified',
+        error: '续接任务区不可证明（路径/HEAD/共享库身份变化），已拒绝启动；请人工核对工作区',
+      };
+    }
+    taskRoot = provenance.taskRoot;
+    taskPublicBase = provenance.publicBase;
+    taskWorkspace = true;
+  } else {
+    // 保留清单只做首次初始化（B5）：从真实原库捕获一次；此后 Bot 可能已切换到
+    // 干净运行时根运行，当前根的清单绝不覆盖原始绑定。建区也永远挂在首次登记
+    // 的属主根之下（避免工作区嵌套进上一个运行时根）。
+    try { evolutionPublish.ensureHoldManifest(dataDir, REPO_ROOT); } catch { /* 不可证明不阻断：同根回退路径仍受既有守卫约束 */ }
+    const ownerRoot = evolutionPublish.ownerStorageRoot(dataDir, REPO_ROOT);
+    try {
+      const provenance = evolutionPublish.createTaskWorkspace({ repoRoot: ownerRoot, dataDir, runId });
+      taskRoot = provenance.taskRoot;
+      taskPublicBase = provenance.publicBase;
+      taskWorkspace = true;
+    } catch {
+      taskRoot = '';
+      taskPublicBase = '';
+      taskWorkspace = false;
+    }
+  }
+
+  if (!taskWorkspace && trackedMain && gitHead() !== trackedMain) {
     lastTask = task;
     current.status = 'privacy_blocked_local';
     current.lastTask = task;
@@ -1470,13 +1589,7 @@ function launchEvolution(task, payload = {}) {
     return { ok: false, reason: 'blocked', error: current.summary };
   }
 
-  // ---- 原任务上下文捕获（必须在任何状态改写之前；2026-10-05 复审第 1 条）----
-  // 下文会把 collaboration/status 改写成 running；续接凭据、原批次水位、原
-  // prompt/轮次/名额身份都必须先从 current 拷贝，否则 spawn 时读到的全是空值。
-  const autonomyBefore = normalizeAutonomy(current.autonomy);
-  const previousCheckpoint = current.collaboration?.checkpoint || null;
-  const resumeCheckpoint = payload.resume === 'continuation' ? continuationCheckpoint(current)
-    : payload.resume === 'checkpoint' ? previousCheckpoint : null;
+  // ---- 原任务上下文捕获（已在工作区判定之前完成；此处起只做派生）----
   const preserveBatch = payload.resume === 'continuation' || payload.resume === 'checkpoint'
     || payload.preserveFeedbackBatch === true;
   // 链条身份（私有 0600 状态文件）：原 prompt（digest 来源）+ 原名额日期。
@@ -1506,7 +1619,9 @@ function launchEvolution(task, payload = {}) {
     ? (preserveBatch && (autonomyBefore.quotaDate
         || (current.lastRunAutomatic === true ? current.lastAutomaticEvolveDate : ''))
       || getLocalDateKey()) : '';
-  const dirtyFiles = worktreeChangeFiles();
+  // 隔离任务区模式下原库脏物已绑定进 hold manifest，不再因原库未收口延期；
+  // 同根回退路径保留原语义（含续接授权 UNION 实测）。
+  const dirtyFiles = taskWorkspace ? [] : worktreeChangeFiles();
   // 信任脏树（2026-10-05 复审第 3 条）：最常见的 review_rejected 失败会留下改动，
   // 一律延期 = 永远无法返工。续接凭据存在且脏文件全部落在授权 UNION 内时放行，
   // 由 runner 对当前工作区逐文件指纹独立实测；无凭据/越权脏文件仍延期等人工。
@@ -1625,6 +1740,9 @@ function launchEvolution(task, payload = {}) {
     : [];
   state.feedbackBatch = nextFeedbackBatch;
   state.githubFeedbackBatch = nextGithubSummary;
+  // 顶层综合巡检位随每次真实启动落盘（2026-10-07 R6）：旧启动只写进 activeRun
+  // （收口即清），重启恢复身份核对永远拿到 false——现在状态文件自身就是权威。
+  state.combinedDaily = payload.combinedDaily === true;
   // 链条身份落盘（0600 状态文件，private）：续接轮据此核原任务不漂移。
   state.autonomy = {
     ...autonomyBefore,
@@ -1662,18 +1780,19 @@ function launchEvolution(task, payload = {}) {
   writeState(state);
   const out = fs.openSync(logFile, 'a', 0o600);
   try { fs.chmodSync(logFile, 0o600); } catch {}
-  const headBefore = gitHead();
+  const runRoot = taskRoot || REPO_ROOT;
+  const headBefore = gitHead(runRoot);
   const evidenceFingerprint = task === 'activity'
     ? activityEvidenceFingerprint(payload.report)
     : (payload.combinedDaily ? String(payload.activityPlan?.fingerprint || '') : '');
-  const runId = `${Date.now()}-${crypto.randomUUID()}`;
   // 单 Agent Claude 轮用 JSON stdout 捕获 session_id（重做时可 --resume 续接原对话）；
   // 其余模式沿用原全量日志输出。JSON 结果文本在收尾时回写日志，审计链不受影响。
   const sessionFile = path.join(EVOLVE_LOG_DIR, `evolve-${task}-${agent}-${getLocalDateKey()}.session.json`);
   const agentCommand = settings.dualAgentEnabled
     ? {
         bin: process.execPath,
-        args: [path.join(REPO_ROOT, 'core/scripts/run-evolution-team.js')],
+        // 协调脚本取任务区版本（与被审计的公开基线一致），cwd 同样落在任务区。
+        args: [path.join(runRoot, 'core/scripts/run-evolution-team.js')],
         stdin: JSON.stringify({ runId, baseCommit: headBefore, settings, bins, prompt, task, initialFailure,
           initialReviewFeedback,
           // 自主续接：checkpoint 在状态改写前捕获（in_run 原样传入；repairOnly 应用
@@ -1701,10 +1820,10 @@ function launchEvolution(task, payload = {}) {
     ? fs.openSync(sessionFile, 'w', 0o600)
     : null;
   const child = spawn(agentCommand.bin, agentCommand.args, {
-    cwd: REPO_ROOT,
+    cwd: runRoot,
     detached: true,
     stdio: ['pipe', sessionOut || out, out],
-    env: buildEvolutionAgentEnv(process.env),
+    env: buildEvolutionAgentEnv(process.env, runRoot),
   });
   fs.closeSync(out);
   if (sessionOut) fs.closeSync(sessionOut);
@@ -1722,6 +1841,7 @@ function launchEvolution(task, payload = {}) {
     launchedAt: state.lastRunAt,
     baseCommit: headBefore,
     logFile,
+    taskRoot,
     newUnknown: task === 'safety' ? (payload.activityPlan?.newUnknown || []) : payload.newUnknown,
     newEnded: task === 'safety' ? (payload.activityPlan?.newEnded || []) : payload.newEnded,
     reviewIds: task === 'safety' ? (payload.activityPlan?.reviewIds || []) : payload.reviewIds,
@@ -1736,26 +1856,30 @@ function launchEvolution(task, payload = {}) {
     if (finalized) return;
     finalized = true;
     scheduler.clear('evolution_agent_watch');
-    const headAfter = gitHead();
+    // 所有收口 Git 操作都在本轮真实运行根（隔离任务区或原库）上执行。
+    const headAfter = gitHead(runRoot);
     const evolved = !!headAfter && headAfter !== headBefore;
     const teamJournal = readTeamJournal(EVOLVE_LOG_DIR, activeRun);
     const teamBlocked = settings.dualAgentEnabled
-      && (!isTeamResultApproved(teamJournal, headAfter) || !!worktreeChanges());
-    const changeSummary = evolved ? readEvolutionChangeSummary(headBefore, headAfter) : '';
-    // 网络 Git 操作用异步子进程，不能阻塞 bot 心跳与收获调度。
-    const pushResult = evolved && !teamBlocked ? await ensureHeadPushed(headAfter, headBefore, teamJournal) : { ok: true };
+      && (!isTeamResultApproved(teamJournal, headAfter) || !!worktreeChanges(runRoot));
+    const changeSummary = evolved ? readEvolutionChangeSummary(headBefore, headAfter, runRoot) : '';
+    // 网络 Git 操作用异步子进程，不能阻塞 bot 心跳与收获调度。隔离任务区带公开
+    // 基线：远端漂移即拒绝推送（不 force、不伪造收口）。
+    const pushResult = evolved && !teamBlocked
+      ? await ensureHeadPushed(headAfter, headBefore, teamJournal, runRoot, taskPublicBase)
+      : { ok: true };
     const privacyBlocked = !!pushResult.privacyBlocked;
     let privacyRollback = false;
     // 二次保险：回滚前确认提交确实不在远端（闸门检查与回滚之间的竞态窗口内可能已被推送）。
-    if (privacyBlocked && gitHead() === headAfter && !worktreeChanges()
-        && (await remoteMainHead()) !== headAfter) {
+    if (privacyBlocked && gitHead(runRoot) === headAfter && !worktreeChanges(runRoot)
+        && (await remoteMainHead(runRoot)) !== headAfter) {
       try {
         execFileSync('git', ['merge-base', '--is-ancestor', headBefore, headAfter], {
-          cwd: REPO_ROOT,
+          cwd: runRoot,
           stdio: 'ignore',
         });
-        execFileSync('git', ['reset', '--keep', headBefore], { cwd: REPO_ROOT, stdio: 'ignore' });
-        privacyRollback = gitHead() === headBefore;
+        execFileSync('git', ['reset', '--keep', headBefore], { cwd: runRoot, stdio: 'ignore' });
+        privacyRollback = gitHead(runRoot) === headBefore;
       } catch {
         privacyRollback = false;
       }
@@ -1765,12 +1889,15 @@ function launchEvolution(task, payload = {}) {
     const retryableAgentFailure = !teamBlocked && !evolved && !signal && code !== 0 && !modelUnavailable;
     const agentFailureReason = readAgentFailureReason(logFile);
     // 解析 Claude JSON stdout：持久化 session_id（重做续接用），结果文本回写日志保持审计链。
-    const agentSession = readAgentSessionResult(sessionFile, logFile);
+    // 产物选择（2026-10-07 R6）：只有本轮真实打开过该 session 文件（单 Agent Claude）
+    // 才读它——双 Agent 轮不读同日早前单 Agent 轮留下的同名残留，避免拿旧会话 id
+    // 与旧 result 冒充本轮结果。
+    const agentSession = sessionOut ? readAgentSessionResult(sessionFile, logFile) : { sessionId: '' };
     let outcome = retryableAgentFailure
       ? 'interrupted'
       : classifyEvolutionExit(settings.dualAgentEnabled && !teamBlocked ? 0 : code,
         settings.dualAgentEnabled && !teamBlocked ? '' : signal, evolved, pushResult.ok, privacyBlocked);
-    if (teamBlocked) outcome = evolved || worktreeChanges() ? 'review_blocked' : signal ? 'interrupted' : 'failed';
+    if (teamBlocked) outcome = evolved || worktreeChanges(runRoot) ? 'review_blocked' : signal ? 'interrupted' : 'failed';
     if (outcome === 'privacy_blocked' && !privacyRollback) outcome = 'privacy_blocked_local';
     running = false;
     const interrupted = outcome === 'interrupted';
@@ -1782,6 +1909,10 @@ function launchEvolution(task, payload = {}) {
         failure: normalizeTeamFailure({ code: 'worktree_changed' }, 'commit', '') };
     }
     next.commit = evolved && !privacyRollback ? headAfter : '';
+    // 候选来源绑定（B2）：本轮真实运行根是隔离任务区时，把任务树随候选一起持久
+    // ——后续 apply/autonomy/restart 只认这个实际来源，不靠「碰巧还留着」的
+    // provenance 登记去猜；legacy 同根轮保持空串。
+    next.candidateTaskRoot = evolved && !privacyRollback ? taskRoot : '';
     next.changeSummary = privacyBlocked || teamBlocked ? '' : changeSummary;
     next.privacyFindings = privacyBlocked ? (pushResult.findings || []).slice(0, 20) : [];
     next.agentSessionId = agentSession.sessionId;
@@ -1896,8 +2027,8 @@ function launchEvolution(task, payload = {}) {
     try { logMtimeMs = fs.statSync(logFile).mtimeMs; } catch {}
     const decision = evolutionWatchDecision({
       launchedAt: activeRun?.launchedAt,
-      headChanged: gitHead() !== headBefore,
-      worktreeDirty: !!worktreeChanges(),
+      headChanged: gitHead(runRoot) !== headBefore,
+      worktreeDirty: !!worktreeChanges(runRoot),
       logMtimeMs,
     });
     if (decision) {
@@ -2162,14 +2293,14 @@ function syncEvolutionHead() {
  * 不信 agent 自报），且记录指纹等于当前仓库实测逻辑指纹（logicSnapshot 直读当前
  * 工作区）。任何缺失/漂移都自动延期重新等待，绝不带着未验证内容停服应用。
  * 返回空串=通过，否则为拒绝原因键。 */
-function autonomousApplyValidationGate() {
+function autonomousApplyValidationGate(root = REPO_ROOT) {
   const summary = getValidationSummary(path.dirname(STATE_FILE));
   if (summary.state !== 'passed') return `validation-${summary.state || 'unknown'}`;
-  const expectedChecks = fs.existsSync(path.join(REPO_ROOT, 'web', 'package.json'))
+  const expectedChecks = fs.existsSync(path.join(root, 'web', 'package.json'))
     ? 'backend,frontend' : 'backend';
   if (summary.checks.join(',') !== expectedChecks) return 'validation-checks-incomplete';
   try {
-    if (summary.fingerprint !== logicSnapshot(REPO_ROOT).fingerprint) return 'validation-fingerprint-drift';
+    if (summary.fingerprint !== logicSnapshot(root).fingerprint) return 'validation-fingerprint-drift';
   } catch {
     return 'validation-snapshot-unreadable';
   }
@@ -2185,24 +2316,72 @@ function applyEvolution(source = 'manual') {
     return { ok: false, error: `当前没有待应用的进化（状态：${state.status}）` };
   }
   const autonomous = source === 'autonomous';
+  // 应用根（B2）：候选绑定以实际任务状态为准——candidateTaskRoot 非空 = 隔离任务
+  // 区候选，必须在登记的任务树上以「受信已审提交」核验通过，失败即如实拒绝，
+  // 绝不静默回退按（脏）原库处理；空 = legacy 同根路径，沿用原库语义。原库保留
+  // 物（脏冻结）不阻断隔离候选的应用。
+  const dataDir = path.dirname(STATE_FILE);
+  const provenance = state.candidateTaskRoot ? evolutionPublish.readProvenance(dataDir) : null;
+  let taskVerified = { ok: false };
+  let applyRoot = REPO_ROOT;
+  if (state.candidateTaskRoot) {
+    if (!provenance || provenance.taskRoot !== state.candidateTaskRoot) {
+      return { ok: false, error: '待应用候选的任务区登记缺失或不符，未部署任何改动；请人工核对任务工作区' };
+    }
+    taskVerified = evolutionPublish.verifyTaskWorkspace(REPO_ROOT, provenance, { expectedHead: state.commit });
+    if (!taskVerified.ok) {
+      return { ok: false, error: `隔离任务区不可证明（${taskVerified.reason}），未部署任何改动；请人工核对任务工作区` };
+    }
+    applyRoot = provenance.taskRoot;
+  }
   // 2026-09-23 反复"待应用提交已变化"根因：维护会话在进化待应用提交之上叠新提交
   // 是正常节奏（修复/功能都会进），只要待应用提交仍是 HEAD 祖先（内容已包含），
   // 就允许部署当前 HEAD；逐字相等反而永远撞墙。已跟踪文件改动仍然阻断。
   // 自主应用路径要求 HEAD 严格等于已审提交（内容以提交哈希钉死，不接受祖先）。
-  const headNow = gitHead();
+  // 隔离任务区候选同样要求严格同提交：任务树上未经审查的叠提交不属于已审内容。
+  const headNow = gitHead(applyRoot);
   let auditedIncluded = false;
-  if (autonomous) auditedIncluded = !!headNow && headNow === state.commit;
+  if (autonomous || taskVerified.ok) auditedIncluded = !!headNow && headNow === state.commit;
   else {
     try {
-      execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow], { cwd: REPO_ROOT, stdio: 'ignore' });
+      execFileSync('git', ['merge-base', '--is-ancestor', state.commit, headNow], { cwd: applyRoot, stdio: 'ignore' });
       auditedIncluded = true;
     } catch { /* 不是祖先或命令失败 */ }
   }
-  if (!state.commit || !headNow || !auditedIncluded || worktreeChanges()) {
+  if (!state.commit || !headNow || !auditedIncluded || worktreeChanges(applyRoot)) {
     return { ok: false, error: '待应用提交或工作区已变化，请先核对，当前未部署任何改动' };
   }
   if (!fs.existsSync(APPLY_PROCESS_SCRIPT)) {
     return { ok: false, error: `缺少应用进程脚本 ${APPLY_PROCESS_SCRIPT}` };
+  }
+  // 隔离候选（Stage C/B3）：应用目标 = 已接受公开提交上的干净运行时工作区；绝不把
+  // 原库保留物部署上线。内容验证门先行（真实 runner 验证记录 passed + 全项 +
+  // 指纹等于任务树实测——缺失/漂移一律拒绝停服）；源身份用 logicSnapshot 内容
+  // 指纹（非 HEAD/status 哈希）。运行时区挂在属主根（原库）之下 + 私有应用目标
+  // 记录（helper 停服前与重启后收口都据此核对）。准备失败 = 未停服，诚实退回。
+  let targetRoot = '';
+  if (taskVerified.ok) {
+    const gate = autonomousApplyValidationGate(applyRoot);
+    if (gate) {
+      return { ok: false, error: `候选内容验证未通过（${gate}），未部署任何改动` };
+    }
+    try {
+      const runtime = evolutionPublish.prepareRuntimeWorkspace({
+        repoRoot: evolutionPublish.ownerStorageRoot(dataDir, REPO_ROOT),
+        runId: provenance.runId, commit: headNow, dataDir,
+      });
+      targetRoot = runtime.runtimeRoot;
+      evolutionPublish.recordApplyTarget(dataDir, {
+        runId: provenance.runId,
+        commit: headNow,
+        runtimeRoot: targetRoot,
+        sourceFingerprint: runtime.logicFingerprint,
+        holdDigest: evolutionPublish.holdDigest(evolutionPublish.readHoldManifest(dataDir)),
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      return { ok: false, error: `运行时工作区准备失败（${error.reason || error.message}），未部署任何改动` };
+    }
   }
   const tmuxTarget = resolveTmuxPaneForProcess(process.pid);
   if (!tmuxTarget) {
@@ -2237,6 +2416,7 @@ function applyEvolution(source = 'manual') {
     '--data-dir', path.dirname(STATE_FILE),
     '--admin-port', String(Number(process.env.ADMIN_PORT) || 3007),
     '--node-bin-dir', path.dirname(process.execPath),
+    ...(targetRoot ? ['--target-root', targetRoot] : []),
     ...(autonomous ? ['--autonomy', '1'] : []),
   ], {
     cwd: REPO_ROOT,
@@ -2472,9 +2652,26 @@ async function runAutonomyStep() {
     if (plan.action === 'none') return;
 
     if (plan.action === 'apply') {
+      // 应用根（B2）：候选绑定以实际任务状态为准；隔离候选必须通过任务树核验
+      // （对照受信已审提交），不可证明 = 如实延期，绝不回退按脏原库处理。
+      const autonomyDataDir = path.dirname(STATE_FILE);
+      const autonomyProvenance = state.candidateTaskRoot
+        ? evolutionPublish.readProvenance(autonomyDataDir) : null;
+      let applyRoot = REPO_ROOT;
+      if (state.candidateTaskRoot) {
+        const autonomyTask = autonomyProvenance && autonomyProvenance.taskRoot === state.candidateTaskRoot
+          ? evolutionPublish.verifyTaskWorkspace(REPO_ROOT, autonomyProvenance, { expectedHead: state.commit })
+          : { ok: false, reason: 'provenance_invalid' };
+        if (!autonomyTask.ok) {
+          autonomyDefer(state, `apply-workspace:${autonomyTask.reason || 'unprovable'}`,
+            `隔离任务区不可证明（${autonomyTask.reason || 'unprovable'}），自主应用暂缓；请人工核对任务工作区`);
+          return;
+        }
+        applyRoot = autonomyProvenance.taskRoot;
+      }
       // 自主应用一律严格同提交（2026-10-05 复审 R1#6/R2#6：不分候选的手动/自动
       // 来源；祖先包含语义只属于人工按钮路径）。内容以提交哈希钉死。
-      const headNow = gitHead();
+      const headNow = gitHead(applyRoot);
       if (headNow !== state.commit) {
         autonomyDefer(state, `apply-head-drift:${headNow || 'none'}`,
           `待应用提交 ${state.commit.slice(0, 8)} 与当前 HEAD 不一致，自主应用已暂停；待仓库收口后自动重查`);
@@ -2488,21 +2685,21 @@ async function runAutonomyStep() {
       }
       // 内容验证门：真实 runner 验证记录 passed + 全项 + 指纹等于当前仓库实测，
       // 缺一自动延期（下一轮验证通过后继续），不启动停服。
-      const gateBefore = autonomousApplyValidationGate();
+      const gateBefore = autonomousApplyValidationGate(applyRoot);
       if (gateBefore) {
         autonomyDefer(state, `apply-${gateBefore}`,
           '待应用提交的离线回归验证未通过或已过期，自主应用暂缓，待重新验证通过后自动继续');
         return;
       }
       // 远端核对必须实测远端（gitRefHead 只读本地跟踪引用，fetch 之前是旧值）。
-      const remote = await remoteMainHead();
+      const remote = await remoteMainHead(applyRoot);
       // 远端核对有网络耗时：期间 owner 可能经 API 关闭自主或状态被改写，
       // 停服决策前必须重读实测，不用 await 前的旧状态。
       const latest = readState();
       if (latest.autonomousEvolutionEnabled !== true
         || latest.status !== 'pending_apply' || latest.commit !== state.commit) return;
       // await 期间仓库/验证记录也可能变化：停服前再核一次内容指纹。
-      const gateAfter = autonomousApplyValidationGate();
+      const gateAfter = autonomousApplyValidationGate(applyRoot);
       if (gateAfter) {
         autonomyDefer(latest, `apply-${gateAfter}`,
           '待应用提交的离线回归验证在启动前发生变化，自主应用暂缓，待重新验证通过后自动继续');
@@ -2693,15 +2890,17 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
   const task = active.task;
   const tag = task === 'safety' ? '安全巡检' : '活动进化';
   const agentLabel = AGENT_LABELS[active.agent];
-  const headAfter = gitHead();
+  // 恢复收口同样在真实运行根上执行（隔离任务区或原库）。
+  const runRoot = active.taskRoot || REPO_ROOT;
+  const headAfter = gitHead(runRoot);
   const evolved = !!headAfter && headAfter !== active.baseCommit;
   const teamJournal = readTeamJournal(EVOLVE_LOG_DIR, active);
   const teamApproved = active.dualAgentEnabled && isTeamResultApproved(teamJournal, headAfter);
   running = true;
   lastTask = task;
 
-  if (worktreeChanges() || (active.dualAgentEnabled && !teamApproved)) {
-    current.status = evolved || worktreeChanges() ? 'review_blocked' : 'interrupted';
+  if (worktreeChanges(runRoot) || (active.dualAgentEnabled && !teamApproved)) {
+    current.status = evolved || worktreeChanges(runRoot) ? 'review_blocked' : 'interrupted';
     current.commit = evolved ? headAfter : '';
     current.activeRun = null;
     current.collaboration = active.dualAgentEnabled ? { ...teamJournal, phase: 'failed', status: 'failed', activeAgent: '' } : null;
@@ -2722,8 +2921,15 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
     return;
   }
 
+  // 恢复收口同样带隔离任务区的公开基线（远端漂移即拒绝推送）；任务树身份先经
+  // 全量核验（对照恢复实测的当前提交），不可证明就不基于它推送。
+  const recoveredProvenance = active.taskRoot ? evolutionPublish.readProvenance(path.dirname(STATE_FILE)) : null;
+  const recoveredVerified = recoveredProvenance && recoveredProvenance.taskRoot === active.taskRoot
+    ? evolutionPublish.verifyTaskWorkspace(REPO_ROOT, recoveredProvenance, { expectedHead: headAfter })
+    : { ok: false };
+  const recoveredExpectedBase = recoveredVerified.ok ? recoveredProvenance.publicBase : '';
   const pushResult = evolved
-    ? await ensureHeadPushed(headAfter, active.baseCommit, teamJournal)
+    ? await ensureHeadPushed(headAfter, active.baseCommit, teamJournal, runRoot, recoveredExpectedBase)
     : { ok: true };
   const privacyBlocked = !!pushResult.privacyBlocked;
   const outcome = classifyEvolutionExit(teamApproved ? 0 : null, teamApproved ? '' : signal, evolved, pushResult.ok, privacyBlocked);
@@ -2735,8 +2941,10 @@ async function finalizeRecoveredEvolution(activeRun, signal = 'parent_restart') 
   next.activeRun = null;
   next.collaboration = active.dualAgentEnabled ? teamJournal : null;
   next.commit = evolved ? headAfter : '';
+  // 候选来源绑定（B2）：恢复收口同样只认 activeRun 记录的实际任务树。
+  next.candidateTaskRoot = evolved ? active.taskRoot : '';
   next.changeSummary = evolved && !privacyBlocked
-    ? readEvolutionChangeSummary(active.baseCommit, headAfter)
+    ? readEvolutionChangeSummary(active.baseCommit, headAfter, runRoot)
     : '';
   next.privacyFindings = privacyBlocked ? (pushResult.findings || []).slice(0, 20) : [];
   next.status = outcome === 'privacy_blocked' ? 'privacy_blocked_local' : outcome;
@@ -2844,8 +3052,8 @@ function watchRecoveredEvolution(activeRun) {
     try { logMtimeMs = fs.statSync(active.logFile).mtimeMs; } catch {}
     const decision = evolutionWatchDecision({
       launchedAt: active.launchedAt,
-      headChanged: gitHead() !== active.baseCommit,
-      worktreeDirty: !!worktreeChanges(),
+      headChanged: gitHead(active.taskRoot || REPO_ROOT) !== active.baseCommit,
+      worktreeDirty: !!worktreeChanges(active.taskRoot || REPO_ROOT),
       logMtimeMs,
     });
     if (decision) stopEvolutionProcessGroup(active.pid);
@@ -2896,6 +3104,129 @@ function reconcileSynchronizedPrivacyBlock(state) {
 }
 
 /**
+ * 丢失协作上下文的真凭据恢复（2026-10-07）：旧版 normalizePersistedState 曾把
+ * collaboration 整体抹成 3 键，checkpoint/预算/任务身份证据丢失（已修为字段保留
+ * 式降级，但历史上已落盘的受损状态仍存在）。此处只在「协作对象存在但凭据缺失」
+ * 时，按最新优先、有界扫描日志目录里的 runner journal，对候选 journal 做**全量
+ * 双侧身份核验**（任一 gate 失败即停止扫描，绝不降级采信更旧条目）：
+ *   baseCommit === 当前 HEAD；journal 主/子 Agent === 当前配置；checkpoint 形状
+ *   合法且 baseline/patchHead 与 HEAD 关系正确；任务身份逐字段比对（task 类型、
+ *   原 prompt digest、反馈水位、活动计划/GitHub 批次摘要、名额日期、自动/综合
+ *   标记——有记录就必须一致）；当前工作区实测：脏集合与凭据逐文件快照的键集
+ *   完全一致（不多不少）、逐条内容/权限/暂存哈希一致、整体指纹一致（post_apply
+ *   则要求干净树 + patchHead 就是 HEAD）。
+ * 全部通过才恢复 2707 形状的失败协作对象（带 recoveredFromJournal 追溯标记）；
+ * journal 只证明「过去的受限方案与重试上下文」，不证明任何业务结论——恢复后
+ * 状态仍是 failed，续接必须重新进 runner 独立实测与主审复核。任何失败 = 不采信、
+ * 不写入、不影响原状态。
+ */
+function reconcileLostCollaboration(state, options = {}) {
+  const repoRoot = options.repoRoot || REPO_ROOT;
+  const logDir = options.logDir || EVOLVE_LOG_DIR;
+  try {
+    if (!state?.dualAgentEnabled || !state.collaboration) return state;
+    if (state.status === 'running' && state.activeRun) return state;
+    // 凭据还在就无所丢失；完整/已批准协作不进入恢复（绝不伪造决策完成）。
+    if (state.collaboration.checkpoint) return state;
+    if (state.collaboration.status === 'completed') return state;
+    if (!['failed', 'interrupted', 'review_blocked', 'privacy_blocked_local', 'deferred'].includes(state.status)) return state;
+    const settings = normalizeAgentSettings(state);
+    let head = '';
+    try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch { return state; }
+    let names = [];
+    try { names = fs.readdirSync(logDir); } catch { return state; }
+    // journal 文件名与 runner teamJournalPath 同源：evolve-team-<runId>.json。
+    // 阶段结构化输出 artifact 是 evolve-team-<runId>-<phase>-schema.json——名字也
+    // 匹配 journal 正则（[\w-] 吃掉 -<phase>-schema 后缀）；被中断的较新阶段留下
+    // 这种文件时，它会被误当成「最新 journal」抢走扫描名额（runId 提取必然不符
+    // → 整个扫描终止 → 真正的 journal 永远轮不到）。排除在排序之前完成，只排除
+    // 已知的非 journal 阶段 schema 后缀；最新真 journal 无效/不匹配仍按原语义
+    // fail-closed（绝不降级采信更旧条目）。
+    const journals = names.filter(name => /^evolve-team-[\w-]{1,100}\.json$/.test(name)
+      && !/-schema\.json$/.test(name))
+      .map(name => ({ name, mtime: fs.statSync(path.join(logDir, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 10);
+    const currentIdentity = {
+      task: state.lastTask === 'safety' ? 'safety' : 'activity',
+      promptDigest: crypto.createHash('sha256').update(String(state.autonomy?.originalPrompt || '')).digest('hex'),
+      feedbackThroughAt: Math.max(0, Math.floor(Number(state.feedbackBatch?.throughAt) || 0)),
+      activityPlanDigest: /^[0-9a-f]{64}$/.test(String(state.autonomy?.activityPlanDigest || ''))
+        ? String(state.autonomy.activityPlanDigest) : '',
+      githubBatchDigest: /^[0-9a-f]{64}$/.test(String(state.autonomy?.githubBatchDigest || ''))
+        ? String(state.autonomy.githubBatchDigest) : '',
+      quotaDate: /^\d{4}-\d{2}-\d{2}$/.test(String(state.autonomy?.quotaDate || ''))
+        ? String(state.autonomy.quotaDate) : '',
+      automatic: state.lastRunAutomatic === true,
+      // 顶层综合巡检位缺位 ≠ false（2026-10-07 R6）：legacy 推导仅当位缺位且原
+      // prompt 含 buildCachedActivityContext 的精确内部标题（只有 combinedDaily=true
+      // 的启动才注入）；原 prompt digest 与 journal 的一致性由下方逐字段比对兜底，
+      // 显式 false 或证据不符都在比对处拒绝。
+      combinedDaily: Object.hasOwn(state, 'combinedDaily')
+        ? state.combinedDaily === true
+        : String(state.autonomy?.originalPrompt || '').includes(CACHED_ACTIVITY_CONTEXT_HEADER),
+    };
+    // 只看最新一条：首个不匹配（身份/凭据/工作区任一 gate）即停止整个扫描，
+    // 绝不降级采信更旧 journal——循环体所有分支都终止，等价于单条处理。
+    if (journals.length) {
+      const name = journals[0].name;
+      let value;
+      try { value = JSON.parse(fs.readFileSync(path.join(logDir, name), 'utf8')); }
+      catch { return state; }
+      // 最新条目身份不符即停止：更旧 journal 一律不再看（ newer-unmatched 不许
+      // fallback，inconsistent 不许跳过续扫）。
+      if (value?.runId !== name.slice('evolve-team-'.length, -'.json'.length)) return state;
+      if (value.baseCommit !== head) return state;
+      if (value.mainAgent !== settings.mainAgent || value.subAgent !== settings.subAgent) return state;
+      if (!['running', 'failed'].includes(value.status)) return state;
+      const checkpoint = normalizeCheckpoint(value.checkpoint);
+      if (!checkpoint) return state;
+      if (checkpoint.kind === 'in_run') {
+        if (checkpoint.baselineHead !== head) return state;
+      } else if (checkpoint.patchHead !== head) return state;
+      const recorded = checkpoint.taskIdentity;
+      if (recorded.task !== currentIdentity.task
+        || recorded.promptDigest !== currentIdentity.promptDigest
+        || recorded.feedbackThroughAt !== currentIdentity.feedbackThroughAt
+        || (!!recorded.activityPlanDigest && recorded.activityPlanDigest !== currentIdentity.activityPlanDigest)
+        || (!!recorded.githubBatchDigest && recorded.githubBatchDigest !== currentIdentity.githubBatchDigest)
+        || (!!recorded.quotaDate && recorded.quotaDate !== currentIdentity.quotaDate)
+        || recorded.automatic !== currentIdentity.automatic
+        || recorded.combinedDaily !== currentIdentity.combinedDaily) return state;
+      const now = inspectWorktreeAt(repoRoot);
+      if (now.head !== head) return state;
+      if (checkpoint.kind === 'post_apply') {
+        if (now.dirty || now.files.length) return state;
+      } else {
+        if (now.files.some(file => !checkpoint.allowedFiles.includes(file))) return state;
+        const recordedFiles = Object.keys(checkpoint.fileFingerprints).sort();
+        if (recordedFiles.length !== now.files.length
+          || recordedFiles.some((file, index) => file !== now.files[index])) return state;
+        for (const [file, digest] of Object.entries(checkpoint.fileFingerprints)) {
+          if (now.fileFingerprints[file] !== digest) return state;
+        }
+        if (checkpoint.worktreeFingerprint !== now.fingerprint) return state;
+      }
+      // 全部 gate 通过：以 runner journal 为权威恢复失败协作对象（真实凭据 + 预算
+      // + 身份），并单独追溯恢复来源——不伪造 decision/approve/complete。
+      const journal = readTeamJournal(logDir, {
+        dualAgentEnabled: true, runId: value.runId, baseCommit: value.baseCommit,
+        agent: value.mainAgent, subAgent: value.subAgent,
+      });
+      if (!journal) return state;
+      state.collaboration = { ...journal, phase: 'failed', status: 'failed', activeAgent: '', recoveredFromJournal: true };
+      state.summary = `${String(state.summary || '').slice(0, 400)}（已按日志身份全量核验恢复协作上下文，仅供续接凭据；须重新走真实验证与主审复核）`.slice(0, 500);
+      return state;
+    }
+    return state;
+  } catch {
+    // 任何内部异常（git 不可用/文件竞争等）都按不可证明处理：不采信、不写。
+    return state;
+  }
+}
+
+/**
  * 已发布进化的反馈收口补挂钩（启动恢复/推送自愈共用）：状态是已验证发布
  * （pending_apply/applied）、有实际提交与批次摘要，且（双 Agent）主批准 journal 仍
  * 有效时，幂等地再进一次反馈收口。入队按键去重、发送有送达标记核对，重复调用不会
@@ -2925,7 +3256,7 @@ function startActivityEvolver(options = {}) {
   scheduler.clearAll();
 
   // apply-evolution.sh 只有在旧进程退出后才能生效，新进程启动就是可靠的已应用边界。
-  const initial = reconcileSynchronizedPrivacyBlock(reconcileLegacyRunningState(readState()));
+  const initial = reconcileLostCollaboration(reconcileSynchronizedPrivacyBlock(reconcileLegacyRunningState(readState())));
   const reconciled = markEvolutionAppliedAfterRestart(initial);
   settleDailyReview(reconciled.state);
   writeState(reconciled.state);
@@ -3005,14 +3336,17 @@ function getEvolveState() {
   // launch/apply 使用；面板/客户端只拿产品级计数字段。
   const {
     autonomy: _autonomy, feedbackBatch: _batch, githubFeedbackBatch: _githubBatch,
-    runtimeIssueBatch: _issues, ...publicFields
+    runtimeIssueBatch: _issues, agentSessionId: _agentSessionId,
+    candidateTaskRoot: _candidateTaskRoot, activeRun: _activeRun, ...publicFields
   } = state;
+  const { taskRoot: _taskRoot, ...publicActiveRun } = _activeRun || {};
   const collaboration = readTeamJournal(EVOLVE_LOG_DIR, state.activeRun) || state.collaboration;
   const autonomy = normalizeAutonomy(state.autonomy);
   return {
     running,
     lastTask,
     ...publicFields,
+    activeRun: _activeRun ? publicActiveRun : null,
     // 面板需要的自主进度：计数与下次动作时刻；不含 originalPrompt/批次/凭据。
     autonomy: state.autonomy ? {
       reworkAttempts: autonomy.reworkAttempts,
@@ -3241,6 +3575,7 @@ module.exports = {
   settleCombinedActivityMemory,
   classifyEvolutionExit,
   normalizePersistedState,
+  reconcileLostCollaboration,
   normalizeEvolutionMemory,
   settleDailyReview,
   normalizeActiveRun,

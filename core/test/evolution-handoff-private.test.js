@@ -29,7 +29,7 @@ test('ignored 私有 HANDOFF：真实更新通过、未更新/缺失/不可读�
   const journalOf = runId => JSON.parse(fs.readFileSync(path.join(dir, 'core/data/logs', `evolve-team-${runId}.json`), 'utf8'));
   try {
     write('core/scripts/run-evolution-team.js', fs.readFileSync(path.join(__dirname, '../scripts/run-evolution-team.js')));
-    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation', 'evolution-countercheck']) {
+    for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation', 'evolution-countercheck', 'evolution-sessions', 'evolution-worktree']) {
       write(`core/src/services/${name}.js`, `module.exports = require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
     write('core/src/services/evolution-references.js', 'module.exports.collectPublicReferences = async () => ({state:"complete", discoveryComplete:true});\n');
@@ -39,9 +39,38 @@ test('ignored 私有 HANDOFF：真实更新通过、未更新/缺失/不可读�
     write('core/test/example.test.js', 'require("node:assert/strict").ok([1, 2].includes(require("../src/example")));\n');
     const fakeCli = `#!/usr/bin/env node
 const fs = require('node:fs');
+const SESSION = { claude: 'aaaa1111-2222-3333-4444-555566667777', codex: 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee' };
+if (process.argv[2] === 'app-server') {
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\\n')) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let value; try { value = JSON.parse(line); } catch { continue; }
+      if (value.id === undefined || !value.method) continue;
+      const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: value.id, result }) + '\\n');
+      if (value.method === 'thread/read' || value.method === 'thread/resume') reply({ thread: { id: value.params.threadId } });
+      else if (value.method === 'thread/compact/start') {
+        reply({});
+        for (const method of ['item/started', 'item/completed']) {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method, params: { threadId: value.params.threadId, item: { type: 'contextCompaction' } } }) + '\\n');
+        }
+      } else reply({});
+    }
+  });
+  return;
+}
 let prompt = '';
 process.stdin.on('data', c => { prompt += c; });
 process.stdin.on('end', () => {
+  if (prompt === '/compact') {
+    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: SESSION.claude }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: SESSION.claude }) + '\\n');
+    return;
+  }
   const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   if (phase === 'implement' && !fs.existsSync('core/data/skip-code')) {
     fs.writeFileSync('core/src/example.js', fs.existsSync('core/data/break-tests') ? 'module.exports = 3;\\n' : 'module.exports = 2;\\n');
@@ -54,11 +83,12 @@ process.stdin.on('end', () => {
   const schemaIndex = process.argv.indexOf('--output-schema');
   if (schemaIndex >= 0) {
     if (!JSON.parse(fs.readFileSync(process.argv[schemaIndex + 1])).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
+    if (process.argv.includes('--json')) process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: SESSION.codex }) + '\\n');
     fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify(result));
   } else {
     const jsonIndex = process.argv.indexOf('--json-schema');
     if (jsonIndex < 0 || !JSON.parse(process.argv[jsonIndex + 1]).properties.decision.enum.includes(decision)) throw new Error('Missing stage schema');
-    process.stdout.write(JSON.stringify({subtype:'success', is_error:false, result:'completed', structured_output:result}));
+    process.stdout.write(JSON.stringify({subtype:'success', is_error:false, session_id: SESSION.claude, result:'completed', structured_output:result}));
   }
 });
 `;
