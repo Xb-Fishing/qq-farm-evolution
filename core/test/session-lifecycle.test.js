@@ -758,8 +758,8 @@ test('应用进化只复用既有 farm tmux pane', () => {
   // 薄壳只传参；pane 定位、送键与重启全部在受审 helper 内完成。
   assert.match(shim, /FARM_TMUX_TARGET:\?missing tmux target/);
   assert.match(helper, /'display-message', '-p', '-t', target, '#\{pane_pid\}'/);
-  assert.match(helper, /'send-keys', '-t', tmuxTarget, '-l'/);
-  assert.match(helper, /'send-keys', '-t', tmuxTarget, 'Enter'/);
+  // 字节编码和清行/回车由真实重启行为测试覆盖，静态门只约束目标 pane。
+  assert.match(helper, /'send-keys', '-t', tmuxTarget,/);
   // 只在原 pane 内启动重启分支：不新建会话/窗口，不向 pane 发中断键。
   assert.doesNotMatch(helper, /new-session|new-window/);
   assert.doesNotMatch(helper, /'C-c'/);

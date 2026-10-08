@@ -9,7 +9,12 @@
 //   实例与其他 pane 实例不被误伤；两次应用后新 Bot 都保持原 pane 后代；
 // - helper 作为 Bot 后代运行（生产拓扑）：其祖先分支（含同分支的 updater 类
 //   常驻进程）被排除在停止集合外，其余 Bot 子树照常停止；
-// - 旁观端口持有者、脏工作区、自主开关关闭三类失败都必须发生在停服之前。
+// - 旁观端口持有者、脏工作区、自主开关关闭三类失败都必须发生在停服之前；
+// - 二批（2026-10-08）：真实 ready 落盘「最近一次 ready」验收证书（目标快照 +
+//   实测验证摘要 + 验收时溯源 + 进程身份，0600），失败应用保留既有证书，成功
+//   应用原子更新；pane 残留未提交 restart 行的真实事故回归——旧 helper（HEAD
+//   版本真进程）在残行后拼接命令而真实失败，新 helper 单事务 C-u 清行后成功
+//   重启预期 marker Bot。
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -81,6 +86,13 @@ const { test } = require('node:test');
 const helper = require('../scripts/evolution-apply-process');
 
 const HELPER_SOURCE = path.join(__dirname, '../scripts/evolution-apply-process.js');
+const HELPER_CODE = fs.readFileSync(HELPER_SOURCE, 'utf8');
+/** 以原始字节（-H hex）向 pane 送字面文本：以 '-' 开头的文本会被 send-keys 的
+ * 选项解析吞掉，-H 按字节无歧义（与 helper 单事务送键同机制）。 */
+function sendLiteral(target, text) {
+  const bytes = Buffer.from(text, 'utf8');
+  tmux(['send-keys', '-t', target, '-H', ...bytes.toString('hex').match(/../g)]);
+}
 const SPECIAL_ENV = 'a"b $d \\e 空格 ;分号 $(echo hi) `tick`';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const shq = value => `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -165,8 +177,9 @@ function readEvidence(file) {
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-/** 独立 fixture 仓库 + 真实 tmux pane（fake Bot 由 pane shell 前台运行）。 */
-function buildFixture(t) {
+/** 独立 fixture 仓库 + 真实 tmux pane（fake Bot 由 pane shell 前台运行）。
+ * helperSource 可注入旧版 helper（从 git HEAD 提取）做真实行为反例。 */
+function buildFixture(t, { helperSource = HELPER_CODE } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-apply2-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'repo');
@@ -177,7 +190,7 @@ function buildFixture(t) {
   fs.mkdirSync(path.join(root, 'tmp'));
   fs.mkdirSync(path.join(root, 'web', 'dist'), { recursive: true });
   fs.writeFileSync(path.join(root, '.gitignore'), 'tmp/\ncore/data/\nweb/dist/\n');
-  fs.copyFileSync(HELPER_SOURCE, path.join(root, 'core/scripts/evolution-apply-process.js'));
+  fs.writeFileSync(path.join(root, 'core/scripts/evolution-apply-process.js'), helperSource);
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ name: 'web', private: true, scripts: { build: 'node build.cjs' } }));
   fs.writeFileSync(path.join(root, 'web/build.cjs'),
     "const fs=require('fs');let out='dist';for(let i=2;i<process.argv.length;i++){if(process.argv[i]==='--outDir')out=process.argv[i+1];}"
@@ -646,6 +659,9 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
   assert.match(bad.stderr, /离线回归验证记录缺失\/未通过\/指纹不符/);
   assert.ok(alive(first.pid, botStart), '验证门失败必须发生在停服之前');
   assertOriginalRootUntouched();
+  // 失败应用绝不写「最近一次 ready」验收证书（二批）：没有成功就没有验收。
+  const certFile = path.join(f.dataDir, 'evolution-approved-runtime.json');
+  assert.equal(fs.existsSync(certFile), false, '失败应用不得写验收证书');
 
   // 正例：真实内容指纹的验证记录 → 全链切换成功。
   writeValidationRecord(f.dataDir, rt1.logicFingerprint);
@@ -676,6 +692,25 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
   assert.equal(alive(bgPid, bgStart), true, '同 pane 后台实例不被误伤');
   assert.equal(alive(otherPid, otherStart), true, '其他 pane 实例不被误伤');
   assert.equal(fs.existsSync(path.join(f.dataDir, 'evolution-apply-context.json')), false, '私有上下文用后即删');
+  // 真实 ready 落盘验收证书（二批）：目标记录快照 + 实测通过验证摘要 + 验收时
+  // 溯源快照 + ready 进程身份，私有 0600。
+  const cert1 = JSON.parse(fs.readFileSync(certFile, 'utf8'));
+  assert.equal(cert1.version, 1);
+  assert.ok(Number.isInteger(cert1.certifiedAt) && cert1.certifiedAt > 0);
+  assert.equal(cert1.target.commit, head1);
+  assert.equal(cert1.target.runtimeRoot, rt1.runtimeRoot);
+  assert.equal(cert1.target.sourceFingerprint, rt1.logicFingerprint);
+  assert.equal(cert1.target.holdDigest, publish.holdDigest(manifest));
+  assert.equal(cert1.validation.state, 'passed');
+  assert.equal(cert1.validation.fingerprint, rt1.logicFingerprint);
+  assert.deepEqual(cert1.validation.checks, ['backend', 'frontend']);
+  assert.equal(cert1.provenance.runId, provenance.runId);
+  assert.equal(cert1.provenance.taskRoot, provenance.taskRoot);
+  assert.equal(cert1.provenance.publicBase, provenance.publicBase);
+  assert.equal(cert1.provenance.commonDir, provenance.commonDir);
+  assert.equal(cert1.process.newPid, run1.receipt.newPid);
+  assert.equal(cert1.process.expectedHead, head1);
+  assert.equal(fs.statSync(certFile).mode & 0o777, 0o600);
 
   // 第二次连续切换：新候选 → 独立运行时根（不覆盖/不嵌套），对运行时根上的新 Bot
   // 再次应用（cwd=旧运行时根/core、入口为映射后的绝对路径——仍在原库边界内）。
@@ -694,6 +729,17 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
     createdAt: Date.now(),
   });
   writeValidationRecord(f.dataDir, rt2.logicFingerprint);
+  // 二批：候选 2 的失败应用（验证指纹错误 → 停服前失败）必须保留下一次 ready
+  // 证书（仍是 rt1），已接受运行时的可启动性不因新候选失败而丢失。
+  writeValidationRecord(f.dataDir, '0'.repeat(64));
+  const failed2 = await runTarget(rt2.runtimeRoot, head2, newPid1, helper.processStarttime(newPid1));
+  assert.equal(failed2.code, 1);
+  assert.match(failed2.stderr, /离线回归验证记录缺失\/未通过\/指纹不符/);
+  assert.ok(alive(newPid1, helper.processStarttime(newPid1)), '失败发生在停服之前，新 Bot 保留');
+  const certKept = JSON.parse(fs.readFileSync(certFile, 'utf8'));
+  assert.equal(certKept.target.commit, head1, '失败应用必须保留上一次 ready 证书');
+  assert.equal(certKept.target.runtimeRoot, rt1.runtimeRoot);
+  writeValidationRecord(f.dataDir, rt2.logicFingerprint);
   const run2 = await runTarget(rt2.runtimeRoot, head2, newPid1, helper.processStarttime(newPid1));
   assert.equal(run2.code, 0, run2.stderr);
   assert.equal(run2.receipt.phase, 'ready');
@@ -705,9 +751,69 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
   assert.equal(cmdline2[1], path.join(rt2.runtimeRoot, 'core', 'client.js'));
   assert.ok(await healthOk(port));
   assert.ok(fs.existsSync(path.join(rt1.runtimeRoot, 'core/client.js')), '旧运行时根不被删除');
+  // 二批：第二次成功应用后证书原子更新为 rt2（最近一次 ready 换新）。
+  const cert2 = JSON.parse(fs.readFileSync(certFile, 'utf8'));
+  assert.equal(cert2.target.commit, head2);
+  assert.equal(cert2.target.runtimeRoot, rt2.runtimeRoot);
+  assert.equal(cert2.process.newPid, run2.receipt.newPid);
+  assert.equal(cert2.validation.fingerprint, rt2.logicFingerprint);
   assertOriginalRootUntouched();
   assert.equal(alive(bgPid, bgStart), true, '两次切换后旁观实例仍在');
   assert.equal(alive(otherPid, otherStart), true);
+});
+
+// ---------------------------------------------------------------------------
+// 真实事故回归（2026-10-08 二批）：被中断的 helper 只把 literal 敲进了 pane 的
+// tty 输入缓冲（前台 Bot 不读 stdin、Enter 从未送达），Bot 退出后残行留在提示符
+// 上。旧 helper（HEAD 版本，literal 与 Enter 分两次 exec）把命令直接拼在残行之后
+// → 坏命令执行、新 Bot 永不出现、服务已停；新 helper 在同一个 tmux 事务里
+// C-u 清残行 + 字面命令 + 回车（-H 字节流），预期 marker Bot 正常重启。
+// 两个 helper 都是真进程真命令效果，不做源码字符串断言或 mock。
+// ---------------------------------------------------------------------------
+test('pane 残留未提交 restart 行：旧 helper 真实失败，新 helper 单事务清行成功', async (t) => {
+  const OLD_HELPER = execFileSync('git', ['show', 'HEAD:core/scripts/evolution-apply-process.js'],
+    { cwd: GUARD_ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  const STALE_LINE = '--restart /nonexistent/evolution-apply-context.json';
+
+  {
+    const f = buildFixture(t, { helperSource: OLD_HELPER });
+    t.after(() => f.killEvidencePids());
+    const port = await freePort();
+    const evidence = await startBot(f, port);
+    const first = readEvidence(evidence)[0];
+    const botStart = helper.processStarttime(first.pid);
+    // 事故形态：Bot 占据前台时敲入 literal（进 tty 缓冲），不送 Enter。
+    sendLiteral(f.target, STALE_LINE);
+    const old = await runApply(f, { botPid: first.pid, botStarttime: botStart, port });
+    assert.equal(old.code, 1);
+    assert.equal(old.receipt.phase, 'failed');
+    assert.match(old.receipt.error, /新 Bot 未在原 pane 中启动/);
+    assert.equal(readEvidence(evidence).length, 1, '旧 helper 下没有任何新 Bot 落证据');
+    assert.equal(await healthOk(port), false, '服务已停止且未被重启');
+    const paneText = tmux(['capture-pane', '-p', '-t', f.target]);
+    assert.match(paneText, /not found/, '残行拼接产生了真实坏命令（非字符串断言）');
+  }
+
+  {
+    const f = buildFixture(t);
+    t.after(() => f.killEvidencePids());
+    const port = await freePort();
+    const evidence = await startBot(f, port);
+    const panePid = Number(tmux(['display-message', '-p', '-t', f.target, '#{pane_pid}']));
+    const first = readEvidence(evidence)[0];
+    sendLiteral(f.target, STALE_LINE);
+    const fixed = await runApply(f, { botPid: first.pid, botStarttime: helper.processStarttime(first.pid), port });
+    assert.equal(fixed.code, 0, fixed.stderr);
+    assert.equal(fixed.receipt.phase, 'ready');
+    const newPid = fixed.receipt.newPid;
+    assert.ok(Number.isInteger(newPid) && newPid > 0 && newPid !== first.pid);
+    assert.equal(helper.isDescendantOf(newPid, panePid), true, '新 Bot 仍是原 pane 后代');
+    assert.ok(await healthOk(port), '预期 marker Bot 成功启动并监听');
+    const markerBot = readEvidence(evidence).find(entry => entry.pid === newPid);
+    assert.ok(markerBot, '重启的 marker Bot 真实留下运行证据');
+    const paneText = tmux(['capture-pane', '-p', '-t', f.target]);
+    assert.doesNotMatch(paneText, /not found/, '残行被 C-u 清掉，没有坏命令执行');
+  }
 });
 
 test('helper 与目标 Bot 为兄弟拓扑时不得豁免公共宿主祖先：TERM 忽略子进程照常被停', async (t) => {
