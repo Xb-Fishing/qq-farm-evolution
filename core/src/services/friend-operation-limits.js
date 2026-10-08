@@ -1,5 +1,5 @@
 const { toNum, log, sleep } = require('../utils/utils');
-const { getPlantByFruitId } = require('../config/gameConfig');
+const { getPlantByFruitId, getItemById } = require('../config/gameConfig');
 const { getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { sendMsgAsync } = require('../utils/network');
@@ -366,11 +366,25 @@ async function stealHarvest(gid, landIds) {
  * "偷 N 个"实为地块数）。只统计能映射到植物的果实 id——每块地回包是
  * "果实+杂物"成对（如 40516x84,1028x2），杂物（1028 等）不计入数量。
  * 回包未携带 items 时返回 0，调用方回退块数。
- * detail 返回 "id xN" 串供日志核对 items 语义。
+ * detail（2026-10-08）返回全名串「名称×N，名称×N」：果实名走权威
+ * getPlantByFruitId，杂物/活动特殊奖励名走 getItemById；查不到或名字是
+ * 占位符（纯数字/物品#N/果实N）时用 未知果实/未知物品，绝不回退数字 ID。
  * fruits/fruitSummary（2026-10-04，附加字段）为按权威 getPlantByFruitId
  * 映射出的实际果实名+数量聚合（黄金· 变异是独立植物配置，天然带全名），
  * 供快车道 daily 记录写明偷到了什么；未知 id 不进名称清单，不编造数量。
  */
+// 展示名占位符（配置缺失时的兜底产物）：命中即视为"没有名字"，不进展示串。
+const PLACEHOLDER_ITEM_NAME = /^(?:\d+|(?:物品|果实|作物|植物|种子)(?:\s*[#:_-])?\s*\d+)$/;
+function displayNameForItemId(id) {
+  const plant = getPlantByFruitId(id);
+  const plantName = plant ? String(plant.name || '').trim() : '';
+  if (plant) return PLACEHOLDER_ITEM_NAME.test(plantName) ? '未知果实' : plantName || '未知果实';
+  // 展示性兜底查询（杂物/活动特殊奖励）：个别测试替身不带 getItemById，
+  // 查名失败只降级为 未知物品，不影响统计语义。
+  let itemName = '';
+  try { itemName = String((getItemById(id) || {}).name || '').trim(); } catch {}
+  return itemName && !PLACEHOLDER_ITEM_NAME.test(itemName) ? itemName : '未知物品';
+}
 function sumHarvestItemCount(reply) {
   const items = (reply && reply.items) || [];
   let total = 0;
@@ -380,19 +394,18 @@ function sumHarvestItemCount(reply) {
     const count = toNum(it && it.count);
     if (count > 0) {
       const id = toNum(it && it.id);
-      const plant = getPlantByFruitId(id);
-      if (plant) {
+      const name = displayNameForItemId(id);
+      if (getPlantByFruitId(id)) {
         total += count;
-        const name = String(plant.name || '').trim() || `果实${id}`;
         fruitCounts.set(name, (fruitCounts.get(name) || 0) + count);
       }
-      detail.push(`${id}x${count}`);
+      detail.push(`${name}×${count}`);
     }
   }
   const fruits = [...fruitCounts.entries()].map(([name, count]) => ({ name, count }));
   return {
     total,
-    detail: detail.join(','),
+    detail: detail.join('，'),
     fruits,
     fruitSummary: fruits.map(({ name, count }) => `${name}×${count}`).join('，'),
   };

@@ -765,18 +765,20 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
 // ---------------------------------------------------------------------------
 // 真实事故回归（2026-10-08 二批）：被中断的 helper 只把 literal 敲进了 pane 的
 // tty 输入缓冲（前台 Bot 不读 stdin、Enter 从未送达），Bot 退出后残行留在提示符
-// 上。旧 helper（HEAD 版本，literal 与 Enter 分两次 exec）把命令直接拼在残行之后
+// 上。无清行的故障对照把命令直接拼在残行之后
 // → 坏命令执行、新 Bot 永不出现、服务已停；新 helper 在同一个 tmux 事务里
 // C-u 清残行 + 字面命令 + 回车（-H 字节流），预期 marker Bot 正常重启。
 // 两个 helper 都是真进程真命令效果，不做源码字符串断言或 mock。
 // ---------------------------------------------------------------------------
-test('pane 残留未提交 restart 行：旧 helper 真实失败，新 helper 单事务清行成功', async (t) => {
-  const OLD_HELPER = execFileSync('git', ['show', 'HEAD:core/scripts/evolution-apply-process.js'],
-    { cwd: GUARD_ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+test('pane 残留未提交 restart 行：无清行对照真实失败，新 helper 单事务清行成功', async (t) => {
+  // 固定缺陷条件：当前 helper 只移除清行字节；不把不断前进的 HEAD 当旧版本。
+  // 这是故障对照（真实进程与残行效果），不是协调器的历史源码基线验收。
+  const UNSAFE_HELPER = HELPER_CODE.replace('Buffer.from([0x15]), ', '');
+  assert.notEqual(UNSAFE_HELPER, HELPER_CODE, '故障对照必须实际移除清行');
   const STALE_LINE = '--restart /nonexistent/evolution-apply-context.json';
 
   {
-    const f = buildFixture(t, { helperSource: OLD_HELPER });
+    const f = buildFixture(t, { helperSource: UNSAFE_HELPER });
     t.after(() => f.killEvidencePids());
     const port = await freePort();
     const evidence = await startBot(f, port);
@@ -788,7 +790,7 @@ test('pane 残留未提交 restart 行：旧 helper 真实失败，新 helper �
     assert.equal(old.code, 1);
     assert.equal(old.receipt.phase, 'failed');
     assert.match(old.receipt.error, /新 Bot 未在原 pane 中启动/);
-    assert.equal(readEvidence(evidence).length, 1, '旧 helper 下没有任何新 Bot 落证据');
+    assert.equal(readEvidence(evidence).length, 1, '无清行对照下没有任何新 Bot 落证据');
     assert.equal(await healthOk(port), false, '服务已停止且未被重启');
     const paneText = tmux(['capture-pane', '-p', '-t', f.target]);
     assert.match(paneText, /not found/, '残行拼接产生了真实坏命令（非字符串断言）');
