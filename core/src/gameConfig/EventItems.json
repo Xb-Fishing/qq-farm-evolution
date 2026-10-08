@@ -302,5 +302,24 @@
     "asset_name": "gold/Crop_435",
     "sells": "1005:6",
     "evidence": "公开参考系官方提取 ItemInfo 1040435 逐字（type 17、gold/Crop_435、sells 1005:6、level 200）+ Plant 1120435 黄金·山丹丹 fruit 1040435×10 交叉 + 本机 steal 实测黄金·山丹丹 命名地块到手 1040435（每地 1-3，2026-10-01 六轮/四好友）；黄金判定来自官方提取与服务端植物名双源（非 ID 段规律）"
+  },
+  {
+    "id": 21072,
+    "name": "寒兰种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_1072",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的寒兰。",
+    "evidence": "client-config-evidence ItemInfo 快照 21072 逐字（type 5、plant、Crop_1072、level 41、sells 1001:2000）+ Plant 1021072 seed_id=21072/fruit 41072×48 交叉 + bag_unclassified_item 实际出现 21072（2026-10-08 维护会话，休眠转实际）；见 tmp 私有取证"
+  },
+  {
+    "id": 1041072,
+    "name": "黄金·寒兰",
+    "type": 17,
+    "asset_name": "gold/Crop_1072",
+    "sells": "1005:6",
+    "evidence": "client-config-evidence ItemInfo 快照 1041072（type 17、gold/Crop_1072、sells 1005:6、level 200）+ Plant 1121072 黄金·寒兰 fruit 1041072×10 交叉；与 1041625/1040435 黄金变异同族同模式（非 ID 段规律）"
   }
 ]
