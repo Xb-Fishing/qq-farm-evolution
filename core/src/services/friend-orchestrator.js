@@ -3,6 +3,7 @@ const {
   isAutomationOn,
   getFriendBlacklist,
   getWatchlistFriendGids,
+  getWatchlistResetMeta,
   getAutoAcceptFriendMinLevel,
   getKnownFriendGids,
   applyConfigSnapshot,
@@ -28,6 +29,7 @@ const {
   setPriorityGids,
   isPriorityGid,
   isFertilizerHot,
+  getFriendRipeSnapshot,
   getNextKnownFriendRipeEntry,
 } = require('./fertilizer-watch');
 const { getBreakerState } = require('./request-governor');
@@ -56,6 +58,7 @@ const {
   normalizeFriendGids,
   acceptFriends,
   getApplications,
+  classifyPrecheckFailure,
   clearAllInvalidKnownFriendGidCooldown,
 } = require('./friend-api');
 const {
@@ -196,6 +199,234 @@ function nextWatchlistPollDelayMs(remainMs, options = {}) {
 function isWatchlistObservationWindow(remainMs) {
   const remain = Number(remainMs) || 0;
   return remain > 0 && remain <= getWatchlistWakeBeforeMs();
+}
+
+// ===== 重点名单失效暂停（2026-10-07 陈旧名单治理）=====
+// 根因：名单里的好友已被对方删除后，普通基线巡田每次 Enter 都收到服务端
+// 业务错误 1002002（不是好友），结果 {entered:false} 被当作普通失败无限
+// 重排 10-15 分钟基线（实测一天约百次浪费请求，并连带治理降速）。
+// 治理：真实 Enter 的严格业务拒绝（isServerBusinessError + 严格十进制码）
+// 连续 3 次后，只暂停该目标的普通基线巡田；在线/活跃/观察窗/HOT/PREARM/
+// 成熟到点/手动操作等豁免通道照常进门。真实 Enter 成功即自然恢复；恢复/
+// 移除由用户意图（opSeq 单调代次）驱动。暂停/恢复的边界全部用代次判断，
+// 旧代次结果与旧意图不得改写新状态。
+const WATCHLIST_STALE_ENTER_LIMIT = 3;
+const WATCHLIST_STALE_ENTER_CODE = 1002002;
+// gid -> { trailingFailures, paused, pausedAt, appliedIntentOpSeq }
+const watchlistPauseRows = new Map();
+// gid -> 单调代次：结果/意图交错时判定谁更新（行删除后代次保留，
+// remove-re-add 的在途旧 Enter 结果因此不得污染新名单状态）
+const watchlistEntryEpochs = new Map();
+let watchlistConsumedOpSeq = 0;
+let watchlistStateSeeded = false;
+// 上次成功推送的主进程镜像内容（内容不变不重推；发送失败置空待重试）
+let lastWatchlistStatePush = '';
+
+function nextWatchlistEntryEpoch(gid) {
+  const id = toNum(gid);
+  if (!id) return 0;
+  const next = (watchlistEntryEpochs.get(id) || 0) + 1;
+  watchlistEntryEpochs.set(id, next);
+  return next;
+}
+
+function ensureWatchlistPauseRow(gid) {
+  const id = toNum(gid);
+  let row = watchlistPauseRows.get(id);
+  if (!row) {
+    row = { trailingFailures: 0, paused: false, pausedAt: 0, appliedIntentOpSeq: 0 };
+    watchlistPauseRows.set(id, row);
+  }
+  return row;
+}
+
+/**
+ * 真实 Enter 发起登记（friend-visit 进门边界调用）：仅重点名单目标返回
+ * { gid, epoch }，其余返回 null（结果回填为 no-op）。每次真实 Enter 都取
+ * 新代次；迟到旧结果因代次不匹配被丢弃。
+ */
+function noteWatchlistEnterAttempt(gid) {
+  const id = toNum(gid);
+  if (!id || !isPriorityGid(id)) return null;
+  return { gid: id, epoch: nextWatchlistEntryEpoch(id) };
+}
+
+/** 真实 Enter 成功：好友关系仍存活，尾随计数与暂停一并清除（自然恢复）。 */
+function applyWatchlistEnterSuccess(attempt) {
+  if (!attempt) return;
+  const id = toNum(attempt.gid);
+  if (!id || toNum(attempt.epoch) !== watchlistEntryEpochs.get(id)) return;
+  const row = watchlistPauseRows.get(id);
+  if (!row || (row.trailingFailures === 0 && !row.paused)) return;
+  row.trailingFailures = 0;
+  row.paused = false;
+  row.pausedAt = 0;
+  pushWatchlistStateToMaster();
+}
+
+/** 真实 Enter 失败：只有严格双条件（业务错误 + 1002002）累计尾随次数。 */
+function applyWatchlistEnterError(attempt, err) {
+  if (!attempt) return;
+  const id = toNum(attempt.gid);
+  if (!id || toNum(attempt.epoch) !== watchlistEntryEpochs.get(id)) return;
+  const info = classifyPrecheckFailure(err);
+  if (!(info.category === 'business' && info.code === WATCHLIST_STALE_ENTER_CODE)) {
+    // 其它真实结局（超时/传输/其他业务码）：计数清零；已暂停的保持暂停
+    //（恢复只能来自真实成功或用户意图），只重排不重复告警。
+    const row = watchlistPauseRows.get(id);
+    if (row && row.trailingFailures > 0) {
+      row.trailingFailures = 0;
+      pushWatchlistStateToMaster();
+    }
+    return;
+  }
+  const row = ensureWatchlistPauseRow(id);
+  row.trailingFailures += 1;
+  if (!row.paused && row.trailingFailures >= WATCHLIST_STALE_ENTER_LIMIT) {
+    row.paused = true;
+    row.pausedAt = Date.now();
+    log('好友',
+      `重点好友连续 ${WATCHLIST_STALE_ENTER_LIMIT} 次进门被拒（不是好友），暂停其普通基线巡田`,
+      {
+        module: 'friend',
+        event: 'watchlist_stale_paused',
+        friendGid: id,
+        result: 'paused',
+        trailingFailures: row.trailingFailures,
+      });
+  }
+  pushWatchlistStateToMaster();
+}
+
+/**
+ * 暂停门：只拦"普通基线巡田"这一档。在线（1s 档）、活跃证据（45-75s 档）、
+ * 施肥 HOT、观察窗（配置观察窗 + PREARM + 成熟到点）任一命中即放行。
+ * evidence 由调用方计算传入，便于测试注入。
+ */
+function isWatchlistBaselinePaused(gid, now, remainMs, evidence = {}) {
+  const id = toNum(gid);
+  const row = id ? watchlistPauseRows.get(id) : null;
+  if (!row || !row.paused) return false;
+  const at = toNum(now) || Date.now();
+  if (evidence.onlineNow || evidence.activityEvidence) return false;
+  if (isFertilizerHot(id, at)) return false;
+  if (isWatchlistObservationWindow(remainMs)) return false;
+  return true;
+}
+
+/** 当前暂停状态快照（Worker 内权威视图；镜像与面板读取共用此形状）。 */
+function getWatchlistStateSnapshot() {
+  const rows = {};
+  for (const [gid, row] of watchlistPauseRows.entries()) {
+    rows[gid] = {
+      trailingFailures: row.trailingFailures,
+      paused: row.paused,
+      pausedAt: row.pausedAt,
+      appliedIntentOpSeq: row.appliedIntentOpSeq,
+    };
+  }
+  return { version: 1, consumedOpSeq: watchlistConsumedOpSeq, rows };
+}
+
+/**
+ * 状态镜像推送：内容不变不重推（全表推送仅在真实变更时发生）；发送失败
+ * 置空已推标记，下一次状态变更自动重试。磁盘写失败由主进程分支兜底，
+ * Worker 业务路径绝不等待落盘。
+ */
+function pushWatchlistStateToMaster() {
+  try {
+    const state = getWatchlistStateSnapshot();
+    const serialized = JSON.stringify(state);
+    if (serialized === lastWatchlistStatePush) return;
+    const sent = postToMaster({
+      type: 'watchlist_state_sync',
+      accountId: process.env.FARM_ACCOUNT_ID || '',
+      state,
+    });
+    lastWatchlistStatePush = sent ? serialized : '';
+  } catch { /* 推送失败不影响业务路径；下次变更重试 */ }
+}
+
+/**
+ * 启动镜像播种（Worker 账号上下文确定后调用一次）：恢复暂停语义与已消费
+ * 意图版本。镜像缺失/损坏按空状态启动——不阻塞登录，配置侧意图照常由
+ * reconcileWatchlistIntents 消费。诚实边界：镜像只保证"最后一次已推送
+ * 状态"，版本号相等的自然恢复若推送丢失，重启后旧暂停如实重现（豁免
+ * 通道照常可用，用户可在管理块手动恢复）。
+ */
+function seedWatchlistStateFromMirror(state) {
+  if (watchlistStateSeeded) return getWatchlistStateSnapshot();
+  watchlistStateSeeded = true;
+  const data = state && typeof state === 'object' ? state : null;
+  if (!data) return getWatchlistStateSnapshot();
+  for (const [rawGid, rawRow] of Object.entries(data.rows && typeof data.rows === 'object' ? data.rows : {})) {
+    const gid = toNum(rawGid);
+    const row = rawRow && typeof rawRow === 'object' ? rawRow : null;
+    if (!gid || !row) continue;
+    const restored = ensureWatchlistPauseRow(gid);
+    restored.trailingFailures = Math.max(0,
+      Math.min(WATCHLIST_STALE_ENTER_LIMIT - 1, toNum(row.trailingFailures) || 0));
+    restored.paused = row.paused === true;
+    restored.pausedAt = toNum(row.pausedAt) || 0;
+    restored.appliedIntentOpSeq = Math.max(0, toNum(row.appliedIntentOpSeq) || 0);
+  }
+  watchlistConsumedOpSeq = Math.max(0, toNum(data.consumedOpSeq) || 0);
+  lastWatchlistStatePush = '';
+  return getWatchlistStateSnapshot();
+}
+
+/** 应用单条用户意图：只有更新的 opSeq 生效；重复消费幂等；旧意图不可回退。 */
+function applyWatchlistIntent(gid, opSeq) {
+  const id = toNum(gid);
+  const seq = toNum(opSeq) || 0;
+  if (!id || seq <= 0) return false;
+  const row = ensureWatchlistPauseRow(id);
+  if (seq <= row.appliedIntentOpSeq) return false;
+  // 代次前移：意图生效前在途的旧 Enter 结果不得改写恢复后的新状态
+  nextWatchlistEntryEpoch(id);
+  row.trailingFailures = 0;
+  row.paused = false;
+  row.pausedAt = 0;
+  row.appliedIntentOpSeq = seq;
+  return true;
+}
+
+/**
+ * 配置侧意图 reconcile（Worker applyRuntimeConfig 完成配置应用后调用）：
+ * 逐条应用 watchlistResetMeta.intents，全部应用完成后才推进整体已消费
+ * 版本；名单里已不存在的目标行清掉（remove-re-add 不继承旧暂停状态）。
+ */
+function reconcileWatchlistIntents() {
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  const meta = getWatchlistResetMeta(accountId);
+  if (!meta) return;
+  let changed = false;
+  for (const [rawGid, seq] of Object.entries((meta && meta.intents) || {})) {
+    if (applyWatchlistIntent(rawGid, seq)) changed = true;
+  }
+  const configured = new Set(getWatchlistFriendGids(accountId).map(toNum));
+  for (const gid of [...watchlistPauseRows.keys()]) {
+    if (!configured.has(gid)) {
+      watchlistPauseRows.delete(gid);
+      nextWatchlistEntryEpoch(gid);
+      changed = true;
+    }
+  }
+  const opSeq = toNum(meta.opSeq) || 0;
+  if (opSeq > watchlistConsumedOpSeq) {
+    watchlistConsumedOpSeq = opSeq;
+    changed = true;
+  }
+  if (changed) pushWatchlistStateToMaster();
+}
+
+/** 仅测试用：重置暂停状态机（生产路径不调用）。 */
+function resetWatchlistPauseStateForTests() {
+  watchlistPauseRows.clear();
+  watchlistEntryEpochs.clear();
+  watchlistConsumedOpSeq = 0;
+  watchlistStateSeeded = false;
+  lastWatchlistStatePush = '';
 }
 
 /**
@@ -436,13 +667,15 @@ async function checkFriends(options = {}) {
   const onlySteal = options.onlySteal || false;
   const onlyBad = options.onlyBad || false;
   const ignoreExpLimit = options.ignoreExpLimit || false;
-  // 哨兵预进门会话（{ gid, enteredAt, enterReply }）：目标已提前 Enter 驻留，
-  // 偷取时复用 Enter 回复跳过重复 Enter，直接分析+偷。
+  // 哨兵预进门会话（{ gid, enteredAt, enterReply, epochAtSend }）：目标已提前
+  // Enter 驻留，偷取时复用 Enter 回复跳过重复 Enter，直接分析+偷；
+  // epochAtSend 透传发起代次（该次 Enter 的记账已在预进门处完成）。
   const preEnter = options.preEnter && Number(options.preEnter.gid) > 0
     ? {
         gid: Number(options.preEnter.gid),
         enteredAt: Number(options.preEnter.enteredAt) || 0,
         enterReply: options.preEnter.enterReply || null,
+        epochAtSend: Number(options.preEnter.epochAtSend) || 0,
       }
     : null;
 
@@ -1481,7 +1714,27 @@ async function watchlistPollTick() {
       // 异常期不再在到期前反复延期（持续 slow 时每次到期都重设更晚时刻会
       // 永远不访问）：首次到期先尝试正常基线读取，实际访问仍受通信硬预算、
       // 免打扰与自己的到点收获保护；额外等待在实际尝试完成后追加。
-      const knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      let knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      // 暂停门证据补齐：巡田时间表没有该目标时，回退读其自身成熟快照
+      // （摘要/土地详情都会更新 fertilizer-watch 的逐目标缓存，且缓存过期
+      // 判断由 getFriendRipeSnapshot 保留）。逐目标键控——其他目标的快照
+      // 不能释放本目标；快照缺失/过期仍按未知处理，只影响暂停门与重排
+      // 档位，不改肥料状态机与任何收益链节奏。
+      if (!(knownRipeAt > 0)) {
+        const ripeSnapshot = getFriendRipeSnapshot(gid, now);
+        const snapshotDueAt = Number(ripeSnapshot?.dueAt) || 0;
+        if (snapshotDueAt > 0) knownRipeAt = snapshotDueAt;
+      }
+      // 失效暂停门：该目标被暂停时只跳过普通基线巡田；在线/活跃/HOT/
+      // 观察窗等豁免证据仍在时照常进门。跳过不发请求、不写健康日志
+      //（未执行不得伪造 ok/failed），按基线节奏重排下一轮。
+      if (isWatchlistBaselinePaused(gid, now, Math.max(0, knownRipeAt - now), {
+        onlineNow: isFriendOnlineEvidence(gid, now),
+        activityEvidence: isFriendActiveEvidence(gid, now),
+      })) {
+        watchlistPollNextAt.set(gid, scheduleWatchlistPollNext(gid, now, Math.max(0, knownRipeAt - now), getBreakerState(now)));
+        continue;
+      }
       const name = watchlistNames.get(gid) || `GID:${gid}`;
       const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
       let result = null;
@@ -1749,6 +2002,15 @@ module.exports = {
   getNextWatchlistStealDueAtMs,
   getWatchlistRipeSnapshots,
   pullWatchlistPollToNow,
+  noteWatchlistEnterAttempt,
+  applyWatchlistEnterSuccess,
+  applyWatchlistEnterError,
+  isWatchlistBaselinePaused,
+  getWatchlistStateSnapshot,
+  seedWatchlistStateFromMirror,
+  applyWatchlistIntent,
+  reconcileWatchlistIntents,
+  resetWatchlistPauseStateForTests,
   getActivityEvidenceSummary: require('./friend-activity').getActivityEvidenceSummary,
   getWatchlistWakeBeforeMs,
   nextWatchlistPollDelayMs,

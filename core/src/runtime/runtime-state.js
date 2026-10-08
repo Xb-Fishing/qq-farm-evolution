@@ -52,6 +52,9 @@ function createRuntimeState(deps) {
             friendQuietHours: store.getFriendQuietHours(accountId),
             friendBlacklist: store.getFriendBlacklist(accountId),
             watchlistFriendGids: store.getWatchlistFriendGids(accountId),
+            watchlistResetMeta: store.getWatchlistResetMeta
+                ? store.getWatchlistResetMeta(accountId)
+                : null,
             autoBadFriendGids: store.getAutoBadFriendGids
                 ? store.getAutoBadFriendGids(accountId)
                 : [],

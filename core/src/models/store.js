@@ -12,6 +12,7 @@ const ACCOUNTS_FILE = getDataFile('accounts.json');
 const KNOWN_FRIEND_GIDS_DIR = getDataFile('known_friend_gids');
 const FRIEND_DOG_INFO_DIR = getDataFile('friend_dog_info');
 const FRIEND_LIST_CACHE_DIR = getDataFile('friend_list_cache');
+const WATCHLIST_STATE_MIRROR_DIR = getDataFile('watchlist_state_mirror');
 
 // ==================== 缓存目录辅助 ====================
 
@@ -109,6 +110,46 @@ function writeFriendListCache(accountId, friends) {
         const filePath = getFriendListCacheFile(accountId);
         writeJsonFileAtomic(filePath, { friends: friends || [], updatedAt: Date.now() });
     } catch { }
+}
+
+// ==================== 重点名单暂停状态镜像（2026-10-07 陈旧名单治理）====================
+// Worker 推送的重点名单暂停状态落盘镜像（重启后恢复暂停语义）。
+// 读路径绝不创建目录/文件——Worker 停止、冷缓存、镜像缺失或损坏时管理路由
+// 也要能安全读取（返回 null 按空状态处理）；写路径仅主进程同步分支调用。
+
+function getWatchlistStateMirrorFile(accountId) {
+    const safeName = String(accountId || '').replace(/[^\w-]/g, '_');
+    return path.join(WATCHLIST_STATE_MIRROR_DIR, `${safeName}.json`);
+}
+
+function readWatchlistStateMirror(accountId) {
+    try {
+        const filePath = getWatchlistStateMirrorFile(accountId);
+        if (fs.existsSync(filePath)) {
+            const data = readJsonFile(filePath);
+            if (data && typeof data === 'object'
+                && data.state && typeof data.state === 'object') {
+                return data.state;
+            }
+        }
+    } catch { }
+    return null;
+}
+
+function writeWatchlistStateMirror(accountId, state) {
+    try {
+        if (!fs.existsSync(WATCHLIST_STATE_MIRROR_DIR)) {
+            fs.mkdirSync(WATCHLIST_STATE_MIRROR_DIR, { recursive: true });
+        }
+        writeJsonFileAtomic(getWatchlistStateMirrorFile(accountId), {
+            version: 1,
+            state: state && typeof state === 'object' ? state : null,
+            updatedAt: Date.now(),
+        });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function removeFriendFromCache(accountId, gid) {
@@ -339,6 +380,7 @@ const DEFAULT_ACCOUNT_CONFIG = {
     knownFriendGids: [],
     friendBlacklist: [],
     watchlistFriendGids: [],
+    watchlistResetMeta: null,
     autoBadFriendGids: [],
     plantBlacklist: DEFAULT_PLANT_BLACKLIST,
     stealDelaySeconds: 1,
@@ -504,6 +546,36 @@ function normalizeIntervals(raw) {
     return { ...input, farm, farmMin, farmMax, helpMin, helpMax, stealMin, stealMax };
 }
 
+/**
+ * 重点名单用户意图元数据（2026-10-07 陈旧名单治理）：
+ * { opSeq: 单调整体版本, intents: { gid: opSeq } }。opSeq 只增不减，
+ * Worker 端按"更新的 opSeq 才生效"消费（恢复/移除意图），旧意图不可回退。
+ * 空意图且无历史时返回 null，不占配置体积。
+ */
+function normalizeWatchlistResetMeta(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const src = raw.intents && typeof raw.intents === 'object' ? raw.intents : {};
+    const intents = {};
+    for (const [rawGid, rawSeq] of Object.entries(src)) {
+        const gid = Number.parseInt(rawGid, 10);
+        const seq = Number(rawSeq);
+        if (!Number.isFinite(gid) || gid <= 0) continue;
+        if (!Number.isFinite(seq) || seq <= 0) continue;
+        intents[gid] = Math.floor(seq);
+    }
+    const opSeq = Number(raw.opSeq);
+    const normalized = {
+        opSeq: Number.isFinite(opSeq) && opSeq > 0 ? Math.floor(opSeq) : 0,
+        intents
+    };
+    return normalized.opSeq > 0 || Object.keys(intents).length > 0 ? normalized : null;
+}
+
+function cloneWatchlistResetMeta(meta) {
+    const normalized = normalizeWatchlistResetMeta(meta);
+    return normalized ? { opSeq: normalized.opSeq, intents: { ...normalized.intents } } : null;
+}
+
 // ==================== 配置克隆/合并 ====================
 
 function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
@@ -540,6 +612,8 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
         knownFriendGids,
         friendBlacklist: friendBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
         watchlistFriendGids: watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0),
+        // 显式深拷贝：避免多账号/多次克隆共享同一 nested intents 引用
+        watchlistResetMeta: cloneWatchlistResetMeta(config.watchlistResetMeta),
         autoBadFriendGids: autoBadFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0),
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(config.plantingStrategy || ''))
             ? String(config.plantingStrategy) : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
@@ -698,6 +772,11 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
     // 重点监控
     if (Array.isArray(input.watchlistFriendGids)) {
         cfg.watchlistFriendGids = input.watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+
+    // 重点名单用户意图元数据（恢复/移除代次）：显式传入才覆盖，缺省沿用基础值
+    if (input.watchlistResetMeta !== undefined) {
+        cfg.watchlistResetMeta = normalizeWatchlistResetMeta(input.watchlistResetMeta);
     }
 
     // 在线自动捣乱（放虫/放草）
@@ -1157,6 +1236,7 @@ function getConfigSnapshot(accountId) {
         knownFriendGids: [...cfg.knownFriendGids || []],
         friendBlacklist: [...cfg.friendBlacklist || []],
         watchlistFriendGids: [...cfg.watchlistFriendGids || []],
+        watchlistResetMeta: cloneWatchlistResetMeta(cfg.watchlistResetMeta),
         autoBadFriendGids: [...cfg.autoBadFriendGids || []],
         plantBlacklist: [...cfg.plantBlacklist || []],
         stealDelaySeconds: Math.max(0, Math.min(60, Number(cfg.stealDelaySeconds) || 1)),
@@ -1234,6 +1314,9 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     }
     if (Array.isArray(patch.watchlistFriendGids)) {
         cfg.watchlistFriendGids = patch.watchlistFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+    if (patch.watchlistResetMeta !== undefined) {
+        cfg.watchlistResetMeta = normalizeWatchlistResetMeta(patch.watchlistResetMeta);
     }
     if (Array.isArray(patch.autoBadFriendGids)) {
         cfg.autoBadFriendGids = patch.autoBadFriendGids.map(Number).filter(n => Number.isFinite(n) && n > 0);
@@ -1424,6 +1507,71 @@ function setWatchlistFriendGids(accountId, gids) {
         ? gids.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
     setAccountConfigSnapshot(accountId, cfg);
     return [...cfg.watchlistFriendGids];
+}
+
+/**
+ * 重点名单用户意图元数据（只读快照，无配置时返回 null）。
+ */
+function getWatchlistResetMeta(accountId) {
+    return cloneWatchlistResetMeta(getAccountConfigSnapshot(accountId).watchlistResetMeta);
+}
+
+/**
+ * 重点名单 + 用户意图一次保存（2026-10-07 陈旧名单治理）。
+ * 名单变更与意图元数据（恢复/移除）必须同批落盘：Worker 重启窗口内不会
+ * 出现"名单已变而意图丢失"的中间态。
+ * intentGids：显式指定登记意图的目标（resume/remove 强制传 [gid]）；
+ * 缺省时按新旧名单差集自动登记（新增与移除同样视为意图——remove-re-add
+ * 不继承旧暂停状态）。
+ * 保存失败回滚内存中的账号配置并向上抛错（调用方不得广播已保存）。
+ */
+function setWatchlistConfig(accountId, gids, intentGids) {
+    const id = resolveAccountId(accountId);
+    if (!id) throw new Error('账号上下文缺失，无法保存重点名单');
+
+    const base = getAccountConfigSnapshot(id);
+    const cfg = normalizeAccountConfig(base, accountFallbackConfig);
+    const nextGids = Array.isArray(gids)
+        ? gids.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
+    cfg.watchlistFriendGids = [...new Set(nextGids)];
+
+    const prevSet = new Set(base.watchlistFriendGids || []);
+    const nextSet = new Set(cfg.watchlistFriendGids);
+    let intents;
+    if (Array.isArray(intentGids)) {
+        intents = intentGids;
+    } else {
+        intents = [];
+        for (const gid of prevSet) if (!nextSet.has(gid)) intents.push(gid);
+        for (const gid of nextSet) if (!prevSet.has(gid)) intents.push(gid);
+    }
+
+    const prevMeta = cloneWatchlistResetMeta(cfg.watchlistResetMeta) || { opSeq: 0, intents: {} };
+    if (intents.length > 0) {
+        const opSeq = prevMeta.opSeq + 1;
+        const mergedIntents = { ...prevMeta.intents };
+        for (const gid of intents) {
+            const num = Number(gid);
+            if (Number.isFinite(num) && num > 0) mergedIntents[num] = opSeq;
+        }
+        cfg.watchlistResetMeta = { opSeq, intents: mergedIntents };
+    } else {
+        cfg.watchlistResetMeta = cloneWatchlistResetMeta(prevMeta);
+    }
+
+    // 一次保存：直接写 globalConfig.accountConfigs[id] + 抛错式保存，
+    // 不走 setAccountConfigSnapshot(save=true)（其吞掉保存错误无法回滚）
+    const hadPrev = Object.prototype.hasOwnProperty.call(globalConfig.accountConfigs, id);
+    const prevStored = hadPrev ? globalConfig.accountConfigs[id] : null;
+    globalConfig.accountConfigs[id] = normalizeAccountConfig(cfg, accountFallbackConfig);
+    try {
+        saveGlobalConfig({ throwOnError: true });
+    } catch (err) {
+        if (hadPrev) globalConfig.accountConfigs[id] = prevStored;
+        else delete globalConfig.accountConfigs[id];
+        throw err;
+    }
+    return getConfigSnapshot(id);
 }
 
 function getAutoBadFriendGids(accountId) {
@@ -2071,6 +2219,10 @@ module.exports = {
     addFriendToBlacklist,
     getWatchlistFriendGids,
     setWatchlistFriendGids,
+    getWatchlistResetMeta,
+    setWatchlistConfig,
+    readWatchlistStateMirror,
+    writeWatchlistStateMirror,
     getAutoBadFriendGids,
     setAutoBadFriendGids,
     getStealDelaySeconds,

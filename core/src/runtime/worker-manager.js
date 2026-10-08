@@ -613,6 +613,34 @@ function createWorkerManager(deps) {
                     });
                 }
             }
+        } else if (msg.type === 'watchlist_state_sync') {
+            // 重点名单暂停状态镜像（2026-10-07）：Worker 推送 → 主进程落盘。
+            // 结构校验（版本/行表/有限整数版本号）失败按畸形丢弃，绝不把
+            // 畸形状态写进镜像；写失败只记日志——Worker 业务路径不等落盘，
+            // 镜像保留最后一份好快照，下一次状态变更重推。
+            const state = msg.state && typeof msg.state === 'object' ? msg.state : null;
+            if (state && state.version === 1
+                && state.rows && typeof state.rows === 'object' && !Array.isArray(state.rows)
+                && Number.isFinite(Number(state.consumedOpSeq))) {
+                try {
+                    const { writeWatchlistStateMirror } = require('../models/store');
+                    // 真实保存函数吞掉磁盘异常并返回 false：false 同样按写失败
+                    // 记诊断（最后好快照保留在盘上，下次状态变更重推），不抛
+                    // 错、不阻断后续消息处理。
+                    const saved = writeWatchlistStateMirror(accountId, state);
+                    if (saved !== true) {
+                        log('错误', `账号 ${  wrk.name  } 重点名单状态镜像写入失败: 保存函数返回失败`, {
+                            accountId: String(accountId),
+                            accountName: wrk.name
+                        });
+                    }
+                } catch (err) {
+                    log('错误', `账号 ${  wrk.name  } 重点名单状态镜像写入失败: ${  err.message}`, {
+                        accountId: String(accountId),
+                        accountName: wrk.name
+                    });
+                }
+            }
         } else if (msg.type === 'api_response') {
             // API 响应
             const { id, result, error } = msg;

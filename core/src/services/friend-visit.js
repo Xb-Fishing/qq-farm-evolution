@@ -64,6 +64,27 @@ async function runBatchWithFallback(landIds, batchFn, singleFn) {
   }
 }
 
+// ===== 重点名单 Enter 记账（2026-10-07 陈旧名单治理）=====
+// 真实 Enter 的发起与结局统一在进门边界登记（暂停状态机见
+// friend-orchestrator）。惰性 require 规避初始化循环；非重点目标返回
+// null，结局回填为 no-op，业务语义不变。预进门复用分支（options.preEnter）
+// 不再发 Enter、不在此记账——那次真实 Enter 已在 Worker 预进门处登记，
+// 保证每次真实 Enter 恰好登记一次结局。
+function noteWatchlistEnter(gid) {
+  try {
+    return require('./friend-orchestrator').noteWatchlistEnterAttempt(gid);
+  } catch { return null; }
+}
+
+function settleWatchlistEnter(attempt, err) {
+  if (!attempt) return;
+  try {
+    const orchestrator = require('./friend-orchestrator');
+    if (err) orchestrator.applyWatchlistEnterError(attempt, err);
+    else orchestrator.applyWatchlistEnterSuccess(attempt);
+  } catch { /* 记账失败不影响进门主流程 */ }
+}
+
 // ===== Single friend operation =====
 
 /**
@@ -78,9 +99,12 @@ async function doFriendOperation(gid, opType) {
 
   // Enter friend's farm
   let enterReply;
+  const wlAttempt = noteWatchlistEnter(numericGid);
   try {
     enterReply = await enterFriendFarm(numericGid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(numericGid, `GID:${numericGid}`, err);
     if (handled.handled && handled.kind === 'blacklist') {
       return { ok: true, opType, count: 0, message: '好友已自动加入黑名单' };
@@ -310,9 +334,12 @@ async function visitFriend(friend, tally, myGid, accountId) {
   let enterReply;
 
   // Enter friend's farm
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enterFriendFarm(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
@@ -668,18 +695,33 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     : null;
   let enterReply;
 
+  // 本次结果携带实际 Enter 结局与发起代次（'real'=本次真实 Enter，'reused'=
+  // 复用哨兵预进门，epoch 为该次 Enter 的代次）：暂停状态机据此区分
+  // "真实 Enter 成功"与"复用旧回复"，成功只能由真实 Enter 证明。
+  let enterOutcome = 'none';
+  let enterEpoch = 0;
+
   if (preEnter && preEnter.enterReply) {
     // 哨兵预进门驻留：直接复用 Enter 回复。地块状态到点可能变化，成熟判定
     // 由后续 CheckCanOperate/Harvest 的服务端应答兜底，本地分析仅做选择。
+    // 复用不重发 Enter 也不记账（发起处已登记），只透传其代次。
     enterReply = preEnter.enterReply;
+    enterOutcome = 'reused';
+    enterEpoch = toNum(preEnter.epochAtSend) || 0;
   } else {
+    const wlAttempt = noteWatchlistEnter(gid);
+    enterOutcome = 'real';
+    enterEpoch = wlAttempt ? wlAttempt.epoch : 0;
     try {
       enterReply = await enterFriendFarm(gid);
+      settleWatchlistEnter(wlAttempt);
     } catch (err) {
+      enterOutcome = 'failed';
+      settleWatchlistEnter(wlAttempt, err);
       const handled = handleFriendEnterError(gid, name, err);
       if (handled.handled) {
         if (handled.kind === 'blacklist') unwatchFriend(gid);
-        return { acted: false, entered: false };
+        return { acted: false, entered: false, enterOutcome, enterEpoch };
       }
       logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
         module: 'friend',
@@ -688,7 +730,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
         friendName: name,
         friendGid: gid,
       });
-      return { acted: false, entered: false };
+      return { acted: false, entered: false, enterOutcome, enterEpoch };
     }
   }
 
@@ -707,7 +749,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     inspectFriendLands(gid, name, []);
     unwatchFriend(gid);
     await maybeLurkLeave(gid);
-    return { acted: false, entered: true, ripeAtMs: 0 };
+    return { acted: false, entered: true, ripeAtMs: 0, enterOutcome, enterEpoch };
   }
 
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
@@ -737,7 +779,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 
   if (!hasStealSlot && analysis.stealable.length === 0) {
     await maybeLurkLeave(gid);
-    return { acted: false, entered: true, ripeAtMs };
+    return { acted: false, entered: true, ripeAtMs, enterOutcome, enterEpoch };
   }
 
   // Steal
@@ -820,6 +862,8 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     entered: true,
     ripeAtMs,
     retryNeeded: stealAttemptFailed,
+    enterOutcome,
+    enterEpoch,
   };
 }
 
@@ -844,9 +888,12 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
   }
 
   let enterReply;
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enterFriendFarm(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
@@ -1089,9 +1136,13 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
   const leave = impl.leave || leaveFriendFarm;
 
   let enterReply;
+  // 真实 Enter 边界记账：impl.enter 仅测试注入，非重点目标记账为 no-op
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enter(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);

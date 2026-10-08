@@ -30,6 +30,8 @@ const {
   friendLandsLoading,
   blacklist,
   watchlist,
+  watchlistMeta,
+  watchlistNotify,
   autoBadList,
   interactRecords,
   interactLoading,
@@ -91,6 +93,55 @@ const knownFriendGidSet = computed(() => new Set(knownFriendGids.value.map(Numbe
 const friendGidSet = computed(() => new Set(friends.value.map(f => Number(f.gid))))
 const blacklistGidSet = computed(() => new Set(blacklist.value.map(item => Number(item.gid))))
 const watchlistGidSet = computed(() => new Set(watchlist.value.map(item => Number(item.gid))))
+
+// 重点名单管理块条目：名称/头像由后端本地构建返回空值，这里与已加载好友
+// 列表拼接补齐；列表为空/账号停止时只显示 GID，操作不受影响。
+const watchlistManageItems = computed(() =>
+  watchlist.value.map((item: any) => {
+    const gid = Number(item.gid)
+    const known = friends.value.find((f: any) => Number(f.gid) === gid)
+    return {
+      gid,
+      name: String(item.name || known?.name || known?.remark || ''),
+      avatarUrl: String(item.avatarUrl || (known ? getFriendAvatar(known) : '')),
+      paused: item.paused === true,
+      pausedAt: Number(item.pausedAt) || 0,
+      trailingFailures: Number(item.trailingFailures) || 0,
+    }
+  }),
+)
+
+// 意图通知三态：已生效（Worker 已消费）/ 待应用（账号真实运行中）/
+// 待运行（账号停止，启动后自动应用）。文案以账号实际运行状态为准；
+// notifyAttempted 只表示"尝试过通知"这一事实，不代理运行态，也不代表
+// 已送达或已消费。
+const watchlistNotifyText = computed(() => {
+  const notify = watchlistNotify.value
+  if (!notify.saved)
+    return ''
+  const meta = watchlistMeta.value
+  if (meta.opSeq > 0 && meta.consumedOpSeq >= meta.opSeq)
+    return '已生效'
+  return currentAccount.value?.running
+    ? '已保存，等待运行中的账号应用'
+    : '已保存（账号未运行，启动后自动应用）'
+})
+
+async function handleResumeWatchlist(gid: number) {
+  if (!currentAccountId.value)
+    return
+  const result = await friendStore.resumeWatchlist(currentAccountId.value, gid)
+  if (!result.ok && !result.stale)
+    toast.error('恢复巡田失败，请重试')
+}
+
+async function handleRemoveWatchlist(gid: number) {
+  if (!currentAccountId.value)
+    return
+  const result = await friendStore.removeWatchlist(currentAccountId.value, gid)
+  if (!result.ok && !result.stale)
+    toast.error('移出重点名单失败，请重试')
+}
 const autoBadGidSet = computed(() => new Set(autoBadList.value.map(item => Number(item.gid))))
 
 const filteredKnownFriendGids = computed(() => {
@@ -106,8 +157,11 @@ const filteredKnownFriendGids = computed(() => {
 
 const syncedGidCount = computed(() => filteredKnownFriendGids.value.filter(item => item.synced).length)
 const unsyncedGidCount = computed(() => filteredKnownFriendGids.value.filter(item => !item.synced).length)
+// 重点名单管理块只依赖本地配置/镜像构建：停止+断开+普通好友数据为空时，
+// 名单条目仍须可见可操作（恢复/移出），不得被离线分支遮蔽。
 const hasAnyFriendData = computed(() =>
-  friends.value.length > 0 || blacklist.value.length > 0 || interactRecords.value.length > 0,
+  friends.value.length > 0 || blacklist.value.length > 0 || interactRecords.value.length > 0
+  || watchlist.value.length > 0,
 )
 const pageLoading = computed(() =>
   loading.value || statusLoading.value || (activeTab.value === 'visitors' && interactLoading.value),
@@ -247,11 +301,14 @@ async function loadData() {
       await statusStore.fetchStatus(currentAccountId.value)
     }
 
+    // 重点名单管理块只依赖配置+暂停镜像的本地构建：停止状态也要能加载
+    // 与操作（不依赖 Worker 在线）；与好友列表读取互不阻塞、并发落地。
+    friendStore.fetchWatchlist(currentAccountId.value)
+
     if (acc.running) {
       avatarErrorKeys.value.clear()
       friendStore.fetchFriends(currentAccountId.value)
       friendStore.fetchBlacklist(currentAccountId.value)
-      friendStore.fetchWatchlist(currentAccountId.value)
       friendStore.fetchAutoBad(currentAccountId.value)
       friendStore.fetchInteractRecords(currentAccountId.value)
       if (isQqAccount.value) {
@@ -780,6 +837,69 @@ async function handleBatchAddKnownFriendGids() {
           @save-settings="handleSaveKnownFriendSettings"
           @open-batch-add="showBatchAddGidModal = true"
         />
+
+        <!-- 重点名单管理块（2026-10-07 陈旧名单治理）：配置+暂停镜像本地构建，
+             账号停止/好友列表为空时也可加载与操作；暂停只拦普通基线巡田 -->
+        <div class="rounded-lg bg-white p-4 shadow dark:bg-gray-800">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span class="text-sm font-medium text-gray-800 dark:text-gray-200">重点监控管理</span>
+              <span class="ml-2 text-xs text-gray-400">{{ watchlistManageItems.length }} 个目标</span>
+            </div>
+            <span
+              v-if="watchlistNotifyText"
+              class="rounded px-2 py-0.5 text-xs"
+              :class="watchlistNotifyText === '已生效'
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'"
+            >
+              {{ watchlistNotifyText }}
+            </span>
+          </div>
+
+          <div v-if="watchlistManageItems.length === 0" class="mt-3 text-sm text-gray-400">
+            暂无重点监控好友；在下方好友列表点"重点"即可添加。
+          </div>
+
+          <div v-else class="mt-3 space-y-2">
+            <div
+              v-for="item in watchlistManageItems"
+              :key="item.gid"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-700/50"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {{ item.name || `GID:${item.gid}` }}
+                </span>
+                <span
+                  v-if="item.paused"
+                  class="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                >
+                  基线巡田已暂停（连续被拒 {{ item.trailingFailures }} 次）
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  v-if="item.paused"
+                  class="rounded bg-green-100 px-2.5 py-1 text-xs text-green-700 transition dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50"
+                  @click="handleResumeWatchlist(item.gid)"
+                >
+                  恢复巡田
+                </button>
+                <button
+                  class="rounded bg-red-100 px-2.5 py-1 text-xs text-red-600 transition dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50"
+                  @click="handleRemoveWatchlist(item.gid)"
+                >
+                  移出名单
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p class="mt-3 text-xs text-gray-400">
+            好友删除后连续三次进门被拒才会暂停，且只暂停普通基线巡田；在线、活跃、观察窗、成熟到点与手动操作照常，真实进门成功自动恢复。
+          </p>
+        </div>
 
         <div v-if="friends.length === 0" class="rounded-lg bg-white p-8 text-center text-gray-500 shadow dark:bg-gray-800">
           <div class="i-carbon-user-multiple mx-auto mb-3 text-4xl text-gray-300" />

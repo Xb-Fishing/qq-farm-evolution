@@ -60,6 +60,13 @@ function fixture(t, options = {}) {
         logWarn: () => {},
         watchlistPollLoopArmed: true, isCheckingFriends: false,
         watchlistPollNextAt: new Map(), watchlistPollRipeAt: new Map(),
+        // 陈旧名单治理边界桩（2026-10-07）：watchlistPollTick 的暂停门与
+        // visitFriendForSteal 的真实 Enter 记账在新源码中是裸标识符，
+        // 这里注入中性实现——本夹具只验证调度档位，暂停矩阵见
+        // friend-watchlist-stale.test.js（真实模块）与 baseline 反例夹具。
+        isWatchlistBaselinePaused: () => false,
+        noteWatchlistEnter: () => null,
+        settleWatchlistEnter: () => {},
         // 生产模块级状态：单访在途互斥标志（isFriendVisitBusy 读它）
         watchlistVisitInFlight: false,
         watchlistNames: new Map([[9, 'fixture-friend']]), watchlistWindowAnnounced: new Map(),
