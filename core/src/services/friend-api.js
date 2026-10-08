@@ -988,6 +988,7 @@ module.exports = {
   enterFriendFarm,
   leaveFriendFarm,
   checkCanOperateRemote,
+  classifyPrecheckFailure,
   parseBriefDogInfoBytes,
   extractVisitEnterBriefDogInfo,
   clearAllInvalidKnownFriendGidCooldown,

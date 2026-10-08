@@ -58,7 +58,73 @@ function getKnownFriendGidsData(store, accountId) {
 function broadcastConfig(provider, accountId) {
   if (provider && typeof provider.broadcastConfig === "function") {
     provider.broadcastConfig(accountId);
+    return true;
   }
+  return false;
+}
+
+// ===== 重点名单本地构建（2026-10-07 陈旧名单治理）=====
+// 只从配置与暂停状态镜像构建响应：零 provider.getFriends 调用、零上游
+// 游戏请求——Worker 停止/在线冷缓存时 GET 也必须立即可用。名称/头像缺失
+// 返回空值，由前端与已加载好友列表拼接展示。
+function buildWatchlistPayload(store, accountId) {
+  const watchlist = store.getWatchlistFriendGids
+    ? store.getWatchlistFriendGids(accountId)
+    : [];
+  const mirror = store.readWatchlistStateMirror
+    ? store.readWatchlistStateMirror(accountId)
+    : null;
+  const rows = mirror && mirror.rows && typeof mirror.rows === "object"
+    ? mirror.rows
+    : {};
+  const meta = store.getWatchlistResetMeta
+    ? store.getWatchlistResetMeta(accountId)
+    : null;
+
+  const data = watchlist.map((gid) => {
+    const row = rows[Number(gid)] || rows[String(gid)] || {};
+    return {
+      gid: Number(gid),
+      name: "",
+      avatarUrl: "",
+      paused: row.paused === true,
+      pausedAt: Number(row.pausedAt) || 0,
+      trailingFailures: Number(row.trailingFailures) || 0,
+    };
+  });
+  return {
+    data,
+    meta: {
+      opSeq: meta ? Number(meta.opSeq) || 0 : 0,
+      consumedOpSeq: mirror ? Number(mirror.consumedOpSeq) || 0 : 0,
+    },
+  };
+}
+
+/**
+ * 保存重点名单并构建响应。保存失败回滚由 store.setWatchlistConfig 保证；
+ * 此处只在成功保存后才尝试配置广播（notifyAttempted 只表示"尝试过通知"，
+ * 不代表 Worker 已收到或已消费——面板据此展示三态）。
+ */
+function saveWatchlistAndRespond(store, provider, req, res, accountId, nextGids, intentGids) {
+  let saved = false;
+  try {
+    if (store.setWatchlistConfig) {
+      store.setWatchlistConfig(accountId, nextGids, intentGids);
+      saved = true;
+    }
+  } catch {
+    saved = false;
+  }
+  const notifyAttempted = saved ? broadcastConfig(provider, accountId) : false;
+  const payload = buildWatchlistPayload(store, accountId);
+  res.json({
+    ok: saved,
+    saved,
+    notifyAttempted,
+    data: payload.data,
+    meta: payload.meta,
+  });
 }
 
 function registerAdminFriendRoutes({
@@ -248,21 +314,15 @@ function registerAdminFriendRoutes({
     });
   });
 
-  app.get("/api/friend-watchlist", async (req, res) => {
+  app.get("/api/friend-watchlist", (req, res) => {
     const accountId = getAccountOrRespond(req, res, access);
     if (!accountId) return;
 
-    const watchlist = store.getWatchlistFriendGids
-      ? store.getWatchlistFriendGids(accountId)
-      : [];
-    const metaByGid = await getFriendMetaByGid(provider, accountId);
-    res.json({
-      ok: true,
-      data: formatFriendBlacklist(watchlist, metaByGid),
-    });
+    const payload = buildWatchlistPayload(store, accountId);
+    res.json({ ok: true, data: payload.data, meta: payload.meta });
   });
 
-  app.post("/api/friend-watchlist/toggle", async (req, res) => {
+  app.post("/api/friend-watchlist/toggle", (req, res) => {
     const accountId = getAccountOrRespond(req, res, access);
     if (!accountId) return;
 
@@ -277,18 +337,42 @@ function registerAdminFriendRoutes({
     const nextWatchlist = watchlist.includes(gid)
       ? watchlist.filter((item) => item !== gid)
       : [...watchlist, gid];
-    const saved = store.setWatchlistFriendGids
-      ? store.setWatchlistFriendGids(accountId, nextWatchlist)
-      : nextWatchlist;
-    if (provider && typeof provider.broadcastConfig === "function") {
-      provider.broadcastConfig(accountId);
-    }
+    // 名单变更即意图：remove-re-add 不继承旧暂停状态（差集自动登记）
+    saveWatchlistAndRespond(store, provider, req, res, accountId, nextWatchlist, undefined);
+  });
 
-    const metaByGid = await getFriendMetaByGid(provider, accountId);
-    res.json({
-      ok: true,
-      data: formatFriendBlacklist(saved, metaByGid),
-    });
+  // 恢复某目标的普通基线巡田（用户意图，opSeq 单调递增；对旧暂停立即生效）
+  app.post("/api/friend-watchlist/resume", (req, res) => {
+    const accountId = getAccountOrRespond(req, res, access);
+    if (!accountId) return;
+
+    const gid = Number((req.body || {}).gid);
+    if (!gid) {
+      return res.status(400).json({ ok: false, error: "Missing gid" });
+    }
+    const watchlist = store.getWatchlistFriendGids
+      ? store.getWatchlistFriendGids(accountId)
+      : [];
+    if (!watchlist.includes(gid)) {
+      return res.status(400).json({ ok: false, error: "该好友不在重点名单" });
+    }
+    saveWatchlistAndRespond(store, provider, req, res, accountId, watchlist, [gid]);
+  });
+
+  // 移出重点名单（显式移除意图：在途旧 Enter 结果不得污染新名单状态）
+  app.post("/api/friend-watchlist/remove", (req, res) => {
+    const accountId = getAccountOrRespond(req, res, access);
+    if (!accountId) return;
+
+    const gid = Number((req.body || {}).gid);
+    if (!gid) {
+      return res.status(400).json({ ok: false, error: "Missing gid" });
+    }
+    const watchlist = store.getWatchlistFriendGids
+      ? store.getWatchlistFriendGids(accountId)
+      : [];
+    const nextWatchlist = watchlist.filter((item) => item !== gid);
+    saveWatchlistAndRespond(store, provider, req, res, accountId, nextWatchlist, [gid]);
   });
 
   // 在线自动捣乱：好友上线（活跃证据）时巡查顺带随机放虫/放草，名单独立于重点监控

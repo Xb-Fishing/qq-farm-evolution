@@ -782,10 +782,23 @@ function armSentinelPreEnter(armed) {
         sentinelPreEnterTimer = null;
         const stillArmed = sentinelArmedFor && Number(sentinelArmedFor.gid) === gid;
         if (!stillArmed) return;
+        // 真实 Enter 发起记账（2026-10-07 陈旧名单治理）：仅重点名单目标返回
+        // attempt，该次 Enter 的结局在此登记（偷取复用分支不再重复记账）。
+        // 惰性 require 与请求治理紧急通道同款写法，vm 沙箱测试可注入桩。
+        const wlAttempt = (() => {
+            try {
+                return require('../services/friend-orchestrator').noteWatchlistEnterAttempt(gid);
+            } catch { return null; }
+        })();
         try {
             setUrgentStrikeMode(15_000);
             const enterReply = await require('../services/friend-api').enterFriendFarm(gid);
             sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply };
+            // 发起代次挂在驻留标记上，Strike 复用分支把它透传进偷取结果
+            sentinelPreEnter.epochAtSend = wlAttempt ? wlAttempt.epoch : 0;
+            try {
+                require('../services/friend-orchestrator').applyWatchlistEnterSuccess(wlAttempt);
+            } catch { /* 记账失败不影响预进门 */ }
             // 兜底清理：dueAt 后 60s 仍未被 Strike 消费则丢弃驻留标记。
             sentinelPreEnterTimer = setTimeout(() => {
                 if (sentinelPreEnter && Number(sentinelPreEnter.gid) === gid) {
@@ -793,7 +806,12 @@ function armSentinelPreEnter(armed) {
                 }
             }, 60_000);
             sentinelPreEnterTimer.unref?.();
-        } catch { /* 预进门失败：Strike 走完整路径 */ }
+        } catch (err) {
+            try {
+                require('../services/friend-orchestrator').applyWatchlistEnterError(wlAttempt, err);
+            } catch { /* 记账失败不影响兜底路径 */ }
+            /* 预进门失败：Strike 走完整路径 */
+        }
     }, Math.max(0, aheadMs - SENTINEL_PRE_ENTER_AHEAD_MS));
     sentinelPreEnterTimer.unref?.();
 }
@@ -820,7 +838,13 @@ async function runSentinelStrike() {
             const handled = await checkFriends({
                 onlySteal: true,
                 preEnter: preEnter
-                    ? { gid: preEnter.gid, enteredAt: preEnter.enteredAt, enterReply: preEnter.enterReply }
+                    ? {
+                        gid: preEnter.gid,
+                        enteredAt: preEnter.enteredAt,
+                        enterReply: preEnter.enterReply,
+                        // 复用驻留的那次真实 Enter 的发起代次（其结局已在预进门处登记）
+                        epochAtSend: Number(preEnter.epochAtSend) || 0,
+                    }
                     : null,
             });
             if (preEnter) clearSentinelPreEnter();
@@ -1091,6 +1115,13 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
         accountId
     });
 
+    // 配置侧意图 reconcile（2026-10-07 陈旧名单治理）：配置应用完成后、
+    // 进入调度前消费用户恢复/移除意图（更新意图先于一切暂停判定）。
+    // 失败不阻塞配置应用，下一次 config_sync 重试。
+    try {
+        require('../services/friend-orchestrator').reconcileWatchlistIntents();
+    } catch { /* reconcile 失败不影响配置应用 */ }
+
     const revision = Number((config || {}).__revision || 0);
     if (revision > 0) appliedConfigRevision = revision;
 
@@ -1208,6 +1239,15 @@ async function startBot(config) {
 
     await loadProto();
     log('系统', '正在连接服务器...');
+
+    // 暂停状态镜像加载一次（2026-10-07 陈旧名单治理）：账号上下文确定后、
+    // 首次配置应用前播种（镜像缺失/损坏按空状态，不阻塞登录）。
+    // 必须先播种再 reconcile：否则本轮刚消费的意图会被旧镜像回滚。
+    try {
+        const { readWatchlistStateMirror } = require('../models/store');
+        require('../services/friend-orchestrator')
+            .seedWatchlistStateFromMirror(readWatchlistStateMirror(process.env.FARM_ACCOUNT_ID || ''));
+    } catch { /* 镜像不可读按空状态启动 */ }
 
     applyRuntimeConfig(getConfigSnapshot(), false);
     initStatusBar();
