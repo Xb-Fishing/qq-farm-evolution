@@ -225,6 +225,22 @@ function shellQuote(text) {
   return `'${String(text).replace(/'/g, `'\\''`)}'`;
 }
 
+/** 私有「最近一次真实 ready」验收证书（2026-10-08 二批）：只含目标记录快照、
+ * 实测通过的验证摘要、验收时任务溯源快照与 ready 进程身份；原子落盘（唯一临时
+ * 名 + rename，0600）。失败/pending 应用绝不触碰既有证书——历史验收不是伪造的
+ * 当前回执，回执仍如实保留 failed/starting 状态。 */
+function writeApprovedCertificate(dataDir, certificate) {
+  const file = path.join(dataDir, 'evolution-approved-runtime.json');
+  const temp = `${file}.${process.pid}-cert.tmp`;
+  // 结尾换行给显式字节（0x0a）：`\n` 转义二次复制会产生字面反斜杠文本，破坏 JSON。
+  fs.writeFileSync(temp, Buffer.concat([
+    Buffer.from(JSON.stringify(certificate, null, 2), 'utf8'), Buffer.from([0x0A]),
+  ]), { mode: 0o600 });
+  try { fs.chmodSync(temp, 0o600); } catch {}
+  fs.renameSync(temp, file);
+  try { fs.chmodSync(file, 0o600); } catch {}
+}
+
 /** 自主路径的停服前复核：owner 经 API 关闭后不得继续停服（候选与旧服务保留）。 */
 function autonomyStillEnabled(dataDir) {
   try {
@@ -417,6 +433,11 @@ async function main() {
   // 资源就绪（tmp 可写、依赖可用），全部不可证明即取消。
   let targetRecord = null;
   let targetSourceRoot = '';
+  // 验收证书素材（2026-10-08 二批）：只在真实 ready 后落盘——证明成功的溯源快照与
+  // 实测通过的验证摘要都是「assertTargetProven 实际核过」的观测值，绝不从模型
+  // 文本或未来全局记录推断通过标志。
+  let targetProvenance = null;
+  let targetValidation = null;
   const assertTargetProven = () => {
     if (!targetRoot) return;
     const record = evolutionPublish.readApplyTarget(dataDir);
@@ -474,6 +495,11 @@ async function main() {
       throw new Error('运行时工作区已漂移（HEAD/干净度），取消应用');
     }
     targetRecord = record;
+    targetProvenance = provenance;
+    targetValidation = {
+      state: summary.state, fingerprint: summary.fingerprint,
+      checks: summary.checks, checkedAt: summary.checkedAt || 0,
+    };
   };
   try { assertTargetProven(); } catch (error) { return fail(`应用前置校验失败（服务保持运行）：${error.message}`); }
   let { table, panePid } = verifyContext();
@@ -587,8 +613,19 @@ async function main() {
     const quiet = await waitFor(() => paneAcceptingCommands(panePid), 10_000, 'pane 提示符空闲');
     if (!quiet) throw new Error('pane 前台未回到提示符（仍有前台任务或无法证明空闲），已取消送键重启，请人工处理');
     const command = [process.execPath, __filename, '--restart', contextFile].map(shellQuote).join(' ');
-    execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '-l', command], { stdio: ['ignore', 'ignore', 'ignore'] });
-    execFileSync('tmux', ['send-keys', '-t', tmuxTarget, 'Enter'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    // 单事务送键（2026-10-08 真实事故修复）：清行（C-u）+ 字面命令 + 回车必须在
+    // 一个 tmux 调用里以原始字节（-H hex）送达。旧实现分两次 exec——literal 已敲入
+    // 而 Enter 未达的中断窗口里，pane 残留未提交行；下一个 helper 又把命令直接拼在
+    // 残行之后，坏路径 context.json/root/.nvm/.../node 打开失败、helper 超时且服务
+    // 已停。注意不能用 C-u ... -l cmd Enter 混排：本机 tmux 会把中途的 -l 当字面键
+    // 敲出（实测 -lecho ...）；-H 按字节发送无歧义（0x15=C-u、0x0d=回车，UTF-8 安全）。
+    // Buffer.concat 显式字节（0x15/0x0d）：模板字符串转义在复制/改写时易被二次
+    // 转义成字面反斜杠文本（2026-10-08 事故复核），直接给字节杜绝歧义。
+    const keyBytes = Buffer.concat([
+      Buffer.from([0x15]), Buffer.from(command, 'utf8'), Buffer.from([0x0D]),
+    ]);
+    execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '-H',
+      ...keyBytes.toString('hex').match(/../g)], { stdio: ['ignore', 'ignore', 'ignore'] });
 
     const minStarttime = Number(processStarttime(process.pid)) || 0;
     // waitFor 返回谓词真值：这里就是找到的新 Bot PID（不是布尔），绝不能当 true 用。
@@ -617,6 +654,20 @@ async function main() {
     }
     writeReceipt({ phase: ready ? 'ready' : 'ready-timeout', newPid: newBot,
       newStarttime: processStarttime(newBot) || '', readyAt: ready ? Date.now() : 0 });
+    // 真实 ready（源/进程/端口/健康/验证 + 就绪后全量重证全部实测通过）才写「最近
+    // 一次 ready」验收证书：原库普通启动据此选择本运行时，而不再依赖会被下一轮
+    // 研究合法替换的全局验证/任务记录。ready-timeout/failed 绝不触碰既有证书。
+    if (ready && targetRoot && targetRecord) {
+      writeApprovedCertificate(dataDir, {
+        version: 1,
+        certifiedAt: Date.now(),
+        target: { ...targetRecord },
+        validation: targetValidation,
+        provenance: targetProvenance,
+        process: { newPid: newBot, newStarttime: processStarttime(newBot) || '',
+          adminPort, expectedHead },
+      });
+    }
     // 私有上下文用后即删（environ 含凭据，不留存）。
     try { fs.unlinkSync(contextFile); } catch {}
     contextFile = '';
