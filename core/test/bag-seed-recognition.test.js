@@ -1,5 +1,26 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// 每个测试进程独立数据目录，首次业务模块加载前完成创建边界检查。
+const originalDataDir = process.env.FARM_DATA_DIR;
+const fixtureRoot = fs.realpathSync(os.tmpdir());
+const repoRoot = fs.realpathSync(path.resolve(__dirname, '..', '..'));
+if (fixtureRoot === repoRoot || fixtureRoot.startsWith(repoRoot + path.sep)) {
+  throw new Error('fixture root must be outside the source repository');
+}
+const fixturePrefix = path.resolve(fixtureRoot, 'bag-seed-recognition-');
+if (path.dirname(fixturePrefix) !== fixtureRoot) throw new Error('fixture creation out of bounds');
+const fixtureDataDir = fs.mkdtempSync(fixturePrefix);
+process.env.FARM_DATA_DIR = fixtureDataDir;
+test.after(() => {
+  if (originalDataDir === undefined) delete process.env.FARM_DATA_DIR;
+  else process.env.FARM_DATA_DIR = originalDataDir;
+  fs.rmSync(fixtureDataDir, { recursive: true, force: true });
+  process.on('exit', () => fs.rmSync(fixtureDataDir, { recursive: true, force: true }));
+});
 
 const {
   getBagSeedsFromItems,
@@ -293,6 +314,95 @@ test('月下美人图片文件缺失时审计必须报 seed_icon_missing,不得�
     noIconLookup,
   );
   assert.ok(missing.issues.some(i => i.itemId === 26030 && i.kind === 'seed_icon_missing'));
+});
+
+test('寒兰 2026-10-08 Bag 实际出现,按本机快照+Plant+Bag 三方证据登记', () => {
+  const {
+    getSeedImageBySeedId, getItemImageById, getPlantByFruitId,
+    getPlantGrowTime, getPlantExp, getSeedHarvestInfo,
+  } = require('../src/config/gameConfig');
+  const crypto = require('node:crypto');
+  // 种子进运行时种子索引（type 5），背包优先种植可识别
+  assert.equal(getItemById(21072)?.name, '寒兰种子');
+  assert.equal(isSeedItem(21072), true);
+  // 植物映射：seed→plant→fruit 双向闭环（快照 Plant 1021072 逐字段）
+  const plant = getPlantBySeedId(21072);
+  assert.equal(plant?.name, '寒兰');
+  // 官方 Plant size=null：按"仅非默认占地写 size"约定 + 枸杞/山丹丹同族先例登记 1x1
+  assert.equal(plant?.size, 1);
+  assert.equal(plant?.fruit?.id, 41072);
+  assert.equal(plant?.fruit?.count, 48);
+  assert.equal(plant?.mutant_effect_plant, '5:1121072:1');
+  // 真实数值：5 阶段各 8640s、exp 1680、果实 48、单季
+  assert.equal(getPlantGrowTime(1021072), 5 * 8640);
+  assert.equal(getPlantExp(1021072), 1680);
+  const harvest = getSeedHarvestInfo(21072);
+  assert.equal(harvest.expPerSeason, 1680);
+  assert.equal(harvest.seasons, 1);
+  // 果实由 EventPlants 合成条目命名（同枸杞惯例，不进 EventItems）
+  assert.equal(getItemById(41072)?.name, '寒兰');
+  // 黄金变体果实（Plant 1121072 fruit 1041072×10 + ItemInfo type 17 双源）
+  assert.equal(getItemById(1041072)?.name, '黄金·寒兰');
+  assert.equal(isSeedItem(1041072), false);
+  assert.equal(getPlantByFruitId(1041072)?.id, 1121072);
+  // 变异展示植物 seed_id 为空,不污染种子索引
+  assert.equal(getPlantBySeedId(0), undefined);
+  // 官方专属图（非通用回退）：种子/果实/黄金三张都必须命中本地文件
+  assert.match(getSeedImageBySeedId(21072), /21072_Crop_1072_Seed\.png$/);
+  assert.match(getSeedImageBySeedId(41072), /41072_Crop_1072_Seed\.png$/);
+  assert.match(getSeedImageBySeedId(1041072) || getItemImageById(1041072), /1041072_gold_Crop_1072_Seed\.png$/);
+  // 三张 PNG 实测 100x100 8bit RGBA + 精确 sha256（reviewed_public_client_snapshot 溯源）
+  const imgDir = path.join(__dirname, '..', 'src', 'gameConfig', 'seed_images_named');
+  const expectedSha = {
+    '21072_Crop_1072_Seed.png': '1ff88c6d5cb0822abae1356398f7483654c148ce95730bc09a90d752294eed92',
+    '41072_Crop_1072_Seed.png': '1ff88c6d5cb0822abae1356398f7483654c148ce95730bc09a90d752294eed92',
+    '1041072_gold_Crop_1072_Seed.png': 'cae38c8c380fc1095a37a9281952cad156e5f98826496de08ec435cd29768b96',
+  };
+  for (const [name, sha] of Object.entries(expectedSha)) {
+    const data = fs.readFileSync(path.join(imgDir, name));
+    assert.equal(data.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', `${name} PNG magic`);
+    assert.equal(data.readUInt32BE(16), 100, `${name} width`);
+    assert.equal(data.readUInt32BE(20), 100, `${name} height`);
+    assert.equal(data[24], 8, `${name} bit depth`);
+    assert.equal(data[25], 6, `${name} RGBA color type`);
+    assert.equal(crypto.createHash('sha256').update(data).digest('hex'), sha, `${name} sha256`);
+  }
+  // 背包识别不再 unknown，mappingStatus=mapped 且 1x1
+  const seeds = getBagSeedsFromItems([
+    { id: 21072, count: 2, showName: '寒兰种子' },
+    { id: 41072, count: 48, showName: '寒兰' },
+    { id: 1041072, count: 1, showName: '黄金·寒兰' },
+  ]);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].mappingStatus, 'mapped');
+  assert.equal(seeds[0].plantSize, 1);
+  assert.match(seeds[0].image, /21072_Crop_1072_Seed\.png$/);
+});
+
+test('活动物品和植物 ID 唯一,寒兰家族不污染 0 键', () => {
+  const configDir = path.join(__dirname, '..', 'src', 'gameConfig');
+  const items = JSON.parse(fs.readFileSync(path.join(configDir, 'EventItems.json'), 'utf8'));
+  const plants = JSON.parse(fs.readFileSync(path.join(configDir, 'EventPlants.json'), 'utf8'));
+  for (const rows of [items, plants]) {
+    const ids = rows.map(entry => entry.id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.ok(!ids.includes(0));
+  }
+  for (const id of [21072, 1041072]) assert.equal(items.filter(entry => entry.id === id).length, 1);
+  for (const id of [1021072, 1121072]) assert.equal(plants.filter(entry => entry.id === id).length, 1);
+});
+
+test('寒兰登记后审计零缺口且不新增通用回退', () => {
+  const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
+  const { getGenericFallbackItemIds } = require('../src/config/gameConfig');
+  const bagItems = [
+    { id: 21072, count: 2 },
+    { id: 41072, count: 48 },
+    { id: 1041072, count: 1 },
+  ];
+  const audit = auditBagSeedCoverage(bagItems, getBagSeedsFromItems(bagItems));
+  assert.deepEqual(audit.issues.filter(i => [21072, 41072, 1041072].includes(i.itemId)), []);
+  assert.deepEqual(getGenericFallbackItemIds(), []);
 });
 
 test('bag_unclassified 签名变化同步进运行时待办,同签名不风暴', () => {
