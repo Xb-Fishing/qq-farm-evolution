@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BearActivityPanel from '@/components/activity/BearActivityPanel.vue'
 import ClaimAllPanel from '@/components/activity/ClaimAllPanel.vue'
 import SeasonRuleActivityPanel from '@/components/activity/SeasonRuleActivityPanel.vue'
@@ -24,9 +24,24 @@ const { wishActivity, wishLoading, wishError } = storeToRefs(activityStore)
 const { happyShareActivity, happyShareLoading, happyShareError } = storeToRefs(activityStore)
 const { seasonWishOperating } = storeToRefs(activityStore)
 const { claimAllRunning, claimAllStep, claimAllResults } = storeToRefs(activityStore)
+const { activityRetired } = storeToRefs(activityStore)
 const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
+
+// 页面存活标记：卸载后旧回调（操作/一键/重新检查）不得弹提示或启动新刷新
+let activityViewAlive = true
+
+// 下架门控：面板与操作入口撤下，换下架说明 + 显式「重新检查」（唯一会再读该活动的入口）
+const bearRetired = computed(() => activityRetired.value.bear != null)
+const wishRetired = computed(() => activityRetired.value.wish != null)
+const happyShareRetired = computed(() => activityRetired.value.happyShare != null)
+const RETIRED_LABELS = { bear: 'S3 萌宠', wish: '秋祈良愿', happyShare: '快乐不独享' } as const
+function retiredReason(key: 'bear' | 'wish' | 'happyShare') {
+  return activityRetired.value[key]?.reason === 'unavailable'
+    ? '服务端不再下发该活动（官方活动列表已下架）'
+    : '已过活动截止时间'
+}
 
 async function refreshAll() {
   if (currentAccountId.value) {
@@ -38,23 +53,34 @@ async function refreshAll() {
   }
 }
 
+// 下架/已取消的读取返回不是失败：普通刷新与操作后刷新对它们静默（零提示，也零请求）
+function isSilentReadResult(result: any) {
+  return result?.retired === true || result?.unavailable === true || result?.cancelled === true
+}
+
 async function refreshBear() {
   if (!currentAccountId.value)
     return
   const result = await activityStore.fetchBearActivity(String(currentAccountId.value))
+  if (isSilentReadResult(result))
+    return
   result?.ok ? toast.success('S3 萌宠只读状态已刷新') : toast.error(result?.error || 'S3 萌宠刷新失败')
 }
 
 async function operateBear(action: string, input: Record<string, unknown> = {}) {
   if (!currentAccountId.value || bearOperating.value)
     return
-  const result = await activityStore.operateBearPet(String(currentAccountId.value), action, input)
+  const runAccount = String(currentAccountId.value)
+  const result = await activityStore.operateBearPet(runAccount, action, input)
+  // 卸载/切账号（含往返，账号串恰好相等）后的旧操作回调直接静默：不弹提示、不启动新的页面刷新
+  if (!activityViewAlive || currentAccountId.value !== runAccount || isSilentReadResult(result))
+    return
   if (result?.ok) {
     const rewardCount = result.rewards?.length || 0
     toast.success(`操作成功${rewardCount ? `，获得 ${rewardCount} 项奖励` : ''}`)
     await refreshBear()
   }
-  else {
+  else if (!(result as any)?.retired) {
     toast.error(result?.error || '操作失败')
   }
 }
@@ -63,6 +89,8 @@ async function refreshWish() {
   if (!currentAccountId.value)
     return
   const result = await activityStore.fetchWishActivity(String(currentAccountId.value))
+  if (isSilentReadResult(result))
+    return
   result?.ok ? toast.success('秋祈良愿只读状态已刷新') : toast.error(result?.error || '秋祈良愿刷新失败')
 }
 
@@ -70,6 +98,8 @@ async function refreshHappyShare() {
   if (!currentAccountId.value)
     return
   const result = await activityStore.fetchHappyShareActivity(String(currentAccountId.value))
+  if (isSilentReadResult(result))
+    return
   result?.ok ? toast.success('快乐不独享只读状态已刷新') : toast.error(result?.error || '快乐不独享刷新失败')
 }
 
@@ -77,7 +107,11 @@ async function refreshHappyShare() {
 async function operateSeasonWish(action: string, input: Record<string, unknown> = {}) {
   if (!currentAccountId.value || seasonWishOperating.value)
     return
-  const result = await activityStore.operateSeasonWish(String(currentAccountId.value), action, input)
+  const runAccount = String(currentAccountId.value)
+  const result = await activityStore.operateSeasonWish(runAccount, action, input)
+  // 卸载/切账号（含往返，账号串恰好相等）后的旧操作回调直接静默：不弹提示、不启动新的页面刷新
+  if (!activityViewAlive || currentAccountId.value !== runAccount || isSilentReadResult(result))
+    return
   if (result?.ok) {
     const rewardText = result.rewards?.length
       ? `，获得 ${result.rewards.map((r: { itemName: string, itemCount: number }) => `${r.itemName}×${r.itemCount}`).join('、')}`
@@ -85,13 +119,12 @@ async function operateSeasonWish(action: string, input: Record<string, unknown> 
     toast.success(`操作成功${rewardText}`)
     await Promise.all([refreshWish(), refreshHappyShare()])
   }
-  else {
+  else if (!(result as any)?.retired) {
     toast.error(result?.error || '操作失败')
   }
 }
 
 // 一键领取：编排层只在 store 内复用已证实手动写入口；部分失败不提示全成功
-let activityViewAlive = true
 async function claimAll() {
   if (!currentAccountId.value || claimAllRunning.value || seasonWishOperating.value || bearOperating.value)
     return
@@ -106,10 +139,28 @@ async function claimAll() {
     toast.success(String((result as any)?.summary || '一键领取完成'))
 }
 
-// 页面卸载：停止一键领取后续请求，旧响应不回填、不弹提示
+// 显式重新检查（下架卡片按钮）：只读所选活动一次；提示同样受页面存活 + 账号双守卫，
+// 切账号往返（字符串恰好相等）也靠读取代次作废，不弹旧生命周期提示
+async function recheck(kind: 'bear' | 'wish' | 'happyShare') {
+  if (!currentAccountId.value)
+    return
+  const runAccount = String(currentAccountId.value)
+  const result = await activityStore.recheckActivity(kind, runAccount)
+  if (!activityViewAlive || currentAccountId.value !== runAccount || (result as any)?.cancelled)
+    return
+  if (result?.ok)
+    toast.success('重新检查完成：活动仍在进行，已恢复展示')
+  else if ((result as any)?.retired)
+    toast.error('重新检查确认：活动已结束，保持下架')
+  else
+    toast.error(String((result as any)?.error || '重新检查失败，请稍后再试'))
+}
+
+// 页面卸载：停止一键领取后续请求，作废在飞读取（迟到响应不回填/不重建计时），旧响应不弹提示
 onBeforeUnmount(() => {
   activityViewAlive = false
   activityStore.cancelClaimAll()
+  activityStore.cancelActivityReads()
 })
 
 watch(currentAccountId, () => {
@@ -126,7 +177,11 @@ watch(() => userStore.isAdmin, (isAdmin, _previous, onCleanup) => {
     showActivityAnalysis.value = false
   }
 }, { immediate: true })
-onMounted(refreshAll)
+// 进入页面先同步清扫已过期的落地快照（零请求，不展示过期缓存），再正常刷新
+onMounted(() => {
+  activityStore.sweepExpiredActivities()
+  refreshAll()
+})
 </script>
 
 <template>
@@ -168,7 +223,7 @@ onMounted(refreshAll)
       请先选择账号，再查看活动数据。
     </div>
     <template v-else>
-      <div v-if="bearError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+      <div v-if="bearError && !bearRetired" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ bearError }}
       </div>
       <ClaimAllPanel
@@ -176,25 +231,51 @@ onMounted(refreshAll)
         :results="claimAllResults" :has-operating="!!seasonWishOperating || !!bearOperating"
         @claim="claimAll"
       />
-      <BearActivityPanel v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
-      <div v-if="wishError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+      <BearActivityPanel v-if="!bearRetired" v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
+      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span>{{ RETIRED_LABELS.bear }}已结束：{{ retiredReason('bear') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
+          <BaseButton variant="secondary" @click="recheck('bear')">
+            重新检查
+          </BaseButton>
+        </div>
+      </div>
+      <div v-if="wishError && !wishRetired" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ wishError }}
       </div>
       <SeasonRuleActivityPanel
+        v-if="!wishRetired"
         :activity="wishActivity" :loading="wishLoading" kind="wish" :operating="seasonWishOperating"
         heading="秋祈良愿 · 每日祈愿"
         subtitle="每日祈愿领好运奖励 · 限定种子 / 烟花 / 盆栽 · 错过存储 5 日 · 邮件补发"
         @refresh="refreshWish" @operate="operateSeasonWish"
       />
-      <div v-if="happyShareError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
+      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span>{{ RETIRED_LABELS.wish }}已结束：{{ retiredReason('wish') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
+          <BaseButton variant="secondary" @click="recheck('wish')">
+            重新检查
+          </BaseButton>
+        </div>
+      </div>
+      <div v-if="happyShareError && !happyShareRetired" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ happyShareError }}
       </div>
       <SeasonRuleActivityPanel
+        v-if="!happyShareRetired"
         :activity="happyShareActivity" :loading="happyShareLoading" kind="happyShare" :operating="seasonWishOperating"
         heading="快乐不独享 · 快乐值"
         subtitle="每日领取 / 每日首次分享 / 好友快乐包链接 · 档位奖励（稚萌熊熊）"
         @refresh="refreshHappyShare" @operate="operateSeasonWish"
       />
+      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span>{{ RETIRED_LABELS.happyShare }}已结束：{{ retiredReason('happyShare') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
+          <BaseButton variant="secondary" @click="recheck('happyShare')">
+            重新检查
+          </BaseButton>
+        </div>
+      </div>
     </template>
 
     <Teleport to="body">

@@ -843,11 +843,13 @@ test('helper 与目标 Bot 为兄弟拓扑时不得豁免公共宿主祖先：TE
   ].join(' ');
   tmux(['send-keys', '-t', f.target, '-l', `${command} &`]);
   tmux(['send-keys', '-t', f.target, 'Enter']);
-  await waitFor(async () => fs.existsSync(pidFile) && await healthOk(port), 10_000, '兄弟拓扑 Bot 启动');
+  const evidence = path.join(f.dataDir, 'bot-evidence.jsonl');
+  await waitFor(async () => fs.existsSync(pidFile) && await healthOk(port)
+    && fs.existsSync(evidence) && readEvidence(evidence).some(entry => Number.isInteger(entry.childPid) && entry.childPid > 0),
+  10_000, '兄弟拓扑 Bot 与 TERM 忽略子进程证据就绪');
   const botPid = Number(fs.readFileSync(pidFile, 'utf8'));
   const botStart = helper.processStarttime(botPid);
   const panePid = Number(tmux(['display-message', '-p', '-t', f.target, '#{pane_pid}']));
-  const evidence = path.join(f.dataDir, 'bot-evidence.jsonl');
   const termChildPid = readEvidence(evidence).find(entry => Number.isInteger(entry.childPid))?.childPid || 0;
   const termChildStart = termChildPid ? helper.processStarttime(termChildPid) : '';
   assert.ok(termChildPid > 0, 'Bot 必须产生 TERM 忽略子进程');
