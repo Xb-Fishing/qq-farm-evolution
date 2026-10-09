@@ -104,6 +104,17 @@ function registerAdminAccountRuntimeRoutes({
       );
 
       const restarted = provider.restartAccount(accountId);
+      // provider 约定：true/false = 同步 startWorker 结果；undefined = 重启已排队
+      // （等旧进程退出后拉起）。undefined 是「已提交、排队中」，不是 404——
+      // 按真假判断会把排队误报成 Account not found；回执须明确未连接，不冒充成功启动。
+      if (restarted === undefined) {
+        return res.status(202).json({
+          ok: true,
+          queued: true,
+          started: false,
+          error: "重启已排队：等待旧进程退出后自动拉起",
+        });
+      }
       if (!restarted) {
         return res.status(404).json({ ok: false, error: "Account not found" });
       }

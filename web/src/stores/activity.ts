@@ -611,6 +611,10 @@ export interface ClaimAllItemResult {
   detail: string
 }
 
+export type ActivityKey = 'bear' | 'wish' | 'happyShare'
+export type ActivityRetireReason = 'unavailable' | 'expired'
+export interface ActivityRetiredInfo { reason: ActivityRetireReason }
+
 export const useActivityStore = defineStore('activity', () => {
   const bearActivity = ref<BearActivityData | null>(null)
   const bearLoading = ref(false)
@@ -640,11 +644,175 @@ export const useActivityStore = defineStore('activity', () => {
   // 萌宠手动操作（写操作仅由面板按钮或一键领取触发；成功后由调用方重新拉取只读状态）
   const bearOperating = ref('')
   let bearOperateSeq = 0
+  // 页面生命周期代次：卸载（cancelActivityReads）与切账号（clearActivityData）各推进一次。
+  // 在飞单项写操作在响应落地时对账：代次已变 = 旧回调，返回 cancelled，页面不弹提示、
+  // 不启动新刷新（切账号往返后账号串恰好相等也靠代次识别，不依赖字符串比较）。
+  let activityLifecycleSeq = 0
 
-  function clearActivityData() {
+  // ===== 活动下架门控（2026-10-08）=====
+  // 下架判据只有两种：读取路由的结构化 unavailable:true（官方 List 不再下发该活动），
+  // 或「已落地快照」的有效 endTime 到期。enabled:false、普通网络错误、账号离线、
+  // 空快照、未知错误都不是下架证据。下架后清旧快照与旧错误、面板换下架说明；
+  // 同账号普通刷新与一键领取对该活动零读取零写入，只有用户显式「重新检查」再读一次。
+  const activityRetired = ref<Record<ActivityKey, ActivityRetiredInfo | null>>({
+    bear: null,
+    wish: null,
+    happyShare: null,
+  })
+  // 到期计时绑定「已落地快照」而不是请求开始代次：发起第二次读取不取消旧计时
+  // （旧快照仍在展示，到点仍须撤下）；只有新快照落地/显式恢复/切账号会推进令牌，
+  // 旧计时因此不会误撤新快照。卸载只作废在飞读取，迟到响应不能重建计时。
+  const expiryTimers: Record<ActivityKey, any> = { bear: null, wish: null, happyShare: null }
+  const expiryTokens: Record<ActivityKey, number> = { bear: 0, wish: 0, happyShare: 0 }
+
+  // 已核实格式的有效截止时间（秒）：正的有限数值；0/缺失/无效一律「未知截止」，不猜测
+  function validEndTimeOf(activity: unknown): number {
+    const end = Number((activity as { endTime?: unknown } | null)?.endTime)
+    return Number.isFinite(end) && end > 0 ? Math.floor(end) : 0
+  }
+
+  /** 「重新检查解除下架」的快照合法性：非空普通对象。数组/字符串/数字/null/空对象都
+   * 不是合法快照，不得凭它们恢复展示（合法但未知截止的快照可恢复，不据此误判结束）。
+   * 只约束显式恢复条件；正常读取的快照落地不经过此判断。 */
+  function isRecoverableSnapshot(activity: unknown): boolean {
+    return typeof activity === 'object'
+      && activity !== null
+      && !Array.isArray(activity)
+      && Object.keys(activity).length > 0
+  }
+
+  function isActivityRetired(key: ActivityKey) {
+    return activityRetired.value[key] != null
+  }
+
+  function retireActivity(key: ActivityKey, reason: ActivityRetireReason) {
+    if (expiryTimers[key]) {
+      clearTimeout(expiryTimers[key])
+      expiryTimers[key] = null
+    }
+    ++expiryTokens[key]
+    activityRetired.value[key] = { reason }
+    // 清旧快照与旧错误：下架不是读取错误，也不得继续展示过期数据
+    if (key === 'bear') {
+      bearActivity.value = null
+      bearError.value = ''
+    }
+    else if (key === 'wish') {
+      wishActivity.value = null
+      wishError.value = ''
+    }
+    else {
+      happyShareActivity.value = null
+      happyShareError.value = ''
+    }
+  }
+
+  function currentSnapshotOf(key: ActivityKey): unknown {
+    if (key === 'bear')
+      return bearActivity.value
+    if (key === 'wish')
+      return wishActivity.value
+    return happyShareActivity.value
+  }
+
+  /** 写入口同步核对：下架标记，或「当前快照的有效截止已实际到期但到期计时尚未执行」
+   * （卸载已释放计时、事件循环忙于定时器回调前）都算已结束；后者当场同步落地 expired
+   * 下架（面板与后续写步骤立即撤下），不等计时回调。零请求、零猜测（未知截止不拦）。 */
+  function activityEndedNow(key: ActivityKey) {
+    if (activityRetired.value[key] != null)
+      return true
+    const end = validEndTimeOf(currentSnapshotOf(key))
+    if (end && end * 1000 <= Date.now()) {
+      retireActivity(key, 'expired')
+      return true
+    }
+    return false
+  }
+
+  function scheduleExpiry(key: ActivityKey, endTimeSec: number) {
+    if (expiryTimers[key])
+      clearTimeout(expiryTimers[key])
+    const token = ++expiryTokens[key]
+    const timer: any = setTimeout(() => {
+      expiryTimers[key] = null
+      if (token !== expiryTokens[key] || isActivityRetired(key))
+        return // 新快照已重排计时并推进令牌，或已下架：旧计时不误撤
+      // 回调落地前再核对「当前快照的有效截止」与实际时间：定时器被提前/截断触发
+      // 或当前快照截止已被新数据推后时，不得提前下架
+      const currentEnd = validEndTimeOf(currentSnapshotOf(key))
+      if (currentEnd && currentEnd * 1000 <= Date.now())
+        retireActivity(key, 'expired')
+    }, Math.max(0, endTimeSec * 1000 - Date.now()))
+    if (typeof timer?.unref === 'function')
+      timer.unref() // 长截止的计时不得阻塞页面/测试进程退出
+    expiryTimers[key] = timer
+  }
+
+  function clearExpiry(key: ActivityKey) {
+    if (expiryTimers[key]) {
+      clearTimeout(expiryTimers[key])
+      expiryTimers[key] = null
+    }
+    ++expiryTokens[key]
+  }
+
+  /** 页面卸载：作废三组在飞读取并完整释放到期计时（清计时+推进令牌），迟到响应不回填
+   * 快照/错误/loading、不在页外重建计时；下架状态与已落地快照的截止证据保留给重进页面
+   * （重进先 sweepExpiredActivities 同步清扫，再由正常刷新为仍有效快照重排计时）。 */
+  function cancelActivityReads() {
+    ++activityLifecycleSeq
     ++bearRequestId
     ++seasonRuleRequestIds.wish
     ++seasonRuleRequestIds.happyShare
+    bearLoading.value = false
+    wishLoading.value = false
+    happyShareLoading.value = false
+    for (const key of ['bear', 'wish', 'happyShare'] as const)
+      clearExpiry(key)
+  }
+
+  /** 页面进入时同步清扫：已过有效截止的落地快照立即下架；仍有效的保留快照恢复到期计时
+   * （零请求，不展示过期缓存，也不等新响应才重建截止保护）。 */
+  function sweepExpiredActivities() {
+    const snapshots: Array<[ActivityKey, unknown]> = [
+      ['bear', bearActivity.value],
+      ['wish', wishActivity.value],
+      ['happyShare', happyShareActivity.value],
+    ]
+    for (const [key, snapshot] of snapshots) {
+      if (isActivityRetired(key))
+        continue
+      const end = validEndTimeOf(snapshot)
+      if (end && end * 1000 <= Date.now()) {
+        retireActivity(key, 'expired')
+        continue
+      }
+      // 仍有效的保留快照：重进页面时恢复到期计时。卸载已释放旧计时，不能等新响应
+      // 落地才重建保护——重进后的刷新缓慢/失败期间，快照到点仍会被零请求撤下。
+      // 计时仍只绑定「已落地快照」：新快照落地会取消并重排；未知截止不建计时、零周期探测。
+      if (end)
+        scheduleExpiry(key, end)
+    }
+  }
+
+  // 显式重新检查（下架卡片按钮触发）：每次只读所选活动一次。有效未过期响应恢复展示；
+  // unavailable/过期保持下架；普通失败不改下架状态、不自动重试；不发任何写请求。
+  async function recheckActivity(kind: ActivityKey, accountId: string) {
+    if (kind === 'bear')
+      return fetchBearActivity(accountId, { recheck: true })
+    return fetchSeasonRuleActivity(kind === 'happyShare' ? 'happyShare' : 'wish', accountId, { recheck: true })
+  }
+
+  function clearActivityData() {
+    ++activityLifecycleSeq
+    ++bearRequestId
+    ++seasonRuleRequestIds.wish
+    ++seasonRuleRequestIds.happyShare
+    // 账号切换：下架证据与到期计时属于旧账号，一并清掉（豁免通道与快照照旧清空）
+    for (const key of ['bear', 'wish', 'happyShare'] as const) {
+      clearExpiry(key)
+      activityRetired.value[key] = null
+    }
     // 账号切换：取消一键领取（停止后续请求），旧账号结果不展示给新账号；
     // 同时作废在飞单项操作代次，旧 response 的 finally 不得清掉新账号的 busy 状态
     ++claimAllRunId
@@ -672,9 +840,12 @@ export const useActivityStore = defineStore('activity', () => {
     return currentId === String(accountId)
   }
 
-  async function fetchBearActivity(accountId: string) {
+  async function fetchBearActivity(accountId: string, options: { recheck?: boolean } = {}) {
     if (!accountId)
       return
+    // 下架门：普通刷新/一键领取对已下架活动零读取；显式重新检查才放行
+    if (!options.recheck && isActivityRetired('bear'))
+      return { ok: false, retired: true, error: '活动已结束' }
     const requestedId = String(accountId)
     const requestId = ++bearRequestId
     bearLoading.value = true
@@ -684,17 +855,52 @@ export const useActivityStore = defineStore('activity', () => {
         headers: { 'x-account-id': accountId },
       })
       if (requestId !== bearRequestId || !isCurrentAccount(requestedId))
+        // 请求已被新一轮/切账号/页面卸载作废：迟到响应不回填，也不给调用方可消费的结果
+        return { ok: false, cancelled: true, error: '已取消' }
+      if ((data as any)?.unavailable === true) {
+        retireActivity('bear', 'unavailable')
+        return { ok: false, unavailable: true, retired: true, error: String((data as any).error || '活动已结束') }
+      }
+      if ((data as any)?.ok === true) {
+        const activity = (data as any).activity || null
+        const end = validEndTimeOf(activity)
+        if (end && end * 1000 <= Date.now()) {
+          // 有效截止时间已过：下架；读取返回值不得继续提供可消费的过期资格
+          retireActivity('bear', 'expired')
+          return { ok: false, retired: true, expired: true, error: '活动已结束（已过截止时间）' }
+        }
+        if (isActivityRetired('bear')) {
+          if (!options.recheck)
+            return { ok: false, retired: true, error: '活动已结束' }
+          // 显式恢复：仅当前代次、非空合法（非空普通对象）、有效未过期快照可解除下架；
+          // 空对象/数组/非对象快照一律保持下架，不虚报恢复
+          if (!isRecoverableSnapshot(activity))
+            return { ok: false, retired: true, error: '重新检查未返回有效活动数据，保持下架（未恢复）' }
+          activityRetired.value.bear = null
+        }
+        bearActivity.value = activity
+        if (end)
+          scheduleExpiry('bear', end)
+        else
+          clearExpiry('bear') // 新快照无有效截止：不猜测，也不沿用旧快照的计时
         return data
-      bearActivity.value = data.ok ? data.activity || null : null
-      if (!data.ok)
-        bearError.value = data.error || '获取 S3 萌宠失败'
-      return data
+      }
+      // 普通失败（含账号离线/网络/未知错误与非严格成功标记）：不是下架证据，不提前判定结束。
+      // 已落地快照与截止证据保留——失败清快照会让到期计时与写入口同步核对失去依据，
+      // 到点无法零请求撤下（2026-10-09 主审返工修复）；错误横幅照常展示，返回值 ok 一律严格 false
+      bearError.value = (data as any)?.error || '获取 S3 萌宠失败'
+      return { ok: false, error: bearError.value }
     }
     catch (err: any) {
       const error = err.message || '获取 S3 萌宠失败'
       if (requestId === bearRequestId && isCurrentAccount(requestedId)) {
-        bearActivity.value = null
+        // 网络拒绝/超时与普通失败同规则：保留已落地快照与截止证据，只记录错误横幅
         bearError.value = error
+      }
+      else {
+        // 过时代次的异常（网络拒绝/超时迟到）：与迟到成功响应同样标记已取消，
+        // 调用方不得把它当普通失败提示（切账号往返后账号串相等也靠代次识别）
+        return { ok: false, cancelled: true, error: '已取消' }
       }
       return { ok: false, error }
     }
@@ -708,11 +914,16 @@ export const useActivityStore = defineStore('activity', () => {
   async function fetchSeasonRuleActivity(
     kind: 'wish' | 'happyShare',
     accountId: string,
+    options: { recheck?: boolean } = {},
   ) {
     if (!accountId)
       return
+    // 下架门：普通刷新/一键领取对已下架活动零读取；显式重新检查才放行
+    if (!options.recheck && isActivityRetired(kind === 'happyShare' ? 'happyShare' : 'wish'))
+      return { ok: false, retired: true, error: '活动已结束' }
     const requestedId = String(accountId)
     const kindKey = (kind === 'happyShare' ? 'happyShare' : 'wish') as 'wish' | 'happyShare'
+    const retireKey: ActivityKey = kindKey
     seasonRuleRequestIds[kindKey] = (seasonRuleRequestIds[kindKey] || 0) + 1
     const requestId = seasonRuleRequestIds[kindKey]
     const isWish = kind === 'wish'
@@ -726,17 +937,52 @@ export const useActivityStore = defineStore('activity', () => {
         headers: { 'x-account-id': accountId },
       })
       if (requestId !== seasonRuleRequestIds[kindKey] || !isCurrentAccount(requestedId))
+        // 请求已被新一轮/切账号/页面卸载作废：迟到响应不回填，也不给调用方可消费的结果
+        return { ok: false, cancelled: true, error: '已取消' }
+      if ((data as any)?.unavailable === true) {
+        retireActivity(retireKey, 'unavailable')
+        return { ok: false, unavailable: true, retired: true, error: String((data as any).error || '活动已结束') }
+      }
+      if ((data as any)?.ok === true) {
+        const activity = (data as any).activity || null
+        const end = validEndTimeOf(activity)
+        if (end && end * 1000 <= Date.now()) {
+          // 有效截止时间已过：下架；读取返回值不得继续提供可消费的过期资格
+          retireActivity(retireKey, 'expired')
+          return { ok: false, retired: true, expired: true, error: '活动已结束（已过截止时间）' }
+        }
+        if (isActivityRetired(retireKey)) {
+          if (!options.recheck)
+            return { ok: false, retired: true, error: '活动已结束' }
+          // 显式恢复：仅当前代次、非空合法（非空普通对象）、有效未过期快照可解除下架；
+          // 空对象/数组/非对象快照一律保持下架，不虚报恢复
+          if (!isRecoverableSnapshot(activity))
+            return { ok: false, retired: true, error: '重新检查未返回有效活动数据，保持下架（未恢复）' }
+          activityRetired.value[retireKey] = null
+        }
+        dataRef.value = activity
+        if (end)
+          scheduleExpiry(retireKey, end)
+        else
+          clearExpiry(retireKey) // 新快照无有效截止：不猜测，也不沿用旧快照的计时
         return data
-      dataRef.value = data.ok ? data.activity || null : null
-      if (!data.ok)
-        errorRef.value = data.error || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
-      return data
+      }
+      // 普通失败（含账号离线/网络/未知错误与非严格成功标记）：不是下架证据，不提前判定结束。
+      // 已落地快照与截止证据保留——失败清快照会让到期计时与写入口同步核对失去依据，
+      // 到点无法零请求撤下（2026-10-09 主审返工修复）；错误横幅照常展示，返回值 ok 一律严格 false
+      errorRef.value = (data as any)?.error || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
+      return { ok: false, error: errorRef.value }
     }
     catch (err: any) {
       const error = err.message || `获取${isWish ? '秋祈良愿' : '快乐不独享'}失败`
-      if (requestId === (seasonRuleRequestIds[kind] ?? -2) && isCurrentAccount(requestedId)) {
-        dataRef.value = null
+      if (requestId === (seasonRuleRequestIds[kindKey] ?? -2) && isCurrentAccount(requestedId)) {
+        // 网络拒绝/超时与普通失败同规则：保留已落地快照与截止证据，只记录错误横幅
         errorRef.value = error
+      }
+      else {
+        // 过时代次的异常（网络拒绝/超时迟到）：与迟到成功响应同样标记已取消，
+        // 调用方不得把它当普通失败提示（切账号往返后账号串相等也靠代次识别）
+        return { ok: false, cancelled: true, error: '已取消' }
       }
       return { ok: false, error }
     }
@@ -754,9 +1000,26 @@ export const useActivityStore = defineStore('activity', () => {
     return fetchSeasonRuleActivity('happyShare', accountId)
   }
 
+  // season-wish 操作归属活动：wishClaim 属秋祈良愿，share* 属快乐不独享。
+  // 用于写入口的下架闸：活动已确认结束（下架/到期）时零新增写请求——面板撤下是
+  // 第一道，这里兜住「截止计时刚触发时已在飞的用户点击」与编排竞态。
+  function seasonWishActionRetireKey(action: string): ActivityKey | null {
+    if (action === 'wishClaim' || action === 'wishDraw')
+      return 'wish'
+    if (action === 'shareDaily' || action === 'shareMilestones')
+      return 'happyShare'
+    return null
+  }
+
   // 实际发请求的内部入口（公共入口多一层一键互斥；runner 串行调用这里）
   async function performSeasonWishOperate(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    const retireKeyOfAction = seasonWishActionRetireKey(String(action))
+    // 写前同步闸：下架标记之外，当前快照有效截止已实际到期也当场拦下（计时回调未跑不放行）
+    if (retireKeyOfAction && activityEndedNow(retireKeyOfAction))
+      return { ok: false, retired: true, error: '活动已结束，已停止操作（未发送请求）' }
     const opSeq = ++seasonWishOperateSeq
+    const lifecycle = activityLifecycleSeq
+    const requestedId = String(accountId)
     seasonWishOperating.value = action
     try {
       const { data } = await api.post('/api/activity/season-wish/operate', {
@@ -765,9 +1028,15 @@ export const useActivityStore = defineStore('activity', () => {
       }, {
         headers: { 'x-account-id': accountId },
       })
+      // 卸载/切账号（含往返，账号串恰好相等）后的旧响应：不给调用方可消费的结果
+      if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
+        return { ok: false, cancelled: true, error: '已取消' }
       return data
     }
     catch (err: any) {
+      if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
+        // 旧代次的迟到异常同迟到成功：标记已取消，不得当普通失败提示
+        return { ok: false, cancelled: true, error: '已取消' }
       return { ok: false, error: err?.response?.data?.error || err.message || '操作失败', status: err?.response?.status, code: err?.response?.data?.code }
     }
     finally {
@@ -783,7 +1052,13 @@ export const useActivityStore = defineStore('activity', () => {
   }
 
   async function performBearPetOperate(accountId: string, action: string, input: Record<string, unknown> = {}) {
+    // 写前同步闸：活动已确认结束（下架标记或快照截止已实际到期）零新增写请求；
+    // 面板撤下之外的兜底，与 season-wish 同规则
+    if (activityEndedNow('bear'))
+      return { ok: false, retired: true, error: '活动已结束，已停止操作（未发送请求）' }
     const opSeq = ++bearOperateSeq
+    const lifecycle = activityLifecycleSeq
+    const requestedId = String(accountId)
     bearOperating.value = action
     try {
       const { data } = await api.post('/api/activity/pet-diary/operate', {
@@ -792,9 +1067,14 @@ export const useActivityStore = defineStore('activity', () => {
       }, {
         headers: { 'x-account-id': accountId },
       })
+      // 卸载/切账号（含往返）后的旧响应：不给调用方可消费的结果
+      if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
+        return { ok: false, cancelled: true, error: '已取消' }
       return data
     }
     catch (err: any) {
+      if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
+        return { ok: false, cancelled: true, error: '已取消' }
       return { ok: false, error: err?.response?.data?.error || err.message || '操作失败', status: err?.response?.status, code: err?.response?.data?.code }
     }
     finally {
@@ -887,6 +1167,10 @@ export const useActivityStore = defineStore('activity', () => {
         const rewards = rewardText((result as any).rewards)
         push({ key, label, status: 'success', detail: rewards ? `获得 ${rewards}` : '已领取' })
       }
+      else if ((result as any)?.retired) {
+        // 运行期间活动结束被下架闸拦下（未发送请求）=显式跳过，不是「结果未知」
+        push({ key, label, status: 'skipped', detail: '运行期间活动已结束，该请求未发出（已发出请求的结果以上方为准，不自动重试）' })
+      }
       else if ((result as any)?.status === 400 && code && PRECONDITION_SKIP_CODES.has(code)) {
         push({ key, label, status: 'skipped', detail: `服务端资格校验未通过（未写入）：${String((result as any).error || '')}` })
       }
@@ -898,9 +1182,17 @@ export const useActivityStore = defineStore('activity', () => {
     const skip = (key: string, label: string, detail: string) =>
       push({ key, label, status: 'skipped', detail })
 
+    // 下架跳过说明：区分「本轮读取过一次并确认结束」（unavailable/过期回包或过期快照）
+    // 与「此前已确认结束、本轮零读取零写入」（下架门直接返回），不得把发生过的探测说成全程零读取
+    const retiredSkipDetail = (fresh: unknown) =>
+      (fresh as any)?.unavailable === true || (fresh as any)?.expired === true
+        ? '活动已结束（本轮读取一次后确认：服务端不再下发或已过截止时间），不再读取、不试写'
+        : '活动已结束（此前已确认并停止自动读取），本轮零读取零写入'
+
     try {
       // 0) 本轮资格先重读：写计划只认本轮服务端只读状态（服务端 ≤60s 读缓存），
       // 不依赖任意旧页面状态漏掉可领奖励。任一读取失败/活动未下发：该活动显式跳过、零写。
+      // 已下架活动的读取入口直接返回下架结果（零请求），本轮按「已结束」显式跳过。
       claimAllStep.value = '读取活动资格'
       const [bearFresh, wishFresh, shareFresh] = await Promise.all([
         fetchBearActivity(accountId),
@@ -913,7 +1205,10 @@ export const useActivityStore = defineStore('activity', () => {
       // 1) S3 萌宠四类免费领取：资格只认服务端推导的 claimEligibility，未知即跳过不试写
       const bear = (bearFresh as any)?.ok ? (bearFresh as any).activity || null : null
       const eligibility = bear?.claimEligibility
-      if (!(bearFresh as any)?.ok) {
+      if ((bearFresh as any)?.retired) {
+        skip('bear', 'S3 萌宠', retiredSkipDetail(bearFresh))
+      }
+      else if (!(bearFresh as any)?.ok) {
         skip('bear', 'S3 萌宠', `活动状态读取失败（${String((bearFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
       }
       else if (!eligibility) {
@@ -923,21 +1218,26 @@ export const useActivityStore = defineStore('activity', () => {
         skip('bear', 'S3 萌宠', `${String(eligibility.reason || '当前不可领取')}，跳过`)
       }
       else {
-        if (eligibility.seedsClaimable === true)
+        // 运行期间到期：尚未发出的写步骤停止（同步核对当前快照截止，计时回调未跑也拦下），
+        // 已发出请求的结果据实保留
+        if (eligibility.seedsClaimable === true && !activityEndedNow('bear'))
           await step('bear:seeds', 'S3 种子礼包', 'bear', 'seeds', {})
         if (!alive())
           return finishRun(runId)
-        if (Number(eligibility.compensationCount || 0) > 0)
+        if (Number(eligibility.compensationCount || 0) > 0 && !activityEndedNow('bear'))
           await step('bear:compensation', 'S3 夺宝补偿', 'bear', 'compensation', {})
         if (!alive())
           return finishRun(runId)
-        if (eligibility.dogClaimable === true)
+        if (eligibility.dogClaimable === true && !activityEndedNow('bear'))
           await step('bear:claimDog', 'S3 永久比熊', 'bear', 'claimDog', {})
         for (const order of (eligibility.stories || [])) {
           if (!alive())
             return finishRun(runId)
-          await step(`bear:story:${order}`, `S3 手记 #${Number(order)}`, 'bear', 'story', { order: Number(order) })
+          if (!activityEndedNow('bear'))
+            await step(`bear:story:${order}`, `S3 手记 #${Number(order)}`, 'bear', 'story', { order: Number(order) })
         }
+        if (activityEndedNow('bear'))
+          skip('bear', 'S3 萌宠', '运行期间活动已到期，剩余领取项停止（已发出请求的结果以上方为准，不自动重试）')
       }
 
       // 2) 秋祈良愿：只领取已抽出的待领签文（不自动抽签）
@@ -946,12 +1246,16 @@ export const useActivityStore = defineStore('activity', () => {
         const wishState = wish?.operateState && 'remainingCount' in wish.operateState
           ? wish.operateState as WishOperateState
           : null
-        if (!(wishFresh as any)?.ok)
+        if ((wishFresh as any)?.retired)
+          skip('wish', '秋祈良愿', retiredSkipDetail(wishFresh))
+        else if (!(wishFresh as any)?.ok)
           skip('wish', '秋祈良愿', `活动状态读取失败（${String((wishFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
         else if (!wishState)
           skip('wish', '秋祈良愿', '服务端未下发祈愿状态，跳过（不试写）')
-        else if (wishState.pending)
+        else if (wishState.pending && !activityEndedNow('wish'))
           await step('wish:claim', '秋祈良愿待领签文', 'wish', 'wishClaim', { chooseId: Number(wishState.pending.chooseId) })
+        else if (wishState.pending)
+          skip('wish:claim', '秋祈良愿待领签文', '运行期间活动已到期，停止领取（不试写）')
         else
           skip('wish', '秋祈良愿', '没有待领取的祈愿奖励（已抽出才领取，不自动抽签）')
       }
@@ -961,14 +1265,16 @@ export const useActivityStore = defineStore('activity', () => {
       const shareData = (shareFresh as any)?.ok ? (shareFresh as any).activity || null : null
       let shareState = shareOperateStateOf(shareData)
       if (alive()) {
-        if (!(shareFresh as any)?.ok)
+        if ((shareFresh as any)?.retired)
+          skip('share', '快乐不独享', retiredSkipDetail(shareFresh))
+        else if (!(shareFresh as any)?.ok)
           skip('share', '快乐不独享', `活动状态读取失败（${String((shareFresh as any)?.error || '未知错误')}），跳过（本轮不试写）`)
         else if (!shareState)
           skip('share', '快乐不独享', '服务端未下发快乐值状态，跳过（不试写）')
       }
       let stateForMilestones: ShareOperateState | null = shareState
       if (alive() && shareState) {
-        if (shareState.daily && shareState.daily.rewardClaimed === false) {
+        if (shareState.daily && shareState.daily.rewardClaimed === false && !activityEndedNow('happyShare')) {
           await step('share:daily', '快乐值每日领取', 'wish', 'shareDaily', {})
           if (!alive())
             return finishRun(runId)
@@ -980,14 +1286,23 @@ export const useActivityStore = defineStore('activity', () => {
           const nextState = fresh?.ok === true ? shareOperateStateOf((fresh as any).activity || null) : null
           if (!nextState) {
             stateForMilestones = null
-            skip('share:milestones', '快乐值档位奖励', fresh?.ok === true
-              ? '每日领取后服务端未下发快乐值状态，跳过档位领取（不试写）'
-              : `每日领取后状态刷新失败（${String(fresh?.error || '未知错误')}），档位不以旧状态继续（结果未知，不自动重试，请稍后刷新确认）`)
+            // 依赖刷新返回下架：活动确认结束，跳过不是「结果未知」。本轮读取确认结束
+            // （unavailable/过期回包）与本地到期计时拦下（零读取）分开表述
+            skip('share:milestones', '快乐值档位奖励', (fresh as any)?.retired
+              ? ((fresh as any)?.unavailable === true || (fresh as any)?.expired === true
+                  ? '每日领取后活动已结束（本轮读取确认：服务端不再下发或已过截止时间），跳过档位领取（不试写；已领取结果保留）'
+                  : '每日领取后活动已到期（本轮截止计时拦下，未再读取），跳过档位领取（不试写；已领取结果保留）')
+              : fresh?.ok === true
+                ? '每日领取后服务端未下发快乐值状态，跳过档位领取（不试写）'
+                : `每日领取后状态刷新失败（${String(fresh?.error || '未知错误')}），档位不以旧状态继续（结果未知，不自动重试，请稍后刷新确认）`)
           }
           else {
             shareState = nextState
             stateForMilestones = nextState
           }
+        }
+        else if (shareState.daily && shareState.daily.rewardClaimed === false && activityEndedNow('happyShare')) {
+          skip('share', '快乐不独享', '运行期间活动已到期，每日领取停止（不试写）')
         }
         if (stateForMilestones) {
           const score = Number(stateForMilestones.currentScore || 0)
@@ -995,22 +1310,24 @@ export const useActivityStore = defineStore('activity', () => {
             Number(tier?.state) === 2 && score >= Number(tier?.threshold))
           if (!alive())
             return finishRun(runId)
-          if (claimable)
+          if (claimable && !activityEndedNow('happyShare'))
             await step('share:milestones', '快乐值档位奖励', 'wish', 'shareMilestones', {})
+          else if (claimable)
+            skip('share:milestones', '快乐值档位奖励', '运行期间活动已到期，停止领取（不试写）')
           else if (stateForMilestones.daily)
             skip('share:milestones', '快乐值档位奖励', '当前没有可领取的快乐值档位')
         }
       }
 
       // 4) 收尾：尽力刷新三个只读状态；刷新失败不丢已领结果，只追加提示。
-      //    fetch 内部 catch 后永远 fulfilled（返回 {ok:false}），所以要同时检查
-      //    rejected 与 fulfilled.value.ok === false，不能只看 rejected。
+      //    已下架活动不补读（零请求）。fetch 内部 catch 后永远 fulfilled（返回 {ok:false}），
+      //    所以要同时检查 rejected 与 fulfilled.value.ok === false，不能只看 rejected。
       if (alive()) {
         claimAllStep.value = '刷新活动状态'
         const refreshed = await Promise.allSettled([
-          fetchBearActivity(accountId),
-          fetchWishActivity(accountId),
-          fetchHappyShareActivity(accountId),
+          isActivityRetired('bear') ? Promise.resolve({ ok: true }) : fetchBearActivity(accountId),
+          isActivityRetired('wish') ? Promise.resolve({ ok: true }) : fetchWishActivity(accountId),
+          isActivityRetired('happyShare') ? Promise.resolve({ ok: true }) : fetchHappyShareActivity(accountId),
         ])
         if (alive() && refreshed.some(item => item.status === 'rejected'
           || (item.status === 'fulfilled' && item.value && (item.value as any).ok === false))) {
@@ -1070,5 +1387,9 @@ export const useActivityStore = defineStore('activity', () => {
     claimAllResults,
     runClaimAll,
     cancelClaimAll,
+    activityRetired,
+    recheckActivity,
+    cancelActivityReads,
+    sweepExpiredActivities,
   }
 })
