@@ -41,6 +41,8 @@ function assertWriteInsidePrivateDir(target) {
 const CANDIDATE_SOURCES = [
   path.join(repoRoot, 'web', 'src', 'stores', 'activity.ts'),
   path.join(repoRoot, 'web', 'src', 'views', 'Activity.vue'),
+  path.join(repoRoot, 'web', 'src', 'components', 'activity', 'SeasonRuleActivityPanel.vue'),
+  path.join(repoRoot, 'web', 'src', 'components', 'admin', 'AdminActivityUpdatePanel.vue'),
 ];
 function fingerprintOf(file) {
   const stat = fs.statSync(file);
@@ -189,6 +191,14 @@ function findAll(node, pred, out = []) {
   return out;
 }
 const buttonsOf = root => findAll(root, node => node.tag === 'button');
+async function openActivityManagement(root) {
+  const toggle = buttonsOf(root).find(node => textOf(node).trim() === '活动管理');
+  assert.ok(toggle, '确认下架后提供收起的活动管理入口');
+  if (toggle.props['aria-expanded'] !== true)
+    click(toggle);
+  await flush();
+  assert.ok(buttonsOf(root).some(node => textOf(node).includes('重新检查')), '仅展开后提供重新检查');
+}
 function click(button) {
   const handler = button.props.onClick;
   if (typeof handler !== 'function')
@@ -1300,7 +1310,9 @@ test('页面重新检查提示矩阵：成功恢复/确认下架/普通失败/�
     return { data: { ok: true, activity: panelSafeActivity({ endTime: future }) } };
   });
   const { root, toastLog } = mountActivityPage(api);
-  await waitFor(() => textOf(root).includes('秋祈良愿已结束'), '初始读取下架生效');
+  await waitFor(() => textOf(root).includes('活动管理'), '初始读取下架生效');
+  assert.doesNotMatch(textOf(root), /秋祈良愿/, '默认页面删除已结束活动');
+  await openActivityManagement(root);
 
   // 1) 普通失败：错误提示带原因；不自动重试
   api.setGet(async (url) => {
@@ -1312,7 +1324,7 @@ test('页面重新检查提示矩阵：成功恢复/确认下架/普通失败/�
   await waitFor(() => toastLog.some(([, message]) => String(message).includes('网络波动')), '普通失败提示');
   await flush();
   assert.equal(wishGets(api), 2, '失败后不自动重试');
-  assert.ok(textOf(root).includes('秋祈良愿已结束'), '普通失败不得虚报恢复');
+  assert.doesNotMatch(textOf(root), /错过存储 5 日/, '普通失败不得恢复玩法面板');
 
   // 2) 确认下架：明确「保持下架」提示
   api.setGet(async (url) => {
@@ -1322,7 +1334,7 @@ test('页面重新检查提示矩阵：成功恢复/确认下架/普通失败/�
   });
   click(buttonsOf(root).find(node => textOf(node).includes('重新检查')));
   await waitFor(() => toastLog.some(([, message]) => String(message).includes('保持下架')), '确认下架提示');
-  assert.ok(textOf(root).includes('秋祈良愿已结束'));
+  assert.doesNotMatch(textOf(root), /错过存储 5 日/, '下架确认不得恢复玩法面板');
 
   // 3) 网络拒绝（异常抛出）：错误提示，不崩页面
   api.setGet(async (url) => {
@@ -1342,9 +1354,38 @@ test('页面重新检查提示矩阵：成功恢复/确认下架/普通失败/�
   });
   click(buttonsOf(root).find(node => textOf(node).includes('重新检查')));
   await waitFor(() => toastLog.some(([, message]) => String(message).includes('已恢复展示')), '恢复提示');
-  await waitFor(() => !textOf(root).includes('秋祈良愿已结束'), '面板回归');
+  await waitFor(() => textOf(root).includes('错过存储 5 日'), '真实有效快照落地后面板回归');
   assert.ok(textOf(root).includes('错过存储 5 日'), '玩法面板恢复展示');
   assert.equal(api.calls.post.length, 0, '重新检查全程零写请求');
+});
+
+test('收起活动管理不读取；展开后每个选中活动恰好一次读取零写，收起彻底移除旧名称与按钮', async () => {
+  const api = apiMock();
+  api.setGet(async () => ({ data: { ok: false, unavailable: true, error: '活动未下发' } }));
+  const { root, toastLog } = mountActivityPage(api);
+  await waitFor(() => textOf(root).includes('暂无进行中的活动。'), '三活动下架响应均落地');
+  assert.equal(api.calls.get.length, 3);
+  assert.doesNotMatch(textOf(root), /S3 萌宠|秋祈良愿|快乐不独享/);
+  await openActivityManagement(root);
+  assert.equal(api.calls.get.length, 3, '展开管理本身不探测');
+  for (const [label, endpoint] of [['S3 萌宠', 'bear'], ['秋祈良愿', 'wish'], ['快乐不独享', 'happy-share']]) {
+    const row = findAll(root, el => el.tag === 'div' && el.children.some(child => child.tag === 'span' && textOf(child) === label))[0];
+    assert.ok(row, `${label} 管理行存在`);
+    const before = api.calls.get.length;
+    const hintsBefore = toastLog.length;
+    click(buttonsOf(row).find(button => textOf(button).includes('重新检查')));
+    await waitFor(() => toastLog.length === hintsBefore + 1, `${label} 重新检查响应已返回`);
+    await flush();
+    assert.equal(api.calls.get.length, before + 1, `${label} 每次只读取所选活动一次`);
+    assert.ok(api.calls.get.at(-1).url.includes(endpoint), `${label} 没有读取其他活动`);
+    assert.equal(api.calls.post.length, 0, `${label} 零写请求`);
+    assert.doesNotMatch(textOf(root), /每日祈愿|档位奖励（稚萌熊熊）/, `${label} 未恢复玩法卡片`);
+  }
+  click(buttonsOf(root).find(button => textOf(button).trim() === '活动管理'));
+  await flush();
+  assert.doesNotMatch(textOf(root), /S3 萌宠|秋祈良愿|快乐不独享/);
+  assert.ok(!buttonsOf(root).some(button => textOf(button).includes('重新检查')), '收起后按钮也从 DOM 移除');
+  assert.equal(api.calls.get.length, 6, '收起不额外读取');
 });
 
 test('页面卸载作废在飞读取：迟到响应不回填快照、不重建到期计时、不弹提示', async () => {
@@ -1384,7 +1425,8 @@ test('切账号往返（字符串恰好相等）后旧重新检查响应不弹�
     return { data: { ok: true, activity: panelSafeActivity({ endTime: future }) } };
   });
   const { root, toastLog, accountRef } = mountActivityPage(api);
-  await waitFor(() => textOf(root).includes('秋祈良愿已结束'), '初始读取下架生效');
+  await waitFor(() => textOf(root).includes('活动管理'), '初始读取下架生效');
+  await openActivityManagement(root);
   const wishReadsAtRecheck = wishGets(api);
   // 重新检查挂起：切走再切回（账号字符串回到同值）
   const gate = deferred();
@@ -1787,7 +1829,8 @@ test('页面重新检查：不合法快照/非布尔 ok 不出现恢复提示，
     return { data: { ok: true, activity: panelSafeActivity({ endTime: future }) } };
   });
   const { root, toastLog } = mountActivityPage(api);
-  await waitFor(() => textOf(root).includes('秋祈良愿已结束'), '初始读取下架生效');
+  await waitFor(() => textOf(root).includes('活动管理'), '初始读取下架生效');
+  await openActivityManagement(root);
   for (const payload of [
     { ok: true, activity: {} },
     { ok: true, activity: ['not-an-activity'] },
@@ -1804,7 +1847,7 @@ test('页面重新检查：不合法快照/非布尔 ok 不出现恢复提示，
     await flush();
     await flush();
     assert.ok(!toastLog.some(([, message]) => String(message).includes('已恢复')), '不得出现恢复提示');
-    assert.ok(textOf(root).includes('秋祈良愿已结束'), '保持下架说明');
+    assert.doesNotMatch(textOf(root), /错过存储 5 日/, '不合法响应不得恢复玩法面板');
   }
   assert.equal(api.calls.post.length, 0, '重新检查全程零写请求');
 });

@@ -34,7 +34,7 @@ const { inspectWorktree: inspectWorktreeAt } = require('./evolution-worktree');
 // 隔离任务/运行时工作区 + 私有保留源清单 + 发布门（2026-10-07 Stage C）。
 const evolutionPublish = require('./evolution-publish');
 const {
-  normalizeAutonomy, computeReworkDelayMs, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
+  normalizeAutonomy, normalizeActivityPlan, computeReworkDelayMs, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
   NO_PROGRESS_DIAGNOSIS_ATTEMPTS,
 } = require('./evolution-autonomy');
 // GitHub issues 反馈路由：模块加载零副作用；未启用 owner 私有配置时全部入口直接返回。
@@ -1343,7 +1343,7 @@ function buildCachedActivityContext({ activityPlan = null, pendingActivity = nul
   const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(id => id > 0).join('、') || '无';
   const lines = [
     CACHED_ACTIVITY_CONTEXT_HEADER,
-    `- 最新活动扫描报告：${reportAvailable ? '可用；先读取现成 core/data/activity-update-report.json，不为本轮新增任何游戏请求' : '不可用；本轮只完成安全巡检部分，不为了等待报告重试'}`,
+    `- 最新活动扫描报告：${reportAvailable ? '可用；先读取现成 core/data/activity-update-report.json，不为本轮新增任何游戏请求' : plan ? '当前不可用；沿用原任务已捕获的活动计划与证据指纹，核对原本机已有证据，材料不足保留待处理，不新增游戏请求' : '不可用；本轮只完成安全巡检部分，不为了等待报告重试'}`,
   ];
   if (plan) {
     lines.push(`- 待处理新活动 ID：${ids(plan.newUnknown)}`);
@@ -1476,11 +1476,37 @@ function settleCombinedActivityMemory(next, { newUnknown = [], newEnded = [], fi
   return next;
 }
 
+function getCapturedActivityPlan(current) {
+  return normalizeActivityPlan(current.autonomy?.activityPlan)
+    || (current.activeRun?.combinedDaily ? normalizeActivityPlan({
+      newUnknown: current.activeRun.newUnknown, newEnded: current.activeRun.newEnded,
+      reviewIds: current.activeRun.reviewIds, fingerprint: current.activeRun.evidenceFingerprint,
+    }) : null);
+}
+
+function getActivityReviewDate(state) {
+  const reviewedAt = Number(normalizeEvolutionMemory(state.evolutionMemory).activity?.reviewedAt) || 0;
+  if (reviewedAt > 0) return getLocalDateKey(reviewedAt);
+  if (state.lastTask === 'activity' && !['idle', 'no_change', 'pending_apply', 'applied'].includes(state.status)) return '';
+  return normalizeDateKey(state.lastEvolveDate);
+}
+
 function launchEvolution(task, payload = {}) {
   const tag = task === 'safety' ? '安全巡检' : '活动进化';
   if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
   const current = readState();
+  if (task === 'safety' && payload.combinedDaily === true && !payload.activityPlan
+      && (payload.preserveFeedbackBatch === true || ['checkpoint', 'continuation'].includes(payload.resume))) {
+    const captured = getCapturedActivityPlan(current);
+    if (captured) payload = { ...payload, activityPlan: captured };
+    else if (!payload.resume) {
+      const report = payload.report || readLatestReport();
+      if (report && report.status !== 'unavailable' && report.online?.available !== false) {
+        payload = { ...payload, report, activityPlan: planDailyActivityEvolution(report, current) };
+      }
+    }
+  }
   // privacy_blocked_local 自愈（2026-09-23 死锁修复）：该阻断态的成因是
   // 「本地 HEAD 与 origin/main 不一致」。一旦对齐且没有待应用提交，直接
   // 复位继续本轮，而不是永久卡死等待人工干预。
@@ -1755,6 +1781,8 @@ function launchEvolution(task, payload = {}) {
     activityPlanDigest: preserveBatch && autonomyBefore.activityPlanDigest ? autonomyBefore.activityPlanDigest
       : (payload.activityPlan && typeof payload.activityPlan === 'object'
         ? crypto.createHash('sha256').update(JSON.stringify(payload.activityPlan)).digest('hex') : ''),
+    activityPlan: normalizeActivityPlan(payload.activityPlan)
+      || (preserveBatch ? normalizeActivityPlan(autonomyBefore.activityPlan) : null),
   };
   state.feedbackCleanupPending = false;
   state.learningReceipt = '';
@@ -2056,9 +2084,10 @@ function planActivityEvolution(report, state = {}, options = {}) {
   const force = options.force === true;
   const handledUnknown = new Set((state.handledUnknownIds || []).map(Number));
   const handledEnded = new Set((state.handledEndedIds || []).map(Number));
-  const newUnknown = (report.unknownActivityIds || []).map(Number)
+  const pending = normalizePendingActivity(state.pendingActivity);
+  const newUnknown = [...new Set([...(report.unknownActivityIds || []), ...(pending?.newUnknown || [])].map(Number))]
     .filter(id => force || !handledUnknown.has(id));
-  const newEnded = (report.endedActivityIds || []).map(Number)
+  const newEnded = [...new Set([...(report.endedActivityIds || []), ...(pending?.newEnded || [])].map(Number))]
     .filter(id => force || !handledEnded.has(id));
   const reviewIds = force
     ? [...new Set((report.online?.checkedActivityIds || []).map(Number))].filter(id => id > 0)
@@ -2084,9 +2113,7 @@ function planDailyActivityEvolution(report, state = {}) {
   const evidenceChanged = fingerprint !== memory.evidenceFingerprint;
   const seedRecognitionNeedsReview = report?.online?.seedRecognition?.available === false
     || (report?.online?.seedRecognition?.issues || []).length > 0;
-  const reviewIds = eventPlan.shouldRun || evidenceChanged || activityPathsChanged || seedRecognitionNeedsReview
-    ? [...new Set((report?.online?.checkedActivityIds || []).map(Number))].filter(id => id > 0)
-    : [];
+  const reviewIds = [...new Set((report?.online?.checkedActivityIds || []).map(Number))].filter(id => id > 0);
   return {
     ...eventPlan,
     shouldRun: eventPlan.shouldRun || evidenceChanged || activityPathsChanged || seedRecognitionNeedsReview,
@@ -2234,12 +2261,14 @@ function retryReviewBlockedEvolution(opts = {}) {
   const report = readLatestReport();
   const reportUsable = !!report && report.status !== 'unavailable' && report?.online?.available !== false;
   const activityPlan = reportUsable ? planDailyActivityEvolution(report, state) : null;
-  if (activityPlan && !(activityPlan.reviewIds || []).length) {
+  if (activityPlan) {
     // 重试轮以复核为底线：即使指纹判断无变化，也覆盖当前 List 下发的活动根节点；
     // 下游 shouldRun 同步置真，保证 buildCachedActivityContext 与收口结算口径一致，
     // 不会出现 shouldRun=false 跳过活动复核但 UI 声称综合验收。
-    activityPlan.reviewIds = [...new Set((report?.online?.checkedActivityIds || []).map(Number))]
-      .filter(id => id > 0);
+    if (!(activityPlan.reviewIds || []).length) {
+      activityPlan.reviewIds = [...new Set((report?.online?.checkedActivityIds || []).map(Number))]
+        .filter(id => id > 0);
+    }
     if (activityPlan.reviewIds.length) activityPlan.shouldRun = true;
   }
   const launch = deps.launchEvolution || launchEvolution;
@@ -3360,9 +3389,7 @@ function getEvolveState() {
       : publicFields.automaticPolicy,
     // 综合巡检的活动侧复核不写 lastEvolveDate（防封去重语义保留），单独暴露完成日供面板展示，
     // 否则活动进化卡片在每日合并轮后永远显示“未跑”。
-    lastActivityReviewDate: getLocalDateKey(
-      Number(normalizeEvolutionMemory(state.evolutionMemory).activity?.reviewedAt) || 0,
-    ) || state.lastEvolveDate || '',
+    lastActivityReviewDate: getActivityReviewDate(state),
     // checkpoint 是 0600 私有续接凭据（授权 UNION/指纹/任务身份），不随 API 下发。
     collaboration: collaboration ? { ...collaboration, checkpoint: null } : collaboration,
     nextAutoRunAt,

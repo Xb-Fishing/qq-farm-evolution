@@ -91,15 +91,15 @@ function manualLabelsFor(guide: { key: string }) {
         </p>
       </div>
       <BaseButton variant="secondary" :loading="loading" @click="$emit('refresh')">
-        刷新只读状态
+        刷新状态
       </BaseButton>
     </header>
     <p class="text-xs text-gray-500">
-      1 分钟内重复刷新复用本地结果；操作命令字来自官方编码器重构证据（手动触发模式，不自动执行）。
+      祈愿和领奖需手动操作，操作前请确认活动状态与奖励。
     </p>
 
     <p v-if="!activity" class="py-6 text-center text-sm text-gray-500">
-      {{ loading ? '正在读取活动状态…' : '当前没有可用活动快照（活动未由当前 List 下发时自动停止读取）。' }}
+      {{ loading ? '正在读取活动状态…' : '暂未取得活动状态，请稍后刷新。' }}
     </p>
     <template v-else>
       <div class="rounded-lg bg-sky-50 p-3 text-sm dark:bg-sky-950/30">

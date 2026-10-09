@@ -620,12 +620,16 @@ function isolatedHookInjectedEnv() {
   return env;
 }
 
-function runLegacyChild() {
+function runLegacyChild(capturedPlan = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-autonomy-legacy-runner-'));
   const before = candidateFingerprint();
   try {
     const script = path.join(dir, 'legacy-child.cjs');
-    fs.writeFileSync(script, LEGACY_CHILD_SOURCE);
+    const source = capturedPlan ? LEGACY_CHILD_SOURCE.replace(
+      'feedbackBatch: { throughAt: legacyThroughAt }, githubFeedbackBatch: legacyGithub,',
+      'feedbackBatch: { throughAt: legacyThroughAt }, githubFeedbackBatch: legacyGithub, autonomy: { activityPlan: { shouldRun: true, newEnded: [81], reviewIds: [91], fingerprint: "a".repeat(64) }, activityPlanDigest: "b".repeat(64) }, pendingActivity: { newUnknown: [], newEnded: [81], updatedAt: Date.now() },')
+      .replace('const publicState = service.getEvolveState();', 'out.capturedPlanPreserved = state.autonomy.activityPlan?.newEnded?.includes(81); out.activitySettled = !!state.evolutionMemory?.activity?.reviewedAt && !state.pendingActivity; out.retainedActivityIdentity = state.autonomy.activityPlanDigest; const publicState = service.getEvolveState();') : LEGACY_CHILD_SOURCE;
+    fs.writeFileSync(script, source);
     const child = spawnSync(process.execPath, [script, CANDIDATE_ROOT],
       { encoding: 'utf-8', timeout: 180_000, env: { ...isolatedHookInjectedEnv(), FARM_DATA_DIR: dir } });
     return { status: child.status, stdout: child.stdout, stderr: child.stderr,
@@ -956,4 +960,20 @@ test('B2 已提交候选：真实 Parent 全链到 pending_apply 后，漂移拒
   assert.equal(out.recordMatches, true, '私有应用目标记录与运行时区/内容指纹一致');
   assert.equal(out.statusApplying, true);
   assert.equal(out.rootStillDirty, true, '应用启动后原库保留物仍逐字节未动');
+});
+
+
+test('real Parent and fresh runner retain and settle a captured activity plan when current report is unavailable', () => {
+  const child = runLegacyChild(true);
+  assert.equal(child.candidateUntouched, true);
+  assert.equal(child.status, 0, child.stderr);
+  const out = JSON.parse(child.stdout.trim().split('\n').pop());
+  assert.equal(out.capturedPlanPreserved, true);
+  assert.equal(out.activitySettled, true);
+  assert.equal(out.retainedActivityIdentity, 'b'.repeat(64));
+  assert.equal(out.taskIdentity.activityPlanDigest, 'b'.repeat(64));
+  assert.equal(out.feedbackThroughAt, out.legacyThroughAt);
+  assert.equal(out.lastAutomaticEvolveDate, '2026-10-04');
+  assert.equal(out.leaksOriginalPrompt, false);
+  assert.equal(out.leaksCheckpoint, false);
 });

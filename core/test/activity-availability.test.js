@@ -4,7 +4,7 @@
 // fetchHappyShareActivity）、领取编排（runClaimAll）与页面入口（Activity.vue
 // 真实渲染点击）观察请求计数与展示行为：
 //   - 旧代码（无下架门控）必须在本文件至少一项真实行为上失败（重复读取、
-//     过期资格触发写请求、下架说明缺失等），而不是缺少新增导出的环境失败；
+//     过期资格触发写请求、已结束活动仍出现在默认页面等），而不是缺少新增导出的环境失败；
 //   - 当前代码全部通过。
 // 本文件不引用任何新增导出（activityRetired / recheckActivity /
 // cancelActivityReads / sweepExpiredActivities），新增能力与生命周期验收在
@@ -43,6 +43,8 @@ function assertWriteInsidePrivateDir(target) {
 const CANDIDATE_SOURCES = [
   path.join(repoRoot, 'web', 'src', 'stores', 'activity.ts'),
   path.join(repoRoot, 'web', 'src', 'views', 'Activity.vue'),
+  path.join(repoRoot, 'web', 'src', 'components', 'activity', 'SeasonRuleActivityPanel.vue'),
+  path.join(repoRoot, 'web', 'src', 'components', 'admin', 'AdminActivityUpdatePanel.vue'),
 ];
 function fingerprintOf(file) {
   const stat = fs.statSync(file);
@@ -502,7 +504,7 @@ test('切账号清下架状态：clearActivityData 后重新读取恢复发请�
   assert.equal(countGets(h.api).wish, 2, '下架证据不跨账号，新账号恢复读取');
 });
 
-test('页面真实渲染：unavailable 活动面板与操作入口撤下、展示已结束与重新检查；在架活动保留；刷新/一键领取零新增读取', async () => {
+test('页面真实渲染：unavailable 活动从默认页面删除，恢复入口收起；在架活动保留；刷新/一键领取零新增读取', async () => {
   const api = apiMock();
   const future = Math.floor(Date.now() / 1000) + 3600;
   api.setGet(async (url) => {
@@ -514,12 +516,11 @@ test('页面真实渲染：unavailable 活动面板与操作入口撤下、展�
   });
   api.setPost(async (url, body) => (url.includes('pet-diary') ? petOkPost(url, body) : wishOkPost(url, body)));
   const { root, toastLog } = mountActivityPage(api);
-  // 等待「下架说明渲染出来」这一确定终态：初始同步渲染（空快照、未置 loading）也会
-  // 短暂不含「正在读取」，只看该文案会在响应落地前误判完成
-  await waitFor(() => textOf(root).includes('秋祈良愿已结束'), '页面初始读取完成且下架说明已渲染');
+  // 活动管理只有确认下架后才出现，不能把初始空快照当作响应完成。
+  await waitFor(() => textOf(root).includes('活动管理') && textOf(root).includes('档位奖励（稚萌熊熊）'), '读取落地且下架活动已删除');
   const text = textOf(root);
-  assert.match(text, /秋祈良愿已结束/, '下架活动应展示明确的下架说明');
-  assert.ok(buttonsOf(root).some(node => textOf(node).includes('重新检查')), '下架卡片提供显式重新检查入口');
+  assert.doesNotMatch(text, /秋祈良愿/, '默认页面不保留下架活动名称、卡片或结束说明');
+  assert.ok(!buttonsOf(root).some(node => textOf(node).includes('重新检查')), '恢复入口默认收起');
   assert.doesNotMatch(text, /错过存储 5 日/, '下架活动的玩法面板应撤下');
   assert.doesNotMatch(text, /活动未下发/, '下架不是读取错误，不渲染错误横幅');
   assert.match(text, /档位奖励（稚萌熊熊）/, '在架活动面板保留');
@@ -548,11 +549,54 @@ test('同账号重新进入页面不得自动探测已下架活动（共享 stor
   });
   const shared = pinia.createPinia();
   const first = mountActivityPage(api, shared);
-  await waitFor(() => textOf(first.root).includes('秋祈良愿已结束'), '首次读取后下架生效');
+  await waitFor(() => textOf(first.root).includes('活动管理'), '首次读取后下架生效');
   render(null, first.root); // 卸载（页面实例销毁，store 保留）
   const second = mountActivityPage(api, shared);
-  await waitFor(() => countGets(api).bear >= 2, '重进后在架活动重新读取');
+  await waitFor(() => countGets(api).bear >= 2 && textOf(second.root).includes('活动管理'), '重进后在架活动重新读取且下架状态落地');
   assert.equal(countGets(api).wish, 1, '重新进入不得自动探测已下架活动');
-  assert.match(textOf(second.root), /秋祈良愿已结束/, '重进仍展示下架说明');
+  assert.doesNotMatch(textOf(second.root), /秋祈良愿/, '重进仍删除已下架活动名称与说明');
   assert.doesNotMatch(textOf(second.root), /错过存储 5 日/, '重进不得展示已下架面板');
+});
+
+test('三活动过期或未下发后默认页面全部删除：无旧介绍、操作、刷新与重新检查，普通刷新零新增读取', async () => {
+  for (const reason of ['unavailable', 'expired']) {
+    const api = apiMock();
+    api.setGet(async () => ({ data: reason === 'unavailable'
+      ? { ok: false, unavailable: true, error: '活动未下发' }
+      : { ok: true, activity: panelSafeActivity({ endTime: Math.floor(Date.now() / 1000) - 1 }) } }));
+    const { root } = mountActivityPage(api);
+    await waitFor(() => textOf(root).includes('暂无进行中的活动。') && countGets(api).share === 1, `${reason} 三活动响应均落地`);
+    assert.doesNotMatch(textOf(root), /S3 萌宠|秋祈良愿|快乐不独享|错过存储|cmd\d+|编码器|复用本地结果/, `${reason} 默认页面删除旧活动与技术说明`);
+    assert.ok(!buttonsOf(root).some(node => /重新检查|一键领取|刷新状态|祈愿|领奖/.test(textOf(node))), `${reason} 无旧活动操作入口`);
+    const before = countGets(api);
+    click(buttonsOf(root).find(node => textOf(node).trim() === '刷新'));
+    await flush();
+    await flush();
+    assert.deepEqual(countGets(api), before, `${reason} 普通刷新零新增读取`);
+    assert.equal(api.calls.post.length, 0, `${reason} 零写请求`);
+    render(null, root);
+  }
+});
+
+test('未知截止、普通读取失败与网络拒绝保留活动入口：不误删、不新增探测、不显示编码说明', async () => {
+  const api = apiMock();
+  api.setGet(async (url) => {
+    if (url.includes('wish'))
+      return { data: { ok: false, error: '暂时读取失败' } };
+    if (url.includes('happy-share'))
+      throw new Error('连接暂时中断');
+    return { data: { ok: true, activity: panelSafeActivity({ endTime: 0 }) } };
+  });
+  const { root } = mountActivityPage(api);
+  await waitFor(() => textOf(root).includes('暂时读取失败') && textOf(root).includes('连接暂时中断'), '普通失败与拒绝已返回');
+  assert.match(textOf(root), /S3 萌宠/);
+  assert.match(textOf(root), /秋祈良愿 · 每日祈愿/);
+  assert.match(textOf(root), /快乐不独享 · 快乐值/);
+  assert.doesNotMatch(textOf(root), /活动管理|已结束/, '未知/普通失败不被当作结束');
+  const seasonPanels = findAll(root, el => el.tag === 'section' && el.children.some(child => child.tag === 'header' && /秋祈良愿 · 每日祈愿|快乐不独享 · 快乐值/.test(textOf(child))));
+  assert.equal(seasonPanels.length, 2);
+  for (const panel of seasonPanels)
+    assert.doesNotMatch(textOf(panel), /编码器|命令字|复用本地结果|当前 List/, '当季活动产品提示无技术说明');
+  assert.deepEqual(countGets(api), { bear: 1, wish: 1, share: 1 }, '每活动仅页面初始读取一次');
+  assert.equal(api.calls.post.length, 0);
 });

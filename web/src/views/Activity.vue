@@ -28,20 +28,19 @@ const { activityRetired } = storeToRefs(activityStore)
 const { evolve } = storeToRefs(evolutionStore)
 
 const showActivityAnalysis = ref(false)
+const showActivityManagement = ref(false)
 
 // 页面存活标记：卸载后旧回调（操作/一键/重新检查）不得弹提示或启动新刷新
 let activityViewAlive = true
 
-// 下架门控：面板与操作入口撤下，换下架说明 + 显式「重新检查」（唯一会再读该活动的入口）
+// 已结束活动从默认页面删除；手动恢复只在展开活动管理后提供，不自动探测。
 const bearRetired = computed(() => activityRetired.value.bear != null)
 const wishRetired = computed(() => activityRetired.value.wish != null)
 const happyShareRetired = computed(() => activityRetired.value.happyShare != null)
 const RETIRED_LABELS = { bear: 'S3 萌宠', wish: '秋祈良愿', happyShare: '快乐不独享' } as const
-function retiredReason(key: 'bear' | 'wish' | 'happyShare') {
-  return activityRetired.value[key]?.reason === 'unavailable'
-    ? '服务端不再下发该活动（官方活动列表已下架）'
-    : '已过活动截止时间'
-}
+const retiredKinds = computed(() => (Object.keys(RETIRED_LABELS) as Array<keyof typeof RETIRED_LABELS>)
+  .filter(key => activityRetired.value[key] != null))
+const hasVisibleActivity = computed(() => !bearRetired.value || !wishRetired.value || !happyShareRetired.value)
 
 async function refreshAll() {
   if (currentAccountId.value) {
@@ -139,7 +138,7 @@ async function claimAll() {
     toast.success(String((result as any)?.summary || '一键领取完成'))
 }
 
-// 显式重新检查（下架卡片按钮）：只读所选活动一次；提示同样受页面存活 + 账号双守卫，
+// 活动管理中的显式重新检查：只读所选活动一次；提示同样受页面存活 + 账号双守卫，
 // 切账号往返（字符串恰好相等）也靠读取代次作废，不弹旧生命周期提示
 async function recheck(kind: 'bear' | 'wish' | 'happyShare') {
   if (!currentAccountId.value)
@@ -164,6 +163,7 @@ onBeforeUnmount(() => {
 })
 
 watch(currentAccountId, () => {
+  showActivityManagement.value = false
   activityStore.clearActivityData()
   refreshAll()
 })
@@ -196,7 +196,7 @@ onMounted(() => {
           <div>
             <h1 class="text-xl text-white font-bold">活动中心</h1>
             <div class="mt-1 text-xs text-sky-100/75">
-              当前账号 {{ currentAccount?.name || '未选择' }} · 当前活动按在线说明与只读证据展示
+              当前账号 {{ currentAccount?.name || '未选择' }} · 查看进行中的活动与奖励
             </div>
           </div>
         </div>
@@ -227,19 +227,12 @@ onMounted(() => {
         {{ bearError }}
       </div>
       <ClaimAllPanel
+        v-if="hasVisibleActivity"
         :running="claimAllRunning" :disabled="!currentAccountId" :step="claimAllStep"
         :results="claimAllResults" :has-operating="!!seasonWishOperating || !!bearOperating"
         @claim="claimAll"
       />
       <BearActivityPanel v-if="!bearRetired" v-model:operating="bearOperating" :activity="bearActivity" :loading="bearLoading" @refresh="refreshBear" @operate="operateBear" />
-      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span>{{ RETIRED_LABELS.bear }}已结束：{{ retiredReason('bear') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
-          <BaseButton variant="secondary" @click="recheck('bear')">
-            重新检查
-          </BaseButton>
-        </div>
-      </div>
       <div v-if="wishError && !wishRetired" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ wishError }}
       </div>
@@ -250,14 +243,6 @@ onMounted(() => {
         subtitle="每日祈愿领好运奖励 · 限定种子 / 烟花 / 盆栽 · 错过存储 5 日 · 邮件补发"
         @refresh="refreshWish" @operate="operateSeasonWish"
       />
-      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span>{{ RETIRED_LABELS.wish }}已结束：{{ retiredReason('wish') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
-          <BaseButton variant="secondary" @click="recheck('wish')">
-            重新检查
-          </BaseButton>
-        </div>
-      </div>
       <div v-if="happyShareError && !happyShareRetired" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-300">
         {{ happyShareError }}
       </div>
@@ -268,12 +253,26 @@ onMounted(() => {
         subtitle="每日领取 / 每日首次分享 / 好友快乐包链接 · 档位奖励（稚萌熊熊）"
         @refresh="refreshHappyShare" @operate="operateSeasonWish"
       />
-      <div v-else class="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span>{{ RETIRED_LABELS.happyShare }}已结束：{{ retiredReason('happyShare') }}。面板已下架，普通刷新与一键领取不再读取该活动。</span>
-          <BaseButton variant="secondary" @click="recheck('happyShare')">
-            重新检查
-          </BaseButton>
+      <p v-if="!hasVisibleActivity" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
+        暂无进行中的活动。
+      </p>
+      <div v-if="retiredKinds.length" class="text-sm text-gray-500 dark:text-gray-400">
+        <button
+          class="inline-flex items-center gap-1 rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-800"
+          :aria-expanded="showActivityManagement"
+          aria-controls="activity-management"
+          @click="showActivityManagement = !showActivityManagement"
+        >
+          活动管理 <span :class="showActivityManagement ? 'i-carbon-chevron-up' : 'i-carbon-chevron-down'" />
+        </button>
+        <div v-if="showActivityManagement" id="activity-management" class="mt-2 rounded-lg bg-gray-50 p-3 space-y-2 dark:bg-gray-800/60">
+          <p class="text-xs">如活动再次开放，可手动检查并恢复显示。</p>
+          <div v-for="kind in retiredKinds" :key="kind" class="flex flex-wrap items-center justify-between gap-2">
+            <span>{{ RETIRED_LABELS[kind] }}</span>
+            <BaseButton variant="secondary" @click="recheck(kind)">
+              重新检查
+            </BaseButton>
+          </div>
         </div>
       </div>
     </template>

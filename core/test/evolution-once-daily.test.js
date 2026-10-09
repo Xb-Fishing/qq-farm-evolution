@@ -53,7 +53,7 @@ function harness(t, options = {}) {
             };
             if (name === '../config/runtime-paths') return { getDataFile: file => path.join(dataDir, file) };
             if (name === './logger') return { createModuleLogger: () => logger };
-            if (name === './scheduler') return { createScheduler: () => fakeScheduler, getSchedulerRegistrySnapshot: () => [] };
+            if (name === './scheduler') return { createScheduler: () => fakeScheduler, getSchedulerRegistrySnapshot: () => ({ schedulers: [] }) };
             if (name === './feishu-notify') return { sendFeishuText: async () => {}, isFeishuWebhook: () => false };
             if (name === 'node:child_process') return {
                 ...childProcess,
@@ -68,6 +68,7 @@ function harness(t, options = {}) {
 module.exports.testAccess = {
     attemptDailyEvolution, isAutomaticQuotaUsed, buildCachedActivityContext,
     settleCombinedActivityMemory, getLocalDateKey, normalizePersistedState,
+    planActivityEvolution, planDailyActivityEvolution, getCapturedActivityPlan, getActivityReviewDate, getEvolveState,
     checkAndMaybeEvolve, readState, writeState,
     configure: value => { deps = value; },
     setRunning: value => { running = value; },
@@ -206,8 +207,8 @@ test('the single daily safety launch carries the cached activity plan and pendin
     assert.equal(payload.automatic, true);
     assert.equal(payload.combinedDaily, true);
     assert.deepEqual(payload.report, report);
-    assert.deepEqual(payload.activityPlan.newUnknown, [31]);
-    assert.deepEqual(payload.activityPlan.newEnded, [41]);
+    assert.deepEqual(payload.activityPlan.newUnknown, [31, 33]);
+    assert.deepEqual(payload.activityPlan.newEnded, [41, 43]);
     assert.deepEqual(payload.activityPlan.reviewIds, [31, 32]);
     const context = f.service.buildCachedActivityContext({ activityPlan: payload.activityPlan, pendingActivity: f.state().pendingActivity, reportAvailable: true });
     assert.ok(context.includes('31') && context.includes('33') && context.includes('41') && context.includes('43'));
@@ -256,4 +257,57 @@ test('scans arriving during an active round survive settlement of only that roun
     assert.equal(f.launches.length, 0);
     f.service.settleCombinedActivityMemory(latest, { newUnknown: [52], newEnded: [62], fingerprint, head: HEAD });
     assert.equal(latest.pendingActivity, null);
+});
+
+
+test('pending events survive report turnover and unchanged listed roots remain in the daily review scope', (t) => {
+    const f = harness(t, { state: { pendingActivity: { newUnknown: [71], newEnded: [81], updatedAt: FIRST_TIME }, handledEndedIds: [80] } });
+    const report = { status: 'up-to-date', unknownActivityIds: [], endedActivityIds: [80], online: { available: true, checkedActivityIds: [91, 92] } };
+    const plan = f.service.planDailyActivityEvolution(report, f.state());
+    assert.deepEqual(Array.from(plan.newUnknown), [71]);
+    assert.deepEqual(Array.from(plan.newEnded), [81]);
+    assert.deepEqual(Array.from(plan.reviewIds), [91, 92]);
+    assert.equal(plan.shouldRun, true);
+    const unchanged = f.service.planDailyActivityEvolution(report, { handledEndedIds: [80], evolutionMemory: { activity: { reviewedAt: FIRST_TIME, reviewedHead: HEAD, evidenceFingerprint: plan.fingerprint } } });
+    assert.equal(unchanged.shouldRun, false);
+    assert.deepEqual(Array.from(unchanged.reviewIds), [91, 92]);
+});
+
+test('failed integrated rounds preserve captured activities across real state persistence without changing identity', (t) => {
+    const fingerprint = 'a'.repeat(64);
+    const original = { shouldRun: true, newUnknown: [71], newEnded: [81], reviewIds: [91], fingerprint };
+    const f = harness(t, { state: { status: 'failed', lastAutomaticEvolveDate: FIRST_DAY, feedbackBatch: { throughAt: FIRST_TIME - 1 }, autonomy: { activityPlan: original, activityPlanDigest: 'b'.repeat(64), quotaDate: FIRST_DAY, roundId: 'original-round' } } });
+    const restarted = harness(t, { dataDir: f.dataDir, clock: f.clock });
+    const state = restarted.state();
+    const plan = restarted.service.getCapturedActivityPlan(state);
+    assert.deepEqual(Array.from(plan.newEnded), [81]);
+    assert.equal(plan.fingerprint, fingerprint);
+    assert.equal(state.autonomy.activityPlanDigest, 'b'.repeat(64));
+    assert.equal(state.lastAutomaticEvolveDate, FIRST_DAY);
+    assert.equal(state.feedbackBatch.throughAt, FIRST_TIME - 1);
+    const context = restarted.service.buildCachedActivityContext({ activityPlan: plan, reportAvailable: false });
+    assert.ok(context.includes('81') && context.includes(fingerprint));
+    assert.ok(!context.includes('本轮只完成安全巡检部分'));
+    assert.ok(context.includes('材料不足保留待处理'));
+});
+
+test('legacy active metadata reconstructs a captured plan only with a valid fingerprint', (t) => {
+    const f = harness(t);
+    assert.equal(f.service.getCapturedActivityPlan({ activeRun: { combinedDaily: true, newEnded: [81], evidenceFingerprint: 'invalid' } }), null);
+    const plan = f.service.getCapturedActivityPlan({ activeRun: { combinedDaily: true, newEnded: [81], reviewIds: [91], evidenceFingerprint: 'a'.repeat(64) } });
+    assert.deepEqual(Array.from(plan.newEnded), [81]);
+    assert.equal(plan.shouldRun, true);
+});
+
+test('activity completion dates never invent epoch zero or treat an unaccepted launch as completion', (t) => {
+    const f = harness(t);
+    assert.equal(f.service.getActivityReviewDate({}), '');
+    assert.equal(f.service.getActivityReviewDate({ lastTask: 'activity', status: 'running', lastEvolveDate: FIRST_DAY }), '');
+    assert.equal(f.service.getActivityReviewDate({ lastTask: 'activity', status: 'review_blocked', lastEvolveDate: FIRST_DAY }), '');
+    assert.equal(f.service.getActivityReviewDate({ lastTask: 'activity', status: 'no_change', lastEvolveDate: FIRST_DAY }), FIRST_DAY);
+    const completed = { lastTask: 'safety', status: 'no_change', lastEvolveDate: '2026-01-24', evolutionMemory: { activity: { reviewedAt: FIRST_TIME, reviewedHead: HEAD, evidenceFingerprint: 'a'.repeat(64) } } };
+    assert.equal(f.service.getActivityReviewDate(completed), FIRST_DAY);
+    f.save(completed);
+    assert.equal(f.service.getEvolveState().lastActivityReviewDate, FIRST_DAY);
+    assert.equal(Object.hasOwn(f.service.getEvolveState().autonomy || {}, 'activityPlan'), false);
 });

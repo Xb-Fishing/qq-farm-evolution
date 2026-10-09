@@ -17,6 +17,25 @@ const REWORK_JITTER_MS = 90 * 1000;
 const NO_PROGRESS_DIAGNOSIS_ATTEMPTS = 2;
 const NOTIFY_DEDUPE_MS = 6 * 60 * 60 * 1000;
 
+function normalizeActivityPlan(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fingerprint = /^[0-9a-f]{64}$/i.test(String(value.fingerprint || '')) ? String(value.fingerprint).toLowerCase() : '';
+  if (!fingerprint) return null;
+  const ids = values => [...new Set((Array.isArray(values) ? values : []).map(Number)
+    .filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, 200);
+  const newUnknown = ids(value.newUnknown);
+  const newEnded = ids(value.newEnded);
+  const reviewIds = ids(value.reviewIds);
+  return {
+    shouldRun: Object.hasOwn(value, 'shouldRun') ? value.shouldRun === true
+      : !!(newUnknown.length || newEnded.length || reviewIds.length),
+    newUnknown, newEnded, reviewIds, fingerprint,
+    evidenceChanged: value.evidenceChanged === true,
+    activityPathsChanged: value.activityPathsChanged === true,
+    seedRecognitionNeedsReview: value.seedRecognitionNeedsReview === true,
+  };
+}
+
 function normalizeAutonomy(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const continuation = source.continuation && typeof source.continuation === 'object'
@@ -48,6 +67,7 @@ function normalizeAutonomy(value) {
     quotaDate: /^\d{4}-\d{2}-\d{2}$/.test(String(source.quotaDate || '')) ? String(source.quotaDate) : '',
     githubBatchDigest: /^[0-9a-f]{64}$/i.test(String(source.githubBatchDigest || '')) ? String(source.githubBatchDigest) : '',
     activityPlanDigest: /^[0-9a-f]{64}$/i.test(String(source.activityPlanDigest || '')) ? String(source.activityPlanDigest) : '',
+    activityPlan: normalizeActivityPlan(source.activityPlan),
     continuation: continuation ? {
       task: continuation.task === 'activity' ? 'activity' : 'safety',
       automatic: continuation.automatic === true,
@@ -220,5 +240,5 @@ function continuationCheckpoint(state) {
 
 module.exports = {
   REWORK_DELAY_BASE_MS, REWORK_DELAY_MAX_MS, NO_PROGRESS_DIAGNOSIS_ATTEMPTS,
-  normalizeAutonomy, computeReworkDelayMs, reworkKey, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
+  normalizeAutonomy, normalizeActivityPlan, computeReworkDelayMs, reworkKey, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
 };

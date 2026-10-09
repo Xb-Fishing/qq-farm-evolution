@@ -156,6 +156,26 @@ const EVOLVE_STATUS_LABELS: Record<string, string> = {
   no_change: '无需改动',
 }
 const evolveStatusLabel = computed(() => EVOLVE_STATUS_LABELS[evolve.value?.status || ''] || '空闲')
+function completedDate(value?: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return ''
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : ''
+}
+const standaloneActivityDate = computed(() => {
+  const state = evolve.value
+  // 独立活动轮在启动时也写日期；未验收的本轮不能冒充已完成记录。
+  if (state?.lastTask === 'activity' && !['', 'idle', 'applied', 'no_change', 'pending_apply'].includes(state.status || ''))
+    return ''
+  return completedDate(state?.lastEvolveDate)
+})
+const latestActivityReview = computed(() => {
+  const standalone = standaloneActivityDate.value
+  const combined = completedDate(evolve.value?.lastActivityReviewDate)
+  return combined && (!standalone || combined > standalone)
+    ? { date: combined, combined: true }
+    : { date: standalone, combined: false }
+})
 const evolutionBlocked = computed(() => ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'privacy_blocked_local', 'review_blocked'].includes(evolve.value?.status || ''))
 // 可「拒绝重做」的状态：待应用提交，或被隐私闸门拦截的轮次（可续接原会话修复）
 const redoeableStatus = computed(() => ['pending_apply', 'privacy_blocked', 'privacy_blocked_local'].includes(evolve.value?.status || ''))
@@ -816,12 +836,14 @@ onUnmounted(() => evolutionStore.stopPolling())
             活动进化
           </div>
           <div class="mt-1 text-xs text-purple-800 dark:text-purple-300">
-            上次：{{ evolve?.lastEvolveDate || evolve?.lastActivityReviewDate || '未跑' }}
+            最近完成：{{ latestActivityReview.date || '尚未完成' }}
             <span
-              v-if="!evolve?.lastEvolveDate && evolve?.lastActivityReviewDate"
+              v-if="latestActivityReview.date"
               class="text-purple-500 dark:text-purple-400"
-              title="每日 00:00-01:00 的自动综合巡检已合并复核活动侧（安全巡检 + 活动增量 + GitHub 公开对照）；只有独立活动轮才更新该字段"
-            >（含每日综合巡检）</span>
+            >{{ latestActivityReview.combined ? '（综合巡检含活动复核）' : '（独立活动进化）' }}</span>
+          </div>
+          <div v-if="latestActivityReview.combined && standaloneActivityDate" class="mt-1 text-xs text-purple-500 dark:text-purple-400">
+            上次独立活动进化：{{ standaloneActivityDate }}
           </div>
           <div class="mt-2 flex flex-wrap gap-2">
             <button
@@ -894,7 +916,7 @@ onUnmounted(() => evolutionStore.stopPolling())
         <span
           v-if="evolve?.autonomousEvolutionEnabled === true && evolve?.autonomy?.nextReworkAt"
           class="ml-1 text-xs text-emerald-700 dark:text-emerald-300"
-          :title="'自主进化下一次自动重试/应用时刻（失败按间隔递增退避）'"
+          title="自主进化下一次自动重试/应用时刻（失败按间隔递增退避）"
         >下次自动处理 {{ formatTime(evolve.autonomy.nextReworkAt) }}</span>
       </div>
     </div>
