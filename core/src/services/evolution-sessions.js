@@ -1,5 +1,6 @@
 /**
- * 进化团队原生会话登记（私有、仅本地）。
+ * Fresh automatic-stage context and legacy private native-session utilities.
+ * Automatic execution no longer calls the legacy registry/compact APIs below.
  *
  * owner 2026-10-07 要求：双 Agent 团队不再每阶段冷启动 CLI——首轮捕获执行器
  * 原生会话/线程 id（Claude envelope.session_id / Codex exec --json 的
@@ -525,7 +526,93 @@ function buildHandoffContext({ handoffFile, storeDir, role, forceRefresh = false
   };
 }
 
-// ---- 阶段会话驱动（runner runStage 专用） ----
+// ---- 全新会话的有界当前上下文（owner 2026-10-09 政策：自动阶段一律独立新会话，
+// 不 resume/compact，也不依赖任何"已读快照"水位）。每阶段由协调进程从私有
+// HANDOFF 确定性摘出：当前策略 + 用户硬约束（无论尾部多大都必须包含，不静默丢
+// 约束）+ 最近章节（有界）+ 全量标题锚点索引（旧证据按需检索）。绝不让新会话
+// 把摘录当全文或宣称"沿用已读快照"；无锁、无登记、无跨轮状态。 ----
+
+const FRESH_CONTEXT_LIMIT = 40 * 1024;
+const FRESH_ANCHOR_LIMIT = 8 * 1024;
+// 钉选章节（按标题定位，取各自首个命中）：最新执行策略与用户硬约束。
+const FRESH_PINNED_HEADINGS = ['当前执行策略', '用户硬约束', '部署环境'];
+
+function buildFreshHandoffContext({ handoffFile, maxBytes = FRESH_CONTEXT_LIMIT }) {
+  let text = null;
+  try { text = fs.readFileSync(handoffFile, 'utf8'); } catch { text = null; }
+  if (text == null || !text.trim()) {
+    return {
+      mode: 'missing',
+      directive: 'docs/HANDOFF.md 当前不存在或不可读：本轮无法生成交接上下文，也不得声称已读。先按运行约束处理交接文档缺失（只读阶段如实报告，不新建），implement/repair 阶段须先恢复该私有文档再继续。',
+    };
+  }
+  const sections = splitSections(text);
+  const pinned = [];
+  for (const anchor of FRESH_PINNED_HEADINGS) {
+    const hit = sections.find(section => section.heading.includes(anchor));
+    if (hit) pinned.push(hit);
+  }
+  const pinnedText = pinned.map(section => `【${section.heading}】\n${section.text}`).join('\n\n');
+  // Reserve framing/heading space; never silently truncate mandatory constraints.
+  const limit = Number.isFinite(maxBytes) ? Math.min(maxBytes, FRESH_CONTEXT_LIMIT) : FRESH_CONTEXT_LIMIT;
+  if (Buffer.byteLength(pinnedText, 'utf8') + 1024 > limit) {
+    throw Object.assign(new Error('mandatory_handoff_context_too_large'), { code: 'missing_handoff' });
+  }
+  const headings = sections.map(section => section.heading).filter(Boolean);
+  const anchorBudget = Math.min(FRESH_ANCHOR_LIMIT, Math.floor(limit / 5));
+  const anchorLines = [];
+  let anchorUsed = 0;
+  for (const heading of headings) {
+    const size = Buffer.byteLength(`- ${heading}\n`, 'utf8');
+    if (anchorUsed + size > anchorBudget) break;
+    anchorLines.push(heading);
+    anchorUsed += size;
+  }
+  const anchorsOmitted = headings.length - anchorLines.length;
+  const recentBudget = Math.max(0, limit - Buffer.byteLength(pinnedText, 'utf8') - anchorUsed - 2048);
+  const pinnedSet = new Set(pinned);
+  const recent = [];
+  let used = 0;
+  let truncated = false;
+  for (let index = sections.length - 1; index >= 0; index -= 1) {
+    const section = sections[index];
+    if (pinnedSet.has(section)) continue;
+    const size = Buffer.byteLength(`【${section.heading}】\n${section.text}\n\n`, 'utf8');
+    if (used + size > recentBudget) {
+      const remaining = recentBudget - used - Buffer.byteLength(section.heading, 'utf8') - 256;
+      if (remaining > 256) {
+        const bytes = Buffer.from(section.text, 'utf8');
+        let start = Math.max(0, bytes.length - remaining);
+        while (start < bytes.length && (bytes[start] & 0xC0) === 0x80) start += 1;
+        recent.unshift({ heading: section.heading,
+          text: `（本节仅摘录末尾，前文已截断；引用完整证据须读取原文。）\n${bytes.subarray(start).toString('utf8')}` });
+        truncated = true;
+      }
+      break;
+    }
+    recent.unshift(section);
+    used += size;
+  }
+  const omitted = sections.length - pinned.length - recent.length;
+  const parts = [
+    '本阶段运行在全新会话中（无历史会话记忆，协调进程不 resume/compact 任何旧会话）。以下是协调进程从 docs/HANDOFF.md 确定性摘出的有界当前上下文：不是全文，未摘录的历史章节一律视为未读，不得宣称已覆盖或沿用任何已读快照。需要旧证据时，先按文末标题锚点在 docs/HANDOFF.md 中检索对应章节原文再引用。',
+    pinnedText,
+    recent.length ? `【近期交接章节（最新在后）】\n${recent.map(section => `【${section.heading}】\n${section.text}`).join('\n\n')}` : '',
+    `本摘录已省略 ${omitted} 个更早章节${truncated ? '，另有一节正文已截断' : ''}${anchorsOmitted ? `（标题索引另省略 ${anchorsOmitted} 条）` : ''}；省略不等于不存在，也不等于已核对。`,
+    `【docs/HANDOFF.md 章节标题锚点（检索索引，非内容）】\n${anchorLines.map(heading => `- ${heading}`).join('\n')}`,
+  ];
+  const directive = parts.filter(Boolean).join('\n\n');
+  if (Buffer.byteLength(directive, 'utf8') > limit) {
+    throw Object.assign(new Error('handoff_context_too_large'), { code: 'missing_handoff' });
+  }
+  return {
+    mode: 'excerpt',
+    directive,
+    sourceSha256: crypto.createHash('sha256').update(text).digest('hex'),
+  };
+}
+
+// ---- 阶段会话驱动（runner runStage 专用；legacy 原生会话续接 API，自动路径不再使用） ----
 
 function createStageSessions({ dataDir, repoRoot, handoffFile, compactTimeoutMs = 300000 }) {
   const handoffStore = path.join(dataDir, 'evolution-handoff');
@@ -628,6 +715,7 @@ function createStageSessions({ dataDir, repoRoot, handoffFile, compactTimeoutMs 
 module.exports = {
   createStageSessions,
   buildHandoffContext,
+  buildFreshHandoffContext,
   compactClaudeSession,
   compactCodexThread,
   readSessionRegistry,

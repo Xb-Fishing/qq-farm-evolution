@@ -13,12 +13,12 @@ const {
   createTeamError, normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback,
   normalizeCheckpoint, FULL_HANDOFF_MANDATE,
 } = require('../src/services/evolution-team');
-const { createStageSessions, validNativeId } = require('../src/services/evolution-sessions');
+const { buildFreshHandoffContext } = require('../src/services/evolution-sessions');
 
 const repoRoot = path.resolve(__dirname, '../..');
 
-// 阶段所有权 → 会话角色（与 provider 无关：主/子允许同为 claude 或同为 codex）。
-const MAIN_PHASES = new Set(['triage', 'plan', 'diagnose', 'review', 'repair_review', 'patch_review']);
+// 阶段所有权由 evolution-team.js 的 workflow 内部决定（与 provider 无关：主/子
+// 允许同为 claude 或同为 codex）；fresh 政策下 runner 不再维护阶段→角色映射。
 
 // 私有交接文档（owner 本地 git exclude 忽略，永不入库）。协调进程必须在
 // 运行开始时独立于 Git 记录它的存在/非空/内容哈希（只记哈希不记内容），
@@ -268,23 +268,6 @@ function executeStreaming(bin, args, options = {}) {
   });
 }
 
-// 只认 CLI 事件流里的原生线程标识（exec --json 事件形 / JSON-RPC 通知形），
-// 绝不把模型输出文本中伪装的 id 当真。
-function codexThreadIdFromLine(line) {
-  if (!line || line.length > 262144) return '';
-  let value;
-  try { value = JSON.parse(line); } catch { return ''; }
-  if (!value || typeof value !== 'object') return '';
-  const candidates = value.type === 'thread.started'
-    ? [value.thread_id, value.thread?.id]
-    : value.method === 'thread/started' ? [value.params?.thread_id, value.params?.thread?.id, value.params?.id] : [];
-  for (const candidate of candidates) {
-    const id = validNativeId(candidate);
-    if (id) return id;
-  }
-  return '';
-}
-
 // Claude 外层 envelope 成功时优先 structured_output；result 必须是可严格解析的 JSON 文本。
 function claudeStageResponse(stdout) {
   const bytes = Buffer.byteLength(stdout);
@@ -396,13 +379,10 @@ async function main(input) {
   // PATH 前置当前 Node，避免 npm/vite 从系统旧 Node 启动。
   const env = buildEvolutionAgentEnv();
   env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${env.PATH || ''}`;
-  // 原生会话登记（私有 0600，仅本地数据目录）：角色/仓库绑定 + 原生压缩 + 私有
-  // HANDOFF 增量快照全部经同一驱动；dataDir 缺失时退回 logDir（同为 ignored 目录）。
-  const sessions = createStageSessions({
-    dataDir: dataDir || logDir,
-    repoRoot,
-    handoffFile: path.join(repoRoot, HANDOFF_FILE),
-  });
+  // 全新会话政策（owner 2026-10-09）：每阶段独立 fresh CLI，不 resume/compact、
+  // 不读写原生会话登记、不跨轮匹配原生 id、无角色锁。遗留 registry/压缩 API
+  // 只作为 legacy 导出存在，自动路径不再触达；损坏/被锁的 legacy 登记不影响阶段执行。
+  const handoffFile = path.join(repoRoot, HANDOFF_FILE);
   const onProgress = async (phase, activeAgent, details) => {
     const fields = { phase, activeAgent: activeAgent || '', status: 'running', updatedAt: Date.now() };
     if (details && typeof details === 'object') {
@@ -447,93 +427,52 @@ async function main(input) {
       onCheckpoint: async (value) => persist({ checkpoint: { ...value, handoffSha256: handoffBaseline.sha256 || '' } }),
       runStage: async (phase, agent, stagePrompt) => {
         // Prompt 始终走 stdin；阶段结构化输出由 schema 强约束，退出 0 不再当作交接成功。
-        // 原生会话连续性（2026-10-07 owner 要求）：同角色首轮捕获真实原生 id（Claude
-        // envelope.session_id / Codex --json thread.started），此后每阶段先原生压缩同一
-        // 会话再续接；压缩失败/跨库/id 不符保留登记并安全停，绝不静默换新 id。
-        // 角色按阶段所有权判定（2026-10-07 R6）：合法配置允许主/子选同一执行器，
-        // 按 provider 相等判角色会把两个角色并成一个登记键。
-        const role = MAIN_PHASES.has(phase) ? 'main' : 'sub';
-        const stage = sessions.beginStage({ role, provider: agent });
-        try {
-          // 新原生会话（首轮/换执行器）不得继承旧会话快照的"已读"记忆：强制完整首读。
-          const handoff = sessions.handoffDirectiveFor(role, { forceRefresh: !stage.entry });
-          // 私有 HANDOFF 缺失是硬边界：research 只读阶段可如实报告，其余阶段没有
-          // 交接上下文就不得继续（更不得据此解析出 approve——不允许凭猜测状态放行）。
-          if (handoff.mode === 'missing' && phase !== 'research') throw createTeamError('missing_handoff');
-          // 增量指令必须覆盖提示里所有完整重读硬性要求（首行模板之外，原任务/守则
-          // 文本里也可能嵌着同一句），不能只替换第一处。
-          const effectivePrompt = handoff.directive
-            ? stagePrompt.replaceAll(FULL_HANDOFF_MANDATE, handoff.directive) : stagePrompt;
-          if (stage.entry) {
-            await sessions.compactBeforeResume({ entry: stage.entry, role, provider: agent, bins, env, logDir, runId });
-          }
-          sessions.noteRunBoundary({ role, runId });
-          const command = buildEvolutionAgentCommand(agent, effectivePrompt,
-            agent === 'codex'
-              ? { jsonEvents: true, ...(stage.entry ? { resumeSessionId: stage.entry.sessionId } : {}) }
-              : (stage.entry ? { resumeSessionId: stage.entry.sessionId } : {}));
-          const schema = JSON.stringify(buildStageSchema(phase));
-          const args = [...command.args];
-          let response;
-          let capturedId = '';
-          if (agent === 'codex') {
-            const schemaFile = path.join(logDir, `evolve-team-${runId}-${phase}-schema.json`);
-            const outputFile = path.join(logDir, `evolve-team-${runId}-${phase}.log`);
-            try {
-              fs.rmSync(outputFile, { force: true });
-              fs.writeFileSync(schemaFile, `${schema}\n`, { mode: 0o600 });
-            } catch { throw createTeamError('unknown'); }
-            args.splice(args.length - 1, 0, '--output-schema', schemaFile, '--output-last-message', outputFile);
-            try {
-              await executeStreaming(bins[agent], args, {
-                env, stdin: command.stdin,
-                eventLog: path.join(logDir, `evolve-team-${runId}-${phase}-events.log`),
-                onLine: (line) => {
-                  const id = codexThreadIdFromLine(line);
-                  if (!id) return;
-                  if (!capturedId) { capturedId = id; return; }
-                  // 同一阶段事件流出现多个不同原生线程 id = 会话漂移，安全停。
-                  if (id !== capturedId) throw createTeamError('session_failed');
-                },
-              }).catch((error) => {
-                // 首轮 CLI/schema 失败也可能已经真实建立会话：私有持久化已确认的 id，
-                // 重试据此续接同一会话，而不是每次失败都另起新会话。
-                if (!stage.entry && capturedId) {
-                  try { sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId }); } catch {}
-                }
-                throw error;
-              });
-              // 流结束且拿到真实 id：立即私有登记（后续 parse 失败也保留，重试可续接）。
-              if (!stage.entry && capturedId) {
-                sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId });
-              }
-              response = readTeamStageOutput(outputFile);
-            } finally {
-              for (const temp of [schemaFile, outputFile]) { try { fs.unlinkSync(temp); } catch {} }
+        // 每阶段独立全新 CLI 会话（owner 2026-10-09）：不传任何 resume id，不要求
+        // 原生会话 id 才接受结果——CLI 事件流里的原生 id 只是普通输出，不参与身份匹配。
+        const handoff = buildFreshHandoffContext({ handoffFile });
+        // 私有 HANDOFF 缺失是硬边界：research 只读阶段可如实报告，其余阶段没有
+        // 交接上下文就不得继续（更不得据此解析出 approve——不允许凭猜测状态放行）。
+        if (handoff.mode === 'missing' && phase !== 'research') throw createTeamError('missing_handoff');
+        // 有界摘录指令必须覆盖提示里所有完整重读硬性要求（首行模板之外，原任务/守则
+        // 文本里也可能嵌着同一句）；函数式替换避免 HANDOFF 内容中的 $ 序列被展开。
+        let injected = false;
+        const effectivePrompt = handoff.directive
+          ? stagePrompt.replaceAll(FULL_HANDOFF_MANDATE, () => {
+              if (injected) return '当前 HANDOFF 摘录已在本提示开头注入一次；按该摘录和标题锚点处理。';
+              injected = true;
+              return handoff.directive;
+            }) : stagePrompt;
+        const command = buildEvolutionAgentCommand(agent, effectivePrompt,
+          agent === 'codex' ? { jsonEvents: true } : {});
+        const schema = JSON.stringify(buildStageSchema(phase));
+        const args = [...command.args];
+        let response;
+        if (agent === 'codex') {
+          const schemaFile = path.join(logDir, `evolve-team-${runId}-${phase}-schema.json`);
+          const outputFile = path.join(logDir, `evolve-team-${runId}-${phase}.log`);
+          try {
+            fs.rmSync(outputFile, { force: true });
+            fs.writeFileSync(schemaFile, `${schema}\n`, { mode: 0o600 });
+          } catch { throw createTeamError('unknown'); }
+          args.splice(args.length - 1, 0, '--output-schema', schemaFile, '--output-last-message', outputFile);
+          try {
+            await executeStreaming(bins[agent], args, {
+              env, stdin: command.stdin,
+              eventLog: path.join(logDir, `evolve-team-${runId}-${phase}-events.log`),
+            });
+            response = readTeamStageOutput(outputFile);
+          } finally {
+            // Failed CLI/schema reads must not leave files mistaken for journals.
+            for (const temp of [schemaFile, outputFile]) {
+              try { fs.unlinkSync(temp); } catch { /* Keep private event evidence. */ }
             }
-          } else {
-            args.push('--output-format', 'json', '--json-schema', schema);
-            const stdout = await execute(bins[agent], args, { env, stdin: command.stdin, capture: true });
-            try { capturedId = validNativeId(JSON.parse(stdout)?.session_id); } catch { capturedId = ''; }
-            if (!stage.entry && capturedId) {
-              sessions.recordCapturedId({ role, provider: agent, runId, sessionId: capturedId });
-            }
-            response = claudeStageResponse(stdout);
           }
-          if (stage.entry) {
-            // 每个续接阶段都必须实证仍是同一原生会话：没有 id 证明同样失败（fail closed）。
-            if (capturedId !== stage.entry.sessionId) throw createTeamError('session_failed');
-          } else if (!capturedId) {
-            // 没有真实原生 id 就没有会话连续性（无 ephemeral 兜底）：安全停。
-            throw createTeamError('session_failed');
-          }
-          const parsed = parseStageResult(response, phase, runtimeTerms);
-          // 私有交接读水位只在真实成功阶段后推进；失败/压缩异常不前移。
-          handoff.commit();
-          return parsed;
-        } finally {
-          stage.release();
+        } else {
+          args.push('--output-format', 'json', '--json-schema', schema);
+          const stdout = await execute(bins[agent], args, { env, stdin: command.stdin, capture: true });
+          response = claudeStageResponse(stdout);
         }
+        return parseStageResult(response, phase, runtimeTerms);
       },
       verify: async ({ reviewedOrchestrationFiles, baselineChecks = [] } = {}) => {
         const { files } = inspectWorktree();

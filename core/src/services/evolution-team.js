@@ -245,7 +245,16 @@ function readTeamJournal(logDir, active) {
       reviewedBy: value.mainAgent,
       githubResolutions: journalGithubResolutions(value),
       lessons: normalizeLessons(value.lessons),
-      checkpoint: normalizeCheckpoint(value.checkpoint),
+      checkpoint: (() => {
+        const checkpoint = normalizeCheckpoint(value.checkpoint);
+        // 2026-10-09 交替失败根因：research 未完成即失败的轮次也会落盘 in_run
+        // checkpoint（completed=[]）。它什么都没证明，runner 侧 validateResumeInput
+        // 按凭据不完整拒绝（invalid_decision），自主策略却仍把它当续接凭据逐小时
+        // 重投 → invalid_decision ↔ session_failed 无限交替。此类凭据不构成续接
+        // 身份：journal 读取侧不再作为 checkpoint 提供（走 fresh 重新诊断）；
+        // runner 的身份/完整性检查保持原样（直接传入仍被拒绝，不放宽任何校验）。
+        return checkpoint && checkpoint.kind === 'in_run' && !checkpoint.completed.length ? null : checkpoint;
+      })(),
     };
   } catch { return null; }
 }
@@ -427,14 +436,15 @@ function parseStageResult(text, phase, runtimeTerms) {
     ...(phase === 'plan' ? { acceptanceChecks: value.acceptanceChecks.map(item => sanitizeHandoff(item, runtimeTerms)), baselineChecks: value.baselineChecks } : {}) };
 }
 
-// 完整重读私有 HANDOFF 的固定开场指令：默认每阶段要求完整读取；启用增量交接的
-// 协调进程（run-evolution-team）会以导出的常量做精确替换，注入增量指令。
-const FULL_HANDOFF_MANDATE = '第一项操作必须从头到尾完整读取 docs/HANDOFF.md，读完前禁止搜索源码、日志、diff 或提出方案。';
+// 阶段提示中的 HANDOFF 占位硬门：协调进程（run-evolution-team / 单 Agent 组装）
+// 以导出的常量做精确替换，注入"全新会话有界摘录"指令（2026-10-09 政策：不再
+// 要求每阶段从头完整重读全文，未摘录章节按锚点按需检索，绝不宣称已读）。
+const FULL_HANDOFF_MANDATE = '【待协调进程注入当前 HANDOFF 有界摘录】';
 
-// 持久原生会话的每轮当前约束（2026-10-07 owner 要求）：阶段提示是本轮唯一当前
-// 指令源；会话/压缩记忆里的旧批准不携带任何授权。审批、验证与状态机不受影响。
-const SESSION_CONTINUITY_PREAMBLE = `【持久会话当前轮约束】
-本提示由协调进程在本阶段实时注入，是本轮唯一当前指令源；【原任务与回归约束】【此前阶段交接】均为本轮有效证据。执行器持久会话/原生压缩记忆中的旧对话仅是背景材料：旧对话里出现过的任何批准、验证通过、反馈已复核（feedbackReviewed）或 GitHub 结论对本轮候选一律无效，不得据此跳过当前审批、验证或反馈复核，也不得把会话记忆当作已获授权或已复核。换新候选时旧授权全部作废；仅协调进程与主 Agent 在本轮提示中的当前输出有效。`;
+// 全新会话的每轮当前约束（owner 2026-10-09 政策取代 2026-10-07 持久原生会话约定）：
+// 每阶段独立新会话，协调进程不 resume/compact 旧会话；阶段提示是本轮唯一当前指令源。
+const SESSION_CONTINUITY_PREAMBLE = `【全新会话当前轮约束】
+本阶段是协调进程启动的全新会话，没有也不依赖任何历史会话记忆。本提示（含协调进程注入的当前规则、任务交接与已验收经验索引）是本轮唯一当前指令源；【原任务与回归约束】【此前阶段交接】均为本轮有效证据。此前任何轮次/会话/日志里的批准、验证通过、反馈已复核（feedbackReviewed）或 GitHub 结论对本轮候选一律无效，不得据此跳过当前审批、验证或反馈复核，也不得宣称已读未注入的历史材料；需要旧证据时按提示中的标题锚点检索原文。换新候选时旧授权全部作废；仅协调进程与主 Agent 在本轮提示中的当前输出有效。`;
 
 function buildTeamStagePrompt(phase, taskPrompt, settings, handoffs = []) {
   const repairOnly = handoffs.some(item => item.phase === 'repair_ready');

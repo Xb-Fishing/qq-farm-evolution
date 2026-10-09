@@ -59,7 +59,8 @@ function workflowFixture(overrides = {}) {
     inspect: async () => ({ ...tree }),
     onProgress: async (phase, agent) => calls.push([phase, agent]),
     runStage: async (phase, agent, prompt) => {
-      assert.ok(prompt.indexOf('完整读取 docs/HANDOFF.md') < prompt.indexOf('双 Agent 阶段契约'));
+      const contextIndex = prompt.indexOf('【待协调进程注入当前 HANDOFF 有界摘录】');
+      assert.ok(contextIndex >= 0 && contextIndex < prompt.indexOf('双 Agent 阶段契约'));
       if (phase === 'research') {
         assert.match(prompt, /六组查询/);
         assert.match(prompt, /本机私有参考配置/);
@@ -721,16 +722,8 @@ test('初始 CLI 失败→只读修复→验证失败：必须新诊断给出写
 });
 
 // ---------------------------------------------------------------------------
-// 真实 runner 原生会话证据与事件流容错（2026-10-07 R5 复审）：
-// - codex exec resume 参数合同：resume 子命令不支持 --color（实测该二进制帮助），
-//   claude /compact 的 stream-json 模式必须 --verbose——夹具按真实合同拒绝错误参数。
-// - 单条 >1MB 事件只丢弃该事件本身：继续解析后续 thread.started 与最终输出文件，
-//   绝不判 output_limit 杀进程。
-// - 同一阶段事件流出现多个不同原生线程 id = 会话漂移，安全停（session_failed）。
-// - 续接阶段必须实证同一原生 id：没有任何 thread.started 证据同样失败。
-// - 首轮 CLI 失败但已真实建立会话：id 私有持久化，重试经 resume 复用同一会话。
-// ---------------------------------------------------------------------------
-test('真实 runner：大事件容忍、会话漂移/无证据拒绝、失败后持久化 id 复用', () => {
+// Fresh stages accept valid outputs independently of native IDs.
+test('真实 runner：大事件、无原生 ID 与失败恢复均使用独立新会话', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-team-session-'));
   const write = (file, data) => {
     const full = path.resolve(dir, file);
@@ -744,40 +737,12 @@ const fs = require('node:fs');
 const SESSION = { claude: 'aaaa1111-2222-3333-4444-555566667777', codex: 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee' };
 const DRIFT = 'dddd7777-8888-9999-aaaa-bbbbccccdddd';
 const mode = f => fs.existsSync(f);
-if (process.argv[2] === 'app-server') {
-  let buffer = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', chunk => {
-    buffer += chunk;
-    let index;
-    while ((index = buffer.indexOf('\\n')) >= 0) {
-      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
-      if (!line) continue;
-      let value; try { value = JSON.parse(line); } catch { continue; }
-      if (value.id === undefined || !value.method) continue;
-      const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: value.id, result }) + '\\n');
-      if (value.method === 'thread/read' || value.method === 'thread/resume') reply({ thread: { id: value.params.threadId } });
-      else if (value.method === 'thread/compact/start') {
-        reply({});
-        for (const method of ['item/started', 'item/completed']) {
-          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method, params: { threadId: value.params.threadId, item: { type: 'contextCompaction' } } }) + '\\n');
-        }
-      } else reply({});
-    }
-  });
-  return;
-}
+if (process.argv[2] === 'app-server' || process.argv.includes('resume') || process.argv.includes('--resume')) process.exit(9);
 let prompt = '';
 process.stdin.on('data', c => { prompt += c; });
 process.stdin.on('end', () => {
   const agent = process.argv.includes('exec') ? 'codex' : 'claude';
-  if (agent === 'codex' && process.argv.includes('resume') && process.argv.includes('--color')) process.exit(2);
-  if (prompt === '/compact') {
-    if (!process.argv.includes('--verbose')) process.exit(2);
-    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: SESSION.claude }) + '\\n');
-    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: SESSION.claude }) + '\\n');
-    return;
-  }
+  if (prompt === '/compact' || process.env.DISABLE_AUTO_COMPACT !== '1') process.exit(9);
   const phase = prompt.match(/只完成 (\\w+) 阶段/)[1];
   fs.appendFileSync('core/data/calls.log', phase + ':' + agent + '\\n');
   if (phase === 'implement') {
@@ -845,8 +810,7 @@ process.stdin.on('end', () => {
       });
     };
     const journalOf = runId => JSON.parse(fs.readFileSync(path.join(dir, `core/data/logs/evolve-team-${runId}.json`), 'utf8'));
-    const registry = () => JSON.parse(fs.readFileSync(path.join(dir, 'core/data/evolution-sessions/registry.json'), 'utf8'));
-
+    const registryFile = path.join(dir, 'core/data/evolution-sessions/registry.json');
     // S1：单条 2.5MB 事件不杀进程——后续 thread.started 仍被解析，运行照常完成。
     write('core/data/giant-events', '1');
     const giant = run('giant');
@@ -855,39 +819,27 @@ process.stdin.on('end', () => {
     fs.unlinkSync(path.join(dir, 'core/data/giant-events'));
     git(['reset', '--hard', baseCommit]);
     git(['clean', '-fdq']);
-    assert.ok(fs.existsSync(path.join(dir, 'core/data/evolution-sessions/registry.json')), '会话登记必须私有落盘');
+    assert.ok(!fs.existsSync(registryFile), 'fresh 不写原生登记');
 
-    // S2：同一阶段出现两个不同原生线程 id = 会话漂移，安全停且不提交。
+    for (const [runId, marker] of [['drift', 'drift'], ['noid', 'no-thread-events']]) {
+      write(`core/data/${  marker}`, '1');
+      const result = run(runId);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(journalOf(runId).status, 'completed');
+      assert.notEqual(git(['rev-parse', 'HEAD']), baseCommit);
+      assert.ok(!fs.existsSync(registryFile));
+      fs.unlinkSync(path.join(dir, `core/data/${  marker}`));
+      git(['reset', '--hard', baseCommit]);
+      git(['clean', '-fdq']);
+    }
     write('core/data/calls.log', '');
-    write('core/data/drift', '1');
-    const drift = run('drift');
-    assert.equal(drift.status, 1);
-    assert.equal(git(['rev-parse', 'HEAD']), baseCommit, '漂移运行不得提交');
-    assert.equal(journalOf('drift').failure.code, 'session_failed');
-    fs.unlinkSync(path.join(dir, 'core/data/drift'));
-
-    // S3：续接阶段没有任何 thread.started 证据 = 无法证明同一会话，拒绝（fail closed）。
-    write('core/data/calls.log', '');
-    write('core/data/no-thread-events', '1');
-    const noid = run('noid');
-    assert.equal(noid.status, 1);
-    assert.equal(git(['rev-parse', 'HEAD']), baseCommit);
-    assert.equal(journalOf('noid').failure.code, 'session_failed');
-    assert.equal(registry().entries.main.sessionId, 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee', '失败不得换 id 顶替');
-    fs.unlinkSync(path.join(dir, 'core/data/no-thread-events'));
-
-    // S4：首轮 CLI 失败但已真实建立会话：id 私有持久化，重试经 resume 复用同一会话。
-    fs.rmSync(path.join(dir, 'core/data/evolution-sessions'), { recursive: true, force: true });
-    write('core/data/calls.log', '');
-    write('core/data/resume.log', '');
     write('core/data/plan-fail-once', '1');
     const failonce = run('failonce');
     assert.equal(failonce.status, 0, failonce.stderr);
-    assert.notEqual(git(['rev-parse', 'HEAD']), baseCommit, '复用会话后运行必须完成');
-    assert.equal(registry().entries.main.sessionId, 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee', '失败时已捕获的 id 必须持久化');
-    const resumeLog = fs.readFileSync(path.join(dir, 'core/data/resume.log'), 'utf8').split('\n').filter(Boolean);
-    assert.ok(resumeLog.length > 0, '重试必须经 resume 复用同一原生会话');
-    assert.ok(resumeLog.every(id => id === 'bbbb8888-9999-aaaa-bbbb-ccccddddeeee'));
+    assert.notEqual(git(['rev-parse', 'HEAD']), baseCommit);
+    assert.ok(!fs.existsSync(registryFile));
+    assert.ok(!fs.existsSync(path.join(dir, 'core/data/resume.log')));
+    assert.ok(!fs.readdirSync(path.join(dir, 'core/data/logs')).some(file => /-schema\.json$/.test(file)));
     const failonceJournal = journalOf('failonce');
     assert.equal(failonceJournal.lastFailure.code, 'cli_exit', '首轮失败按执行失败真实记录');
     assert.ok(failonceJournal.recoveryAttempt >= 1);

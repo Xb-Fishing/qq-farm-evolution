@@ -22,12 +22,13 @@ const { getDailyFeedback } = require('./daily-feedback');
 const { getValidationSummary, logicSnapshot } = require('./evolution-validation');
 const { getPublicReferenceSummary } = require('./evolution-references');
 const { recordApprovedLessons, readLearningSummary, buildLearningContext } = require('./evolution-learning');
+const { buildFreshHandoffContext } = require('./evolution-sessions');
 const { createModuleLogger } = require('./logger');
 const { createScheduler, getSchedulerRegistrySnapshot } = require('./scheduler');
 const { sendFeishuText } = require('./feishu-notify');
 const {
   normalizeAgentSettings, validateAgentSettings, readTeamJournal, isTeamResultApproved,
-  normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback, normalizeCheckpoint,
+  normalizeTeamFailure, normalizeOrchestrationFiles, safeReviewFeedback, normalizeCheckpoint, FULL_HANDOFF_MANDATE,
 } = require('./evolution-team');
 const { inspectWorktree: inspectWorktreeAt } = require('./evolution-worktree');
 // 隔离任务/运行时工作区 + 私有保留源清单 + 发布门（2026-10-07 Stage C）。
@@ -701,17 +702,12 @@ function resolveCodexBin(options = {}) {
 
 function buildEvolutionAgentCommand(agentValue, prompt, options = {}) {
   const agent = normalizeEvolutionAgent(agentValue);
-  const resumeSessionId = String(options.resumeSessionId || '').trim();
-  const hasResume = /^[a-f0-9-]{8,64}$/i.test(resumeSessionId);
+  // 全新会话政策（owner 2026-10-09）：自动进化（含双 Agent 阶段与单 Agent 轮/
+  // 拒绝重做）一律独立 fresh CLI，绝不 --resume/exec resume 旧原生会话；旧
+  // resumeSessionId 入参仅为兼容历史调用形状而被忽略，不产生任何续接参数。
   if (agent === 'codex') {
-    // exec resume <id>：官方非交互续接同一原生线程；--json 让 stdout 输出事件流
-    // （thread.started 携带真实线程 id），最终结构化结果仍走 --output-last-message。
-    // 实测安装版二进制：`codex exec resume --help` 无 --color 旗标（仅 `codex exec`
-    // 支持），resume 子命令带上会被拒——只在新会话时传。
-    const args = ['exec'];
-    if (hasResume) args.push('resume', resumeSessionId);
-    args.push('--dangerously-bypass-approvals-and-sandbox');
-    if (!hasResume) args.push('--color', 'never');
+    // --json 让 stdout 输出事件流，最终结构化结果走 --output-last-message。
+    const args = ['exec', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never'];
     if (options.jsonEvents === true) args.push('--json');
     args.push('-');
     return {
@@ -722,10 +718,9 @@ function buildEvolutionAgentCommand(agentValue, prompt, options = {}) {
       stdin: String(prompt || ''),
     };
   }
-  // --output-format json：stdout 输出单条 JSON（含 session_id），父进程据此持久化会话，
-  // 隐私拦截/用户拒绝重做时用 --resume 续接原对话上下文而不是从零重来。
+  // --output-format json：stdout 输出单条 JSON（含 session_id）；session_id 仅作
+  // 私有审计记录，绝不用于续接（fresh 默认不可动摇）。
   const args = ['-p', '--dangerously-skip-permissions', '--output-format', 'json'];
-  if (hasResume) args.push('--resume', resumeSessionId);
   return {
     agent,
     label: AGENT_LABELS[agent],
@@ -747,6 +742,7 @@ function buildEvolutionAgentEnv(source = process.env, root = REPO_ROOT) {
     if (source[name] !== undefined && source[name] !== '') env[name] = String(source[name]);
   }
   env.GIT_TERMINAL_PROMPT = '0';
+  env.DISABLE_AUTO_COMPACT = '1';
   env.GIT_CONFIG_COUNT = '1';
   env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
   env.GIT_CONFIG_VALUE_0 = path.join(root, 'scripts', 'evolution-hooks');
@@ -1200,8 +1196,12 @@ ${rows.join('\n')}`;
 
 function buildEvolutionGuardrails(userInstruction = '', revisionContext = null) {
   const instruction = normalizeEvolutionInstruction(userInstruction);
-  const guardrails = `【执行顺序硬门】
-开始任务后的第一项操作必须是从头到尾完整读取 docs/HANDOFF.md；在读完前禁止搜索源码、查看日志、查看 git diff 或提出修改方案。读完后先提取「用户硬约束」「踩过的坑」「不要做的」「风险待处理」及最近巡检记录，再开始其他动作。
+  // 全新会话政策（owner 2026-10-09）：单 Agent 轮同样独立 fresh 会话，不再要求
+  // 从头完整重读全文；协调进程注入有界当前摘录（含用户硬约束），旧证据按标题
+  // 锚点按需检索，未摘录章节不得宣称已读。
+  const guardrails = `【执行顺序硬门（全新会话有界上下文）】
+${FULL_HANDOFF_MANDATE}
+先把摘录中的「用户硬约束」「踩过的坑」「不要做的」「风险待处理」与最新巡检记录过一遍再动手；需要更早的证据时按标题锚点检索 docs/HANDOFF.md 对应章节原文，不得以摘录宣称已覆盖全文。
 
 【历史踩坑回归硬门（优先级高于本轮优化目标）】
 1. docs/HANDOFF.md 不只是说明文档，而是回归约束清单。修改前列出会影响的既有不变量，修改后逐项确认没有改回历史错误。
@@ -1811,9 +1811,10 @@ function launchEvolution(task, payload = {}) {
           combinedDaily: payload.combinedDaily === true,
           logDir: EVOLVE_LOG_DIR, dataDir: path.dirname(STATE_FILE) }),
       }
-    : buildEvolutionAgentCommand(agent, prompt, {
-        // 仅显式重做（拒绝/隐私拦截 redo）才续接原会话；每日常规轮必须全新上下文。
-        resumeSessionId: payload.resume === true ? current.agentSessionId : '',
+    : buildEvolutionAgentCommand(agent, prompt.replaceAll(FULL_HANDOFF_MANDATE, () =>
+        buildFreshHandoffContext({ handoffFile: path.join(REPO_ROOT, 'docs/HANDOFF.md') }).directive), {
+        // 全新会话政策（2026-10-09）：显式重做（拒绝/隐私拦截 redo）同样独立 fresh
+        // 会话；legacy agentSessionId 只留审计，绝不用于 --resume 续接。
       });
 
   const sessionOut = agentCommand.agent === 'claude' && !settings.dualAgentEnabled
@@ -1916,7 +1917,7 @@ function launchEvolution(task, payload = {}) {
     next.changeSummary = privacyBlocked || teamBlocked ? '' : changeSummary;
     next.privacyFindings = privacyBlocked ? (pushResult.findings || []).slice(0, 20) : [];
     next.agentSessionId = agentSession.sessionId;
-    // 隐私拦截轮：记录被丢弃提交与基线，供「拒绝重做」续接原会话修复（提交对象在本地 git 可查）。
+    // 隐私拦截轮：记录被丢弃提交与基线，供「拒绝重做」在 fresh 会话中携上下文修复（提交对象在本地 git 可查）。
     if (privacyBlocked) {
       next.privacyBlockedCommit = headAfter;
       next.privacyBlockedBase = headBefore;
@@ -1930,7 +1931,7 @@ function launchEvolution(task, payload = {}) {
         ? `${tag}（${agentLabel}）完成并已核对 GitHub origin/main（提交 ${headAfter.slice(0, 8)}），将自动应用生效；如需调整可在面板填写修改要求`
         : `${tag}（${agentLabel}）完成并已核对 GitHub origin/main，待确认应用（提交 ${headAfter.slice(0, 8)}）。满意则点「应用进化」；不满意就在面板填写修改要求并点「拒绝本次并按要求重做」`)
       : outcome === 'privacy_blocked' || outcome === 'privacy_blocked_local'
-        ? `${tag}（${agentLabel}）被隐私闸门拦截，未向 GitHub 推送；${privacyRollback ? `本轮自动提交已安全丢弃（提交 ${headAfter.slice(0, 8)} 保留在本地 git）` : '本地提交已保留并阻止后续自动任务，请人工检查'}。可在面板填写修改要求并点「拒绝本次并按要求重做」，Agent 将续接原会话修复后重新提交`
+        ? `${tag}（${agentLabel}）被隐私闸门拦截，未向 GitHub 推送；${privacyRollback ? `本轮自动提交已安全丢弃（提交 ${headAfter.slice(0, 8)} 保留在本地 git）` : '本地提交已保留并阻止后续自动任务，请人工检查'}。可在面板填写修改要求并点「拒绝本次并按要求重做」，Agent 将携带拦截证据在全新会话中修复后重新提交`
       : outcome === 'push_failed'
         ? `${tag}（${agentLabel}）已生成本地提交 ${headAfter.slice(0, 8)}，但 GitHub 推送/远端校验失败（${pushResult.error}）；为防止本地与远端分叉，当前禁止应用和启动下一轮`
         : outcome === 'no_change'
@@ -3448,7 +3449,7 @@ async function reviseEvolution(value) {
   state.userInstruction = instruction;
   state.status = 'revising';
   state.summary = privacyRedo
-    ? `正在按修改要求重做被隐私闸门拦截的提交 ${rejectedCommit.slice(0, 8)}（Agent 续接原会话）`
+    ? `正在按修改要求重做被隐私闸门拦截的提交 ${rejectedCommit.slice(0, 8)}（Agent 全新会话携拦截证据重做）`
     : `正在拒绝提交 ${rejectedCommit.slice(0, 8)}，推送回退后将按新要求重新执行${task === 'safety' ? '安全巡检' : '活动进化'}`;
   writeState(state);
   // 拒绝边界已成立：在任何被等待的 revert/push 之前，先把发件箱里该提交的未发送
@@ -3529,7 +3530,7 @@ async function reviseEvolution(value) {
     redoState.privacyBlockedCommit = '';
     redoState.privacyBlockedBase = '';
     writeState(redoState);
-    await notify('农场 bot 进化重做中', `被拦截提交 ${rejectedCommit.slice(0, 8)} 已按修改要求转入重做（Agent 续接原会话）`);
+    await notify('农场 bot 进化重做中', `被拦截提交 ${rejectedCommit.slice(0, 8)} 已按修改要求转入重做（Agent 全新会话携拦截证据重做）`);
   }
 
   let launchResult;

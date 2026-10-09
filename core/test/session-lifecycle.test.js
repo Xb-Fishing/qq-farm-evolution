@@ -321,18 +321,18 @@ test('Claude/Codex 可跨 NVM Node 版本解析并生成各自非交互命令', 
     const claude = buildEvolutionAgentCommand('claude', '审计', { env: { PATH: '' }, homeDir: tempHome });
     assert.deepEqual(claude.args, ['-p', '--dangerously-skip-permissions', '--output-format', 'json']);
     assert.equal(claude.stdin, '审计');
-    // 重做轮传 resumeSessionId：续接原会话；非法值忽略。
+    // 全新会话政策（owner 2026-10-09）：重做轮即使带 legacy resumeSessionId 也一律
+    // fresh CLI，绝不生成 --resume/exec resume 续接参数。
     const resumed = buildEvolutionAgentCommand('claude', '重做', {
       env: { PATH: '' }, homeDir: tempHome, resumeSessionId: 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
     });
-    assert.deepEqual(resumed.args, [
-      '-p', '--dangerously-skip-permissions', '--output-format', 'json',
-      '--resume', 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
-    ]);
-    const badResume = buildEvolutionAgentCommand('claude', '重做', {
-      env: { PATH: '' }, homeDir: tempHome, resumeSessionId: '../etc/passwd',
+    assert.deepEqual(resumed.args, ['-p', '--dangerously-skip-permissions', '--output-format', 'json']);
+    assert.ok(!resumed.args.includes('--resume') && !resumed.args.some(arg => arg.startsWith('--resume')));
+    const codexResumed = buildEvolutionAgentCommand('codex', '重做', {
+      env: { PATH: '' }, homeDir: tempHome, resumeSessionId: 'abc123de-f090-4a5b-9c8d-1e2f3a4b5c6d',
     });
-    assert.deepEqual(badResume.args, ['-p', '--dangerously-skip-permissions', '--output-format', 'json']);
+    assert.deepEqual(codexResumed.args, ['exec', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
+    assert.ok(!codexResumed.args.some(arg => arg === 'resume' || arg.startsWith('--resume')));
     const codex = buildEvolutionAgentCommand('codex', '审计', { env: { PATH: '' }, homeDir: tempHome });
     assert.deepEqual(codex.args, ['exec', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
     assert.equal(codex.stdin, '审计');
@@ -353,6 +353,7 @@ test('自动进化只继承运行必需环境且 Prompt 不进入命令行', () 
   assert.equal(env.HOME, '/tmp/example-home');
   assert.equal(env.HTTPS_PROXY, 'http://proxy.invalid');
   assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(env.DISABLE_AUTO_COMPACT, '1');
   assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
   assert.match(env.GIT_CONFIG_VALUE_0, /scripts[\\/]evolution-hooks$/);
   assert.equal(env.VSCODE_GIT_IPC_AUTH_TOKEN, undefined);
@@ -526,7 +527,10 @@ test('安全巡检读取脱敏运行问题摘要且不信任外部文案', () =>
 
 test('活动与安全进化共用历史踩坑回归硬门', () => {
   const guardrails = buildEvolutionGuardrails();
-  assert.match(guardrails, /第一项操作必须是从头到尾完整读取 docs\/HANDOFF\.md/);
+  // 全新会话政策（owner 2026-10-09）：完整重读硬门改为有界摘录 + 钉选硬约束 +
+  // 标题锚点按需检索；单 Agent 轮不得再被要求从头读全文。
+  assert.match(guardrails, /执行顺序硬门（全新会话有界上下文）】\n【待协调进程注入当前 HANDOFF 有界摘录】/);
+  assert.match(guardrails, /按标题锚点检索 docs\/HANDOFF\.md 对应章节原文/);
   assert.match(guardrails, /HANDOFF\.md 不只是说明文档，而是回归约束清单/);
   assert.match(guardrails, /禁止恢复整号熔断/);
   assert.match(guardrails, /自己成熟到点 Harvest/);
