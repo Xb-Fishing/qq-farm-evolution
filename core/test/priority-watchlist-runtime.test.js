@@ -10,12 +10,17 @@ process.env.FARM_DATA_DIR = privateDir;
 const watch = require('../src/services/fertilizer-watch');
 const governor = require('../src/services/request-governor');
 const clocks = require('../src/services/steal-schedule');
-const { toNum } = require('../src/utils/utils');
+const governedWarnings = require('../src/services/governed-warn-aggregation');
+const { toNum, getServerTimeSec } = require('../src/utils/utils');
 const orchestrator = fs.readFileSync(path.join(__dirname, '../src/services/friend-orchestrator.js'), 'utf8');
 const visits = fs.readFileSync(path.join(__dirname, '../src/services/friend-visit.js'), 'utf8');
 const api = fs.readFileSync(path.join(__dirname, '../src/services/friend-api.js'), 'utf8');
 test.after(() => fs.rmSync(privateDir, { recursive: true, force: true }));
-test.afterEach(() => { watch.resetFertilizerWatchForTests(); governor.resetForTest(); });
+test.afterEach(() => {
+    watch.resetFertilizerWatchForTests();
+    governor.resetForTest();
+    governedWarnings.resetGovernedWarnAggregationForTests();
+});
 
 // Execute actual production function bodies, injecting only clocks, transport,
 // account configuration and external dependencies. No game connection is made.
@@ -24,6 +29,13 @@ function sourceFunction(source, name) {
     const index = declarations.findIndex(match => match[1] === name);
     assert.ok(index >= 0, `production function ${name} exists`);
     return source.slice(declarations[index].index, declarations[index + 1]?.index || source.length);
+}
+
+function sourceReadState() {
+    const start = orchestrator.indexOf('let friendReadLifecycleSeq = 0;');
+    const end = orchestrator.indexOf('function isSummaryReadBlocked', start);
+    assert.ok(start >= 0 && end > start, 'production summary read and action cache state exists');
+    return orchestrator.slice(start, end);
 }
 
 function fixture(t, options = {}) {
@@ -45,7 +57,7 @@ function fixture(t, options = {}) {
             return autoBadModule;
         },
         process: { env: { FARM_ACCOUNT_ID: 'fixture-account' } },
-        ...watch, ...clocks, toNum, toLong: Number,
+        ...watch, ...clocks, ...governedWarnings, toNum, getServerTimeSec, toLong: Number,
         getWatchlistFriendGids: () => gids,
         getFriendQuietHours: () => ({ watchlistWakeBeforeMinutes: 122 }),
         getUserState: () => ({ gid: 1 }), getFriendBlacklist: () => [],
@@ -108,10 +120,13 @@ function fixture(t, options = {}) {
         noteFriendActivity: () => {},
     };
     const functions = ['getWatchlistWakeBeforeMs', 'nextWatchlistPollDelayMs', 'isWatchlistObservationWindow',
-        'scheduleWatchlistPollNext', 'watchlistPollTick', 'watchlistPollTickDelayMs', 'applyStealScheduleFromFriends']
+        'scheduleWatchlistPollNext', 'watchlistPollTick', 'watchlistPollTickDelayMs',
+        'updateSummaryDueActionCache', 'applyStealScheduleFromFriends']
         .map(name => sourceFunction(orchestrator, name));
     vm.createContext(context);
-    vm.runInContext([...functions, sourceFunction(api, 'enterFriendFarm'),
+    vm.runInContext([sourceReadState(), ...functions,
+        sourceFunction(visits, 'captureGovernedWarnSeq'), sourceFunction(visits, 'wireGovernedEnterWarn'),
+        sourceFunction(api, 'enterFriendFarm'),
         sourceFunction(visits, 'visitFriendForSteal')].join('\n'), context);
     return { flags, context, transport, logs,
         tick: () => context.watchlistPollTick(), time: () => time,

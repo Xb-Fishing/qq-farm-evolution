@@ -380,7 +380,7 @@ test('核心巡查/成熟墙钟刷新仍直接调用 getAllFriends，不进入�
   const start = orchestratorSrc.indexOf('async function refreshFriendRipeSchedule');
   const end = orchestratorSrc.indexOf('function formatWatchlistRemain', start);
   const body = orchestratorSrc.slice(start, end);
-  assert.match(body, /await getAllFriends\(\)/);
+  assert.match(body, /await getAllFriends\((?:force, \(observation\) => \{|\))/);
   assert.doesNotMatch(body, /getFriendsList/);
 });
 

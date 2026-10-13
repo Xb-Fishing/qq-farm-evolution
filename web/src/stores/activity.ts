@@ -734,15 +734,17 @@ export const useActivityStore = defineStore('activity', () => {
       clearTimeout(expiryTimers[key])
     const token = ++expiryTokens[key]
     const timer: any = setTimeout(() => {
-      expiryTimers[key] = null
       if (token !== expiryTokens[key] || isActivityRetired(key))
         return // 新快照已重排计时并推进令牌，或已下架：旧计时不误撤
+      expiryTimers[key] = null
       // 回调落地前再核对「当前快照的有效截止」与实际时间：定时器被提前/截断触发
       // 或当前快照截止已被新数据推后时，不得提前下架
       const currentEnd = validEndTimeOf(currentSnapshotOf(key))
       if (currentEnd && currentEnd * 1000 <= Date.now())
         retireActivity(key, 'expired')
-    }, Math.max(0, endTimeSec * 1000 - Date.now()))
+      else if (currentEnd)
+        scheduleExpiry(key, currentEnd)
+    }, Math.min(2_147_483_647, Math.max(0, endTimeSec * 1000 - Date.now())))
     if (typeof timer?.unref === 'function')
       timer.unref() // 长截止的计时不得阻塞页面/测试进程退出
     expiryTimers[key] = timer

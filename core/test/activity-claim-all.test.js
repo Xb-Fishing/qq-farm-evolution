@@ -72,18 +72,18 @@ const BEAR_PLAY_ID = 2026090101;
 const BEAR_SEEDS_ID = 2026090102;
 
 // ---------- TS / SFC 加载器（bear-activity-panel / wx-login-ui 测试既有模式） ----------
-function evaluateModule(source, resolve, filename = 'module.ts') {
+function evaluateModule(source, resolve, filename = 'module.ts', timing = {}) {
   const code = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ESNext },
   }).outputText;
   const mod = { exports: {} };
   mod.exports.__esModule = true;
-  vm.compileFunction(code, ['require', 'module', 'exports'])(spec => {
+  vm.compileFunction(code, ['require', 'module', 'exports', 'setTimeout', 'clearTimeout', 'Date'])(spec => {
     const value = resolve(spec, filename);
     if (value === undefined)
       throw new Error(`测试加载器无法解析依赖: ${spec} (from ${filename})`);
     return value;
-  }, mod, mod.exports);
+  }, mod, mod.exports, timing.setTimeout || setTimeout, timing.clearTimeout || clearTimeout, timing.Date || Date);
   return mod.exports;
 }
 
@@ -450,7 +450,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function storeHarness() {
+function storeHarness(timing) {
   const api = apiMock();
   const accountState = { currentAccountId: 'acc-1' };
   const resolve = (spec) => {
@@ -465,7 +465,7 @@ function storeHarness() {
     return undefined;
   };
   const mod = evaluateModule(
-    fs.readFileSync(path.join(WEB, 'src/stores/activity.ts'), 'utf8'), resolve,
+    fs.readFileSync(path.join(WEB, 'src/stores/activity.ts'), 'utf8'), resolve, 'activity.ts', timing,
   );
   const store = mod.useActivityStore(pinia.createPinia());
   liveStores.push(store); // 套件收尾统一释放到期计时（含用例失败路径）
@@ -1357,6 +1357,187 @@ test('页面重新检查提示矩阵：成功恢复/确认下架/普通失败/�
   await waitFor(() => textOf(root).includes('错过存储 5 日'), '真实有效快照落地后面板回归');
   assert.ok(textOf(root).includes('错过存储 5 日'), '玩法面板恢复展示');
   assert.equal(api.calls.post.length, 0, '重新检查全程零写请求');
+});
+
+// 局部计时依赖只注入真实 store 编译加载器，不替换全局时钟或 Node 测试调度器。
+// 手动投递真实到期回调，证明早到、截断和已取消回调的行为，无额外等待或 API 请求。
+function expiryClockHarness() {
+  let now = 1_800_000_000_000;
+  const timers = new Map();
+  const created = [];
+  const h = storeHarness({
+    Date: { now: () => now },
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay, unrefCount: 0, unref() { this.unrefCount++; } };
+      created.push(timer);
+      timers.set(timer, timer);
+      return timer;
+    },
+    clearTimeout: timer => timers.delete(timer),
+  });
+  return {
+    ...h, timers, created,
+    now: () => now,
+    setNow: value => { now = value; },
+    deliver: timer => {
+      timers.delete(timer);
+      timer.callback();
+    },
+    close: () => {
+      h.store.cancelActivityReads();
+      assert.equal(timers.size, 0, '局部到期计时在成功与失败收尾均完整释放');
+    },
+  };
+}
+
+test('真实到期回调提前 1ms 到达：普通失败/网络拒绝仍保留截止并单次重排，实际截止零请求下架', async () => {
+  for (const [label, failWith] of [
+    ['普通失败', () => ({ data: { ok: false, error: '账号未运行' } })],
+    ['网络拒绝', () => Promise.reject(new Error('连接中断'))],
+  ]) {
+    const h = expiryClockHarness();
+    try {
+      const end = h.now() / 1000 + 2;
+      h.api.setGet(async () => ({ data: { ok: true, activity: panelSafeActivity({ endTime: end }) } }));
+      await Promise.all([
+        h.store.fetchBearActivity('acc-1'),
+        h.store.fetchWishActivity('acc-1'),
+        h.store.fetchHappyShareActivity('acc-1'),
+      ]);
+      assert.equal(h.created.length, 3);
+      const initial = [...h.timers.keys()];
+      h.api.setGet(async () => failWith());
+      const failed = await Promise.all([
+        h.store.fetchBearActivity('acc-1'),
+        h.store.fetchWishActivity('acc-1'),
+        h.store.fetchHappyShareActivity('acc-1'),
+      ]);
+      assert.ok(failed.every(result => result.ok === false), `${label} 确实已经返回`);
+      const gets = h.api.calls.get.length;
+      h.setNow(end * 1000 - 1);
+      for (const timer of initial)
+        h.deliver(timer);
+      assert.equal(h.created.length, 6, '三个实际早到回调各重排一次，不能丢失到期计时');
+      assert.equal(h.timers.size, 3);
+      for (const key of ['bear', 'wish', 'happyShare'])
+        assert.equal(h.store.activityRetired[key], null, `${label} 早到不得提前下架 ${key}`);
+      assert.ok(h.store.bearActivity && h.store.wishActivity && h.store.happyShareActivity);
+      for (const timer of h.timers.keys()) {
+        assert.equal(timer.delay, 1, '只排剩余实际墙钟间隔');
+        assert.equal(timer.unrefCount, 1);
+      }
+      assert.equal(h.api.calls.get.length, gets, '重排零新增读取');
+      assert.equal(h.api.calls.post.length, 0, '重排零写');
+      h.setNow(end * 1000);
+      for (const timer of [...h.timers.keys()])
+        h.deliver(timer);
+      for (const key of ['bear', 'wish', 'happyShare'])
+        assert.equal(h.store.activityRetired[key]?.reason, 'expired', `${label} 真正到点下架 ${key}`);
+      assert.equal(h.timers.size, 0);
+      assert.equal(h.created.length, 6, '到点后不继续排定时器');
+      await Promise.all([
+        h.store.fetchBearActivity('acc-1'),
+        h.store.fetchWishActivity('acc-1'),
+        h.store.fetchHappyShareActivity('acc-1'),
+      ]);
+      await h.store.operateBearPet('acc-1', 'seeds', {});
+      await h.store.operateSeasonWish('acc-1', 'wishClaim', { chooseId: 3 });
+      await h.store.operateSeasonWish('acc-1', 'shareDaily', {});
+      assert.equal(h.api.calls.get.length, gets, '截止后普通刷新零新增读取');
+      assert.equal(h.api.calls.post.length, 0, '截止后三活动写入口零写');
+    }
+    finally { h.close(); }
+  }
+});
+
+test('实际计时令牌：有效新快照取消旧截止，旧回调不重排或撤下；卸载旧回调不复活计时', async () => {
+  const h = expiryClockHarness();
+  try {
+    const firstEnd = h.now() / 1000 + 1;
+    let reads = 0;
+    h.api.setGet(async () => ({ data: { ok: true, activity: panelSafeActivity({ endTime: ++reads === 1 ? firstEnd : firstEnd + 2 }) } }));
+    await h.store.fetchWishActivity('acc-1');
+    const old = h.created[0];
+    await h.store.fetchWishActivity('acc-1');
+    const replacement = h.created[1];
+    assert.equal(h.timers.has(old), false);
+    assert.equal(h.timers.has(replacement), true);
+    h.setNow(firstEnd * 1000);
+    h.deliver(old);
+    assert.equal(h.store.activityRetired.wish, null);
+    assert.equal(h.created.length, 2, '作废旧令牌不会生成新计时');
+    assert.equal(h.timers.size, 1, '新快照的实际定时器仍在');
+    h.setNow((firstEnd + 2) * 1000);
+    h.deliver(replacement);
+    assert.equal(h.store.activityRetired.wish?.reason, 'expired');
+    assert.equal(h.api.calls.get.length, 2);
+    assert.equal(h.api.calls.post.length, 0);
+  }
+  finally { h.close(); }
+
+  const cancelled = expiryClockHarness();
+  try {
+    const end = cancelled.now() / 1000 + 3;
+    let reads = 0;
+    cancelled.api.setGet(async () => ({ data: { ok: true, activity: panelSafeActivity({ endTime: ++reads === 1 ? end - 2 : end }) } }));
+    await cancelled.store.fetchWishActivity('acc-1');
+    const old = cancelled.created[0];
+    await cancelled.store.fetchWishActivity('acc-1');
+    const current = cancelled.created[1];
+    cancelled.setNow((end - 2) * 1000);
+    cancelled.deliver(old);
+    assert.equal(cancelled.timers.has(current), true, '作废旧回调不篡改新计时所有权');
+    cancelled.store.cancelActivityReads();
+    assert.equal(cancelled.timers.size, 0, '作废旧回调后取消仍实际 clearTimeout 新计时');
+    cancelled.setNow(end * 1000 - 1);
+    cancelled.deliver(current);
+    assert.equal(cancelled.created.length, 2, '卸载作废后的早到回调零重排');
+    assert.equal(cancelled.store.activityRetired.wish, null);
+    assert.equal(cancelled.api.calls.get.length, 2);
+    assert.equal(cancelled.api.calls.post.length, 0);
+  }
+  finally { cancelled.close(); }
+});
+
+test('远期有效截止定时延迟限制为 Node 最大值，截断回调只单次重排；未知截止零计时', async () => {
+  const h = expiryClockHarness();
+  try {
+    const maxDelay = 2_147_483_647;
+    const end = h.now() / 1000 + 80 * 86400;
+    h.api.setGet(async () => ({ data: { ok: true, activity: panelSafeActivity({ endTime: end }) } }));
+    await h.store.fetchWishActivity('acc-1');
+    assert.equal(h.created.length, 1);
+    assert.equal(h.created[0].delay, maxDelay, '远期截止不能被 Node 截成 1ms');
+    let deliveries = 0;
+    while (h.now() < end * 1000) {
+      assert.equal(h.timers.size, 1);
+      const timer = [...h.timers.keys()][0];
+      assert.ok(timer.delay > 0 && timer.delay <= maxDelay);
+      h.setNow(h.now() + timer.delay);
+      h.deliver(timer);
+      deliveries++;
+      assert.equal(h.created.length, Math.min(deliveries + 1, 4), '每次截断只重排一个未来计时');
+      assert.ok(deliveries <= 4, '80日截止分段调度有界，不形成即时自旋');
+    }
+    assert.equal(deliveries, 4);
+    assert.equal(h.store.activityRetired.wish?.reason, 'expired');
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.api.calls.get.length, 1);
+    assert.equal(h.api.calls.post.length, 0);
+  }
+  finally { h.close(); }
+  for (const endTime of [undefined, 0, -1, Number.NaN]) {
+    const unknown = expiryClockHarness();
+    try {
+      unknown.api.setGet(async () => ({ data: { ok: true, activity: panelSafeActivity({ endTime }) } }));
+      await unknown.store.fetchWishActivity('acc-1');
+      assert.equal(unknown.created.length, 0, '未知截止不猜测或安排计时');
+      assert.equal(unknown.store.activityRetired.wish, null);
+      assert.equal(unknown.api.calls.get.length, 1);
+      assert.equal(unknown.api.calls.post.length, 0);
+    }
+    finally { unknown.close(); }
+  }
 });
 
 test('收起活动管理不读取；展开后每个选中活动恰好一次读取零写，收起彻底移除旧名称与按钮', async () => {

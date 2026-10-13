@@ -11,6 +11,11 @@ const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, randomDelay } = require('../utils/utils');
 const { getInteractRecords } = require('./interact');
+const {
+    getGovernedRejectionInfo,
+    getGovernedWarnLifecycleSeq,
+    noteGovernedWarn,
+} = require('./governed-warn-aggregation');
 
 // ===== Constants =====
 const QQ_FRIEND_LIST_BATCH_SIZE = 35;
@@ -293,7 +298,7 @@ function getEffectiveKnownQqFriendGids() {
  * On first login, seed known friend GIDs from recent visitor records.
  * Only runs once per session.
  */
-async function syncKnownFriendGidsFromRecentVisitorsOnce() {
+async function syncKnownFriendGidsFromRecentVisitorsOnce(obs = null) {
   if (hasInitializedFromVisitors) return getEffectiveKnownQqFriendGids();
 
   const accountId = process.env.FARM_ACCOUNT_ID || '';
@@ -359,6 +364,8 @@ async function syncKnownFriendGidsFromRecentVisitorsOnce() {
     return getEffectiveKnownQqFriendGids();
   } catch (err) {
     hasInitializedFromVisitors = true;
+    // 访客初始化吞错前先记录本次复合读取的结构化拒绝（不影响返回值）。
+    if (obs) obs.noteError(err);
     logWarn('好友', `首次获取好友GID失败: ${err.message}`, {
       module: 'friend',
       event: '首次获取好友GID',
@@ -496,8 +503,78 @@ function handleFriendEnterError(gid, friendName, error) {
 
 // ===== QQ friend APIs =====
 
+// ===== 复合读取独立观测（2026-10-13 预算自旋收口）=====
+// 每次 getAllFriends 建立一次性观测闭包：只记录本次复合调用是否遇到
+// 结构化预算拒绝、是否部分结果（QQ 分批有批次被吞错）、内部逻辑尝试
+// 次数，并在唯一出口（成功/失败/编码前失败）恰好报告一次。观察回调
+// 异常不得改变业务结果；返回形状、部分成功、内部尝试顺序与错误文案
+// 全部保持。治理拒绝的识别只认 network.js 唯一构造点的结构化标记，
+// 不做文案匹配。
+function createFriendReadObservation() {
+  const rebuiltErrors = new WeakSet();
+  const state = {
+    attempts: 0,              // 内部逻辑读取尝试（分批/兜底/直连各计一次）
+    governedRejection: false, // 本次复合调用遇到过结构化预算拒绝
+    governedReasons: new Set(),
+    ordinaryFailure: false,
+    partial: false,           // QQ 分批有批次被吞错（结果可能遗漏目标）
+    originSeq: getGovernedWarnLifecycleSeq(), // 发起时的警告聚合代次
+    reported: false,
+  };
+  return {
+    state,
+    noteTry() { state.attempts += 1; },
+    markGoverned(err) {
+      const info = getGovernedRejectionInfo(err);
+      if (info) {
+        state.governedRejection = true;
+        state.governedReasons.add(info.reason);
+      }
+      return info;
+    },
+    noteError(err) {
+      const info = this.markGoverned(err);
+      if (!info) state.ordinaryFailure = true;
+      return info;
+    },
+    rebuiltError(err) {
+      rebuiltErrors.add(err);
+      return err;
+    },
+    noteExitError(err) {
+      if (err && typeof err === 'object' && rebuiltErrors.has(err)) return;
+      this.noteError(err);
+    },
+    markPartial() { state.partial = true; },
+    finish(ok, observer) {
+      if (typeof observer !== 'function' || state.reported) return;
+      state.reported = true;
+      try {
+        observer({
+          ok,
+          governedRejection: state.governedRejection,
+          governedReasons: [...state.governedReasons],
+          ordinaryFailure: state.ordinaryFailure,
+          partial: state.partial,
+          attempts: state.attempts,
+        });
+      } catch { /* 观察回调异常不影响业务结果 */ }
+    },
+  };
+}
+
+/** QQ 分批 catch 的治理拦截警告聚合接线（固定入口之一）。 */
+function wireGovernedBatchWarn(obs, err) {
+  const info = obs ? obs.noteError(err) : getGovernedRejectionInfo(err);
+  if (!info) return false; // 非治理错误：保留原 logWarn
+  const outcome = noteGovernedWarn('qq_batch', info.reason, {
+    seq: obs ? obs.state.originSeq : getGovernedWarnLifecycleSeq(),
+  });
+  return outcome.handled; // 聚合已处理（含旧代次静默）时不再逐条落盘
+}
+
 /** Fetch QQ friends by batch-requesting known GIDs via GetGameFriends. */
-async function fetchQqFriendsByKnownGids() {
+async function fetchQqFriendsByKnownGids(obs = null) {
   if (!types.GetGameFriendsRequest || !types.GetAllFriendsReply) {
     throw new Error('GetGameFriends 接口类型未加载');
   }
@@ -513,6 +590,7 @@ async function fetchQqFriendsByKnownGids() {
     ).finish();
 
     try {
+      if (obs) obs.noteTry();
       const { body } = await sendMsgAsync(
         'gamepb.friendpb.FriendService',
         'GetGameFriends',
@@ -521,16 +599,19 @@ async function fetchQqFriendsByKnownGids() {
       const reply = types.GetAllFriendsReply.decode(body);
       allFriends.push(...extractReplyFriends(reply));
     } catch (err) {
-      logWarn('好友',
-        `QQ 新好友接口分批请求失败(${i + 1}-${i + batch.length}/${gids.length}): ${err.message}`,
-        {
-          module: 'friend',
-          event: '好友列表接口',
-          result: 'error',
-          method: 'GetGameFriends',
-          batchSize: batch.length,
-        }
-      );
+      if (!wireGovernedBatchWarn(obs, err)) {
+        logWarn('好友',
+          `QQ 新好友接口分批请求失败(${i + 1}-${i + batch.length}/${gids.length}): ${err.message}`,
+          {
+            module: 'friend',
+            event: '好友列表接口',
+            result: 'error',
+            method: 'GetGameFriends',
+            batchSize: batch.length,
+          }
+        );
+      }
+      if (obs) obs.markPartial();
     }
 
     if (i + QQ_FRIEND_LIST_BATCH_SIZE < gids.length) {
@@ -542,7 +623,7 @@ async function fetchQqFriendsByKnownGids() {
 }
 
 /** Fetch QQ friends via legacy methods: SyncAll first, then GetAll as fallback. */
-async function fetchQqFriendsByLegacyMethod() {
+async function fetchQqFriendsByLegacyMethod(obs = null) {
   const errors = [];
 
   // Try SyncAll
@@ -552,6 +633,7 @@ async function fetchQqFriendsByLegacyMethod() {
     if (!SyncAllReq || !SyncAllRep) throw new Error('SyncAll 接口类型未加载');
 
     const payload = SyncAllReq.encode(SyncAllReq.create({ open_ids: [] })).finish();
+    if (obs) obs.noteTry();
     const { body } = await sendMsgAsync(
       'gamepb.friendpb.FriendService',
       'SyncAll',
@@ -559,6 +641,8 @@ async function fetchQqFriendsByLegacyMethod() {
     );
     return extractReplyFriends(SyncAllRep.decode(body));
   } catch (err) {
+    // 错误以 ' | ' 重组后会丢失结构化标记：先在本次复合读取的观测里记录。
+    if (obs) obs.noteError(err);
     errors.push(`SyncAll: ${err.message}`);
   }
 
@@ -570,6 +654,7 @@ async function fetchQqFriendsByLegacyMethod() {
     const payload = types.GetAllFriendsRequest.encode(
       types.GetAllFriendsRequest.create({})
     ).finish();
+    if (obs) obs.noteTry();
     const { body } = await sendMsgAsync(
       'gamepb.friendpb.FriendService',
       'GetAll',
@@ -577,10 +662,12 @@ async function fetchQqFriendsByLegacyMethod() {
     );
     return extractReplyFriends(types.GetAllFriendsReply.decode(body));
   } catch (err) {
+    if (obs) obs.noteError(err);
     errors.push(`GetAll: ${err.message}`);
   }
 
-  throw new Error(errors.join(' | '));
+  const err = new Error(errors.join(' | '));
+  throw obs ? obs.rebuiltError(err) : err;
 }
 
 // ===== 好友名册只读快照（2026-09-26 全好友观察层消费）=====
@@ -633,16 +720,37 @@ function getRosterSnapshot() {
 /**
  * Get all friends. For QQ platform, try GetGameFriends first (with known GIDs),
  * then fall back to legacy methods. For WeChat, use GetAll directly.
+ * 可选末参 observer：本次复合读取的独立观测回调，恰好报告一次
+ * { ok, governedRejection, governedReasons, ordinaryFailure, partial, attempts }。
+ * 回调异常不影响业务。
+ * 原参数与返回形状不变，既有调用方零变化。
  */
-async function getAllFriends(_forceRefresh = false) {
+async function getAllFriends(_forceRefresh = false, observer = null) {
   const reqSeq = ++rosterReqSeq; // 本请求序号；仅成功出口可发布快照
+  const obs = createFriendReadObservation();
+  let ok = false;
+  try {
+    const reply = await getAllFriendsObserved(reqSeq, obs);
+    ok = true;
+    return reply;
+  } catch (err) {
+    // 兜底：直达出口的原始错误（微信直连/编码前守卫）在此补记结构化标记；
+    // 错误对象原样抛出，文案与类型不变。
+    obs.noteExitError(err);
+    throw err;
+  } finally {
+    obs.finish(ok, observer);
+  }
+}
+
+async function getAllFriendsObserved(reqSeq, obs) {
   const isQQ = CONFIG.platform === 'qq';
 
   if (isQQ) {
-    await syncKnownFriendGidsFromRecentVisitorsOnce();
+    await syncKnownFriendGidsFromRecentVisitorsOnce(obs);
 
     // Try new API first
-    const knownFriends = await fetchQqFriendsByKnownGids();
+    const knownFriends = await fetchQqFriendsByKnownGids(obs);
     if (knownFriends.length > 0) {
       syncKnownFriendGidsFromFriends(knownFriends);
       recordRosterReply(knownFriends, reqSeq);
@@ -651,7 +759,7 @@ async function getAllFriends(_forceRefresh = false) {
 
     // Fallback to legacy methods
     try {
-      const fallbackFriends = dedupeFriendsByGid(await fetchQqFriendsByLegacyMethod());
+      const fallbackFriends = dedupeFriendsByGid(await fetchQqFriendsByLegacyMethod(obs));
       if (fallbackFriends.length > 0) {
         syncKnownFriendGidsFromFriends(fallbackFriends);
       } else if (getEffectiveKnownQqFriendGids().length === 0) {
@@ -668,9 +776,9 @@ async function getAllFriends(_forceRefresh = false) {
       return buildFriendReply(fallbackFriends);
     } catch (err) {
       if (getEffectiveKnownQqFriendGids().length === 0) {
-        throw new Error(
+        throw obs.rebuiltError(new Error(
           `QQ 好友列表获取失败，请先在好友页维护已知好友 GID 列表。${err.message}`
-        );
+        ));
       }
       throw err;
     }
@@ -685,6 +793,7 @@ async function getAllFriends(_forceRefresh = false) {
   const payload = types.GetAllFriendsRequest.encode(
     types.GetAllFriendsRequest.create({})
   ).finish();
+  obs.noteTry();
   const { body } = await sendMsgAsync(
     'gamepb.friendpb.FriendService',
     'GetAll',

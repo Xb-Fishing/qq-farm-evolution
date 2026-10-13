@@ -3,6 +3,11 @@ const { getPlantById } = require('../config/gameConfig');
 const { getPlantBlacklist, isAutomationOn } = require('../models/store');
 const { getUserState } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, sleep } = require('../utils/utils');
+const {
+    getGovernedRejectionInfo,
+    getGovernedWarnLifecycleSeq,
+    noteGovernedWarn,
+} = require('./governed-warn-aggregation');
 const { stealIsDue } = require('../utils/behavior');
 const { recordOperation } = require('./stats');
 const { recordEvent } = require('./daily-events');
@@ -83,6 +88,23 @@ function settleWatchlistEnter(attempt, err) {
     if (err) orchestrator.applyWatchlistEnterError(attempt, err);
     else orchestrator.applyWatchlistEnterSuccess(attempt);
   } catch { /* 记账失败不影响进门主流程 */ }
+}
+
+// ===== 治理拦截警告聚合接线（2026-10-13 预算自旋收口）=====
+// 四个既有进门 catch 是固定聚合入口（enter_visit/enter_steal/enter_help/
+// enter_autobad）：结构化预算拒绝走有界聚合（首条立即、突发内每签名
+// 60 秒至多一条计数行），非治理错误与非白名单情形保留原 logWarn 原样。
+// 代次在访问函数入口捕获：生命周期复位后的迟到旧代次不占新窗口。
+function captureGovernedWarnSeq() {
+  return getGovernedWarnLifecycleSeq();
+}
+
+/** 返回 true = 聚合已处理（含旧代次静默），调用方跳过原 logWarn。 */
+function wireGovernedEnterWarn(entry, err, originSeq) {
+  const info = getGovernedRejectionInfo(err);
+  if (!info) return false;
+  const outcome = noteGovernedWarn(entry, info.reason, { seq: originSeq });
+  return outcome.handled;
 }
 
 // ===== Single friend operation =====
@@ -331,6 +353,7 @@ async function doFriendOperation(gid, opType) {
  */
 async function visitFriend(friend, tally, myGid, accountId) {
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   let enterReply;
 
   // Enter friend's farm
@@ -345,13 +368,15 @@ async function visitFriend(friend, tally, myGid, accountId) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { acted: false, entered: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_visit', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { acted: false, entered: false };
   }
 
@@ -690,6 +715,7 @@ async function maybeLurkLeave(gid) {
 
 async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}) {
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   const preEnter = options && options.preEnter && Number(options.preEnter.gid) === Number(gid)
     ? options.preEnter
     : null;
@@ -723,13 +749,15 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
         if (handled.kind === 'blacklist') unwatchFriend(gid);
         return { acted: false, entered: false, enterOutcome, enterEpoch };
       }
-      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-        module: 'friend',
-        event: '进入农场',
-        result: 'error',
-        friendName: name,
-        friendGid: gid,
-      });
+      if (!wireGovernedEnterWarn('enter_steal', err, govWarnSeq)) {
+        logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+          module: 'friend',
+          event: '进入农场',
+          result: 'error',
+          friendName: name,
+          friendGid: gid,
+        });
+      }
       return { acted: false, entered: false, enterOutcome, enterEpoch };
     }
   }
@@ -876,6 +904,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimit = false, expLimitMode = false) {
   if (stealIsDue()) return { acted: false, entered: false };
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   const expLimitEnabled = !!isAutomationOn('friend_help_exp_limit');
   const checkExpLimit = expLimitEnabled && !ignoreExpLimit;
   const hasGuardDog = !!friend.hasGuardDog;
@@ -899,13 +928,15 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { acted: false, entered: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_help', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { acted: false, entered: false };
   }
 
@@ -1131,6 +1162,7 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
   const allowPlace = options.allowPlace !== false;
   const guard = options.guard || null;
   const impl = options.impl || {};
+  const govWarnSeq = captureGovernedWarnSeq();
 
   const enter = impl.enter || enterFriendFarm;
   const leave = impl.leave || leaveFriendFarm;
@@ -1148,13 +1180,15 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_autobad', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
   }
 

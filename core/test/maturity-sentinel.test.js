@@ -169,7 +169,7 @@ test('unified scheduler has no global breaker branch that postpones all work', (
 test('a successful friend visit clears only that friend cached due clock', () => {
   assert.match(friendSrc, /const friendSummaryDueByGid = new Map\(\)/);
   assert.match(friendSrc, /friendSummaryDueByGid\.delete\(id\)/);
-  assert.match(friendSrc, /applyStealVisitResult\(target\.gid, result\)/);
+  assert.match(friendSrc, /applyStealVisitResult\(target\.gid, result(?:, Date\.now\(\), \{ lifecycleSeq: (?:seq|roundSeq|visitSeq) \})?\)/);
   assert.match(friendSrc, /cachedDueWithinGrace\(dueAt, now, STEAL_OVERDUE_GRACE_MS\)/);
 });
 
@@ -178,7 +178,7 @@ test('already-read ordinary friend lands join the steal clock and arm direct PRE
   assert.match(friendSrc, /knownEntry\.ripeAt <= now \+ prearmMs/);
   assert.match(friendSrc, /ripeAt: knownEntry\.ripeAt,[\s\S]*mode: 'prearm'/);
   assert.match(friendVisitSrc, /return \{ acted: actionLogs\.length > 0, entered: true, ripeAtMs \}/);
-  assert.match(friendSrc, /const result = await visitFriendForHelp\([\s\S]*applyStealVisitResult\(target\.gid, result\)/);
+  assert.match(friendSrc, /const result = await visitFriendForHelp\([\s\S]*applyStealVisitResult\(target\.gid, result(?:, Date\.now\(\), \{ lifecycleSeq: roundSeq \})?\)/);
 });
 
 test('enter success with Harvest failure keeps the bounded mature retry', () => {

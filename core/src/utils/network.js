@@ -271,7 +271,14 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
         // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
         const gate = requestGovernor.checkRequest(serviceName, methodName);
         if (!gate.allowed) {
-            reject(new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`));
+            const governedError = new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`);
+            // 结构化标记（严格布尔 + 白名单类别）：仅供本地读取观测/警告聚合识别。
+            // 不改错误文案、治理决策或发送流程；非预算拒绝不会走到这里。
+            if (GOVERNED_BUDGET_REASONS.has(gate.reason)) {
+                governedError.isGovernedRejection = true;
+                governedError.governedReason = gate.reason;
+            }
+            reject(governedError);
             return;
         }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -967,6 +974,8 @@ function stopNetwork(reason = '停止网络') {
 
 function getWs() { return ws; }
 function isConnected() { return !!(ws && ws.readyState === WebSocket.OPEN); }
+
+const GOVERNED_BUDGET_REASONS = new Set(['budget_total', 'budget_method']);
 function getAceStatus() {
     if (aceService) return aceService.getStatus();
     return tsdkRuntime ? { running: false, runtime: tsdkRuntime.getStatus() } : null;
