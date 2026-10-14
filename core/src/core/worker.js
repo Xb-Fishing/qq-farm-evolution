@@ -1656,7 +1656,7 @@ async function handleApiCall(msg) {
     let error = null;
     let errorMeta = null;
 
-    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method)) {
+    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements') {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({
@@ -1854,6 +1854,11 @@ async function handleApiCall(msg) {
             case 'getActivityDiscoveryList': {
                 const { getActivityDiscoveryList } = require('../services/activity');
                 result = await getActivityDiscoveryList();
+                break;
+            }
+            case 'getOfficialAnnouncements': {
+                const { getOfficialAnnouncements } = require('../services/official-announcements');
+                result = await getOfficialAnnouncements();
                 break;
             }
             case 'getActivityGroupSnapshot': {
