@@ -1868,9 +1868,11 @@ async function handleApiCall(msg) {
             }
             case 'getMilkTeaActivity': {
                 const { getMilkTeaActivity } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
                 // 活动段入口防护：未登录就绪/连接不在位一律在触达读取前拒绝（零上游）
                 result = await getMilkTeaActivity({
-                    deps: { isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
+                    includeGameplay: true,
+                    deps: { getBag, getBagItems, isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
                 });
                 break;
             }

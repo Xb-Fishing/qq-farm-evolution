@@ -104,7 +104,7 @@ function fail(code, message) { throw businessError(code, message); }
 
 function str64(value) { return String(value == null ? '' : value); }
 function num64(value) { return Number(value) || 0; }
-function inputNumber(value) { return (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) ? Number(value) : NaN; }
+function inputNumber(value) { return (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) ? Number(value) : Number.NaN; }
 function list(value) { return Array.isArray(value) ? value : []; }
 function trimTo(value, max) { return String(value == null ? '' : value).trim().slice(0, max); }
 
@@ -266,7 +266,7 @@ function timingOf(snapshot, now) {
   };
 }
 
-function assertActionPhase(action, timing, now) {
+function assertActionPhase(action, timing, _now) {
   if (timing.phase === 'ended') {
     fail('SEASON_WISH_MILK_TEA_ENDED', `奶茶热销中已过最终截止时间，停止该操作`);
   }
@@ -425,10 +425,6 @@ function confirmedCostsMatch(confirmed, totals) {
   return seen.size === 0;
 }
 
-function costsDto(totals) {
-  return [...totals.entries()].map(([itemId, count]) => ({ itemId: Number(itemId), count: count.toString() }));
-}
-
 function shopNameValid(name) {
   const trimmed = String(name == null ? '' : name).trim();
   const min = toNum(CONFIG.shopName.minLength) || 2;
@@ -480,6 +476,14 @@ function buildMilkTeaOverview(snapshot, inventory, now) {
 }
 
 async function getMilkTeaActivity(options = {}) {
+  if (options.includeGameplay !== true) return readMilkTeaOverview(options);
+  const lease = acquireLease();
+  if (!lease) fail('SEASON_WISH_MILK_TEA_BUSY', '奶茶查询/操作进行中，请稍后再试（不排队）');
+  try { return await readMilkTeaOverview(options); }
+  finally { releaseLease(lease); }
+}
+
+async function readMilkTeaOverview(options = {}) {
   // 时间一律取「当前」值：入口与每个 await 之后分别重算，不用 await 前的旧值
   const nowSec = () => (typeof options.now === 'function'
     ? Math.floor(options.now() / 1000)
@@ -528,6 +532,11 @@ async function getMilkTeaActivity(options = {}) {
   }
   const overview = buildMilkTeaOverview(snapshot, inventory, nowSec());
   recordEndedEvidence(overview.timing, overview);
+  if (options.includeGameplay === true && overview.timing.phase !== 'ended') {
+    overview.gameplay = await readInitialGameplay(overview, snapshot, options.deps || {}, context, nowSec);
+    overview.timing = timingOf(snapshot, nowSec());
+    recordEndedEvidence(overview.timing, overview);
+  }
   log('活动', '奶茶热销中只读状态刷新', {
     module: 'activity',
     event: 'milk_tea_activity_read',
@@ -538,6 +547,67 @@ async function getMilkTeaActivity(options = {}) {
     inventoryAvailable: overview.inventory.available,
   });
   return overview;
+}
+
+// The core first-page read is a single bounded batch, not an automatic action loop.
+async function readInitialGameplay(overview, snapshot, deps, context, nowSec) {
+  const names = { shop: '店铺', workshop: '工坊', work: '工作' };
+  const result = {};
+  const recheck = () => {
+    assertConnectionOwned(deps, context);
+    const phase = timingOf(snapshot, nowSec()).phase;
+    if (phase === 'ended') fail('SEASON_WISH_MILK_TEA_ENDED', '奶茶活动已结束，停止后续状态读取');
+    if (phase === 'beforeStart') fail('SEASON_WISH_MILK_TEA_NOT_STARTED', '奶茶活动尚未开始，停止后续状态读取');
+  };
+  for (const kind of ['shop', 'workshop', 'work']) {
+    if (!overview.summary || !(overview.summary.shopOpenAt > 0)) {
+      result[kind] = { available: false, data: null, error: overview.summary ? '' : '店铺摘要读取失败，请刷新重试',
+        ...(overview.summary ? { state: 'not_open' } : {}) };
+      continue;
+    }
+    recheck();
+    try {
+      const data = await readMilkTeaQueryData(kind, {}, snapshot, deps, context, recheck);
+      recheck();
+      if (!data || typeof data !== 'object' || !Object.keys(data).length) throw new Error('empty_gameplay_reply');
+      result[kind] = { available: true, data, error: '' };
+    } catch (error) {
+      recheck();
+      if (error?.business === true) throw error;
+      result[kind] = { available: false, data: null, error: `${names[kind]}状态读取失败，请刷新或点击查询重试` };
+    }
+  }
+  return result;
+}
+
+async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck) {
+  const operation = OPERATIONS[QUERY_KINDS[kind]];
+  const reply = await operateMilkTeaRequest(operation, operateParams, deps, context);
+  recheck(snapshot);
+  const selector = operation[2];
+  const rsp = selector ? reply[selector] : null;
+  if (!rsp) {
+    // 回包缺结果体：读路径普通错误（读无副作用，不标 business，不重试）
+    const err = new Error('奶茶查询响应缺少预期结果');
+    err.code = 'SEASON_WISH_MILK_TEA_REPLY_MISMATCH';
+    throw err;
+  }
+  const data = kind === 'shop' ? shopViewDto(rsp.shop)
+    : kind === 'hireList' ? hireListDto(rsp)
+      : kind === 'workshop' ? workshopDto(rsp)
+        : kind === 'work' ? workPageDto(rsp)
+          : kind === 'rank' ? rankDto(rsp)
+            : salesLogDto(rsp);
+  if (kind === 'workshop' && data && typeof deps.getBag === 'function' && typeof deps.getBagItems === 'function') {
+    const bag = await deps.getBag();
+    recheck(snapshot);
+    const fruitIds = new Set(CONFIG.recipes.map(row => row.fruitItemId).filter(Boolean));
+    data.fruits = list(deps.getBagItems(bag)).filter(item => fruitIds.has(num64(item.id))).slice(0, 100).map(item => ({
+      uid: str64(item.uid), itemId: num64(item.id), name: getItemById(num64(item.id))?.name || '果实',
+      count: str64(item.count), locked: item.locked === true || item.is_locked === true,
+    }));
+  }
+  return data;
 }
 
 // ---------- 显式查询（shop/hireList/workshop/work/rank/sales；用户点击才发） ----------
@@ -794,32 +864,7 @@ async function queryMilkTeaActivity(kind, params = {}, deps = {}) {
       }
       // day 缺省：按服务端默认（今日）读取一次，不枚举、不翻页
     }
-    const operation = OPERATIONS[QUERY_KINDS[kind]];
-    const reply = await operateMilkTeaRequest(operation, operateParams, deps, context);
-    recheck(snapshot);
-    const selector = operation[2];
-    const rsp = selector ? reply[selector] : null;
-    if (!rsp) {
-      // 回包缺结果体：读路径普通错误（读无副作用，不标 business，不重试）
-      const err = new Error('奶茶查询响应缺少预期结果');
-      err.code = 'SEASON_WISH_MILK_TEA_REPLY_MISMATCH';
-      throw err;
-    }
-    const data = kind === 'shop' ? shopViewDto(rsp.shop)
-      : kind === 'hireList' ? hireListDto(rsp)
-        : kind === 'workshop' ? workshopDto(rsp)
-          : kind === 'work' ? workPageDto(rsp)
-            : kind === 'rank' ? rankDto(rsp)
-              : salesLogDto(rsp);
-    if (kind === 'workshop' && data && typeof deps.getBag === 'function' && typeof deps.getBagItems === 'function') {
-      const bag = await deps.getBag();
-      recheck(snapshot);
-      const fruitIds = new Set(CONFIG.recipes.map(row => row.fruitItemId).filter(Boolean));
-      data.fruits = list(deps.getBagItems(bag)).filter(item => fruitIds.has(num64(item.id))).slice(0, 100).map(item => ({
-        uid: str64(item.uid), itemId: num64(item.id), name: getItemById(num64(item.id))?.name || '果实',
-        count: str64(item.count), locked: item.locked === true || item.is_locked === true,
-      }));
-    }
+    const data = await readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck);
     log('活动', '奶茶显式查询完成', {
       module: 'activity', event: 'milk_tea_query', kind, result: 'ok',
     });
@@ -904,7 +949,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
         // 写前的固定拒绝（连接/就绪/编码前校验，business）原样抛出；写请求已发出
         // 之后的传输失败/解码失败/回显不匹配 = 结果未知（可能已执行），不自动重试
         if (err && err.business === true) throw err;
-        throw { unknown: true, err };
+        throw Object.assign(new Error('奶茶操作结果未知'), { unknown: true, err });
       }
     };
     // 读侧 Operate（写前前置校验用的查询）也要在每个 await 后复查连接与相位

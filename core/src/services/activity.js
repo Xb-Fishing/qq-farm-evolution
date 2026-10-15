@@ -3411,6 +3411,7 @@ module.exports = {
   normalizeCoreItem,
   getActivityDiscoveryList,
   getActivityGroupSnapshot,
+  getBagItemCounts,
   normalizeDiscoveryActivity,
   summarizeActivityProtocolShape,
   normalizeWeatherActivity,

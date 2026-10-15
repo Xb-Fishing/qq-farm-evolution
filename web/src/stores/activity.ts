@@ -631,6 +631,12 @@ export interface MilkTeaActivityData {
   exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchasedCount?: number, diamondCostCount?: number }> }
   growthFund?: { unlocked?: boolean, tiers?: Array<{ tierId?: number, state?: number, conditions?: Array<{ reached?: boolean }>, reward?: MilkTeaItem[] }> }
   shareReward?: MilkTeaShareReward
+  gameplay?: Partial<Record<'shop' | 'workshop' | 'work', {
+    available: boolean
+    data: Record<string, any> | null
+    error: string
+    state?: 'not_open'
+  }>>
 }
 export type MilkTeaQueryKind = 'shop' | 'hireList' | 'workshop' | 'work' | 'rank' | 'sales'
 export interface MilkTeaQueryState { data: Record<string, any> | null, loading: boolean, error: string }
@@ -847,6 +853,8 @@ export const useActivityStore = defineStore('activity', () => {
       return { ok: false, retired: true, error: '活动已结束' }
     const requestedId = String(accountId)
     const requestId = ++milkTeaRequestId
+    const initialQueryIds = { ...milkTeaQueryIds }
+    const initialQueryBusy = { shop: milkTeaQueries.value.shop.loading, workshop: milkTeaQueries.value.workshop.loading, work: milkTeaQueries.value.work.loading }
     milkTeaLoading.value = true
     milkTeaError.value = ''
     try {
@@ -877,6 +885,21 @@ export const useActivityStore = defineStore('activity', () => {
           activityRetired.value.milkTea = null
         }
         milkTeaActivity.value = activity
+        // The first-page GET includes one bounded batch of the three core views.
+        // A manual query begun before/during this GET retains its own ownership.
+        for (const kind of ['shop', 'workshop', 'work'] as const) {
+          const entry = activity?.gameplay?.[kind]
+          if (!entry || initialQueryBusy[kind] || initialQueryIds[kind] !== milkTeaQueryIds[kind])
+            continue
+          const valid = entry.available === true && entry.data && typeof entry.data === 'object'
+            && !Array.isArray(entry.data) && Object.keys(entry.data).length > 0
+          if (valid)
+            milkTeaQueries.value[kind] = { data: entry.data, loading: false, error: '' }
+          else if (entry.state === 'not_open')
+            milkTeaQueries.value[kind] = { data: null, loading: false, error: '' }
+          else
+            milkTeaQueries.value[kind] = { ...milkTeaQueries.value[kind], loading: false, error: entry.error || '玩法状态读取失败，请刷新重试' }
+        }
         if (end)
           scheduleExpiry('milkTea', end)
         else
