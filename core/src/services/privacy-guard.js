@@ -216,6 +216,9 @@ function auditGitRange(repoRoot, base, head, options = {}) {
     'web/src/utils/daily-feedback.ts',
     'core/src/services/evolution-team.js',
     'core/scripts/run-evolution-team.js',
+    'core/src/services/evolution-main-workflow.js',
+    'core/src/services/evolution-main-mcp.js',
+    'core/scripts/run-evolution-main-mcp.js',
     'scripts/evolution-hooks/pre-push',
     // 2026-10-07 R6 owner 授权新增（仅此两条路径，不放宽任何扫描/豁免）：
     // worktree 指纹与原生会话登记是完整性控制面，提交面出现即报 privacy-control-changed。
