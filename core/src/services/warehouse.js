@@ -497,8 +497,10 @@ async function getBagDetail() {
     else if (getPlantByFruitId(id)) {
       if (!name) name = `${getFruitName(id)  }果实`;
       category = 'fruit';
-    } else if (Number(info && info.type) === 4) {
+    } else if (Number(info && info.type) === 4 || Number(info && info.type) === 17) {
       // 活动产出物可能尚未进入 Plant.json，但活动回包已确认它是果实/产出物。
+      // type 17 = 已登记黄金果实（官方提取 type 语义，如无本地 Plant 映射的
+      // 1040525）；仅影响展示分类，不构成 isFruitItemId 的自动出售资格。
       category = 'fruit';
     } else if (seedPlant || isSeedItem(id) || isActivitySeedInfo(info) || serverShowName.endsWith('种子')) {
       if (!name) name = `${seedPlant?.name || serverShowName.replace(/种子$/, '') || '未知'}种子`;

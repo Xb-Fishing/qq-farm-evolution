@@ -444,5 +444,13 @@
     "rarity_color": "D1A21E",
     "desc": "种植后，可以收获一定数量的森野黄金芽（四格作物）。",
     "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；公开 Plant 1029005 size=2 四格仅公开配置单源，本机无土地证据，EventPlants 暂不登记、plantSize 保持 0 待证"
+  },
+  {
+    "id": 1040525,
+    "name": "黄金·森野甜莓",
+    "type": 17,
+    "asset_name": "gold/Crop_525",
+    "sells": "1005:3",
+    "evidence": "公开参考系官方提取 ItemInfo 1040525（type 17、gold/Crop_525、sells 1005:3；固定 SHA 见 client-config-evidence/sources.json）+ 本机 Bag 实际出现（bag_unclassified_item 复盘登记，未分类清单仅剩此条）+ 现成官方公告正文交叉；Plant 1120525 黄金·森野甜莓 fruit 1040525×10、seed null 仅作类型交叉，不进植物表；2026-10-15 奶茶活动轮登记；黄金判定来自官方提取与真实 Bag 双源（非 ID 段规律）；果实专属图待官方资源证据，缺图为空不以其他道具图顶替；sells 1005:3 金豆豆为该活动特例（常规黄金 1005:6）"
   }
 ]
