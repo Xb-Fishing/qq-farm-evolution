@@ -321,5 +321,128 @@
     "asset_name": "gold/Crop_1072",
     "sells": "1005:6",
     "evidence": "client-config-evidence ItemInfo 快照 1041072（type 17、gold/Crop_1072、sells 1005:6、level 200）+ Plant 1121072 黄金·寒兰 fruit 1041072×10 交叉；与 1041625/1040435 黄金变异同族同模式（非 ID 段规律）"
+  },
+  {
+    "id": 1041,
+    "name": "奶茶券",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s4_ticket/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "S4 奶茶热销中活动货币，出售奶茶与结算可获得；营业期结束后可按规则折算。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记"
+  },
+  {
+    "id": 1042,
+    "name": "宣传喇叭",
+    "type": 19,
+    "icon_res": "gui/texture/icon/icon_s4_boost/spriteFrame",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "S4 奶茶热销中活动道具，使用后立即获得店铺基础热卖值对应的 1 小时销售收益。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记"
+  },
+  {
+    "id": 210048,
+    "name": "人气招牌装饰",
+    "type": 32,
+    "desc": "S4 快乐值档位奖励的专属小屋部件（快乐值 60 档）。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替"
+  },
+  {
+    "id": 40525,
+    "name": "森野甜莓",
+    "type": 4,
+    "desc": "S4 奶茶活动果实，可在奶茶工坊加工为甜莓奶茶。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；Plant 1020525→fruit 40525 映射 + 本机 Bag 实际出现（bag_unclassified_item 复盘登记）；果实专属图待官方资源证据；本地 EventItems type 4 表示背包果实，官方 type 18 保留为 official_type",
+    "official_type": 18
+  },
+  {
+    "id": 20525,
+    "name": "森野甜莓种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_525",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野甜莓。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 20526,
+    "name": "森野白桃种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_526",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野白桃。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 20527,
+    "name": "森野甜橙种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_527",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野甜橙。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 20528,
+    "name": "森野红柚种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_528",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野红柚。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 20021,
+    "name": "森野可可豆种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_21",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野可可豆。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 21435,
+    "name": "森野柿子种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_1435",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野柿子。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 20529,
+    "name": "森野芭乐种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_529",
+    "rarity": 3,
+    "rarity_color": "B09DED",
+    "desc": "种植后，可以收获一定数量的森野芭乐。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+  },
+  {
+    "id": 29005,
+    "name": "森野黄金芽种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_9005",
+    "rarity": 4,
+    "rarity_color": "D1A21E",
+    "desc": "种植后，可以收获一定数量的森野黄金芽（四格作物）。",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；公开 Plant 1029005 size=2 四格仅公开配置单源，本机无土地证据，EventPlants 暂不登记、plantSize 保持 0 待证"
   }
 ]

@@ -52,6 +52,7 @@ async function performLoad() {
         getResourcePath('proto', 'activitypb.proto'),
         getResourcePath('proto', 'pet-diary.proto'),
         getResourcePath('proto', 'mysteryshoppb.proto'),
+        getResourcePath('proto', 'milk-tea.proto'),
         getResourcePath('proto', 'acepb.proto'),
         getResourcePath('proto', 'careerpb.proto'),
     ], { keepCase: true });
@@ -189,6 +190,13 @@ async function performLoad() {
     resolved.ActivityListReply = newRoot.lookupType('gamepb.activitypb.ListReply');
     resolved.ActivityStarRecordInfo = newRoot.lookupType('gamepb.activitypb.StarRecordInfo');
     resolved.ActivityStarRecordClaimResult = newRoot.lookupType('gamepb.activitypb.StarRecordClaimResult');
+    // 奶茶热销中（S4，2026110100 族）：读路径详情体与手动操作请求/回复（独立命名空间，
+    // 选择子 158-173 / 商城 101 / 快乐值 154、157 / 基金领取空参 cmd76）
+    for (const name of [
+        'MilkTeaGetGroupReply', 'MilkTeaOperateRequest', 'MilkTeaOperateReply',
+    ]) {
+        resolved[name] = newRoot.lookupType(`gamepb.milkteapb.${name}`);
+    }
 
     // 好友
     resolved.GetAllFriendsRequest = newRoot.lookupType('gamepb.friendpb.GetAllRequest');

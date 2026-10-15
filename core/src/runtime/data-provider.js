@@ -193,11 +193,13 @@ function createDataProvider(deps) {
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
-        getBearActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getBearActivity'),
-        getWishActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getWishActivity'),
-        getHappyShareActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getHappyShareActivity'),
-        operatePetDiary: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operatePetDiary', action, input),
-        operateSeasonWish: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateSeasonWish', action, input),
+        // 奶茶热销中（S4）：默认只读快照 + 显式查询 + 面板手动操作
+        getMilkTeaActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getMilkTeaActivity'),
+        queryMilkTeaActivity: (ref, kind, params) => callWorkerApi(resolveAccountId(ref), 'queryMilkTeaActivity', kind, params),
+        operateMilkTea: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMilkTea', action, input),
+        // S3 萌宠 / 秋祈良愿 / 快乐不独享已随 S4 轮换下架（2026-10-15 退役）：
+        // getBearActivity/getWishActivity/getHappyShareActivity/operatePetDiary/
+        // operateSeasonWish 转发与对应 Worker case 一并移除，旧链路不可达。
 
         // ========== Illustrated ==========
         getIllustratedList: (ref, type, level) => callWorkerApi(resolveAccountId(ref), 'getIllustratedList', type, level),

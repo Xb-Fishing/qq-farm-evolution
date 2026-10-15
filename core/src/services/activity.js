@@ -18,6 +18,9 @@ const { getBag, getBagItems } = require('./warehouse');
 const activityLogger = createModuleLogger('activity');
 const bearActivity = require('./season-bear-activity');
 const seasonWishActivities = require('./season-wish-activities');
+// 奶茶热销中（S4）只引纯标准化部分：本模块不反向依赖 activity.js 的运行期函数
+// （milk-tea-activity.js 在函数内延迟 require 本模块，避免循环依赖）。
+const milkTeaActivity = require('./milk-tea-activity');
 // 历史活动写方法只保留解析结构上下文；即使以后被误接线，也必须在发包前失败。
 const RETIRED_ACTIVITY_WRITES_DISABLED = true;
 
@@ -401,6 +404,17 @@ async function getActivityGroupSnapshot(activityId, uid = '', options = {}) {
   // 需要二次解码的服务内调用方（萌宠一键领取资格）通过 onRawBody 私有回调就地消费。
   if (typeof options?.onRawBody === 'function') {
     options.onRawBody(reply?.__rawBody ? Buffer.from(reply.__rawBody) : null);
+  }
+  // 奶茶根（S4 2026110100）：专用解码器就地消费原始回包，把 121 店铺摘要 /
+  // 102 商城富解析（限购/费用/条件）/ 122 成长基金合并进子节点 details；
+  // 快乐值 120 由通用 share_reward 解析。解码失败保持通用兜底，不额外探测。
+  if (toNum(activityId) === milkTeaActivity.MILK_TEA_ROOT_ACTIVITY_ID) {
+    try {
+      milkTeaActivity.normalizeMilkTeaDiscovery(
+        snapshot,
+        reply?.__rawBody ? Buffer.from(reply.__rawBody) : null,
+      );
+    } catch { /* 缺少专用字段时按通用兜底展示，不触发重试或探测 */ }
   }
   return {
     ...snapshot,
@@ -907,102 +921,19 @@ function normalizeCharityActivity(snapshot, options = {}) {
   };
 }
 
-async function getBearActivity(options = {}) {
-  const listReader = options.getActivityDiscoveryList || getActivityDiscoveryList;
-  const snapshotReader = options.getActivityGroupSnapshot || getActivityGroupSnapshot;
-  const inventoryReader = options.getBagItemCounts || getBagItemCounts;
-  const activities = await listReader();
-  if (!(activities || []).some(node => toNum(node.id) === bearActivity.BEAR_ACTIVITY_ID && toNum(node.parentId) === 0)) {
-    throw new Error('S3 萌宠未由当前 ActivityService.List 下发，停止读取活动详情');
-  }
-  let claimEligibility = { available: false, reason: 'S3 萌宠实时领取状态未知' };
-  const snapshot = await snapshotReader(bearActivity.BEAR_ACTIVITY_ID, '', {
-    // 一键领取资格：萌宠专用解码器在快照读取处就地消费原始回包（零额外请求），
-    // 原始字节不落到快照对象上；解码失败保持未知，前端跳过不试写。
-    onRawBody: (rawBody) => {
-      try {
-        if (rawBody) {
-          claimEligibility = bearActivity.summarizeBearClaimEligibility(
-            types.PetDiaryGetGroupReply.decode(rawBody),
-          );
-        }
-      } catch { /* 缺少可靠资格时前端只跳过并显示原因，不试写 */ }
-    },
-  });
-  if (toNum(snapshot?.id) !== bearActivity.BEAR_ACTIVITY_ID) {
-    throw new Error('S3 萌宠活动组不匹配，停止读取');
-  }
-  const shop = snapshot.children?.find(node => toNum(node.id) === bearActivity.BEAR_SHOP_ACTIVITY_ID);
-  const ids = [
-    bearActivity.BEAR_CURRENCY_ITEM_ID,
-    bearActivity.BEAR_CAKE_ITEM_ID,
-    bearActivity.BEAR_SEED_ITEM_ID,
-    bearActivity.BEAR_BASIC_CHALLENGE_ITEM_ID,
-    bearActivity.BEAR_MIDDLE_CHALLENGE_ITEM_ID,
-    bearActivity.BEAR_ADVANCED_CHALLENGE_ITEM_ID,
-    bearActivity.BEAR_TREASURE_ITEM_ID,
-    ...bearActivity.getBearObservedItemIds(snapshot),
-    ...(shop?.details?.exchangeShop?.items || []).map(item => item.itemId),
-  ];
-  let inventory = { counts: new Map(), available: false };
-  try {
-    inventory = await inventoryReader([...new Set(ids)]);
-  } catch { /* 背包失败仍展示活动说明，数量保持未知，不循环重试。 */ }
-  const activity = bearActivity.normalizeBearActivity(snapshot, {
-    ...options, counts: inventory.counts, inventoryAvailable: inventory.available,
-  });
-  // 一键领取资格已在快照读取回调里就地解码（见上方 onRawBody）；这里只挂到展示对象。
-  activity.claimEligibility = claimEligibility;
-  activityLogger.info('S3 萌宠只读状态刷新', {
-    event: 'bear_activity_read', activityId: bearActivity.BEAR_ACTIVITY_ID,
-    gameplayCount: activity.gameplayGuides.length, exchangeItemCount: activity.exchangeShop.length,
-    inventoryAvailable: activity.inventoryAvailable,
-  });
-  return activity;
+// S3 萌宠 / 秋祈良愿 / 快乐不独享已随 S4 轮换下架（2026-10-15 退役）：
+// 官方 List 不再下发，读写路由均不再注册。公开读取入口在任何读取/发包前固定拒绝，
+// 纯解析函数、proto 与脱敏测试夹具保留作历史证据；共享读取、公告与通用分享不受影响。
+function retiredSeasonActivityReader(name) {
+  // 异步固定拒绝（任何读取/发包前），调用方 assert.rejects 直接收敛
+  return async () => {
+    throw new Error(`${name}已随 S4 轮换下架退役，官方 List 不再下发，停止读取`);
+  };
 }
 
-// 秋祈良愿与快乐不独享（2026-09-24 开放）：说明驱动的只读接入。
-// 秋祈良愿开放首日 Bag 证据确认烟花互动道具为 6001（烟花桶），读取其库存；
-// 快乐不独享仍无已知道具 ID，不做背包读取。两组活动均无官方成功操作样本。
-async function getSeasonRuleActivity(kind, options = {}) {
-  const definition = kind === 'wish'
-    ? { rootId: seasonWishActivities.WISH_ACTIVITY_ID, name: '秋祈良愿', reader: seasonWishActivities.normalizeWishActivity, event: 'wish_activity_read', bagItemIds: [seasonWishActivities.WISH_FIREWORK_ITEM_ID] }
-    : { rootId: seasonWishActivities.HAPPY_SHARE_ACTIVITY_ID, name: '快乐不独享', reader: seasonWishActivities.normalizeHappyShareActivity, event: 'happy_share_activity_read', bagItemIds: [] };
-  const listReader = options.getActivityDiscoveryList || getActivityDiscoveryList;
-  const snapshotReader = options.getActivityGroupSnapshot || getActivityGroupSnapshot;
-  const inventoryReader = options.getBagItemCounts || getBagItemCounts;
-  const activities = await listReader();
-  if (!(activities || []).some(node => toNum(node.id) === definition.rootId && toNum(node.parentId) === 0)) {
-    throw new Error(`${definition.name}未由当前 ActivityService.List 下发，停止读取活动详情`);
-  }
-  const snapshot = await snapshotReader(definition.rootId, '');
-  if (toNum(snapshot?.id) !== definition.rootId) {
-    throw new Error(`${definition.name}活动组不匹配，停止读取`);
-  }
-  let counts = new Map();
-  let inventoryAvailable = false;
-  if (definition.bagItemIds.length) {
-    try {
-      const inventory = await inventoryReader([...new Set(definition.bagItemIds)]);
-      counts = inventory.counts instanceof Map ? inventory.counts : new Map();
-      inventoryAvailable = inventory.available === true;
-    } catch { /* 背包失败仍展示活动说明，数量保持未知，不循环重试。 */ }
-  }
-  const activity = definition.reader(snapshot, { ...options, counts, inventoryAvailable });
-  activityLogger.info(`${definition.name}只读状态刷新`, {
-    event: definition.event, activityId: definition.rootId,
-    gameplayCount: activity.gameplayGuides.length,
-  });
-  return activity;
-}
-
-function getWishActivity(options = {}) {
-  return getSeasonRuleActivity('wish', options);
-}
-
-function getHappyShareActivity(options = {}) {
-  return getSeasonRuleActivity('happyShare', options);
-}
+const getBearActivity = retiredSeasonActivityReader('S3 萌宠');
+const getWishActivity = retiredSeasonActivityReader('秋祈良愿');
+const getHappyShareActivity = retiredSeasonActivityReader('快乐不独享');
 
 /**
  * 操作活动
@@ -3430,6 +3361,7 @@ void [
 module.exports = {
   ...bearActivity,
   ...seasonWishActivities,
+  ...milkTeaActivity,
   getBearActivity,
   getWishActivity,
   getHappyShareActivity,

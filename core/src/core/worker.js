@@ -1866,33 +1866,38 @@ async function handleApiCall(msg) {
                 result = await getActivityGroupSnapshot(args[0], args[1]);
                 break;
             }
-            case 'getBearActivity': {
-                const { getBearActivity } = require('../services/activity');
-                result = await getBearActivity();
+            case 'getMilkTeaActivity': {
+                const { getMilkTeaActivity } = require('../services/milk-tea-activity');
+                // 活动段入口防护：未登录就绪/连接不在位一律在触达读取前拒绝（零上游）
+                result = await getMilkTeaActivity({
+                    deps: { isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
+                });
                 break;
             }
-            case 'getWishActivity': {
-                const { getWishActivity } = require('../services/activity');
-                result = await getWishActivity();
+            case 'queryMilkTeaActivity': {
+                const { queryMilkTeaActivity } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
+                result = await queryMilkTeaActivity(args[0], args[1] || {}, {
+                    getBag, getBagItems,
+                    isReady: () => loginReady && getWs()?.readyState === 1,
+                    getConnection: () => getWs(),
+                });
                 break;
             }
-            case 'getHappyShareActivity': {
-                const { getHappyShareActivity } = require('../services/activity');
-                result = await getHappyShareActivity();
+            case 'operateMilkTea': {
+                const { runManualMilkTeaAction } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
+                result = await runManualMilkTeaAction(args[0], args[1] || {}, {
+                    getBag, getBagItems,
+                    isReady: () => loginReady && getWs()?.readyState === 1,
+                    getConnection: () => getWs(),
+                });
                 break;
             }
-            case 'operatePetDiary': {
-                const { runManualPetDiaryAction } = require('../services/pet-diary-operate');
-                const { getBag } = require('../services/warehouse');
-                const { getBagItems } = require('../services/warehouse');
-                result = await runManualPetDiaryAction(args[0], args[1], { getBag, getBagItems });
-                break;
-            }
-            case 'operateSeasonWish': {
-                const { runManualSeasonWishAction } = require('../services/season-wish-operate');
-                result = await runManualSeasonWishAction(args[0], args[1]);
-                break;
-            }
+            // S3 萌宠 / 秋祈良愿 / 快乐不独享（getBearActivity/getWishActivity/
+            // getHappyShareActivity/operatePetDiary/operateSeasonWish）已随 S4 轮换
+            // 下架（2026-10-15 退役）：Worker case 与 provider 转发一并移除，
+            // 旧公开服务入口在任何读取/发包前固定拒绝。
             case 'getIllustratedList': {
                 const { getIllustratedListV2 } = require('../services/illustrated');
                 result = await getIllustratedListV2(args[0], args[1]);

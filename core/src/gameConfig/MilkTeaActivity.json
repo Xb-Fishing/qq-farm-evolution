@@ -1,0 +1,69 @@
+{
+  "comment": "奶茶热销中（S4，2026110100 族）操作校验所需的最小固定约束。只摘写前校验必需项，不整表搬运；静态配置不代替实时资格，运行时仍以服务端回包为准。",
+  "evidence": "公开血缘仓库固定提交的官方配置提取（owner/repo/SHA 只存 core/data/client-config-evidence/sources.json），与当前 ActivityService.List 下发、官方公告正文交叉核对；编码向量 evidence=official-encoder-reconstruction（两级写操作策略第①级面板手动层）。",
+  "activityIds": {
+    "root": 2026110100,
+    "main": 2026110101,
+    "shop": 2026110102,
+    "growthFund": 2026110103,
+    "happyShare": 2026110104
+  },
+  "shopName": {
+    "minLength": 2,
+    "maxLength": 8,
+    "renameLimitSec": 172800
+  },
+  "hireDurations": [
+    { "durationId": 1, "durationSec": 14400, "cost": { "itemId": 1041, "count": 40 } },
+    { "durationId": 2, "durationSec": 43200, "cost": { "itemId": 1041, "count": 130 } },
+    { "durationId": 3, "durationSec": 86400, "cost": { "itemId": 1041, "count": 270 } }
+  ],
+  "storeLevels": [
+    { "level": 1, "revenueRequired": 0, "employeeSlotCount": 1 },
+    { "level": 2, "revenueRequired": 14000, "employeeSlotCount": 1 },
+    { "level": 3, "revenueRequired": 33000, "employeeSlotCount": 2 },
+    { "level": 4, "revenueRequired": 53000, "employeeSlotCount": 2 },
+    { "level": 5, "revenueRequired": 75000, "employeeSlotCount": 2 },
+    { "level": 6, "revenueRequired": 102000, "employeeSlotCount": 2 },
+    { "level": 7, "revenueRequired": 157000, "employeeSlotCount": 2 },
+    { "level": 8, "revenueRequired": 222000, "employeeSlotCount": 2 },
+    { "level": 9, "revenueRequired": 291000, "employeeSlotCount": 2 },
+    { "level": 10, "revenueRequired": 372000, "employeeSlotCount": 2 },
+    { "level": 11, "revenueRequired": 457000, "employeeSlotCount": 2 },
+    { "level": 12, "revenueRequired": 560000, "employeeSlotCount": 2 },
+    { "level": 13, "revenueRequired": 694000, "employeeSlotCount": 2 }
+  ],
+  "recipes": [
+    { "recipeId": 1, "name": "普通奶茶", "fruitItemId": 0, "fruitCount": 0, "basePrice": { "itemId": 1041, "count": 3 } },
+    { "recipeId": 2, "name": "甜莓奶茶", "fruitItemId": 40525, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 10 } },
+    { "recipeId": 3, "name": "白桃乌龙", "fruitItemId": 40526, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 11 } },
+    { "recipeId": 4, "name": "摇摇甜橙", "fruitItemId": 40527, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 12 } },
+    { "recipeId": 5, "name": "馥香红柚", "fruitItemId": 40528, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 13 } },
+    { "recipeId": 6, "name": "厚乳可可", "fruitItemId": 40021, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 14 } },
+    { "recipeId": 7, "name": "柿柿如意", "fruitItemId": 41435, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 15 } },
+    { "recipeId": 8, "name": "芭乐冰奶", "fruitItemId": 40529, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 16 } },
+    { "recipeId": 9, "name": "金露云酪", "fruitItemId": 49005, "fruitCount": 1, "basePrice": { "itemId": 1041, "count": 45 } }
+  ],
+  "interactionTypes": [
+    { "id": 1, "name": "宣传推广" },
+    { "id": 2, "name": "花式摇杯" },
+    { "id": 3, "name": "招牌试饮" },
+    { "id": 4, "name": "划水摸鱼" },
+    { "id": 5, "name": "申请涨薪" }
+  ],
+  "cashier": {
+    "capacitySec": 172800,
+    "secPerCup": 90,
+    "boostCupsPerUse": 40,
+    "salesItemId": 1042
+  },
+  "currency": {
+    "ticketItemId": 1041,
+    "diamondItemId": 1004
+  },
+  "activitySeedItemIds": [20525, 20526, 20527, 20528, 20529, 21435, 20021, 29005],
+  "announceSettle": {
+    "startAt": 1795795200,
+    "note": "官方公告正文：北京 2026-11-15 00:00 进入结算期（营业期至 11-14 24:00）。仅在已确认奶茶根且解码 settle_start_time 缺失/无效时兜底，最终截止一律以根 endTime 为准。"
+  }
+}

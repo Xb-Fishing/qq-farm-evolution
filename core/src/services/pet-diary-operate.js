@@ -66,7 +66,11 @@ function itemDto(raw) {
 function items(value) { return list(value).filter(Boolean).map(itemDto); }
 
 /** 读活动组（GetGroup 请求类型与通用活动一致；响应用 PetDiaryGetGroupReply 解码）。 */
+// S4 轮换后已下架退役（2026-10-15）：官方 List 不再下发 S3 萌宠，路由与 Worker
+// 转发均已断开。公开读取/操作入口在任何 List/GetGroup/Operate 前固定拒绝，
+// 保留纯解析、proto 与脱敏编码向量作历史证据。
 async function readPetDiaryGroup() {
+  fail('PET_DIARY_RETIRED', '萌宠成长日记已随 S4 轮换下架退役，停止读取');
   const listRequest = types.ActivityListRequest.encode(types.ActivityListRequest.create({})).finish();
   const listed = await sendMsgAsync('gamepb.activitypb.ActivityService', 'List', listRequest);
   const entry = list(types.ActivityListReply.decode(listed.body)?.groups)
@@ -111,6 +115,7 @@ async function operatePetDiary(action, params = {}, targetId = PET_DIARY_PLAY_ID
   if (!Object.prototype.hasOwnProperty.call(OPERATIONS, action)) {
     fail('PET_DIARY_UNKNOWN_ACTION', '未知萌宠操作');
   }
+  fail('PET_DIARY_RETIRED', '萌宠成长日记已随 S4 轮换下架退役，停止操作');
   const [command, selector] = OPERATIONS[action];
   const requestInput = {
     activity_id: toLong(targetId),
@@ -171,6 +176,7 @@ function treasureCostsFromState(state) {
  */
 async function runManualPetDiaryAction(action, input, deps = {}) {
   if (!Object.hasOwn(OPERATIONS, action)) fail('PET_DIARY_UNKNOWN_ACTION', '该萌宠操作未开放');
+  fail('PET_DIARY_RETIRED', '萌宠成长日记已随 S4 轮换下架退役，停止操作');
   const getBag = deps.getBag;
   const getBagItems = deps.getBagItems;
   const { pet, seeds, shop } = await readPetDiaryGroup();
