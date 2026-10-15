@@ -589,7 +589,11 @@ async function sellAllFruits() {
     for (const item of items) {
       const id = toNum(item.id);
       const count = toNum(item.count);
-      if (isFruitItemId(id) && count > 0) {
+      const info = getItemById(id);
+      // 新核验活动植物的映射只证明作物身份；仅有活动条件售价时，
+      // 尚未具备自动出售资格，不能因补齐 Plant 就开始尝试出售。
+      const conditionalSaleOnly = info?.evidence && info.sell_cond && !info.sells;
+      if (isFruitItemId(id) && count > 0 && !conditionalSaleOnly) {
         fruits.push(item);
       }
     }
@@ -730,6 +734,8 @@ async function sellAllFruits() {
  */
 let lastUnclassifiedSignature = '';
 const lastUnclassifiedReportedIds = new Set();
+let lastFallbackSeedSignature = '';
+const lastFallbackSeedReportedIds = new Set();
 
 function getBagSeedsFromItems(items) {
   const seedMap = new Map();
@@ -812,15 +818,31 @@ function getBagSeedsFromItems(items) {
     lastUnclassifiedReportedIds.clear();
   }
 
-  if (fallbackSeedIds.length > 0) {
-    const activityOnly = fallbackSeedIds.filter(id => Boolean(getItemById(id)?.evidence));
-    log('warehouse', `bag seed fallback detection: ${fallbackSeedIds.join(',')}`, {
+  const uniqueFallbackIds = [...new Set(fallbackSeedIds)].sort((a, b) => a - b);
+  const fallbackSignature = uniqueFallbackIds.join(',');
+  if (uniqueFallbackIds.length > 0 && fallbackSignature !== lastFallbackSeedSignature) {
+    lastFallbackSeedSignature = fallbackSignature;
+    const added = uniqueFallbackIds.filter(id => !lastFallbackSeedReportedIds.has(id));
+    for (const id of uniqueFallbackIds) lastFallbackSeedReportedIds.add(id);
+    const activityOnly = uniqueFallbackIds.filter(id => Boolean(getItemById(id)?.evidence));
+    const names = uniqueFallbackIds.map(id => getItemById(id)?.name || '未知种子');
+    log('warehouse', `活动种子植物映射待补齐：${names.join('、')}`, {
       module: 'warehouse',
       event: 'bag_seed_detect',
-      result: activityOnly.length === fallbackSeedIds.length ? 'activity_seed_without_plant_mapping' : 'fallback',
-      count: fallbackSeedIds.length,
+      result: activityOnly.length === uniqueFallbackIds.length ? 'activity_seed_without_plant_mapping' : 'fallback',
+      count: uniqueFallbackIds.length,
       pendingPlantMappingIds: activityOnly,
+      fallbackSeedIds: uniqueFallbackIds,
+      addedSeedIds: added,
     });
+    if (added.length > 0) {
+      try { require('./evolution-issue-inbox').recordRuntimeIssue('bag_seed_mapping', 'warn'); }
+      catch { /* 待办写失败不阻断已有背包与种植链 */ }
+    }
+  }
+  if (uniqueFallbackIds.length === 0 && lastFallbackSeedSignature) {
+    lastFallbackSeedSignature = '';
+    lastFallbackSeedReportedIds.clear();
   }
 
   return Array.from(seedMap.values());

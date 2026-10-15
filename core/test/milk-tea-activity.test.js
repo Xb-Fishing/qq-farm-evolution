@@ -424,12 +424,12 @@ test('固定配置：EventItems 新增项分类正确无重复；未证植物不
     assert.equal(seed.interaction_type, 'plant', `种子 ${seedId} plant 交互`);
     assert.ok(/种子/.test(seed.name), `种子 ${seedId} 名称以种子命名`);
   }
-  // 未证植物保持缺口：S4 种子不登记 EventPlants（无占地/生长期的官方双源证据）
+  // 已核验森野黄金芽映射先交付；其余未证植物继续保留缺口。
   const plantSeedIds = new Set(EVENT_PLANTS.map(plant => Number(plant.seed_id)));
   for (const seedId of CONFIG.activitySeedItemIds) {
-    assert.equal(plantSeedIds.has(seedId), false, `种子 ${seedId} 未证不进 EventPlants`);
+    assert.equal(plantSeedIds.has(seedId), seedId === 29005, `种子 ${seedId} 仅采用经审阅映射`);
   }
-  assert.equal('plantSize' in (byId.get(29005) || {}), false, '29005 占地缺口保留，不在 EventItems 侧假销账');
+  assert.equal('plantSize' in (byId.get(29005) || {}), false, '占地由EventPlants提供，不在EventItems侧伪造字段');
   // 活动编号与编码表一致
   assert.equal(Number(CONFIG.activityIds.root), ROOT);
   assert.equal(Number(CONFIG.activityIds.main), MAIN);
@@ -450,7 +450,7 @@ test.after(() => {
   fs.rmSync(assertWriteInsidePrivateDir(privateDir), { recursive: true, force: true });
 });
 
-test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所有种子有名且未知占地0', async () => {
+test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所有种子有名、已核验四格与未知占地分开', async () => {
   await loadProto();
   const networkPath = require.resolve('../src/utils/network');
   const warehousePath = require.resolve('../src/services/warehouse');
@@ -464,7 +464,7 @@ test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所�
     assert.equal(byId.get(1041).category,'item');assert.equal(byId.get(1041).name,'奶茶券');
     assert.equal(byId.get(40525).category,'fruit');assert.equal(byId.get(40525).name,'森野甜莓');
     const seeds=warehouse.getBagSeedsFromItems(items);assert.equal(seeds.length,CONFIG.activitySeedItemIds.length);
-    for(const id of CONFIG.activitySeedItemIds){const seed=seeds.find(s=>s.seedId===id);assert.match(seed.name,/种子/);assert.doesNotMatch(seed.name,/未知|物品\d/);assert.equal(seed.plantSize,0);assert.equal(config.getPlantBySeedId(id),undefined);}
+    for(const id of CONFIG.activitySeedItemIds){const seed=seeds.find(s=>s.seedId===id);assert.match(seed.name,/种子/);assert.doesNotMatch(seed.name,/未知|物品\d/);if(id===29005){assert.equal(seed.plantSize,2);assert.equal(config.getPlantBySeedId(id)?.id,1029005);}else{assert.equal(seed.plantSize,0);assert.equal(config.getPlantBySeedId(id),undefined);}}
   } finally {for(const [file,entry] of saved){if(entry)require.cache[file]=entry;else delete require.cache[file];}}
 });
 
