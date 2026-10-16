@@ -222,15 +222,17 @@ test('1040525 按 type17 黄金果实登记，字段逐项核对且不伪造植�
   '公开参考 Plant 1120525 仅作类型交叉，不得登记为本地植物');
 });
 
-test('未知 S4 种子 plantSize=0 与已确认四格种子 29004 size=2 保持不变', () => {
+test('已确认普通活动种子按单格、四格保持原占地，真正未知种子仍为零', () => {
   const warehouse = require('../src/services/warehouse');
   const seeds = warehouse.getBagSeedsFromItems([
-    { id: 20529, count: 2 }, // 森野芭乐种子：已登记但无 Plant 映射
+    { id: 20529, count: 2 }, // 森野芭乐：现已核验默认单格映射
     { id: 29004, count: 3 }, // 泡泡棉花糖：EventPlants 1029004 size=2
+    { id: 799991, count: 1, showName: '合成未知种子' },
   ]);
   const byId = new Map(seeds.map(seed => [seed.seedId, seed]));
-  assert.equal(byId.get(20529)?.plantSize, 0, '无 Plant 映射的活动种子 plantSize 保持 0');
-  assert.equal(byId.get(20529)?.mappingStatus, 'item_only');
+  assert.equal(byId.get(20529)?.plantSize, 1);
+  assert.equal(byId.get(20529)?.mappingStatus, 'mapped');
+  assert.equal(byId.get(799991)?.plantSize, 0, '真正缺少 Plant 的种子继续保留未知占地');
   assert.equal(byId.get(29004)?.plantSize, 2, '四格作物 plantSize 保持 2');
   assert.equal(byId.get(29004)?.mappingStatus, 'mapped');
 });

@@ -24,15 +24,19 @@ for (const id of [20525, 20526, 20527, 20528, 20529, 21435, 20021, 29005]) {
 test('normal and naturally observed golden fruit images resolve without inventing Plant mappings', () => {
   for (const row of rows.filter(x => x.kind !== 'seed')) assert.equal(config.getItemImageById(row.itemId), '/game-config/seed_images_named/' + row.file);
   assert.ok(config.getItemImageById(1040525), 'the observed golden fruit has its own image');
-  assert.equal(config.getPlantByFruitId(1040525), undefined); assert.equal(config.getPlantBySeedId(20529), undefined);
+  assert.equal(config.getPlantByFruitId(1040525), undefined); assert.equal(config.getPlantBySeedId(20529).size, 1);
   assert.deepEqual(config.getGenericFallbackItemIds(), []);
 });
 test('real bag seed recognition clears icon gaps while keeping unverified footprints separate', () => {
   const { getBagSeedsFromItems } = require('../src/services/warehouse');
   const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
-  const items = [29005, 20529].map(id => ({ id, count: 1 })); const seeds = getBagSeedsFromItems(items), audit = auditBagSeedCoverage(items, seeds);
-  assert.equal(audit.issues.some(x => x.kind === 'seed_icon_missing'), false);
+  const items = [...[29005, 20529].map(id => ({ id, count: 1 })), { id: 799991, count: 1, showName: '合成未知种子' }];
+  const seeds = getBagSeedsFromItems(items);
+  const audit = auditBagSeedCoverage(items, seeds);
+  assert.equal(audit.issues.some(x => [29005, 20529].includes(x.itemId) && x.kind === 'seed_icon_missing'), false);
+  assert.ok(audit.issues.some(x => x.itemId === 799991 && x.kind === 'seed_icon_missing'), 'unknown seed still retains its real icon gap');
   assert.equal(audit.issues.some(x => x.itemId === 29005 && x.kind === 'seed_footprint_unverified'), false);
-  assert.ok(audit.issues.some(x => x.itemId === 20529 && x.kind === 'seed_footprint_unverified'));
-  assert.equal(seeds.find(x => x.seedId === 29005).plantSize, 2); assert.equal(seeds.find(x => x.seedId === 20529).plantSize, 0);
+  assert.equal(audit.issues.some(x => x.itemId === 20529 && x.kind === 'seed_footprint_unverified'), false);
+  assert.ok(audit.issues.some(x => x.itemId === 799991 && x.kind === 'seed_footprint_unverified'));
+  assert.equal(seeds.find(x => x.seedId === 29005).plantSize, 2); assert.equal(seeds.find(x => x.seedId === 20529).plantSize, 1);
 });

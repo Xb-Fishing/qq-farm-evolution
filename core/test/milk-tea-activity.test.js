@@ -408,15 +408,15 @@ test('只读入口：账号未就绪零读取；库存普通失败不伪造状�
   assert.equal(overview.timing.phase, 'open');
 });
 
-test('固定配置：EventItems 新增项分类正确无重复；未证植物不进 EventPlants（plantSize 缺口不假销账）', () => {
+test('固定配置：物品分类无重复，已核验森野植物显式登记正确占地', () => {
   const ids = EVENT_ITEMS.map(item => item.id);
   assert.equal(new Set(ids).size, ids.length, 'EventItems 无重复 id');
   const byId = new Map(EVENT_ITEMS.map(item => [item.id, item]));
-  // 货币/道具（type 19）、活动果实（type 18）、活动种子（type 5 + plant 交互）
+  // 货币/道具（type 19）、果实（本地 type 4、源表 type 6）、种子（type 5 + plant 交互）
   assert.deepEqual([byId.get(1041).name, byId.get(1041).type], ['奶茶券', 19]);
   assert.deepEqual([byId.get(1042).name, byId.get(1042).type], ['宣传喇叭', 19]);
   assert.equal(byId.get(40525).type, 4);
-  assert.equal(byId.get(40525).official_type, 18);
+  assert.equal(byId.get(40525).official_type, 6);
   for (const seedId of CONFIG.activitySeedItemIds) {
     const seed = byId.get(seedId);
     assert.ok(seed, `种子 ${seedId} 在 EventItems 登记`);
@@ -424,10 +424,11 @@ test('固定配置：EventItems 新增项分类正确无重复；未证植物不
     assert.equal(seed.interaction_type, 'plant', `种子 ${seedId} plant 交互`);
     assert.ok(/种子/.test(seed.name), `种子 ${seedId} 名称以种子命名`);
   }
-  // 已核验森野黄金芽映射先交付；其余未证植物继续保留缺口。
+  // 七种普通作物按已核验默认单格登记，黄金芽仍明确四格。
   const plantSeedIds = new Set(EVENT_PLANTS.map(plant => Number(plant.seed_id)));
   for (const seedId of CONFIG.activitySeedItemIds) {
-    assert.equal(plantSeedIds.has(seedId), seedId === 29005, `种子 ${seedId} 仅采用经审阅映射`);
+    assert.equal(plantSeedIds.has(seedId), true, `种子 ${seedId} 采用已复核映射`);
+    assert.equal(EVENT_PLANTS.find(plant => Number(plant.seed_id) === seedId)?.size, seedId === 29005 ? 2 : 1);
   }
   assert.equal('plantSize' in (byId.get(29005) || {}), false, '占地由EventPlants提供，不在EventItems侧伪造字段');
   // 活动编号与编码表一致
@@ -450,7 +451,7 @@ test.after(() => {
   fs.rmSync(assertWriteInsidePrivateDir(privateDir), { recursive: true, force: true });
 });
 
-test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所有种子有名、已核验四格与未知占地分开', async () => {
+test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所有种子有名、已核验单格和四格均正确', async () => {
   await loadProto();
   const networkPath = require.resolve('../src/utils/network');
   const warehousePath = require.resolve('../src/services/warehouse');
@@ -464,7 +465,13 @@ test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所�
     assert.equal(byId.get(1041).category,'item');assert.equal(byId.get(1041).name,'奶茶券');
     assert.equal(byId.get(40525).category,'fruit');assert.equal(byId.get(40525).name,'森野甜莓');
     const seeds=warehouse.getBagSeedsFromItems(items);assert.equal(seeds.length,CONFIG.activitySeedItemIds.length);
-    for(const id of CONFIG.activitySeedItemIds){const seed=seeds.find(s=>s.seedId===id);assert.match(seed.name,/种子/);assert.doesNotMatch(seed.name,/未知|物品\d/);if(id===29005){assert.equal(seed.plantSize,2);assert.equal(config.getPlantBySeedId(id)?.id,1029005);}else{assert.equal(seed.plantSize,0);assert.equal(config.getPlantBySeedId(id),undefined);}}
+    for (const id of CONFIG.activitySeedItemIds) {
+      const seed = seeds.find(s => s.seedId === id);
+      assert.match(seed.name, /种子/); assert.doesNotMatch(seed.name, /未知|物品\d/);
+      assert.equal(seed.plantSize, id === 29005 ? 2 : 1);
+      assert.equal(config.getPlantBySeedId(id)?.size, id === 29005 ? 2 : 1);
+      if (id === 29005) assert.equal(config.getPlantBySeedId(id)?.id, 1029005);
+    }
   } finally {for(const [file,entry] of saved){if(entry)require.cache[file]=entry;else delete require.cache[file];}}
 });
 
