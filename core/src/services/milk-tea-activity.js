@@ -437,6 +437,44 @@ function shopNameValid(name) {
 
 // ---------- 默认只读入口（List 确认根下发后读一次根 + 一次库存） ----------
 
+/** Snapshot-only bounds. The existing write entry still refreshes and verifies every cost/limit. */
+function getMilkTeaExchangeBounds(goods, inventory, timing = {}) {
+  const bounds = { requestMax: 999, limitKnown: false, hasPurchaseLimit: false,
+    remainingLimit: null, affordableCount: null, maxCount: null, blockReason: '', unitCosts: [] };
+  const integer = value => {
+    if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null;
+    const n = Number(value);
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  };
+  const limit = integer(goods.purchaseLimit);
+  const purchased = integer(goods.purchasedCount);
+  bounds.limitKnown = limit !== null && (limit === 0 || purchased !== null);
+  bounds.hasPurchaseLimit = limit !== null && limit > 0;
+  if (bounds.hasPurchaseLimit && purchased !== null) bounds.remainingLimit = Math.max(0, limit - purchased);
+  const block = reason => ({ ...bounds, maxCount: 0, blockReason: reason });
+  if (toNum(goods.diamondCostCount) > 0 || (goods.costs || []).some(cost => toNum(cost.id) === DIAMOND_ITEM_ID)) return block('该商品涉及钻石，暂不支持兑换');
+  if ((goods.condHints || []).some(hint => hint.satisfied === false)) return block('尚未满足兑换条件');
+  if (timing.phase === 'settle' && (goods.rewards || []).some(item => (CONFIG.activitySeedItemIds || []).includes(toNum(item.id)))) return block('结算期已停止种子兑换');
+  if (bounds.remainingLimit === 0) return block('已达限购上限');
+  let totals;
+  try { totals = costTotals(goods.costs || []); } catch { totals = null; }
+  if (!totals || totals.size === 0 || [...totals.keys()].some(id => !getItemById(id))) return block('兑换费用尚未确认');
+  bounds.unitCosts = [...totals].map(([id, count]) => ({ itemId: id, count: count.toString(), name: getItemById(id)?.name || '活动货币' }));
+  if (!bounds.limitKnown) return { ...bounds, blockReason: '限购信息尚未确认，请刷新' };
+  if (inventory.available !== true || !(inventory.counts instanceof Map)) return { ...bounds, blockReason: '库存尚未确认，请刷新' };
+  let affordable = 999n;
+  for (const [id, amount] of totals) {
+    const raw = inventory.counts.get(id) ?? 0;
+    if ((typeof raw === 'number' && !Number.isSafeInteger(raw)) || !/^\d+$/.test(String(raw))) return { ...bounds, blockReason: '余额暂不能精确计算，请刷新' };
+    const count = BigInt(String(raw)) / amount;
+    if (count < affordable) affordable = count;
+  }
+  bounds.affordableCount = Number(affordable);
+  bounds.maxCount = Math.min(bounds.requestMax, bounds.affordableCount, bounds.remainingLimit ?? bounds.requestMax);
+  if (bounds.maxCount === 0) bounds.blockReason = '余额不足，暂不可兑换';
+  return bounds;
+}
+
 function buildMilkTeaOverview(snapshot, inventory, now) {
   const displayItems = rows => list(rows).map(item => {
     const id = toNum(item.id); const image = getItemImageById(id) || '';
@@ -462,7 +500,7 @@ function buildMilkTeaOverview(snapshot, inventory, now) {
       .filter(Boolean)
       .slice(0, 40),
     summary: main?.details?.milkTea || null,
-    exchangeShop: shop?.details?.exchangeShop ? { items: list(shop.details.exchangeShop.items).map(goods => ({ ...goods, costs: displayItems(goods.costs), rewards: displayItems(goods.rewards) })) } : null,
+    exchangeShop: shop?.details?.exchangeShop ? { items: list(shop.details.exchangeShop.items).map(goods => ({ ...goods, costs: displayItems(goods.costs), rewards: displayItems(goods.rewards), exchangeBounds: getMilkTeaExchangeBounds(goods, inventory, timing) })) } : null,
     growthFund: fund?.details?.growthFund ? { ...fund.details.growthFund, tiers: list(fund.details.growthFund.tiers).map(tier => ({ ...tier, reward: displayItems(tier.reward) })) } : null,
     shareReward: happy?.details?.shareReward ? { ...happy.details.shareReward, milestones: list(happy.details.shareReward.milestones).map(tier => ({ ...tier, rewards: list(tier.rewards).map(item => ({ ...item, itemName: getItemById(toNum(item.itemId))?.name || '未知物品' })) })) } : null,
     inventory: {
@@ -526,7 +564,10 @@ async function readMilkTeaOverview(options = {}) {
   // 读取过程中跨过最终截止：跳过库存等后续读取，用当前时间收口
   if (timingOf(snapshot, nowSec()).phase !== 'ended') {
     try {
-      inventory = await inventoryReader([TICKET_ITEM_ID, BOOST_ITEM_ID]);
+      const catalog = list(snapshot.children).find(node => toNum(node?.id) === MILK_TEA_SHOP_ACTIVITY_ID)?.details?.exchangeShop;
+      const costIds = list(catalog?.items).flatMap(goods => list(goods.costs).map(cost => toNum(cost.id)))
+        .filter(id => id > 0 && id !== DIAMOND_ITEM_ID && !!getItemById(id));
+      inventory = await inventoryReader([...new Set([TICKET_ITEM_ID, BOOST_ITEM_ID, ...costIds])]);
     } catch (err) { if (err && err.business) throw err; /* 库存失败仍展示活动说明与状态，数量保持未知，不循环重试 */ }
     recheck();
   }
@@ -1327,6 +1368,7 @@ module.exports = {
   milkTeaSummaryDto,
   growthFundDto,
   exchangeShopRichDto,
+  getMilkTeaExchangeBounds,
   getMilkTeaActivity,
   queryMilkTeaActivity,
   runManualMilkTeaAction,

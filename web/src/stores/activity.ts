@@ -621,6 +621,16 @@ export interface MilkTeaShareReward {
   daily?: { rewardClaimed?: boolean, claimedCount?: number, claimLimit?: number }
   milestones?: Array<{ id?: number, threshold?: number, state?: number, rewards?: Array<{ itemId?: number, itemCount?: number, itemName?: string, image?: string }> }>
 }
+export interface MilkTeaExchangeBounds {
+  requestMax: number
+  limitKnown: boolean
+  hasPurchaseLimit: boolean
+  remainingLimit: number | null
+  affordableCount: number | null
+  maxCount: number | null
+  blockReason: string
+  unitCosts: Array<{ itemId: number, count: string, name: string }>
+}
 export interface MilkTeaActivityData {
   activityId?: number
   title?: string
@@ -628,7 +638,7 @@ export interface MilkTeaActivityData {
   rules?: string[]
   summary?: { shopOpenAt?: number, shopName?: string, level?: number, totalRevenue?: number, canUpgrade?: boolean, hireDisabled?: boolean, hasUnclaimedWage?: boolean }
   inventory?: { available?: boolean, ticketCount?: number, boostItemCount?: number }
-  exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchasedCount?: number, diamondCostCount?: number }> }
+  exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchasedCount?: number, diamondCostCount?: number, exchangeBounds?: MilkTeaExchangeBounds }> }
   growthFund?: { unlocked?: boolean, tiers?: Array<{ tierId?: number, state?: number, conditions?: Array<{ reached?: boolean }>, reward?: MilkTeaItem[] }> }
   shareReward?: MilkTeaShareReward
   gameplay?: Partial<Record<'shop' | 'workshop' | 'work', {
@@ -697,9 +707,11 @@ export const useActivityStore = defineStore('activity', () => {
     return Number.isFinite(end) && end > 0 ? Math.floor(end) : 0
   }
 
-  /** 「重新检查解除下架」的快照合法性：非空普通对象。数组/字符串/数字/null/空对象都
+  /**
+   * 「重新检查解除下架」的快照合法性：非空普通对象。数组/字符串/数字/null/空对象都
    * 不是合法快照，不得凭它们恢复展示（合法但未知截止的快照可恢复，不据此误判结束）。
-   * 只约束显式恢复条件；正常读取的快照落地不经过此判断。 */
+   * 只约束显式恢复条件；正常读取的快照落地不经过此判断。
+   */
   function isRecoverableSnapshot(activity: unknown): boolean {
     return typeof activity === 'object'
       && activity !== null
@@ -731,9 +743,11 @@ export const useActivityStore = defineStore('activity', () => {
     return null
   }
 
-  /** 写入口同步核对：下架标记，或「当前快照的有效截止已实际到期但到期计时尚未执行」
+  /**
+   * 写入口同步核对：下架标记，或「当前快照的有效截止已实际到期但到期计时尚未执行」
    * （卸载已释放计时、事件循环忙于定时器回调前）都算已结束；后者当场同步落地 expired
-   * 下架（面板与后续写步骤立即撤下），不等计时回调。零请求、零猜测（未知截止不拦）。 */
+   * 下架（面板与后续写步骤立即撤下），不等计时回调。零请求、零猜测（未知截止不拦）。
+   */
   function activityEndedNow(key: ActivityKey) {
     if (activityRetired.value[key] != null)
       return true
@@ -774,10 +788,12 @@ export const useActivityStore = defineStore('activity', () => {
     ++expiryTokens[key]
   }
 
-  /** 页面卸载：作废在飞读取（快照 + 六种查询）并完整释放到期计时（清计时+推进令牌），
+  /**
+   * 页面卸载：作废在飞读取（快照 + 六种查询）并完整释放到期计时（清计时+推进令牌），
    * 迟到响应不回填快照/错误/loading、不在页外重建计时；下架状态与已落地快照的截止
    * 证据保留给重进页面（重进先 sweepExpiredActivities 同步清扫，再由正常刷新为仍
-   * 有效快照重排计时）。 */
+   * 有效快照重排计时）。
+   */
   function cancelActivityReads() {
     ++activityLifecycleSeq
     ++milkTeaOperateSeq
@@ -791,8 +807,10 @@ export const useActivityStore = defineStore('activity', () => {
     clearExpiry('milkTea')
   }
 
-  /** 页面进入时同步清扫：已过有效截止的落地快照立即下架；仍有效的保留快照恢复到期计时
-   * （零请求，不展示过期缓存，也不等新响应才重建截止保护）。 */
+  /**
+   * 页面进入时同步清扫：已过有效截止的落地快照立即下架；仍有效的保留快照恢复到期计时
+   * （零请求，不展示过期缓存，也不等新响应才重建截止保护）。
+   */
   function sweepExpiredActivities() {
     const key: ActivityKey = 'milkTea'
     if (isActivityRetired(key))
@@ -930,8 +948,10 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
-  /** 显式查询（shop/hireList/workshop/work/rank/sales）：仅用户点击触发，各自独立
-   * loading/代次；不自动轮询、不后台翻页。 */
+  /**
+   * 显式查询（shop/hireList/workshop/work/rank/sales）：仅用户点击触发，各自独立
+   * loading/代次；不自动轮询、不后台翻页。
+   */
   async function runMilkTeaQuery(kind: MilkTeaQueryKind, accountId: string, params: Record<string, unknown> = {}) {
     if (!accountId)
       return { ok: false, error: '未选择账号' }

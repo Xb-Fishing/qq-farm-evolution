@@ -25,7 +25,9 @@ const recipeId = ref(2)
 const page = ref(1)
 const day = ref('')
 const interactionType = ref(1)
-const exchangeCount = ref(1)
+type ExchangeGoods = NonNullable<NonNullable<MilkTeaActivityData['exchangeShop']>['items']>[number]
+const exchangeCounts = ref<Record<number, number | string>>({})
+const exchangeNotice = ref('')
 const dialogRef = ref<HTMLElement | null>(null)
 let returnFocus: HTMLElement | null = null
 const pending = ref<{ action: string, input: Record<string, unknown>, text: string } | null>(null)
@@ -43,7 +45,17 @@ const shopStarted = computed(() => Number(props.activity?.summary?.shopOpenAt) >
 const validShopName = computed(() => Array.from(shopName.value.trim()).length >= 2 && Array.from(shopName.value.trim()).length <= 8)
 const noCashierReward = computed(() => Array.isArray(shop.value?.pendingRewards) && shop.value.pendingRewards.length === 0)
 const noClaimableWages = computed(() => Array.isArray(work.value?.slips) && !work.value.slips.some((slip: any) => slip.wageStatus === 1))
-const validExchangeCount = computed(() => Number.isSafeInteger(Number(exchangeCount.value)) && Number(exchangeCount.value) > 0)
+watch(() => props.activity?.exchangeShop?.items?.map(goods => goods.id) || [], (ids) => {
+  const values: Record<number, number | string> = {}
+  for (const id of ids) values[id] = exchangeCounts.value[id] ?? 1
+  exchangeCounts.value = values
+}, { immediate: true })
+watch(() => JSON.stringify(props.activity?.exchangeShop || null), () => {
+  if (pending.value?.action === 'exchange') {
+    closeConfirmation()
+    exchangeNotice.value = '商城信息已更新，请重新核对数量和费用。'
+  }
+})
 watch(() => freeSlots.value.map((slot: any) => Number(slot.slotIndex)).filter((id: number) => Number.isSafeInteger(id) && id >= 0), (ids: number[]) => {
   if (ids.length && !ids.includes(slotIndex.value))
     slotIndex.value = ids[0]!
@@ -101,9 +113,54 @@ function confirmationKey(event: KeyboardEvent) {
     first?.focus()
   }
 }
-function exchange(goods: NonNullable<NonNullable<MilkTeaActivityData['exchangeShop']>['items']>[number]) {
-  const costs = (goods.costs || []).map(cost => ({ itemId: cost.id, count: String(Number(cost.count) * Number(exchangeCount.value)) }))
-  prepare('exchange', { goodsId: goods.id, count: Number(exchangeCount.value), confirmedCosts: costs }, `兑换 ${goods.name || '商品'} × ${number(exchangeCount.value)}；消耗 ${(goods.costs || []).map(cost => `${cost.name || '活动货币'} × ${number(Number(cost.count) * Number(exchangeCount.value))}`).join('、') || '费用待确认，无法兑换'}。`)
+function exchangeCountOf(goods: ExchangeGoods) {
+  return Number(exchangeCounts.value[goods.id] ?? 1)
+}
+function formatAmount(value: unknown) {
+  const text = String(value ?? '')
+  return /^\d+$/.test(text) ? BigInt(text).toLocaleString() : '待确认'
+}
+function validExchangeCount(goods: ExchangeGoods) {
+  const count = exchangeCountOf(goods)
+  const max = goods.exchangeBounds?.maxCount
+  return Number.isSafeInteger(count) && count > 0 && typeof max === 'number'
+    && count <= max && !!goods.exchangeBounds?.unitCosts?.length
+}
+function exchangeProblem(goods: ExchangeGoods) {
+  if (goods.exchangeBounds?.blockReason)
+    return goods.exchangeBounds.blockReason
+  const max = goods.exchangeBounds?.maxCount
+  if (max == null)
+    return '可兑换数量尚未确认，请刷新活动。'
+  if (!validExchangeCount(goods))
+    return `请输入 1～${max} 之间的整数。`
+  return ''
+}
+function exchangeTotals(goods: ExchangeGoods) {
+  if (!validExchangeCount(goods))
+    return []
+  return goods.exchangeBounds!.unitCosts.map(cost => ({
+    itemId: cost.itemId,
+    name: cost.name,
+    count: (BigInt(cost.count) * BigInt(exchangeCountOf(goods))).toString(),
+  }))
+}
+function setMaximum(goods: ExchangeGoods) {
+  const max = goods.exchangeBounds?.maxCount
+  if (!busy.value && typeof max === 'number' && max > 0)
+    exchangeCounts.value[goods.id] = max
+}
+function exchange(goods: ExchangeGoods) {
+  if (busy.value || !validExchangeCount(goods))
+    return
+  exchangeNotice.value = ''
+  const count = exchangeCountOf(goods)
+  const totals = exchangeTotals(goods)
+  const costs = totals.map(({ itemId, count }) => ({ itemId, count }))
+  const limit = goods.exchangeBounds?.hasPurchaseLimit
+    ? `当前剩余限购 ${formatAmount(goods.exchangeBounds.remainingLimit)} 份`
+    : '服务端未设置限购'
+  prepare('exchange', { goodsId: goods.id, count, confirmedCosts: costs }, `兑换 ${goods.name || '商品'} × ${formatAmount(count)} 份；合计消耗 ${totals.map(cost => `${cost.name || '活动货币'} × ${formatAmount(cost.count)}`).join('、')}；${limit}。`)
 }
 </script>
 
@@ -275,25 +332,52 @@ function exchange(goods: NonNullable<NonNullable<MilkTeaActivityData['exchangeSh
       <div class="milk-section-heading">
         <div class="milk-card-heading">
           <span class="i-carbon-shopping-bag" aria-hidden="true" /><div><h3>活动商城与专属种子</h3><p>选择喜欢的奖励，兑换前核对消耗</p></div>
-        </div><label class="milk-field milk-quantity">兑换数量<input v-model.number="exchangeCount" type="number" min="1" aria-label="兑换数量" class="milk-input"></label>
+        </div>
       </div>
       <p class="milk-muted">
-        结算期不再售卖专属种子；钻石或未知费用不可兑换。
+        数量按商品分别选择；可兑上限取当前余额、剩余限购和单次上限的最小值。提交时会重新核验，以服务端返回为准。结算期不再售卖专属种子；钻石或未知费用不可兑换。
+      </p>
+      <p v-if="exchangeNotice" class="milk-notice" role="status">
+        {{ exchangeNotice }}
       </p>
       <div class="milk-goods-grid">
         <article v-for="goods in activity?.exchangeShop?.items || []" :key="goods.id" class="milk-goods">
           <div>
             <h4>{{ goods.name || '商品名称待确认' }}</h4><p class="milk-muted">
-              已购 {{ number(goods.purchasedCount) }} / {{ number(goods.purchaseLimit) }}
+              <template v-if="goods.exchangeBounds?.limitKnown && goods.exchangeBounds.hasPurchaseLimit">
+                限购 {{ number(goods.purchaseLimit) }} 份 · 已兑 {{ number(goods.purchasedCount) }} 份 · 剩余 {{ number(goods.exchangeBounds.remainingLimit) }} 份
+              </template>
+              <template v-else-if="goods.exchangeBounds?.limitKnown">
+                服务端未设置限购
+              </template>
+              <template v-else>
+                限购信息待读取
+              </template>
             </p>
           </div><div class="milk-reward-list">
             <div v-for="(item, index) in goods.rewards || []" :key="index" class="milk-reward">
               <img v-if="item.image" :src="item.image" :alt="item.name || '奖励'"><span v-else class="milk-item-placeholder i-carbon-gift" aria-hidden="true" /><span>{{ item.name || '奖励' }} × {{ number(item.count) }}<small v-if="!item.image">暂无专属图标</small><small v-else-if="item.iconStatus === 'generic'">通用图标</small></span>
             </div>
           </div><p class="milk-cost">
-            每份消耗：<span v-for="(cost, index) in goods.costs || []" :key="index">{{ cost.name || '活动货币' }} × {{ number(cost.count) }} </span><span v-if="!goods.costs?.length">费用待确认</span>
-          </p><BaseButton class="milk-action milk-buy" variant="primary" :disabled="busy || !validExchangeCount || !!goods.diamondCostCount || !goods.costs?.length || (Number(goods.purchaseLimit) > 0 && Number(goods.purchasedCount) >= Number(goods.purchaseLimit))" @click="exchange(goods)">
-            确认兑换 {{ goods.name || '商品' }}
+            每份消耗：<span v-for="(cost, index) in goods.costs || []" :key="index">{{ cost.name || '活动货币' }} × {{ formatAmount(cost.count) }} </span><span v-if="!goods.costs?.length">费用待确认</span>
+          </p>
+          <p class="milk-muted">
+            当前最多可兑 {{ number(goods.exchangeBounds?.maxCount) }} 份<span v-if="goods.exchangeBounds && goods.exchangeBounds.maxCount === goods.exchangeBounds.requestMax">（单次上限）</span>
+          </p>
+          <div class="milk-exchange-controls">
+            <label class="milk-field milk-quantity">兑换数量<input v-model.number="exchangeCounts[goods.id]" type="number" min="1" step="1" :max="goods.exchangeBounds?.maxCount ?? undefined" :aria-label="`${goods.name || '商品'}兑换数量`" :disabled="busy || !goods.exchangeBounds?.maxCount" class="milk-input"></label>
+            <BaseButton class="milk-action milk-max" variant="secondary" :disabled="busy || !goods.exchangeBounds?.maxCount" @click="setMaximum(goods)">
+              最大
+            </BaseButton>
+          </div>
+          <p v-if="exchangeProblem(goods)" class="milk-muted" role="status">
+            {{ exchangeProblem(goods) }}
+          </p>
+          <p v-else class="milk-cost">
+            本次合计：<span v-for="cost in exchangeTotals(goods)" :key="cost.itemId">{{ cost.name }} × {{ formatAmount(cost.count) }} </span>
+          </p>
+          <BaseButton class="milk-action milk-buy" variant="primary" :disabled="busy || !validExchangeCount(goods)" @click="exchange(goods)">
+            确认兑换 {{ goods.name || '商品' }} × {{ formatAmount(exchangeCountOf(goods)) }}
           </BaseButton>
         </article>
       </div><p v-if="!activity?.exchangeShop" class="milk-notice">
@@ -682,6 +766,18 @@ function exchange(goods: NonNullable<NonNullable<MilkTeaActivityData['exchangeSh
 .milk-quantity {
   width: 110px;
   flex-shrink: 0;
+}
+.milk-exchange-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+.milk-exchange-controls .milk-quantity {
+  flex: 1;
+  min-width: 0;
+}
+.milk-exchange-controls .milk-max {
+  flex: none;
 }
 .milk-goods-grid {
   display: grid;
