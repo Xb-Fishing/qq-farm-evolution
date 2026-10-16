@@ -1,5 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 const { getDataDir } = require('../config/runtime-paths');
 const { readPrivateConfig } = require('./private-config');
@@ -196,6 +198,96 @@ function parseAddedDiff(diff) {
   return rows;
 }
 
+function pngResourceInfo(bytes, options = {}) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 45 || bytes.length > 2 * 1024 * 1024
+    || bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return null;
+  let offset = 8; let width = 0; let height = 0; let ended = false; let hasPixels = false;
+  const allowed = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'pHYs', 'sRGB', 'gAMA', 'cHRM', 'iCCP', 'tEXt', 'zTXt', 'iTXt']);
+  while (offset + 12 <= bytes.length) {
+    const size = bytes.readUInt32BE(offset); const kind = bytes.toString('ascii', offset + 4, offset + 8);
+    if (!allowed.has(kind) || size > bytes.length - offset - 12 || ended) return null;
+    const chunk = bytes.subarray(offset + 8, offset + 8 + size);
+    let crc = 0xFFFFFFFF;
+    for (const value of bytes.subarray(offset + 4, offset + 8 + size)) {
+      crc ^= value;
+      for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+    }
+    if (((crc ^ 0xFFFFFFFF) >>> 0) !== bytes.readUInt32BE(offset + size + 8)) return null;
+    if (offset === 8 && (kind !== 'IHDR' || size !== 13)) return null;
+    if (kind === 'IHDR') {
+      if (offset !== 8) return null;
+      width = chunk.readUInt32BE(0); height = chunk.readUInt32BE(4);
+      if (!width || !height || width > 2048 || height > 2048) return null;
+      const depths = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+      if (!depths[chunk[9]]?.includes(chunk[8]) || chunk[10] !== 0 || chunk[11] !== 0 || chunk[12] > 1) return null;
+    }
+    if (['tEXt', 'zTXt', 'iTXt', 'iCCP'].includes(kind)) {
+      try {
+        let text = chunk;
+        if (kind === 'zTXt' || kind === 'iCCP') {
+          const split = chunk.indexOf(0);
+          if (split < 1 || chunk[split + 1] !== 0) return null;
+          text = Buffer.concat([chunk.subarray(0, split), Buffer.from('\n'),
+            zlib.inflateSync(chunk.subarray(split + 2), { maxOutputLength: 1024 * 1024 })]);
+        } else if (kind === 'iTXt') {
+          const split = chunk.indexOf(0);
+          if (split < 1 || chunk[split + 2] !== 0) return null;
+          const language = chunk.indexOf(0, split + 3); const translated = chunk.indexOf(0, language + 1);
+          if (language < 0 || translated < 0 || chunk[split + 1] > 1) return null;
+          text = chunk.subarray(translated + 1);
+          if (chunk[split + 1] === 1) text = zlib.inflateSync(text, { maxOutputLength: 1024 * 1024 });
+          text = Buffer.concat([chunk.subarray(0, translated + 1), text]);
+        }
+        if (scanTextForPrivacy(text.toString('utf8'), { ...options, blockUrls: false }).length) return null;
+      } catch { return null; }
+    }
+    offset += size + 12;
+    if (kind === 'IDAT' && size > 0) hasPixels = true;
+    if (kind === 'IEND') { if (size !== 0) return null; ended = true; }
+  }
+  return ended && hasPixels && offset === bytes.length ? { width, height } : null;
+}
+
+// Only a completed Main approval may ask the publication audit to use these
+// content-bound proofs. A path, extension, or worker self-report is insufficient.
+function getReviewedOfficialResources(repoRoot, head, options = {}) {
+  if (!/^[a-f0-9]{40}$/i.test(String(head))) return [];
+  const prefix = 'core/src/gameConfig/seed_images_named/';
+  const gitBytes = args => execFileSync('git', args, { cwd: repoRoot, timeout: 10000,
+    maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const manifest = JSON.parse(gitBytes(['show', `${head}:${prefix}event-seed-sources.json`]).toString('utf8'));
+    const rows = Array.isArray(manifest.reviewedResources) ? manifest.reviewedResources : [];
+    if (rows.length > 256) return [];
+    const terms = options.runtimeTerms || collectRuntimePrivacyTerms(options); const proofs = []; const seen = new Set();
+    for (const row of rows) {
+      const file = String(row?.file || '');
+      if (seen.has(file)) return [];
+      if (!/^\d+_[A-Za-z0-9_]+\.png$/.test(file) || seen.has(file)
+        || !Number.isSafeInteger(row.itemId) || row.itemId <= 0
+        || !/^[a-z][a-z0-9-]{1,63}$/.test(String(row.repositoryAlias))
+        || row.sourceGrade !== 'reviewed_public_client_snapshot'
+        || !/^[a-f0-9]{40}$/i.test(String(row.sourceCommit)) || !/^[a-f0-9]{40}$/i.test(String(row.gitBlob))
+        || !/^[a-f0-9]{64}$/i.test(String(row.sha256)) || Number(file.split('_')[0]) !== row.itemId
+        || typeof row.sourcePath !== 'string' || row.sourcePath.includes('\\')
+        || Array.from(row.sourcePath).some(char => char.charCodeAt(0) < 32 || '?#:'.includes(char))
+        || row.sourcePath.split('/').some(part => !part || part === '.' || part === '..')
+        || !/^(?:public\/(?:seed_images_named|item_images)\/|core\/src\/gameConfig\/seed_images_named\/seed_images\/).+\.png$/.test(row.sourcePath)
+        || !(manifest.references || []).some(ref => ref.repositoryAlias === row.repositoryAlias && ref.commit === row.sourceCommit)) continue;
+      seen.add(file);
+      const target = prefix + file;
+      if (!gitBytes(['ls-tree', head, '--', target]).toString('utf8').startsWith('100644 blob ')) continue;
+      const bytes = gitBytes(['show', `${head}:${target}`]);
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      const blob = crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
+      const info = pngResourceInfo(bytes, { runtimeTerms: terms });
+      if (sha256 !== row.sha256 || blob !== row.gitBlob || !info || info.width !== row.width || info.height !== row.height) continue;
+      proofs.push({ file: target, commit: head, sha256 });
+    }
+    return proofs;
+  } catch { return []; }
+}
+
 function auditGitRange(repoRoot, base, head, options = {}) {
   // 仅父进程持有已完成双 Agent 验收凭据时传入；隐私文件不在这个例外集合中。
   const orchestrationFiles = new Set([
@@ -241,6 +333,7 @@ function auditGitRange(repoRoot, base, head, options = {}) {
     const commits = git(['rev-list', '--reverse', `${base}..${head}`]).trim().split('\n').filter(Boolean);
     const runtimeTerms = options.runtimeTerms || collectRuntimePrivacyTerms(options);
     const findings = [];
+    const resourceProofs = new Map();
     const safeFile = file => scanTextForPrivacy(file, { blockUrls: true, runtimeTerms }).length ? '(sensitive-file)' : file;
     const add = (finding, commit) => findings.push({ ...finding, file: safeFile(finding.file), commit });
     const scan = (text, file, commit, line) => {
@@ -261,7 +354,16 @@ function auditGitRange(repoRoot, base, head, options = {}) {
       const numstat = git([...args, '--numstat', commit]);
       for (const line of numstat.trim().split('\n').filter(Boolean)) {
         const [added, deleted, ...fileParts] = line.split('\t');
-        if (added === '-' || deleted === '-') add({ rule: 'binary-change', file: fileParts.join('\t'), line: 0 }, commit);
+        if (added === '-' || deleted === '-') {
+          const file = fileParts.join('\t');
+          const requested = Array.isArray(options.reviewedOfficialResources) ? options.reviewedOfficialResources : [];
+          if (requested.some(proof => proof?.commit === commit) && !resourceProofs.has(commit)) {
+            resourceProofs.set(commit, getReviewedOfficialResources(repoRoot, commit, { runtimeTerms }));
+          }
+          const approved = requested.some(proof => proof?.file === file && proof.commit === commit
+            && (resourceProofs.get(commit) || []).some(actual => actual.file === file && actual.sha256 === proof.sha256));
+          if (!approved) add({ rule: 'binary-change', file, line: 0 }, commit);
+        }
       }
       for (const row of git(['ls-tree', '-r', '-z', commit]).split('\0').filter(Boolean)) {
         const tab = row.indexOf('\t');
@@ -302,5 +404,7 @@ module.exports = {
   scanTextForPrivacy,
   parseAddedDiff,
   auditGitRange,
+  getReviewedOfficialResources,
+  pngResourceInfo,
   formatPrivacyFindings,
 };

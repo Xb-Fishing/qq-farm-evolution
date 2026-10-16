@@ -3,7 +3,7 @@
 // 覆盖：真实 loadProto + 模拟 BagReply 走真实 getBag/getBagDetail/
 // getBagSeedsFromItems 入口（网络为注入替身，零真实游戏请求）；
 // 名称/type17/category=fruit/金豆豆 1005:3/重复堆叠/种子排除/未知合成 ID
-// 仍上报且该项不报警；普通果实/货币/种子分类不退化；缺图为空不顶替、
+// 仍上报且该项不报警；普通果实/货币/种子分类不退化；专属图哈希核验且不顶替、
 // 无伪造 Plant 映射；真实 sellAllFruits 入口（sell=true）证明无 Plant 映射
 // 的该项零 Sell 请求，不扩大自动写资格；空与无效数量忽略；失败后替身与
 // 环境恢复；候选源码内容/权限指纹不变。旧源（未登记 + 无 type17 分支）在
@@ -207,8 +207,8 @@ test('1040525 按 type17 黄金果实登记，字段逐项核对且不伪造植�
   assert.equal(getPlantByFruitId(GOLDEN_FRUIT_ID), undefined);
   assert.equal(getPlantBySeedId(GOLDEN_FRUIT_ID), undefined);
   assert.equal(isSeedItem(GOLDEN_FRUIT_ID), false);
-  // 缺图为空，不以其他道具图顶替，也不进通用回退集合
-  assert.equal(getItemImageById(GOLDEN_FRUIT_ID), '');
+  // 已核验的专属图与登记同轮交付，不以其他道具图顶替。
+  assert.match(getItemImageById(GOLDEN_FRUIT_ID), /1040525_gold_Crop_525\.png$/);
   // EventItems 无重复 ID、无新增植物条目（1120525 不进 EventPlants）
   const items = JSON.parse(fs.readFileSync(
     path.join(repoRoot, 'core', 'src', 'gameConfig', 'EventItems.json'), 'utf8'));
@@ -251,7 +251,7 @@ test('模拟 BagReply 经真实 getBagDetail：黄金果实展示为 fruit/type1
     assert.equal(entry.price, 3);
     assert.equal(entry.priceUnit, '金豆豆');
     assert.equal(entry.count, 5, '两堆 2+3 必须合并计数');
-    assert.equal(entry.image, '', '专属图未取得时为空，不以其他道具图顶替');
+    assert.match(entry.image, /1040525_gold_Crop_525\.png$/, '已核验专属图进入真实背包详情');
     assert.equal(entry.plantSize, 1, '非种子展示 plantSize 默认 1');
     // 普通果实 / 货币 / 种子分类不退化
     const normalFruit = detail.items.find(item => item.id === 41072);

@@ -354,7 +354,7 @@
     "name": "森野甜莓",
     "type": 4,
     "desc": "S4 奶茶活动果实，可在奶茶工坊加工为甜莓奶茶。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；Plant 1020525→fruit 40525 映射 + 本机 Bag 实际出现（bag_unclassified_item 复盘登记）；果实专属图待官方资源证据；本地 EventItems type 4 表示背包果实，官方 type 18 保留为 official_type",
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；Plant 1020525→fruit 40525 映射 + 本机 Bag 实际出现（bag_unclassified_item 复盘登记）；果实专属图待官方资源证据；本地 EventItems type 4 表示背包果实，官方 type 18 保留为 official_type；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付",
     "official_type": 18
   },
   {
@@ -366,7 +366,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野甜莓。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 20526,
@@ -377,7 +377,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野白桃。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 20527,
@@ -388,7 +388,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野甜橙。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 20528,
@@ -399,7 +399,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野红柚。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 20021,
@@ -410,7 +410,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野可可豆。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 21435,
@@ -421,7 +421,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野柿子。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 20529,
@@ -432,7 +432,7 @@
     "rarity": 3,
     "rarity_color": "B09DED",
     "desc": "种植后，可以收获一定数量的森野芭乐。",
-    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）"
+    "evidence": "公开参考系官方提取 ItemInfo（S4 v1.15 配置，SHA 见 client-config-evidence/sources.json）+ 当前 ActivityService.List 商城/奖励下发 + 官方公告正文交叉；2026-10-15 奶茶活动轮登记；当前商城下发名称逐字一致；种子图标走官方抓取流程（PNG 待人工提交）；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 29005,
@@ -443,7 +443,7 @@
     "rarity": 4,
     "rarity_color": "D1A21E",
     "desc": "种植后，可以收获一定数量的森野黄金芽（四格作物）。",
-    "evidence": "当前Bag真实种子、ActivityService.List与官方公告交叉；经审阅S4配置Plant SHA256 808ba9312cb07e740e21ab6d8685f3775ad79791ff85cedc208f731ec7476773显式seed/fruit/size=2与生长字段，非编号推导；专属图片仍待官方资源证据"
+    "evidence": "当前Bag真实种子、ActivityService.List与官方公告交叉；经审阅S4配置Plant SHA256 808ba9312cb07e740e21ab6d8685f3775ad79791ff85cedc208f731ec7476773显式seed/fruit/size=2与生长字段，非编号推导；种子专属图已按经审阅提取快照的sourcePath/Git blob/SHA-256核验交付"
   },
   {
     "id": 1040525,
@@ -451,7 +451,7 @@
     "type": 17,
     "asset_name": "gold/Crop_525",
     "sells": "1005:3",
-    "evidence": "公开参考系官方提取 ItemInfo 1040525（type 17、gold/Crop_525、sells 1005:3；固定 SHA 见 client-config-evidence/sources.json）+ 本机 Bag 实际出现（bag_unclassified_item 复盘登记，未分类清单仅剩此条）+ 现成官方公告正文交叉；Plant 1120525 黄金·森野甜莓 fruit 1040525×10、seed null 仅作类型交叉，不进植物表；2026-10-15 奶茶活动轮登记；黄金判定来自官方提取与真实 Bag 双源（非 ID 段规律）；果实专属图待官方资源证据，缺图为空不以其他道具图顶替；sells 1005:3 金豆豆为该活动特例（常规黄金 1005:6）"
+    "evidence": "公开参考系官方提取 ItemInfo 1040525（type 17、gold/Crop_525、sells 1005:3；固定 SHA 见 client-config-evidence/sources.json）+ 本机 Bag 实际出现（bag_unclassified_item 复盘登记，未分类清单仅剩此条）+ 现成官方公告正文交叉；Plant 1120525 黄金·森野甜莓 fruit 1040525×10、seed null 仅作类型交叉，不进植物表；2026-10-15 奶茶活动轮登记；黄金判定来自官方提取与真实 Bag 双源（非 ID 段规律）；果实专属图已按经审阅提取快照和内容哈希核验交付；sells 1005:3 金豆豆为该活动特例（常规黄金 1005:6）"
   },
-  {"id":49005,"name":"森野黄金芽","type":6,"asset_name":"Crop_9005","sells":null,"sell_cond":"活动区间外:2026110101","cond_sells":"1001:50000","evidence":"当前真实种子的经审阅官方提取Plant明确果实映射；ItemInfo SHA256 f9e8ac4bf5797d533fc4292980155df40c28e27b6a3b645c8e22fb1ed61779b9，活动期间不可售卖；有条件售价不构成自动出售资格"}
+  {"id":49005,"name":"森野黄金芽","type":6,"asset_name":"Crop_9005","sells":null,"sell_cond":"活动区间外:2026110101","cond_sells":"1001:50000","evidence":"当前真实种子的经审阅官方提取Plant明确果实映射；ItemInfo SHA256 f9e8ac4bf5797d533fc4292980155df40c28e27b6a3b645c8e22fb1ed61779b9，活动期间不可售卖；有条件售价不构成自动出售资格；专属图已按资源登记的sourcePath/Git blob/SHA-256核验交付"}
 ]
