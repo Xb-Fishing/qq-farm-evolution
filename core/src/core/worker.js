@@ -290,13 +290,14 @@ function stopDailyRoutineTimer() {
 
 function startDailyRoutineTimer() {
     stopDailyRoutineTimer();
-    lastDailyRunDate = getLocalDateKey();
+    // A paused start is still pending; the interval must catch it up after resume.
+    lastDailyRunDate = pauseRemainMsNow() > 0 ? '' : getLocalDateKey();
     // 完成态按账号落盘；worker/主进程重启不再把当天已完成项目强制重查一遍。
     runDailyRoutines(false).catch(() => null);
 
     // 每 60 秒检查一次日期是否变化
     workerScheduler.setIntervalTask('daily_routine_interval', 60000, () => {
-        if (!loginReady) return;
+        if (!loginReady || pauseRemainMsNow() > 0) return;
         const today = getLocalDateKey();
         if (today === lastDailyRunDate) return;
         lastDailyRunDate = today;

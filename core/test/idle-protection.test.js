@@ -169,3 +169,25 @@ test('already armed pre-entry timer does not enter a friend farm after protectio
   vm.createContext(ctx); vm.runInContext(actualFunction('core/worker.js', 'armSentinelPreEnter'), ctx);
   ctx.armSentinelPreEnter({ gid: 42, dueAt: now + 1000 }); await callback(); assert.equal(calls, 0);
 });
+
+for (const pausedAtStartup of [false, true]) test(`daily routines catch up after ${pausedAtStartup ? 'paused startup' : 'midnight during pause'}`, async () => {
+  let paused = pausedAtStartup; let day = 'synthetic-day-one'; let tick;
+  const runs = [];
+  const ctx = {
+    loginReady: true, lastDailyRunDate: '', stopDailyRoutineTimer() {},
+    getLocalDateKey: () => day, pauseRemainMsNow: () => paused ? 60_000 : 0,
+    runDailyRoutines: async () => { if (!paused) runs.push(day); },
+    runBadOnceOnStartup: async () => {},
+    workerScheduler: { setIntervalTask: (_key, _ms, fn) => { tick = fn; } },
+  };
+  vm.createContext(ctx); vm.runInContext(actualFunction('core/worker.js', 'startDailyRoutineTimer'), ctx);
+  ctx.startDailyRoutineTimer(); await Promise.resolve();
+  if (!pausedAtStartup) { paused = true; day = 'synthetic-day-two'; }
+  tick(); await Promise.resolve();
+  assert.equal(runs.length, pausedAtStartup ? 0 : 1);
+  paused = false; tick(); await Promise.resolve();
+  assert.equal(runs.length, pausedAtStartup ? 1 : 2);
+  assert.equal(runs.at(-1), day);
+  tick(); await Promise.resolve();
+  assert.equal(runs.length, pausedAtStartup ? 1 : 2, 'same-day completion is not replayed');
+});
