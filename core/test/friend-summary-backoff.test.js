@@ -230,6 +230,7 @@ function workerEntry(h) {
     STEAL_IDLE_MS: 60000, OWN_HARVEST_RESERVE_MS: 10000,
     PRIORITY_SUMMARY_FLOOR_MIN_MS: 60000, PRIORITY_SUMMARY_FLOOR_MAX_MS: 120000,
     getPauseRemainMs: () => h.state.pause, markIdleQuietUntil: () => {}, pauseAceReports: () => {}, resumeAceReports: () => {},
+    getIdleProtectionUntil: () => 0,
     formatIdleRemain: String, log: () => {}, getAutomation: () => h.state.automation,
     ownHarvestDueAt: () => h.state.ownDue, armOwnHarvestGuard: () => {},
     nextScheduledStealAt: () => sandbox.nextStealRunAt,
@@ -648,13 +649,18 @@ function realGovernedSender(governor, state) {
   assert.ok(from > 0 && to > from);
   const timers = new Map();
   const sandbox = { requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
+    process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
+    getStoreModule: () => ({ getPauseRemainMs: () => 0 }),
     ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, Date,
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, { delay, fn }), clear: key => timers.delete(key) },
     isConnected: () => true, sendMsg: async (_service, method, _body, callback) => {
       state.actualSends.push(method); callback(null, Buffer.alloc(0), {}); return true;
     },
   };
-  const send = vm.runInNewContext(`${src.slice(from, to)  }\n;sendMsgAsync`, sandbox, { filename: 'network.js#actual-governor-constructor' });
+  const pauseFrom = src.indexOf('function businessPauseError(');
+  const pauseTo = src.indexOf('async function sendMsg(', pauseFrom);
+  assert.ok(pauseFrom > 0 && pauseTo > pauseFrom);
+  const send = vm.runInNewContext(`${src.slice(pauseFrom, pauseTo)}\n${src.slice(from, to)  }\n;sendMsgAsync`, sandbox, { filename: 'network.js#actual-governor-constructor' });
   return { send, timers };
 }
 

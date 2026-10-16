@@ -242,14 +242,37 @@ async function encodeMsg(serviceName, methodName, bodyBytes, clientSeqValue) {
     return types.GateMessage.encode(msg).finish();
 }
 
+function businessPauseError(serviceName, methodName) {
+    // Exact connection-maintenance methods only; no method-name-only exemption.
+    if (serviceName === 'gamepb.userpb.UserService'
+        && (methodName === 'Heartbeat' || methodName === 'Login')) return null;
+    const remain = getStoreModule().getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
+    if (!(remain > 0)) return null;
+    const error = new Error('当前处于静默或重点防护，业务请求已暂停，请到点后重试');
+    error.code = 'LOCAL_BUSINESS_PAUSED';
+    error.pauseRemainMs = remain;
+    return error;
+}
+
 async function sendMsg(serviceName, methodName, bodyBytes, callback) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         log('系统', '[WS] 连接未打开');
         return false;
     }
+    const pausedBeforeEncoding = businessPauseError(serviceName, methodName);
+    if (pausedBeforeEncoding) {
+        if (callback) callback(pausedBeforeEncoding);
+        return false;
+    }
     const seq = clientSeq;
     clientSeq += 1;
     const encoded = await encodeMsg(serviceName, methodName, bodyBytes, seq);
+    // Encoding awaits encryption; a pause may begin while this request is queued.
+    const pausedBeforeSend = businessPauseError(serviceName, methodName);
+    if (pausedBeforeSend) {
+        if (callback) callback(pausedBeforeSend);
+        return false;
+    }
     if (callback) pendingCallbacks.set(seq, callback);
     // ws.send(encoded);
     try {
@@ -267,6 +290,8 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
+        const paused = businessPauseError(serviceName, methodName);
+        if (paused) { reject(paused); return; }
         // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
         // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
         const gate = requestGovernor.checkRequest(serviceName, methodName);
@@ -310,7 +335,7 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
             if (settled) return;
             settled = true;
             if (err) {
-                if (isConnected()) {
+                if (isConnected() && err.code !== 'LOCAL_BUSINESS_PAUSED') {
                     // 只允许调用方豁免明确的服务端业务错误。超时、断线、发送失败仍是
                     // 真实通信异常，不能因为探测模式而从异常统计里消失。
                     const breakerExempt = options.breakerExemptBusinessError === true

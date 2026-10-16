@@ -2,6 +2,7 @@ const process = require('node:process');
 const { parentPort, workerData } = require('node:worker_threads');
 
 const { CONFIG } = require('../config/config');
+const { setIdleProtectionUntil, getIdleProtectionUntil, planIdleProtection } = require('../utils/idle-protection');
 const {
     gaussianInt,
     randInt,
@@ -267,7 +268,7 @@ function getLocalDateKey() {
 // ==================== 每日任务 ====================
 
 async function runDailyRoutines(force = false) {
-    if (!loginReady || friendSyncPaused) return;
+    if (!loginReady || friendSyncPaused || pauseRemainMsNow() > 0) return;
     try {
         await runDailyRoutineStep('email_rewards', checkAndClaimEmails, getEmailDailyState, force);
         await runDailyRoutineStep('daily_share', performDailyShare, getShareDailyState, force);
@@ -313,7 +314,7 @@ function stopMysteryShopAutoBuyTimer() {
 }
 
 function runMysteryShopAutoBuy() {
-    if (!loginReady || getAutomation().mystery_shop_auto_buy !== true) return Promise.resolve();
+    if (!loginReady || pauseRemainMsNow() > 0 || getAutomation().mystery_shop_auto_buy !== true) return Promise.resolve();
     const { checkAndAutoBuyMysteryShop } = require('../services/mystery-shop');
     return checkAndAutoBuyMysteryShop();
 }
@@ -425,10 +426,11 @@ async function runFarmTick(autoConfig) {
         const horizon = nextIdleHorizonMs();
         const nap = idleNapMs(horizon, patrol, {
             maxSleepMs: idleMaxSleepMs(),
+            minSleepMs: idleMinSleepMs(),
             activeMs: effectiveWakeBeforeMs(),
         });
         const nextDelay = capDelayByMatureInMs(nap, matureMs);
-        const normalDelay = matureMs > 0 && matureMs < nextDelay
+        const normalDelay = nextDelay >= 60_000 || (matureMs > 0 && matureMs < nextDelay)
             ? nextDelay
             : maybeStretchDelay(nextDelay);
         const delay = Math.max(normalDelay, ordinarySlowdownFloorMs('farm'));
@@ -470,6 +472,7 @@ async function runHelpTick(autoConfig) {
         const horizon = nextIdleHorizonMs();
         const nap = idleNapMs(horizon, patrol, {
             maxSleepMs: idleMaxSleepMs(),
+            minSleepMs: idleMinSleepMs(),
             activeMs: effectiveWakeBeforeMs(),
         });
         const delay = Math.max(nap, ordinarySlowdownFloorMs('help'));
@@ -504,9 +507,12 @@ function stealRediscoveryDelayMs() {
 
 function idleMaxSleepMs() {
     const minutes = Number((getFriendQuietHours() || {}).maxSleepMinutes) || 120;
-    // 单次睡眠封顶 10 分钟（下限 1 分钟，idleNapMs 在区间内随机取）：
-    // 勤醒来重估时刻表，防催熟/估算偏差睡过头
-    return Math.max(1, Math.min(10, minutes)) * 60 * 1000;
+    return Math.max(1, Math.min(720, minutes)) * 60 * 1000;
+}
+
+function idleMinSleepMs() {
+    const minutes = Number((getFriendQuietHours() || {}).minSleepMinutes) || 1;
+    return Math.min(idleMaxSleepMs(), Math.max(1, Math.min(720, minutes)) * 60 * 1000);
 }
 
 function idleWakeBeforeMs() {
@@ -782,6 +788,7 @@ function armSentinelPreEnter(armed) {
         sentinelPreEnterTimer = null;
         const stillArmed = sentinelArmedFor && Number(sentinelArmedFor.gid) === gid;
         if (!stillArmed) return;
+        if (pauseRemainMsNow() > 0) return;
         // 真实 Enter 发起记账（2026-10-07 陈旧名单治理）：仅重点名单目标返回
         // attempt，该次 Enter 的结局在此登记（偷取复用分支不再重复记账）。
         // 惰性 require 与请求治理紧急通道同款写法，vm 沙箱测试可注入桩。
@@ -819,6 +826,12 @@ function armSentinelPreEnter(armed) {
 /** 好友哨兵到点动作：走偷菜快路径（含抢收快路径逻辑）。 */
 async function runSentinelStrike() {
     const armed = sentinelArmedFor;
+    const pauseRemain = pauseRemainMsNow();
+    if (armed && pauseRemain > 0) {
+        sentinelTimer = setTimeout(runSentinelStrike, pauseRemain + 100);
+        sentinelTimer.unref?.();
+        return;
+    }
     sentinelTimer = null;
     sentinelArmedFor = null;
     if (!armed || friendSyncPaused) return;
@@ -988,12 +1001,13 @@ async function runUnifiedTick() {
     // 免打扰：偷菜/农场/帮助/推送全部不做，只等唤醒
     const pauseRemain = pauseRemainMsNow();
     if (pauseRemain > 0) {
-        markIdleQuietUntil(0);
+        markIdleQuietUntil(Date.now() + pauseRemain);
         pauseAceReports();
         const now = Date.now();
         if (now - lastPauseAnnounceAt > 10 * 60_000) {
             lastPauseAnnounceAt = now;
-            log('系统', `免打扰中，${formatIdleRemain(pauseRemain)}内不做任何检测`, {
+            const idleProtected = getIdleProtectionUntil(now) > now;
+            log('系统', `${idleProtected ? '重点防护中' : '免打扰中'}，${formatIdleRemain(pauseRemain)}内暂停业务请求`, {
                 module: 'system',
                 event: '免打扰',
                 pauseRemainMs: pauseRemain,
@@ -1065,7 +1079,30 @@ function scheduleUnifiedNextTick() {
     }
 
     const now = Date.now();
-    const pauseRemain = pauseRemainMsNow();
+    let pauseRemain = pauseRemainMsNow();
+    if (pauseRemain <= 0) {
+        const until = planIdleProtection({
+            enabled: getFriendQuietHours().idleProtectionEnabled,
+            now, farmAt: nextFarmRunAt, helpAt: nextHelpRunAt,
+            ownDueAt: ownHarvestDueAt(), stealDueAt: resolveStealDueAt(now),
+            horizonMs: nextIdleHorizonMs(now), activeMs: effectiveWakeBeforeMs(now),
+        });
+        if (until > now) {
+            setIdleProtectionUntil(until);
+            pauseRemain = until - now;
+            log('系统', `重点防护：空闲期间暂停业务请求，${formatIdleRemain(pauseRemain)}后恢复`, {
+                module: 'system', event: '重点防护', sleepMs: pauseRemain, until,
+            });
+        }
+    }
+    if (pauseRemain > 0) {
+        markIdleQuietUntil(now + pauseRemain);
+        pauseAceReports();
+        workerScheduler.setTimeoutTask('unified_next_tick', pauseRemain, async () => {
+            try { await runUnifiedTick(); } finally { scheduleUnifiedNextTick(); }
+        });
+        return;
+    }
     const stealAt = pauseRemain > 0 ? now + pauseRemain : nextScheduledStealAt();
     const nearest = Math.min(
         Number(nextFarmRunAt) || now + 8000,
@@ -1095,6 +1132,8 @@ function startUnifiedScheduler() {
 }
 
 function stopUnifiedScheduler() {
+    setIdleProtectionUntil(0);
+    markIdleQuietUntil(0);
     unifiedSchedulerRunning = false;
     farmTaskRunning = false;
     helpTaskRunning = false;
@@ -1114,6 +1153,7 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
         persist: false,
         accountId
     });
+    if (getFriendQuietHours().idleProtectionEnabled !== true) setIdleProtectionUntil(0);
 
     // 配置侧意图 reconcile（2026-10-07 陈旧名单治理）：配置应用完成后、
     // 进入调度前消费用户恢复/移除意图（更新意图先于一切暂停判定）。
@@ -1533,6 +1573,8 @@ function onFriendLandsChanged(info) {
         // 证据——进活跃表后巡田自动收紧到 45-75s，施肥证据则直接进 HOT。
         require('../services/friend-activity').recordActivity(hostGid, Date.now(), 'lands_push',
             `${externalLands.length} lands changed`);
+        // Passive evidence may update, but a pause must not dispatch online/push actions.
+        if (pauseRemainMsNow() > 0) return;
         // 推送即出手窗口（2026-09-23 用户定标）：不等 1s 档 tick，直接把该好友
         // 的巡田拉近到 ~300ms 后——推送→进门→偷 的端到端压到 1 秒内。
         require('../services/friend').pullWatchlistPollToNow(hostGid, 300);
@@ -2167,6 +2209,14 @@ function syncStatus() {
         : { active: false, remainSec: 0, recommendedDelaySec: 0 };
     // 兼容旧面板字段：新机制不再存在整号硬熔断。
     stats.breaker = { active: false, remainSec: 0 };
+    const protectionUntil = getFriendQuietHours().idleProtectionEnabled === true
+        ? getIdleProtectionUntil(now) : 0;
+    stats.idleProtection = {
+        enabled: getFriendQuietHours().idleProtectionEnabled === true,
+        active: protectionUntil > now,
+        remainSec: Math.max(0, Math.ceil((protectionUntil - now) / 1000)),
+        until: protectionUntil,
+    };
 
     // 重点监控好友的成熟倒计时快照（面板展示 + 设置参考）
     stats.watchlistRipe = require('../services/friend').getWatchlistRipeSnapshots(now);

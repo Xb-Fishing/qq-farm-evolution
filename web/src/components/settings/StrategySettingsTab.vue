@@ -40,10 +40,12 @@ interface StrategySettings {
     enabled: boolean
     start: string
     end: string
+    minSleepMinutes: number
     maxSleepMinutes: number
     wakeBeforeMinutes: number
     watchlistWakeBeforeMinutes: number
     pauseUntil: string
+    idleProtectionEnabled: boolean
   }
 }
 

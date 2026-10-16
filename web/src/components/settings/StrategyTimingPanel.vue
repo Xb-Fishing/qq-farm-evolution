@@ -20,9 +20,11 @@ interface StrategyTimingSettings {
     start: string
     end: string
     maxSleepMinutes: number
+    minSleepMinutes: number
     wakeBeforeMinutes: number
     watchlistWakeBeforeMinutes: number
     pauseUntil: string
+    idleProtectionEnabled: boolean
   }
 }
 
@@ -159,12 +161,19 @@ async function restartAccount() {
       />
     </div>
 
-    <div class="flex flex-wrap items-center gap-4 border-t pt-3 dark:border-gray-700">
+    <div class="idle-rest-settings flex flex-wrap items-center gap-4 border-t pt-3 dark:border-gray-700">
+      <BaseInput
+        v-model.number="settings.friendQuietHours.minSleepMinutes"
+        label="每次最短休息（分钟）"
+        type="number"
+        min="1"
+        :max="settings.friendQuietHours.maxSleepMinutes"
+      />
       <BaseInput
         v-model.number="settings.friendQuietHours.maxSleepMinutes"
-        label="最长歇多久 (分钟)"
+        label="每次最长休息（分钟）"
         type="number"
-        min="10"
+        :min="settings.friendQuietHours.minSleepMinutes"
         max="720"
       />
       <BaseInput
@@ -182,8 +191,17 @@ async function restartAccount() {
         max="360"
       />
       <p class="w-full text-xs text-gray-500 dark:text-gray-400">
-        成熟还早时随机歇 1 分钟到「最长歇多久」。醒了先刷新好友成熟时刻，再决定要不要继续歇。
-        距成熟不足「开始盯化肥」的分钟数就不再长睡，只按正常节奏刷列表。确认有人施肥后才几秒进一次门盯梢；到点照样偷菜。
+        每次在你设置的最短与最长分钟数之间随机休息，没有额外的 10 分钟上限。
+        若休息会跨入提前观察窗口，则缩短休息；不足最短时长时按正常节奏巡查。设置相同的最短和最长值可固定休息时长。
+      </p>
+      <BaseSwitch
+        v-model="settings.friendQuietHours.idleProtectionEnabled"
+        label="重点防护"
+        class="min-h-11"
+      />
+      <p class="w-full text-xs text-gray-500 dark:text-gray-400">
+        开启后，空闲歇息期间暂停农场、偷菜、帮助和重点好友动作，保留连接心跳，到点恢复；关闭后使用原有空闲策略。
+        设置手动保存；关掉开关解除自动防护，不清除手动静默时间。
       </p>
       <div class="flex flex-wrap items-end gap-4">
         <div class="flex flex-col gap-1">
@@ -272,3 +290,9 @@ async function restartAccount() {
     </div>
   </div>
 </template>
+
+<style scoped>
+.idle-rest-settings :deep(.base-input) {
+  min-height: 42px;
+}
+</style>

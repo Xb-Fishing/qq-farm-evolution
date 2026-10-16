@@ -1,6 +1,6 @@
 const { PlantPhase } = require('../config/config');
 const { getPlantById } = require('../config/gameConfig');
-const { getPlantBlacklist, isAutomationOn } = require('../models/store');
+const { getPlantBlacklist, isAutomationOn, getPauseRemainMs } = require('../models/store');
 const { getUserState } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, sleep } = require('../utils/utils');
 const {
@@ -669,6 +669,7 @@ function fastLaneDailyText(got, targets, lands) {
 }
 
 async function fastLaneSteal(gid, lands) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   const id = toNum(gid);
   if (!id || !isPriorityGid(id)) return;
   // 在线闸门（用户定标）：离线时失败率高、也无施肥竞速意义
@@ -687,6 +688,7 @@ async function fastLaneSteal(gid, lands) {
   // 串行化：同好友同一时刻只 1 个在途 Harvest，后到的地块并进下一次
   const prev = fastLaneInFlight.get(id) || Promise.resolve();
   const run = prev.catch(() => undefined).then(async () => {
+    if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
     try {
       const reply = await stealHarvest(id, targets);
       const got = sumHarvestItemCount(reply);

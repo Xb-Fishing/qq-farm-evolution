@@ -58,7 +58,7 @@ function createStrategySettings() {
     plantOrderRandom: true,
     plantDelaySeconds: 2,
     intervals: { farmMin: 8, farmMax: 12, helpMin: 30, helpMax: 35, stealMin: 25, stealMax: 30 },
-    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '' },
+    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
   }
 }
 

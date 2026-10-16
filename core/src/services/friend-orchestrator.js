@@ -881,6 +881,7 @@ function trackBadVisitResult(result, target, context = {}) {
  * Called by the loop or triggered externally.
  */
 async function checkFriends(options = {}) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return false;
   const roundSeq = friendReadLifecycleSeq;
   const userState = getUserState();
   if (!isAutomationOn('friend') || !isConnected()) return false;

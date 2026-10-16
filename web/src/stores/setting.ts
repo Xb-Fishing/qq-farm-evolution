@@ -49,10 +49,12 @@ export interface FriendQuietHoursConfig {
   enabled?: boolean
   start?: string
   end?: string
+  minSleepMinutes?: number
   maxSleepMinutes?: number
   wakeBeforeMinutes?: number
   watchlistWakeBeforeMinutes?: number
   pauseUntil?: string
+  idleProtectionEnabled?: boolean
 }
 
 export interface KickoutReloginConfig {
@@ -168,7 +170,7 @@ export const useSettingStore = defineStore('setting', () => {
     bagSeedFallbackStrategy: 'level',
     autoAcceptFriendMinLevel: 0,
     intervals: {},
-    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '' },
+    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
     kickoutRelogin: createDefaultKickoutRelogin(),
     automation: {},
     autoCodeRefresh: createDefaultAutoCodeRefresh(),
@@ -204,7 +206,7 @@ export const useSettingStore = defineStore('setting', () => {
       bagSeedFallbackStrategy: 'level',
       autoAcceptFriendMinLevel: 0,
       intervals: {},
-      friendQuietHours: { enabled: false, start: '23:00', end: '07:00', maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '' },
+      friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
       kickoutRelogin: createDefaultKickoutRelogin(),
       automation: {},
       autoCodeRefresh: createDefaultAutoCodeRefresh(),
@@ -246,10 +248,12 @@ export const useSettingStore = defineStore('setting', () => {
           enabled: false,
           start: '23:00',
           end: '07:00',
+          minSleepMinutes: 1,
           maxSleepMinutes: 120,
           wakeBeforeMinutes: 66,
           watchlistWakeBeforeMinutes: 122,
           pauseUntil: '',
+          idleProtectionEnabled: false,
           ...(d.friendQuietHours || {}),
         }
         settings.value.kickoutRelogin = {

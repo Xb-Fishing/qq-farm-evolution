@@ -287,12 +287,15 @@ const DEFAULT_QUIET_HOURS = {
     start: '01:00',
     end: '07:30',
     maxSleepMinutes: 120,
+    minSleepMinutes: 1,
     wakeBeforeMinutes: 66,
     // 重点监控好友的盯梢窗口（分钟）。化肥一次最多催熟约 2 小时，默认 122；
     // 普通好友用 wakeBeforeMinutes。可独立调大调小
     watchlistWakeBeforeMinutes: 122,
     // 自定义免打扰：到这个时间点之前完全不做任何检测（偷菜/农场/帮助/巡田）
-    pauseUntil: ''
+    pauseUntil: '',
+    // 空闲歇息期间的重点防护：暂停动作、保留心跳；默认关闭
+    idleProtectionEnabled: false
 };
 
 /** 解析 pauseUntil 为 Date；无效/已过期返回 null */
@@ -312,7 +315,7 @@ const DEFAULT_KICKOUT_RELOGIN = {
 function normalizeMaxSleepMinutes(raw, fallback = 120) {
     const n = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(n)) return fallback;
-    return Math.max(10, Math.min(12 * 60, n));
+    return Math.max(1, Math.min(12 * 60, n));
 }
 
 function normalizeWakeBeforeMinutes(raw, fallback = 66) {
@@ -330,14 +333,15 @@ function normalizeWatchlistWakeBeforeMinutes(raw, fallback = 122) {
 function normalizeFriendQuietHours(input, prev = DEFAULT_QUIET_HOURS) {
     const src = input && typeof input === 'object' ? input : {};
     const base = prev && typeof prev === 'object' ? prev : DEFAULT_QUIET_HOURS;
+    const maxSleepMinutes = normalizeMaxSleepMinutes(src.maxSleepMinutes !== undefined
+        ? src.maxSleepMinutes : base.maxSleepMinutes, DEFAULT_QUIET_HOURS.maxSleepMinutes);
     return {
         enabled: src.enabled !== undefined ? !!src.enabled : !!base.enabled,
         start: normalizeTimeString(src.start, base.start || DEFAULT_QUIET_HOURS.start),
         end: normalizeTimeString(src.end, base.end || DEFAULT_QUIET_HOURS.end),
-        maxSleepMinutes: normalizeMaxSleepMinutes(
-            src.maxSleepMinutes !== undefined ? src.maxSleepMinutes : base.maxSleepMinutes,
-            DEFAULT_QUIET_HOURS.maxSleepMinutes
-        ),
+        maxSleepMinutes,
+        minSleepMinutes: Math.min(maxSleepMinutes, normalizeMaxSleepMinutes(src.minSleepMinutes !== undefined
+            ? src.minSleepMinutes : base.minSleepMinutes, DEFAULT_QUIET_HOURS.minSleepMinutes)),
         wakeBeforeMinutes: normalizeWakeBeforeMinutes(
             src.wakeBeforeMinutes !== undefined ? src.wakeBeforeMinutes : base.wakeBeforeMinutes,
             DEFAULT_QUIET_HOURS.wakeBeforeMinutes
@@ -346,7 +350,10 @@ function normalizeFriendQuietHours(input, prev = DEFAULT_QUIET_HOURS) {
             src.watchlistWakeBeforeMinutes !== undefined ? src.watchlistWakeBeforeMinutes : base.watchlistWakeBeforeMinutes,
             DEFAULT_QUIET_HOURS.watchlistWakeBeforeMinutes
         ),
-        pauseUntil: normalizePauseUntil(src.pauseUntil !== undefined ? src.pauseUntil : (base.pauseUntil || ''))
+        pauseUntil: normalizePauseUntil(src.pauseUntil !== undefined ? src.pauseUntil : (base.pauseUntil || '')),
+        idleProtectionEnabled: src.idleProtectionEnabled !== undefined
+            ? src.idleProtectionEnabled === true
+            : base.idleProtectionEnabled === true
     };
 }
 
@@ -1451,8 +1458,12 @@ function getKickoutRelogin(accountId) {
 
 /** 免打扰剩余毫秒；未设置/已过期返回 0 */
 function getPauseRemainMs(accountId) {
-    const until = parsePauseUntil(getFriendQuietHours(accountId).pauseUntil);
-    return until ? until.getTime() - Date.now() : 0;
+    const quiet = getFriendQuietHours(accountId);
+    const until = parsePauseUntil(quiet.pauseUntil);
+    const now = Date.now();
+    const idleUntil = quiet.idleProtectionEnabled === true
+        ? require('../utils/idle-protection').getIdleProtectionUntil(now) : 0;
+    return Math.max(0, (until ? until.getTime() : 0) - now, idleUntil - now);
 }
 
 function getKnownFriendGids(accountId) {

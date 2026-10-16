@@ -73,13 +73,14 @@ function idleNapMs(nextEventMs, patrolMs, options = {}) {
   const patrol = Math.max(0, Math.floor(Number(patrolMs) || 0));
   const horizon = Math.max(0, Math.floor(Number(nextEventMs) || 0));
   const maxSleep = Math.max(MIN_SLEEP_MS, Math.floor(Number(options.maxSleepMs) || DEFAULT_MAX_SLEEP_MS));
+  const minSleep = Math.min(maxSleep, Math.max(MIN_SLEEP_MS, Math.floor(Number(options.minSleepMs) || MIN_SLEEP_MS)));
   const active = Math.max(0, Math.floor(Number(options.activeMs) || IDLE_ACTIVE_MS));
-  if (horizon <= 0) return randInt(MIN_SLEEP_MS, maxSleep);
+  if (horizon <= 0) return randInt(minSleep, maxSleep);
   if (horizon <= active) return patrol;
   const room = horizon - active;
   const hi = Math.min(maxSleep, room);
-  if (hi < MIN_SLEEP_MS) return patrol;
-  return randInt(MIN_SLEEP_MS, hi);
+  if (hi < minSleep) return patrol;
+  return randInt(minSleep, hi);
 }
 
 let stealDueAt = 0;
