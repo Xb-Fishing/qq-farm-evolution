@@ -66,7 +66,16 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const hash = x => crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
   const selectedPlants = new Set(cases.map(x => x[1])); const selectedFruits = new Set(cases.map(x => x[2]));
   assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
-  assert.equal(hash(items.filter(x => !selectedFruits.has(x.id))), '4baaa0138392f234b1a06ca7dd2161537b8de7cdf9ce8932e5bd950fb072ebe6');
+  // Preserve the original reviewed rows/hash while permitting the separately
+  // verified reward additions and this one resolved image-provenance annotation.
+  const rewardAdditions = new Set([2163, 202011, 203012, 205011, 206011, 207012, 208012,
+    210031, 210032, 210033, 210034, 210035, 210036, 210037]);
+  const originalItems = items.filter(x => !selectedFruits.has(x.id) && !rewardAdditions.has(x.id))
+    .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
+      '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
+      '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
+    ) });
+  assert.equal(hash(originalItems), '4baaa0138392f234b1a06ca7dd2161537b8de7cdf9ce8932e5bd950fb072ebe6');
   for (const [seed, plant] of cases) assert.equal(plants.find(x => x.id === plant && x.seed_id === seed)?.size, 1);
   assert.equal(config.getPlantBySeedId(29005).size, 2); assert.equal(config.getPlantBySeedId(29004).size, 2);
   assert.equal(config.getPlantByFruitId(1040525), undefined, 'golden fruit does not become a seed-bearing Plant');
