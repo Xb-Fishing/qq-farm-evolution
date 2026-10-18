@@ -868,6 +868,48 @@
       "sha256": "ff9f68ca50095803f2d81a58989ded9b1fa33a7c496f528715037ca7f6814396",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 1040165,
+      "file": "1040165_gold_Crop_165.png",
+      "assetName": "gold/Crop_165",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040165.png",
+      "gitBlob": "f90765c0e4e0b38206429aae7cb5f55c8ef83e79",
+      "sha256": "6b570b0e384bf5fde7cc0549b30f7308699448f9a986a5136cc5878a3fe76ebd",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 1040526,
+      "file": "1040526_gold_Crop_526.png",
+      "assetName": "gold/Crop_526",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040526.png",
+      "gitBlob": "2c74e15835cb1ae7b4ace60e1a48915e571b99e7",
+      "sha256": "a6b4d053ac29dcc6347a5e44603f53a4cfb690263df8ca60c700ff8446494da5",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 1049005,
+      "file": "1049005_gold_Crop_9005.png",
+      "assetName": "gold/Crop_9005",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1049005.png",
+      "gitBlob": "02f24e93fd2cb92cd866b9f2156c78d8a57d65db",
+      "sha256": "f29ba6766aecd1244678f161fc8c5a8edc92672caef2ac41003db861a7ed8efb",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
