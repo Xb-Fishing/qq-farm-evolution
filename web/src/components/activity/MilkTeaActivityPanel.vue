@@ -20,8 +20,9 @@ const durationId = ref(1)
 const targetGid = ref('')
 const slotIndex = ref(0)
 const boostCount = ref(1)
-const fruitUid = ref('')
-const recipeId = ref(2)
+const recipeId = ref(0)
+const selectedFruitUids = ref<string[]>([])
+const craftNotice = ref('')
 const page = ref(1)
 const day = ref('')
 const interactionType = ref(1)
@@ -45,6 +46,20 @@ const shopStarted = computed(() => Number(props.activity?.summary?.shopOpenAt) >
 const validShopName = computed(() => Array.from(shopName.value.trim()).length >= 2 && Array.from(shopName.value.trim()).length <= 8)
 const noCashierReward = computed(() => Array.isArray(shop.value?.pendingRewards) && shop.value.pendingRewards.length === 0)
 const noClaimableWages = computed(() => Array.isArray(work.value?.slips) && !work.value.slips.some((slip: any) => slip.wageStatus === 1))
+const craftableFruits = computed(() => (workshop.value?.fruits || []).filter((fruit: any) =>
+  !fruit.locked && /^[1-9]\d*$/.test(String(fruit.uid)) && /^[1-9]\d*$/.test(String(fruit.count))
+  && (workshop.value?.recipes || []).some((recipe: any) => recipe.unlocked === true && Number(recipe.fruitItemId) > 0 && Number(recipe.fruitItemId) === Number(fruit.itemId))))
+const visibleFruits = computed(() => craftableFruits.value.filter((fruit: any) => !recipeId.value
+  || (workshop.value?.recipes || []).some((recipe: any) => Number(recipe.recipeId) === recipeId.value && Number(recipe.fruitItemId) === Number(fruit.itemId))))
+const selectedFruits = computed(() => craftableFruits.value.filter((fruit: any) => selectedFruitUids.value.includes(String(fruit.uid))))
+const selectedFruitCount = computed(() => selectedFruits.value.reduce((sum: bigint, fruit: any) => sum + BigInt(fruit.count), 0n).toString())
+watch(() => JSON.stringify(workshop.value), (_current, previous) => {
+  selectedFruitUids.value = []
+  if (previous && pending.value?.action === 'craft') {
+    closeConfirmation()
+    craftNotice.value = '工坊或果实数量已更新，请重新选择并确认。'
+  }
+})
 watch(() => props.activity?.exchangeShop?.items?.map(goods => goods.id) || [], (ids) => {
   const values: Record<number, number | string> = {}
   for (const id of ids) values[id] = exchangeCounts.value[id] ?? 1
@@ -61,13 +76,27 @@ watch(() => freeSlots.value.map((slot: any) => Number(slot.slotIndex)).filter((i
     slotIndex.value = ids[0]!
 }, { immediate: true })
 watch(() => (workshop.value?.recipes || []).filter((recipe: any) => recipe.unlocked === true).map((recipe: any) => Number(recipe.recipeId)).filter((id: number) => Number.isSafeInteger(id) && id > 0), (ids: number[]) => {
-  if (ids.length && !ids.includes(recipeId.value))
-    recipeId.value = ids[0]!
+  if (recipeId.value && !ids.includes(recipeId.value))
+    recipeId.value = 0
 }, { immediate: true })
 watch(() => (work.value?.myShift?.interactPreviews || []).map((preview: any) => Number(preview.interactionType)).filter((id: number) => Number.isSafeInteger(id) && id > 0), (ids: number[]) => {
   if (ids.length && !ids.includes(interactionType.value))
     interactionType.value = ids[0]!
 }, { immediate: true })
+function selectVisibleFruits() {
+  selectedFruitUids.value = [...new Set([...selectedFruitUids.value, ...visibleFruits.value.map((fruit: any) => String(fruit.uid))])]
+}
+function prepareCraft(all = false) {
+  if (busy.value || settle.value)
+    return
+  const fruits = all ? craftableFruits.value : selectedFruits.value
+  if (!fruits.length || fruits.length > 100)
+    return
+  const confirmedFruits = fruits.map((fruit: any) => ({ uid: String(fruit.uid), itemId: Number(fruit.itemId), count: String(fruit.count) }))
+  const total = fruits.reduce((sum: bigint, fruit: any) => sum + BigInt(fruit.count), 0n).toString()
+  craftNotice.value = ''
+  prepare('craft', { fruitUids: confirmedFruits.map((fruit: any) => fruit.uid), confirmedFruits }, `确认批量制作奶茶？将消耗 ${fruits.length} 组、共 ${total} 个果实：${fruits.map((fruit: any) => `${fruit.name || '果实'} × ${fruit.count}`).join('；')}。所选果实按整组全部消耗，实际杯数以服务端结果为准。`)
+}
 function prepare(action: string, input: Record<string, unknown> = {}, text = '确认执行此操作？') {
   returnFocus = typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null
   pending.value = { action, input, text }
@@ -260,16 +289,36 @@ function exchange(goods: ExchangeGoods) {
           背包中暂无可加工的活动果实。
         </p>
         <div class="milk-fields">
-          <label class="milk-field">配方<select v-model.number="recipeId" aria-label="配方" class="milk-input"><option v-for="recipe in workshop?.recipes || []" :key="recipe.recipeId" :value="recipe.recipeId" :disabled="!recipe.unlocked">{{ recipe.name || '配方待确认' }} · 库存 {{ number(recipe.stockCups) }}</option></select></label><label class="milk-field">果实<select v-model="fruitUid" aria-label="加工果实" class="milk-input"><option value="">请选择</option><option v-for="fruit in workshop?.fruits || []" :key="fruit.uid" :value="fruit.uid" :disabled="fruit.locked">{{ fruit.name || '果实' }} × {{ number(fruit.count) }}{{ fruit.locked ? '（已锁定）' : '' }}</option></select></label>
+          <label class="milk-field">配方<select v-model.number="recipeId" aria-label="配方" class="milk-input"><option :value="0">全部可用配方</option><option v-for="recipe in workshop?.recipes || []" :key="recipe.recipeId" :value="recipe.recipeId" :disabled="!recipe.unlocked">{{ recipe.name || '配方待确认' }} · 库存 {{ number(recipe.stockCups) }}</option></select></label>
         </div>
+        <div class="milk-fruit-grid" role="group" aria-label="制作材料">
+          <label v-for="fruit in visibleFruits" :key="fruit.uid" class="milk-fruit-choice">
+            <input v-model="selectedFruitUids" type="checkbox" :value="String(fruit.uid)" :aria-label="`选择${fruit.name || '果实'}，${fruit.count}个`" :disabled="busy || settle">
+            <span>{{ fruit.name || '果实' }} <strong>× {{ fruit.count }}</strong></span>
+          </label>
+        </div>
+        <p v-if="workshop && !visibleFruits.length" class="milk-notice">
+          当前配方暂无可用果实；锁定果实与未解锁配方不会参与制作。
+        </p>
+        <p class="milk-muted">
+          已选 {{ selectedFruits.length }} 组，共 {{ selectedFruitCount }} 个果实。每组按背包全部数量消耗，变异产量以制作结果为准。
+        </p>
         <div class="milk-actions">
-          <BaseButton class="milk-action" variant="primary" :disabled="busy || settle || !fruitUid" @click="prepare('craft', { recipeId: Number(recipeId), fruitUids: [fruitUid] }, '确认加工所选果实条目？请核对条目数量，加工会消耗该条目。')">
-            加工所选果实
+          <BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !visibleFruits.length" @click="selectVisibleFruits">
+            全选当前配方
+          </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !selectedFruitUids.length" @click="selectedFruitUids = []">
+            清空选择
+          </BaseButton><BaseButton class="milk-action" variant="primary" :disabled="busy || settle || !selectedFruits.length" @click="prepareCraft()">
+            制作所选果实
+          </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !craftableFruits.length" @click="prepareCraft(true)">
+            一键制作全部
           </BaseButton><BaseButton class="milk-action" variant="secondary" :loading="queries.workshop.loading" :disabled="busy || queries.workshop.loading" @click="emit('query', 'workshop', {})">
             查询工坊与果实
           </BaseButton>
-        </div><p class="milk-muted">
-          已锁定或失效条目不能加工，执行前会再次确认。
+        </div><p v-if="craftNotice" class="milk-notice" role="status">
+          {{ craftNotice }}
+        </p><p class="milk-muted">
+          选择与全选不会发请求；确认后一次提交全部所选条目。执行前会重新核对配方、锁定状态和整组数量。
         </p><p v-if="queries.workshop.error" class="milk-error" role="alert">
           {{ queries.workshop.error }}
         </p>
@@ -476,6 +525,32 @@ function exchange(goods: ExchangeGoods) {
 </template>
 
 <style scoped>
+.milk-fruit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 8px;
+}
+.milk-fruit-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--milk-border);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.milk-fruit-choice input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--theme-primary);
+}
+.milk-fruit-choice:focus-within {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 2px;
+}
 .milk-panel p {
   overflow-wrap: anywhere;
 }

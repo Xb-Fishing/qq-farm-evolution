@@ -13,8 +13,8 @@ function initialState() {
     gameplay: {
       shop: { available: true, error: '', data: { slots: [], pendingRewards: [{ id: 1041, count: 9 }], secPerCup: 20, nextFullAt: 0 } },
       workshop: { available: true, error: '', data: {
-        recipes: [{ recipeId: 2, name: '甜莓奶茶', unlocked: true, stockCups: 4 }],
-        fruits: [{ uid: '9001', name: '森野甜莓', count: '8', locked: false }],
+        recipes: [{ recipeId: 2, fruitItemId: 40525, name: '甜莓奶茶', unlocked: true, stockCups: 4 }],
+        fruits: [{ uid: '9001', itemId: 40525, name: '森野甜莓', count: '8', locked: false }],
       } },
       work: { available: true, error: '', data: { myShift: null, talentName: '服务', slips: [{ shiftId: '7001', shopName: '测试雇主', finalWage: 40, wageStatus: 1 }] } },
     },

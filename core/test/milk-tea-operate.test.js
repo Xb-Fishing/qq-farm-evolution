@@ -522,13 +522,13 @@ test('收银台/升级/喇叭/工坊加工：前置状态与官方向量', async
     await assert.rejects(run('craft', { fruitUids: ['23563', '23563'] }), business('SEASON_WISH_MILK_TEA_INVALID_INPUT'));
     await assert.rejects(run('craft', { fruitUids: ['23563'], recipeId: 99 }), business('SEASON_WISH_MILK_TEA_INVALID_INPUT'));
     await assert.rejects(run('craft', { fruitUids: ['40404'], recipeId: 2 }), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
-    await assert.rejects(run('craft', { fruitUids: ['23563', '23564'], recipeId: 2 }), business('SEASON_WISH_MILK_TEA_INVALID_INPUT'));
+    await assert.rejects(run('craft', { fruitUids: ['23563', '23564'], recipeId: 2 }), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
     env.operateRequests.length = 0;
     env.scenario.bagItems = [{ id: 40525, count: '7', uid: '23563' }];
     const crafted = await run('craft', { fruitUids: ['23563'], recipeId: 2 });
     assert.equal(crafted.ok, true);
     assert.deepEqual(crafted.craftedCups, { '2': 20 });
-    assert.equal(hex(env.operateRequests[0].buffer), '0895f98fc607103eba0a050a038bb801');
+    assert.equal(hex(env.operateRequests.find(row => row.cmd === 62).buffer), '0895f98fc607103eba0a050a038bb801');
     assert.equal(env.operateRequests.filter(r => r.cmd === 62).length, 1, '加工恰好一次写');
   });
 });
@@ -834,8 +834,6 @@ test('连接/就绪：入口捕获，每个 await 后复查；换连接或失去
   // 雇佣前置读（cmd55）后换连接：零雇佣写
   await withFreshService({ advanceOnCmd: 0, advanceSeconds: 0 }, async (service, env) => {
     env.scenario.bagItems = [{ id: TICKET, count: '500', uid: '1' }];
-    const originalBodies = env.scenario.operateBodies;
-    const swapAfterShopRead = { ...originalBodies };
     // 在 cmd55 回包时换连接：借助 advanceOnCmd 钩子位置的既有机制不可用，直接改网络替身
     let shopReadCount = 0;
     env.network.sendMsgAsync = async (_service, method, payload) => {
@@ -951,7 +949,7 @@ function setupRoutes(provider, options = {}) {
 test('管理路由：鉴权/访问/连接/运行序前置，零上游；业务码与普通错误分层', async () => {
   const providerCalls = [];
   const provider = {
-    getStatus: id => ({ connection: { connected: provider.connected !== false } }),
+    getStatus: _id => ({ connection: { connected: provider.connected !== false } }),
     isAccountRunning: async id => { providerCalls.push(['isAccountRunning', id]); return provider.running !== false; },
     getMilkTeaActivity: async id => { providerCalls.push(['getMilkTeaActivity', id]); return { timing: { phase: 'open' }, marker: 'fresh' }; },
     queryMilkTeaActivity: async (id, kind, params) => { providerCalls.push(['queryMilkTeaActivity', id, kind, params]); return { kind, data: {} }; },
@@ -1224,5 +1222,42 @@ test('标量参数及班次回显：布尔/结构体/缺槽位不可隐式变成
     env.scenario.operateBodies[56].milk_tea_get_hire_list.duration_id=2;
     await assert.rejects(service.runManualMilkTeaAction('hire',{durationId:1,hires:[{slotIndex:0,targetGid:'101'}],confirmedCosts:[{itemId:TICKET,count:'40'}]},env.deps),business('SEASON_WISH_MILK_TEA_NO_STATE'));
     assert.deepEqual(env.operateRequests.map(r=>r.cmd),[55,56]);
+  });
+});
+
+
+test('批量制作整组果实：同配方多组与多配方均只发一次写，确认数量变动零写', async () => {
+  await withFreshService({}, async (service, env) => {
+    const run = input => service.runManualMilkTeaAction('craft', input, env.deps);
+    env.scenario.bagItems = [
+      { id: 40525, uid: '23563', count: '7' },
+      { id: 40525, uid: '23564', count: '9' },
+      { id: 40526, uid: '23565', count: '11' },
+    ];
+    env.scenario.operateBodies[58].milk_tea_get_workshop.recipes.push({ recipe_id: 3, unlocked: true });
+    const confirmedFruits = env.scenario.bagItems.map(item => ({ uid: item.uid, itemId: item.id, count: item.count }));
+    const input = { fruitUids: ['23563', '23564'], recipeId: 2, confirmedFruits: confirmedFruits.slice(0, 2) };
+    await assert.doesNotReject(async () => { assert.equal((await run(input)).ok, true); });
+    assert.deepEqual(env.operateRequests.map(req => req.cmd), [58, 62]);
+    assert.deepEqual(types.MilkTeaOperateRequest.decode(env.operateRequests[1].buffer).milk_tea_craft.fruit_uids.map(String), input.fruitUids);
+    env.operateRequests.length = 0;
+    await assert.doesNotReject(async () => { assert.equal((await run({ fruitUids: confirmedFruits.map(row => row.uid), confirmedFruits })).ok, true); });
+    assert.deepEqual(env.operateRequests.map(req => req.cmd), [58, 62]);
+    assert.deepEqual(types.MilkTeaOperateRequest.decode(env.operateRequests[1].buffer).milk_tea_craft.fruit_uids.map(String), ['23563', '23564', '23565']);
+    for (const change of ['count', 'lock', 'recipe', 'missing']) {
+      env.operateRequests.length = 0;
+      const original = env.scenario.bagItems.map(row => ({ ...row }));
+      if (change === 'count') env.scenario.bagItems[0].count = '8';
+      if (change === 'lock') env.scenario.bagItems[0].locked = true;
+      if (change === 'recipe') env.scenario.operateBodies[58].milk_tea_get_workshop.recipes[1].unlocked = false;
+      if (change === 'missing') env.scenario.bagItems.shift();
+      await assert.rejects(run(input), business(change === 'count' ? 'SEASON_WISH_MILK_TEA_COST_CHANGED' : 'SEASON_WISH_MILK_TEA_INVALID_STATE'));
+      assert.equal(env.operateRequests.filter(row => row.cmd === 62).length, 0);
+      env.scenario.bagItems = original;
+      env.scenario.operateBodies[58].milk_tea_get_workshop.recipes[1].unlocked = true;
+    }
+    for (const fruitUids of [[], ['23563', '23563'], [''], ['-1'], ['9223372036854775808']]) {
+      await assert.rejects(run({ fruitUids }), business('SEASON_WISH_MILK_TEA_INVALID_INPUT'));
+    }
   });
 });

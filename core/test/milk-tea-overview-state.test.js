@@ -72,6 +72,7 @@ test('one real overview entry reads each core gameplay once, reuses its List/gro
   assert.deepEqual(f.counts.commands, [55, 58, 63]); assert.equal(f.counts.list, 1); assert.equal(f.counts.group, 1);
   for (const kind of ['shop', 'workshop', 'work']) assert.equal(result.gameplay[kind].available, true, kind);
   assert.equal(result.gameplay.workshop.data.recipes[0].name, '甜莓奶茶');
+  assert.equal(result.gameplay.workshop.data.recipes[0].fruitItemId, 40525, 'default decoder supplies the actual recipe/fruit mapping used by bulk selection');
   assert.equal(result.gameplay.workshop.data.fruits[0].uid, '9001');
   assert.equal(result.gameplay.work.data.myShift, null); assert.equal(result.gameplay.work.data.slips[0].finalWage, 40);
 });

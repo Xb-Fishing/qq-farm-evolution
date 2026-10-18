@@ -51,14 +51,14 @@ test('the styled confirmation keeps explicit one-click execution and no action o
 test('real available slots, recipes and interactions replace invalid default selections without automatic requests', async () => {
   const data = value => ({ data: value, loading: false, error: '' });
   const f = panel({ shop: data({ slots: [{ slotIndex: 4 }] }), hireList: data({ durationId: 1, robots: [{ gid: '9001', name: '员工' }] }),
-    workshop: data({ recipes: [{ recipeId: 7, name: '可用配方', unlocked: true }], fruits: [{ uid: '7001', name: '果实', count: 2 }] }),
+    workshop: data({ recipes: [{ recipeId: 7, fruitItemId: 41435, name: '可用配方', unlocked: true }], fruits: [{ uid: '7001', itemId: 41435, name: '果实', count: 2 }] }),
     work: data({ myShift: { shiftId: '8001', interactPreviews: [{ interactionType: 3 }] } }) });
   const set = (label, value) => { const node = h.findAll(f.root, n => n.props['aria-label'] === label)[0]; assert.ok(node); node.props['onUpdate:modelValue'](value); };
-  set('雇佣候选', '9001'); set('加工果实', '7001'); await h.vue.nextTick(); assert.equal(f.writes.length, 0);
-  for (const label of ['雇佣所选员工', '加工所选果实', '执行班次互动']) {
+  set('雇佣候选', '9001'); set('选择果实，2个', ['7001']); await h.vue.nextTick(); assert.equal(f.writes.length, 0);
+  for (const label of ['雇佣所选员工', '制作所选果实', '执行班次互动']) {
     h.click(button(f.root, label)); await h.vue.nextTick(); h.click(button(f.root, '确认执行')); await h.vue.nextTick();
   }
-  assert.equal(f.writes[0][1].hires[0].slotIndex, 4); assert.equal(f.writes[1][1].recipeId, 7); assert.equal(f.writes[2][1].interactionType, 3);
+  assert.equal(f.writes[0][1].hires[0].slotIndex, 4); assert.equal(f.writes[1][1].confirmedFruits[0].itemId, 41435); assert.equal(f.writes[2][1].interactionType, 3);
 });
 test('known empty reward and wage states show disabled actions while the shop remains readable', () => {
   const f = panel({ shop: { data: { pendingRewards: [], slots: [] }, loading: false, error: '' }, work: { data: { slips: [] }, loading: false, error: '' } });

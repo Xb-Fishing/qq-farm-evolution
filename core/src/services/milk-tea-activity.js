@@ -738,6 +738,7 @@ function workshopDto(rsp) {
   return {
     recipes: list(rsp.recipes).filter(Boolean).slice(0, 30).map(recipe => ({
       recipeId: num64(recipe.recipe_id),
+      fruitItemId: toNum(CONFIG.recipes.find(row => row.recipeId === num64(recipe.recipe_id))?.fruitItemId),
       name: trimTo(recipe.recipe_name, 40),
       unlocked: recipe.unlocked === true,
       isAdvanced: recipe.is_advanced === true,
@@ -1085,9 +1086,16 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       if (summary.canUpgrade !== true) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '当前营业额尚未达到升级条件');
     }
     else if (action === 'craft') {
-      const fruitUids = list(input.fruitUids).map(value => str64(value)).filter(Boolean);
-      if (!fruitUids.length || new Set(fruitUids).size !== fruitUids.length) {
+      const fruitUids = list(input.fruitUids).map(value => str64(value));
+      if (!fruitUids.length || fruitUids.length > 100
+        || fruitUids.some(uid => !/^[1-9]\d*$/.test(uid) || BigInt(uid) > 9223372036854775807n)
+        || new Set(fruitUids).size !== fruitUids.length) {
         fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '加工果实条目无效（需唯一且非空）');
+      }
+      const recipeId = input.recipeId == null ? 0 : inputNumber(input.recipeId);
+      const recipe = (CONFIG.recipes || []).find(row => toNum(row.recipeId) === recipeId) || null;
+      if (!Number.isSafeInteger(recipeId) || recipeId < 0 || (recipeId > 0 && !recipe?.fruitItemId)) {
+        fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '未知奶茶配方，停止加工');
       }
       if (typeof deps.getBag !== 'function' || typeof deps.getBagItems !== 'function') {
         fail('SEASON_WISH_MILK_TEA_NO_STATE', '无法读取背包，停止加工');
@@ -1103,15 +1111,17 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
         if (uidToItem.has(uid)) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '背包果实条目不唯一，停止加工');
         if (uid) uidToItem.set(uid, item);
       }
-      const recipeId = toNum(input.recipeId);
-      // 指定了配方就必须是已知配方：未知配方无法核对果实归属，写前拒绝
-      if (recipeId > 0 && !(CONFIG.recipes || []).some(row => toNum(row.recipeId) === recipeId)) {
-        fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '未知奶茶配方，停止加工');
-      }
-      const recipe = (CONFIG.recipes || []).find(row => toNum(row.recipeId) === recipeId) || null;
-      // 配方所需果实数量是唯一核实口径：多给/少给都在写前拒绝
-      if (recipe && toNum(recipe.fruitCount) > 0 && fruitUids.length !== toNum(recipe.fruitCount)) {
-        fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', `加工果实数量与配方不符（需 ${toNum(recipe.fruitCount)} 个）`);
+      // fruit_uids consumes complete bag stacks in one request. fruitCount is a
+      // recipe ratio, not a limit on the number of selected stacks.
+      let confirmed = null;
+      if (input.confirmedFruits != null) {
+        if (!Array.isArray(input.confirmedFruits) || input.confirmedFruits.length !== fruitUids.length) {
+          fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '请确认所有果实条目与数量');
+        }
+        confirmed = new Map(input.confirmedFruits.map(row => [str64(row?.uid), row]));
+        if (confirmed.size !== fruitUids.length || fruitUids.some(uid => !confirmed.has(uid))) {
+          fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '确认的果实条目与选择不符');
+        }
       }
       for (const uid of fruitUids) {
         const item = uidToItem.get(uid);
@@ -1123,6 +1133,20 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
         if (recipe && toNum(recipe.fruitItemId) !== itemId) {
           fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '所选果实与配方不符');
         }
+        const count = str64(item.count);
+        if (!/^[1-9]\d*$/.test(count)) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '果实数量无法确认，请刷新后重选');
+        const expected = confirmed?.get(uid);
+        if (confirmed && (String(expected.count) !== count || Number(expected.itemId) !== itemId)) {
+          fail('SEASON_WISH_MILK_TEA_COST_CHANGED', '果实数量或种类已变化，请刷新后重新确认整组消耗');
+        }
+      }
+      const workshopReply = await readOperate(OPERATIONS.queryWorkshop, {});
+      const recipes = workshopReply?.milk_tea_get_workshop?.recipes;
+      if (!Array.isArray(recipes)) fail('SEASON_WISH_MILK_TEA_NO_STATE', '无法读取当前配方，停止加工');
+      const unlockedFruitIds = new Set(recipes.filter(row => row.unlocked === true)
+        .map(row => CONFIG.recipes.find(config => config.recipeId === num64(row.recipe_id))?.fruitItemId).filter(Boolean));
+      if (fruitUids.some(uid => !unlockedFruitIds.has(num64(uidToItem.get(uid).id)))) {
+        fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '所选果实的配方尚未解锁，请刷新后重选');
       }
       params = { fruit_uids: fruitUids.map(uid => toLong(uid)) };
     }
