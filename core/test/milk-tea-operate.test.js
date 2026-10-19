@@ -485,22 +485,26 @@ test('雇佣：班次/槽位/成员/费用确认/余额逐项前置校验与官�
 });
 
 test('雇佣空位：等级容量减去有效班次，稀疏列表和到期残留在读取与写前校验中一致', async () => {
+  // 注入时钟落后真实墙钟一小时（仍在营业窗口内）：表值与 env.deps.now 同源，避免异步装配跨整秒后未来班次提前到截止
+  const fixtureClock = nowSec() - 3600;
   const cases = [
     { name: '一级空列表', level: 1, slots: [], free: [0] },
     { name: '二级省略空列表', level: 2, free: [0] },
     { name: '三级无人', level: 3, slots: [], free: [0, 1] },
-    { name: '三级零号在岗', level: 3, slots: [{ slot_index: 0, employee: { gid: 7001 }, end_at: nowSec() + 60 }], free: [1] },
-    { name: '三级一号机器人在岗', level: 3, slots: [{ slot_index: 1, is_robot: true, end_at: nowSec() + 60 }], free: [0] },
-    { name: '截止时释放机器人残留', level: 1, slots: [{ slot_index: 0, is_robot: true, employee: { gid: 7002 }, shift_id: 8001, end_at: nowSec() }], free: [0] },
+    { name: '三级零号在岗', level: 3, slots: [{ slot_index: 0, employee: { gid: 7001 }, end_at: fixtureClock + 60 }], free: [1] },
+    { name: '三级一号机器人在岗', level: 3, slots: [{ slot_index: 1, is_robot: true, end_at: fixtureClock + 60 }], free: [0] },
+    { name: '截止时释放机器人残留', level: 1, slots: [{ slot_index: 0, is_robot: true, employee: { gid: 7002 }, shift_id: 8001, end_at: fixtureClock }], free: [0] },
     { name: '空员工对象不是占岗', level: 1, slots: [{ slot_index: 0, employee: {} }], free: [0] },
-    { name: '缺员工但班次未结束', level: 1, slots: [{ slot_index: 0, end_at: nowSec() + 1 }], free: [] },
+    { name: '缺员工但班次未结束', level: 1, slots: [{ slot_index: 0, end_at: fixtureClock + 1 }], free: [] },
+    { name: '缺员工班次到截止释放', level: 1, slots: [{ slot_index: 0, end_at: fixtureClock }], free: [0] },
+    { name: '缺员工班次已结束释放', level: 1, slots: [{ slot_index: 0, end_at: fixtureClock - 1 }], free: [0] },
     { name: '缺结束时间的在岗员工', level: 1, slots: [{ slot_index: 0, employee: { gid: 7003 } }], free: [] },
     { name: '未知等级不猜容量', level: 99, slots: [], free: [], unknown: true },
     { name: '异常索引不猜占用', level: 1, slots: [{ slot_index: 3 }], free: [], unknown: true },
     { name: '重复索引不忽略冲突', level: 1, slots: [{ slot_index: 0 }, { slot_index: 0 }], free: [], unknown: true },
   ];
   for (const row of cases) {
-    await withFreshService({}, async (service, env) => {
+    await withFreshService({ clock: fixtureClock }, async (service, env) => {
       const shop = { level: row.level, ...(row.slots ? { slots: row.slots } : {}) };
       env.scenario.operateBodies[55] = { milk_tea_get_shop: { shop } };
       const result = await service.queryMilkTeaActivity('shop', {}, env.deps);
