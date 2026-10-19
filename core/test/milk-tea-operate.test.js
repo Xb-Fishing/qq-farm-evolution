@@ -484,6 +484,64 @@ test('雇佣：班次/槽位/成员/费用确认/余额逐项前置校验与官�
   });
 });
 
+test('雇佣空位：等级容量减去有效班次，稀疏列表和到期残留在读取与写前校验中一致', async () => {
+  const cases = [
+    { name: '一级空列表', level: 1, slots: [], free: [0] },
+    { name: '二级省略空列表', level: 2, free: [0] },
+    { name: '三级无人', level: 3, slots: [], free: [0, 1] },
+    { name: '三级零号在岗', level: 3, slots: [{ slot_index: 0, employee: { gid: 7001 }, end_at: nowSec() + 60 }], free: [1] },
+    { name: '三级一号机器人在岗', level: 3, slots: [{ slot_index: 1, is_robot: true, end_at: nowSec() + 60 }], free: [0] },
+    { name: '截止时释放机器人残留', level: 1, slots: [{ slot_index: 0, is_robot: true, employee: { gid: 7002 }, shift_id: 8001, end_at: nowSec() }], free: [0] },
+    { name: '空员工对象不是占岗', level: 1, slots: [{ slot_index: 0, employee: {} }], free: [0] },
+    { name: '缺员工但班次未结束', level: 1, slots: [{ slot_index: 0, end_at: nowSec() + 1 }], free: [] },
+    { name: '缺结束时间的在岗员工', level: 1, slots: [{ slot_index: 0, employee: { gid: 7003 } }], free: [] },
+    { name: '未知等级不猜容量', level: 99, slots: [], free: [], unknown: true },
+    { name: '异常索引不猜占用', level: 1, slots: [{ slot_index: 3 }], free: [], unknown: true },
+    { name: '重复索引不忽略冲突', level: 1, slots: [{ slot_index: 0 }, { slot_index: 0 }], free: [], unknown: true },
+  ];
+  for (const row of cases) {
+    await withFreshService({}, async (service, env) => {
+      const shop = { level: row.level, ...(row.slots ? { slots: row.slots } : {}) };
+      env.scenario.operateBodies[55] = { milk_tea_get_shop: { shop } };
+      const result = await service.queryMilkTeaActivity('shop', {}, env.deps);
+      assert.equal(result.data.slotAvailabilityKnown, !row.unknown, row.name);
+      assert.equal(result.data.employeeSlotCount, row.level === 99 ? null : row.level >= 3 ? 2 : 1, row.name);
+      assert.deepEqual(result.data.freeSlotIndexes, row.free, row.name);
+      assert.equal(env.operateRequests.filter(req => req.cmd === 57).length, 0, '查询不雇佣');
+      const slotIndex = row.free[0] ?? 0;
+      env.scenario.operateBodies[57].milk_tea_hire.results = [{ slot_index: slotIndex, duration_id: 1, target_gid: 101, success: true }];
+      const run = () => service.runManualMilkTeaAction('hire', {
+        durationId: 1, hires: [{ slotIndex, targetGid: '101' }], confirmedCosts: [{ itemId: TICKET, count: '40' }],
+      }, env.deps);
+      if (row.free.length) {
+        const hired = await run(); assert.equal(hired.ok, true, row.name);
+        assert.deepEqual(env.operateRequests.slice(-3).map(req => req.cmd), [55, 56, 57]);
+        assert.equal(Number(types.MilkTeaOperateRequest.decode(env.operateRequests.at(-1).buffer).milk_tea_hire.hires[0].slot_index), slotIndex);
+      }
+      else {
+        await assert.rejects(run(), business(row.unknown ? 'SEASON_WISH_MILK_TEA_NO_STATE' : 'SEASON_WISH_MILK_TEA_INVALID_STATE'), row.name);
+        assert.equal(env.operateRequests.filter(req => req.cmd === 57).length, 0, row.name);
+      }
+    });
+  }
+});
+
+test('雇佣写前重新读取占用，未解锁槽位和已被占用的旧空位均零写', async () => {
+  await withFreshService({}, async (service, env) => {
+    env.scenario.operateBodies[55].milk_tea_get_shop.shop.slots = [];
+    const initial = await service.queryMilkTeaActivity('shop', {}, env.deps);
+    assert.deepEqual(initial.data.freeSlotIndexes, [0]);
+    const run = slotIndex => service.runManualMilkTeaAction('hire', {
+      durationId: 1, hires: [{ slotIndex, targetGid: '101' }], confirmedCosts: [{ itemId: TICKET, count: '40' }],
+    }, env.deps);
+    await assert.rejects(run(1), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
+    env.scenario.operateBodies[55].milk_tea_get_shop.shop.slots = [{ slot_index: 0, end_at: nowSec() + 60 }];
+    await assert.rejects(run(0), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
+    assert.equal(env.operateRequests.filter(req => req.cmd === 57).length, 0);
+    assert.equal(env.operateRequests.filter(req => req.cmd === 55).length, 3, '每次提交都读当前店铺');
+  });
+});
+
 test('收银台/升级/喇叭/工坊加工：前置状态与官方向量', async () => {
   await withFreshService({}, async (service, env) => {
     const run = (action, input) => service.runManualMilkTeaAction(action, input, env.deps);
@@ -891,6 +949,7 @@ test('写后失败：传输/回显不匹配/缺结果体 = 结果未知；恰好
     assert.equal(operateCount(env), 1);
     env.scenario.failOperate = null;
 
+    env.scenario.operateBodies[55].milk_tea_get_shop.shop.level = 3;
     env.scenario.operateBodies[55].milk_tea_get_shop.shop.slots.push({ slot_index: 1 });
     env.scenario.operateBodies[56].milk_tea_get_hire_list.robots.push({ friend: { gid: 102 } });
     env.scenario.bagItems.push({ id: TICKET, count: '500', uid: '1' });

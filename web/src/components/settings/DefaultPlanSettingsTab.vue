@@ -165,9 +165,11 @@ const updatedAtLabel = computed(() => {
 })
 
 function buildConfig() {
+  const automationKeys = Object.keys(createAutomationSettings()) as (keyof ReturnType<typeof createAutomationSettings>)[]
   return {
     ...strategySettings.value,
-    ...automationSettings.value,
+    // Both drafts contain the loaded config; only automation fields may override current strategy edits.
+    ...Object.fromEntries(automationKeys.map(key => [key, automationSettings.value[key]])),
     autoCodeRefresh: autoCodeRefresh.value,
   }
 }

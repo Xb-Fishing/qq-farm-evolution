@@ -608,7 +608,7 @@ async function readInitialGameplay(overview, snapshot, deps, context, nowSec) {
     }
     recheck();
     try {
-      const data = await readMilkTeaQueryData(kind, {}, snapshot, deps, context, recheck);
+      const data = await readMilkTeaQueryData(kind, {}, snapshot, deps, context, recheck, nowSec);
       recheck();
       if (!data || typeof data !== 'object' || !Object.keys(data).length) throw new Error('empty_gameplay_reply');
       result[kind] = { available: true, data, error: '' };
@@ -621,7 +621,7 @@ async function readInitialGameplay(overview, snapshot, deps, context, nowSec) {
   return result;
 }
 
-async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck) {
+async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck, nowSec) {
   const operation = OPERATIONS[QUERY_KINDS[kind]];
   const reply = await operateMilkTeaRequest(operation, operateParams, deps, context);
   recheck(snapshot);
@@ -633,7 +633,7 @@ async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context
     err.code = 'SEASON_WISH_MILK_TEA_REPLY_MISMATCH';
     throw err;
   }
-  const data = kind === 'shop' ? shopViewDto(rsp.shop)
+  const data = kind === 'shop' ? shopViewDto(rsp.shop, nowSec())
     : kind === 'hireList' ? hireListDto(rsp)
       : kind === 'workshop' ? workshopDto(rsp)
         : kind === 'work' ? workPageDto(rsp)
@@ -662,10 +662,40 @@ function playerDto(player) {
   };
 }
 
-function shopViewDto(view) {
+// slots is a sparse shift list, not the list of unlocked employee positions.
+// The same interpretation is used by the read DTO and the fresh pre-hire check.
+function shopSlotAvailability(view, now) {
+  const level = CONFIG.storeLevels.find(row => row.level === num64(view?.level));
+  const employeeSlotCount = level?.employeeSlotCount ?? null;
+  const unknown = { employeeSlotCount, slotAvailabilityKnown: false, freeSlotIndexes: [] };
+  if (!employeeSlotCount || !Array.isArray(view?.slots)) return unknown;
+  const occupied = new Set();
+  const seen = new Set();
+  for (const slot of view.slots) {
+    if (!slot) return unknown;
+    const index = Number(slot.slot_index ?? 0);
+    if (!Number.isInteger(index) || index < 0 || index >= employeeSlotCount || seen.has(index)) return unknown;
+    seen.add(index);
+    const endAt = Number(slot.end_at || 0);
+    if (!Number.isFinite(endAt) || endAt < 0) return unknown;
+    // A finished shift releases the position even when employee/robot fields remain.
+    // Missing time with an actual employee/shift is kept occupied conservatively.
+    const hasShift = slot.is_robot === true || num64(slot.shift_id) > 0
+      || num64(slot.employee?.gid) > 0 || !!trimTo(slot.employee?.name, 40);
+    if (endAt > now || (!endAt && hasShift)) occupied.add(index);
+  }
+  return {
+    employeeSlotCount,
+    slotAvailabilityKnown: true,
+    freeSlotIndexes: Array.from({ length: employeeSlotCount }, (_, index) => index).filter(index => !occupied.has(index)),
+  };
+}
+
+function shopViewDto(view, now) {
   if (!view) return null;
   return {
     level: num64(view.level),
+    ...shopSlotAvailability(view, now),
     totalRevenue: num64(view.total_revenue),
     nextLevelRevenue: num64(view.next_level_revenue),
     cashierCapacitySec: num64(view.cashier_capacity_sec),
@@ -906,7 +936,7 @@ async function queryMilkTeaActivity(kind, params = {}, deps = {}) {
       }
       // day 缺省：按服务端默认（今日）读取一次，不枚举、不翻页
     }
-    const data = await readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck);
+    const data = await readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck, nowSec);
     log('活动', '奶茶显式查询完成', {
       module: 'activity', event: 'milk_tea_query', kind, result: 'ok',
     });
@@ -1029,8 +1059,9 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       // 逐项核对本次候选与空槽：先读店铺视图与候选列表（有界两读）
       const shopReply = await readOperate(OPERATIONS.queryShop, {});
       const shopView = shopReply && shopReply.milk_tea_get_shop && shopReply.milk_tea_get_shop.shop;
-      const slots = list(shopView && shopView.slots).filter(Boolean);
-      const freeSlots = new Set(slots.filter(slot => !slot.employee && !slot.is_robot).map(slot => toNum(slot.slot_index)));
+      const availability = shopSlotAvailability(shopView, nowSec());
+      if (!availability.slotAvailabilityKnown) fail('SEASON_WISH_MILK_TEA_NO_STATE', '店铺槽位状态未确认，请刷新后重试');
+      const freeSlots = new Set(availability.freeSlotIndexes);
       for (const row of wanted) {
         if (!freeSlots.has(row.slotIndex)) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', `槽位 ${row.slotIndex} 不可用（未解锁或已占用）`);
       }

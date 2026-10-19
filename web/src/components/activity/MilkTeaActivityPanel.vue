@@ -40,7 +40,10 @@ const hires = computed(() => props.queries.hireList.data)
 const work = computed(() => props.queries.work.data)
 const workshop = computed(() => props.queries.workshop.data)
 const candidates = computed(() => [...(hires.value?.friends || []), ...(hires.value?.robots || [])])
-const freeSlots = computed(() => (shop.value?.slots || []).filter((slot: any) => !slot.employee && !slot.isRobot))
+const hireAvailabilityKnown = computed(() => shop.value?.slotAvailabilityKnown === true && !props.queries.shop.loading && !props.queries.shop.error)
+const freeSlots = computed(() => hireAvailabilityKnown.value
+  ? (shop.value?.freeSlotIndexes || []).map((slotIndex: number) => ({ slotIndex }))
+  : [])
 const hireCost = computed(() => ({ 1: 40, 2: 130, 3: 270 }[Number(durationId.value)] || 0))
 const shopStarted = computed(() => Number(props.activity?.summary?.shopOpenAt) > 0)
 const validShopName = computed(() => Array.from(shopName.value.trim()).length >= 2 && Array.from(shopName.value.trim()).length <= 8)
@@ -74,6 +77,8 @@ watch(() => JSON.stringify(props.activity?.exchangeShop || null), () => {
 watch(() => freeSlots.value.map((slot: any) => Number(slot.slotIndex)).filter((id: number) => Number.isSafeInteger(id) && id >= 0), (ids: number[]) => {
   if (ids.length && !ids.includes(slotIndex.value))
     slotIndex.value = ids[0]!
+  if (pending.value?.action === 'hire' && !ids.includes(Number((pending.value.input.hires as { slotIndex: number }[])[0]?.slotIndex)))
+    closeConfirmation()
 }, { immediate: true })
 watch(() => (workshop.value?.recipes || []).filter((recipe: any) => recipe.unlocked === true).map((recipe: any) => Number(recipe.recipeId)).filter((id: number) => Number.isSafeInteger(id) && id > 0), (ids: number[]) => {
   if (recipeId.value && !ids.includes(recipeId.value))
@@ -361,19 +366,28 @@ function exchange(goods: ExchangeGoods) {
         <div class="milk-hire-fields">
           <label class="milk-field">雇佣时长<select v-model.number="durationId" aria-label="雇佣时长" class="milk-input"><option :value="1">4 小时 / 40 奶茶券</option><option :value="2">12 小时 / 130 奶茶券</option><option :value="3">24 小时 / 270 奶茶券</option></select></label><label class="milk-field">空槽<select v-model.number="slotIndex" aria-label="雇佣槽位" class="milk-input"><option v-for="slot in freeSlots" :key="slot.slotIndex" :value="slot.slotIndex">槽位 {{ Number(slot.slotIndex) + 1 }}</option></select></label><label class="milk-field">候选员工<select v-model="targetGid" aria-label="雇佣候选" class="milk-input"><option value="">请选择</option><option v-for="candidate in candidates" :key="candidate.gid" :value="candidate.gid">{{ candidate.name || '员工' }} · {{ candidate.talentName || '特长待确认' }}</option></select></label>
         </div>
-        <p v-if="shop && !freeSlots.length" class="milk-notice">
+        <p v-if="queries.shop.error" class="milk-error" role="alert">
+          雇佣空位读取失败，请刷新雇佣空位后重试。
+        </p><p v-else-if="!hireAvailabilityKnown" class="milk-notice">
+          {{ queries.shop.loading ? '正在读取雇佣空位…' : '雇佣空位尚未确认，请刷新雇佣空位。' }}
+        </p><p v-else-if="!freeSlots.length" class="milk-notice">
           当前没有可雇佣空位，请先升级店铺或等待现有班次结束。
+        </p><p v-else class="milk-notice">
+          已开放 {{ shop?.employeeSlotCount }} 个槽位，当前可雇佣 {{ freeSlots.length }} 位员工。
         </p><p v-if="queries.hireList.error" class="milk-error" role="alert">
           {{ queries.hireList.error }}
         </p>
         <div class="milk-actions">
+          <BaseButton class="milk-action" variant="secondary" :loading="queries.shop.loading" :disabled="busy || queries.shop.loading" @click="emit('query', 'shop', {})">
+            刷新雇佣空位
+          </BaseButton>
           <BaseButton class="milk-action" variant="secondary" :loading="queries.hireList.loading" :disabled="busy || queries.hireList.loading" @click="emit('query', 'hireList', { durationId: Number(durationId) })">
             查询雇佣候选
           </BaseButton><BaseButton class="milk-action" variant="primary" :disabled="busy || settle || !targetGid || !freeSlots.length || Number(hires?.durationId) !== Number(durationId)" @click="prepare('hire', { durationId: Number(durationId), hires: [{ slotIndex: Number(slotIndex), targetGid }], confirmedCosts: [{ itemId: 1041, count: String(hireCost) }] }, `消耗奶茶券 × ${hireCost} 雇佣所选员工，确认？`)">
             雇佣所选员工
           </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !activity?.summary" @click="prepare('hireSetting', { hireDisabled: !activity?.summary?.hireDisabled })">
             {{ activity?.summary?.hireDisabled ? '开启被雇佣' : '暂停被雇佣' }}
-          </BaseButton><span class="milk-muted">本次费用：{{ hireCost }} 奶茶券</span>
+          </BaseButton><span class="milk-muted">本次费用：{{ hireCost }} 奶茶券；班次结束后可刷新空位。</span>
         </div>
       </section>
     </div>
