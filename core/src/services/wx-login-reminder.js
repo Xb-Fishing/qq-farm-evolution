@@ -1651,11 +1651,12 @@ function createWxLoginReminderService(deps = {}) {
   }
 
   /** 面板状态视图：只给有权访问该账号的登录用户。 */
-  function getHelpStatus(account) {
+  function getHelpStatus(account, connected = null) {
     const incident = getIncident(account.id);
     const pending = getPendingSession(account.id);
     return {
       serverNow: now(),
+      connection: { connected: typeof connected === 'boolean' ? connected : null },
       account: describeAccount(account),
       platform: String(account.platform || ''),
       incident: incident ? {

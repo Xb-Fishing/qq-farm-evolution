@@ -44,6 +44,7 @@ interface HelpPlan {
 }
 
 interface HelpStatus {
+  connection?: { connected: boolean | null }
   serverNow: number
   account: { id: string, name: string, platform: string }
   incident: { needsRescan: boolean, lastError: string, sentAt: number }
@@ -445,7 +446,12 @@ onUnmounted(() => {
           v-if="status?.incident?.needsRescan"
           class="mt-3 border border-amber-300 rounded bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
         >
-          该账号的微信登录已被系统确认失效，需要重新扫码授权后才能继续自动登录。
+          <template v-if="status?.connection?.connected === true">
+            当前农场仍在线，但重新登录的凭据已失效。请扫码更新授权，避免下次重连无法登录。
+          </template>
+          <template v-else>
+            重新登录的凭据已失效，需要扫码更新授权后恢复登录。
+          </template>
           <div v-if="status?.incident?.lastError" class="mt-1 text-xs opacity-80">
             上次自动提醒发送失败：{{ status.incident.lastError }}（可在设置里测试 Bark 后重试）
           </div>

@@ -29,6 +29,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn, execFileSync } = require('node:child_process');
+const { prepareUpdatePreflight, preflightError } = require('../src/services/wx-update-preflight');
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const STATE_FILE_NAME = 'activity-evolve-state.json';
@@ -518,6 +519,8 @@ async function main() {
   const buildLog = path.join(dataDir, 'logs', 'evolve-apply.log');
   const buildRoot = fs.mkdtempSync(path.join(deployRoot, 'tmp', 'evolution-apply.XXXXXX'));
   let contextFile = '';
+  let wxPreflight = null;
+  let stoppingStarted = false;
   const receiptFile = path.join(dataDir, 'evolution-apply-receipt.json');
   const writeReceipt = (fields) => {
     fs.writeFileSync(receiptFile, `${JSON.stringify({
@@ -557,6 +560,8 @@ async function main() {
     assertTargetProven();
 
     // 私有捕获 Bot 原始启动上下文（0600；重启完成或失败后即删，绝不入库）。
+    wxPreflight = await prepareUpdatePreflight({ targetCommit: expectedHead, oldPid: botPid,
+      oldStartTicks: botStarttime, dataDir, adminPort });
     contextFile = path.join(dataDir, 'evolution-apply-context.json');
     const readProcList = (file) => {
       const parts = fs.readFileSync(`/proc/${botPid}/${file}`, 'utf8').split('\0');
@@ -586,9 +591,18 @@ async function main() {
         .mapBotContextToTarget(botContext, targetSourceRoot, targetRoot, dataDir);
       Object.assign(botContext, { argv, argv0, exe, cwd, env });
     }
+    Object.assign(botContext.env, wxPreflight.env);
     fs.writeFileSync(contextFile, `${JSON.stringify(botContext)}\n`, { mode: 0o600 });
     try { fs.chmodSync(contextFile, 0o600); } catch {}
 
+    if (!await wxPreflight.validate()) throw preflightError('account_changed');
+    ({ table, panePid } = verifyContext());
+    if (panePid !== firstPanePid || processStarttime(panePid) !== firstPaneStart)
+      throw new Error('pane 身份变化，保留当前服务');
+    if (autonomyRequired && !autonomyStillEnabled(dataDir)) throw new Error('自主进化已关闭，保留当前服务');
+    assertDeployable();
+    assertTargetProven();
+    stoppingStarted = true;
     writeReceipt({ phase: 'stopping', newPid: 0, newStarttime: '' });
     await stopBotTree(botPid, botStarttime, table);
 
@@ -674,9 +688,15 @@ async function main() {
     if (!ready) process.exitCode = 1;
   } catch (error) {
     if (contextFile) { try { fs.unlinkSync(contextFile); } catch {} }
-    writeReceipt({ phase: 'failed', newPid: 0, newStarttime: '', error: String(error.message || '').slice(0, 300) });
+    if (stoppingStarted) writeReceipt({ phase: 'failed', newPid: 0, newStarttime: '', error: String(error.message || '').slice(0, 300) });
+    else fs.writeFileSync(path.join(dataDir, 'evolution-apply-attempt.json'), JSON.stringify({
+      phase: 'failed_before_stop', expectedHead, oldPid: botPid, oldStarttime: botStarttime,
+      failedAt: Date.now(), reasonCode: error.wxUpdateReason || '',
+      error: String(error.message || '').slice(0, 300),
+    }), { mode: 0o600 });
     return fail(error.message || '应用失败');
   } finally {
+    if (wxPreflight?.file) { try { fs.unlinkSync(wxPreflight.file); } catch {} }
     try { fs.rmSync(buildRoot, { recursive: true, force: true }); } catch {}
   }
 }

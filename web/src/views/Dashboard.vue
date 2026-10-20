@@ -906,7 +906,7 @@ useIntervalFn(updateCountdowns, 1000)
             <button
               v-if="currentAccountNeedsRescan"
               class="rounded bg-amber-500 px-2 py-1 text-xs text-white transition hover:bg-amber-600"
-              title="微信登录已被系统确认失效：打开自助页面，可把新二维码推送到手机"
+              title="重新登录凭据需要更新：打开自助页面，可把新二维码推送到手机"
               @click="openWxLoginHelp"
             >
               需重新扫码·发到手机

@@ -191,6 +191,10 @@ function buildFixture(t, { helperSource = HELPER_CODE } = {}) {
   fs.mkdirSync(path.join(root, 'web', 'dist'), { recursive: true });
   fs.writeFileSync(path.join(root, '.gitignore'), 'tmp/\ncore/data/\nweb/dist/\n');
   fs.writeFileSync(path.join(root, 'core/scripts/evolution-apply-process.js'), helperSource);
+  const preflight = path.resolve(root, 'core/src/services/wx-update-preflight.js');
+  assert.equal(preflight.startsWith(root + path.sep), true);
+  fs.mkdirSync(path.dirname(preflight), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '../src/services/wx-update-preflight.js'), preflight);
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ name: 'web', private: true, scripts: { build: 'node build.cjs' } }));
   fs.writeFileSync(path.join(root, 'web/build.cjs'),
     "const fs=require('fs');let out='dist';for(let i=2;i<process.argv.length;i++){if(process.argv[i]==='--outDir')out=process.argv[i+1];}"
@@ -467,10 +471,14 @@ test('旁观端口持有者、脏工作区与自主关闭都在停服前如实�
   // 自主开关关闭（toggle-off 竞态）：构建后、停服前取消，候选与旧服务保留。
   fs.writeFileSync(path.join(f.dataDir, 'activity-evolve-state.json'),
     JSON.stringify({ autonomousEvolutionEnabled: false, status: 'applying' }));
+  const previousReady = { phase: 'ready', newPid: bot.pid, newStarttime: botStart, expectedHead: f.head };
+  fs.writeFileSync(path.join(f.dataDir, 'evolution-apply-receipt.json'), JSON.stringify(previousReady));
   const cancelled = await runApply(f, { botPid: bot.pid, botStarttime: botStart, port, autonomy: true });
   assert.equal(cancelled.code, 1);
-  assert.equal(cancelled.receipt.phase, 'failed');
-  assert.match(cancelled.receipt.error, /自主进化已被关闭/);
+  assert.deepEqual(cancelled.receipt, previousReady, '停服前失败不能覆盖仍运行的 ready 身份');
+  const attempt = JSON.parse(fs.readFileSync(path.join(f.dataDir, 'evolution-apply-attempt.json'), 'utf8'));
+  assert.equal(attempt.phase, 'failed_before_stop');
+  assert.match(attempt.error, /自主进化已被关闭/);
   assert.ok(botAlive());
   assert.equal(fs.readFileSync(path.join(f.root, 'web/dist/index.html'), 'utf8'), 'old UI', '候选与旧服务保留');
 });
@@ -522,7 +530,7 @@ function buildTargetFixture(t) {
   // helper 的服务依赖经 re-export shim 指回候选仓真实模块（依赖链保持真实，
   // fixture 只提供落点；与 autonomy 子进程夹具同构）。
   fs.mkdirSync(path.join(root, 'core/src/services'), { recursive: true });
-  for (const name of ['evolution-publish', 'evolution-validation', 'evolution-worktree']) {
+  for (const name of ['evolution-publish', 'evolution-validation', 'evolution-worktree', 'wx-update-preflight']) {
     fs.writeFileSync(path.join(root, 'core/src/services', `${name}.js`),
       `module.exports=require(${JSON.stringify(path.join(__dirname, `../src/services/${name}.js`))});\n`);
   }

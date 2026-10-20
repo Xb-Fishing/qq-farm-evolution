@@ -13,6 +13,9 @@ const { createRuntimeState } = require('./runtime-state');
 const { createWorkerManager } = require('./worker-manager');
 const { getSharedWxLoginReminder } = require('../services/wx-login-reminder');
 const { bindRescanProvider } = require('../services/wx-rescan-save');
+const { getDataFile } = require('../config/runtime-paths');
+const { createWxRestartCoordinator, consumeWxRestartHandoff, accountStamp } = require('./wx-restart-handoff');
+const { withAccountCredentialLock } = require('../services/wx-login-adapter');
 
 /**
  * 自助扫码恢复排程的 reason 包装。auto-code-refresh.isRecoveryReason 只认
@@ -154,6 +157,7 @@ function createRuntimeEngine(options = {}) {
         resolveWorkerControls: () => engine,
         log,
         addAccountLog,
+        needsWxRescan: id => getSharedWxLoginReminder().needsRescan(id),
         // 仅微信账号凭据被服务端判定明确失效时通知一次；回调内部自带
         // 平台过滤与去重，异常不影响保活/错误预算。
         onWxCredentialDefinitivelyInvalid: (accountId) =>
@@ -223,8 +227,16 @@ function createRuntimeEngine(options = {}) {
     engine.startWorker = startWorker;
     engine.restartWorker = restartWorker;
 
+    const wxRestart = createWxRestartCoordinator({
+        getAccounts: store.getAccounts, isAutoLogin: store.isAccountAutoLogin,
+        workers, autoCodeRefresh,
+    });
+
     // 创建数据提供器
     const dataProviderDeps = {
+        invalidateWxCredentialTasks: autoCodeRefresh.invalidateCredentialTasks,
+        prepareWxRestart: wxRestart.prepareWxRestart,
+        validateWxRestart: wxRestart.validateWxRestart,
         workers,
         globalLogs,
         accountLogs,
@@ -295,6 +307,7 @@ function createRuntimeEngine(options = {}) {
     // startup 原生换码临时失败后：回退判定一律读规范最新账号态 + 持久扫码
     // 检查点，绝不拿 await 前快照里的旧一次性 Code/空 Code 拉 Worker。
     const startupRecoveryIds = new Set();
+    const expiredHandoffIds = new Set();
 
     function resolveStartupWxRecovery(accountId) {
         const latest = (store.getAccounts().accounts || [])
@@ -322,10 +335,49 @@ function createRuntimeEngine(options = {}) {
 
     /** 启动所有账号 */
     async function startAllAccounts() {
+        const handoffFile = processRef.env.FARM_WX_RESTART_HANDOFF_FILE;
+        let actualCommit = '';
+        if (handoffFile) {
+            try {
+                actualCommit = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+                    cwd: path.resolve(path.dirname(mainEntryPath), '..'), encoding: 'utf8', timeout: 5000,
+                }).trim();
+            } catch { /* Unknown source identity cannot consume a login Code. */ }
+        }
+        const preparedCodes = consumeWxRestartHandoff({
+            file: handoffFile, directory: getDataFile('wx-restart-handoffs'),
+            targetCommit: processRef.env.FARM_WX_RESTART_TARGET_COMMIT,
+            nonce: processRef.env.FARM_WX_RESTART_NONCE, actualCommit,
+            getAccounts: store.getAccounts, isAutoLogin: store.isAccountAutoLogin,
+        });
+        delete processRef.env.FARM_WX_RESTART_HANDOFF_FILE;
+        delete processRef.env.FARM_WX_RESTART_TARGET_COMMIT;
+        delete processRef.env.FARM_WX_RESTART_NONCE;
+        const preparedIds = new Set(preparedCodes.keys());
+        // Settle every handoff before ordinary startup can await an upstream
+        // request. Re-read identity, pause and TTL inside the credential lock.
+        for (const [id, prepared] of preparedCodes) {
+            try { await withAccountCredentialLock('', id, () => {
+                const latest = (store.getAccounts().accounts || []).find(a => String(a.id) === id);
+                if (!latest || !store.isAccountAutoLogin(latest) || autoCodeRefresh.isCredentialBlocked(id)
+                    || accountStamp(latest, store.isAccountAutoLogin) !== prepared.accountStamp)
+                    return false;
+                if (prepared.expiresAt <= Date.now()) {
+                    expiredHandoffIds.add(id);
+                    return armStartupWxRecovery(id);
+                }
+                store.addOrUpdateAccount({ id, code: prepared.code });
+                return startWorker({ ...latest, code: prepared.code });
+            }); } catch {
+                log('错误', '更新登录码保存失败，已停止本次账号启动');
+            }
+            preparedCodes.delete(id);
+        }
         const accounts = store.getAccounts().accounts || [];
         if (accounts.length > 0) {
             log('系统', `发现 ${  accounts.length  } 个账号，正在启动...`);
             for (const acc of accounts) {
+                if (preparedIds.has(String(acc.id))) continue;
                 // 为移植前已扫码保存凭证的微信账号执行一次默认策略迁移。
                 if (acc.platform === 'wx' && acc.loginBuffer && acc.wxDefaultsApplied !== true) {
                     const currentRefresh = store.getAutoCodeRefresh(acc.id);
@@ -400,7 +452,7 @@ function createRuntimeEngine(options = {}) {
         for (const id of Array.from(startupRecoveryIds)) {
             startupRecoveryIds.delete(id);
             const decision = resolveStartupWxRecovery(id);
-            if (decision && !decision.fallback) armStartupWxRecovery(id);
+            if (decision && (!decision.fallback || expiredHandoffIds.has(id))) armStartupWxRecovery(id);
         }
 
         // 扫码维护参考计划的本地巡检：只读注册表与账号状态，零网络探测。

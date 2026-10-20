@@ -66,8 +66,8 @@ function credentialFailureDiagnostic(error) {
     const source = asRecord(error);
     const stage = ['oauth_callback', 'refresh_token', 'login_buffer', 'issue_code'].includes(source.wxStage)
         ? source.wxStage : 'unknown';
-    return { stage, code: Number.isInteger(source.wxCode) ? source.wxCode : null,
-        tokenRefreshSucceeded: source.tokenRefreshSucceeded === true };
+    return { stage, upstreamStatus: Number.isInteger(source.wxCode) ? source.wxCode : null,
+        refreshStageCompleted: source.tokenRefreshSucceeded === true };
 }
 function persistCredentialFields(accountId, updates) {
     try {
@@ -446,16 +446,31 @@ async function issueFarmCode(openid, options = {}) {
             code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
         }
         catch (issueError) {
+            if (!supersededByGuard()) return { Success: false, superseded: true, Message: '请求已取消或被更新的扫码取代' };
             const msg = errorMessage(issueError);
             if (refreshtoken && shouldRefreshWxCredentialForCodeError(msg)) {
                 try {
                     // refresh 请求使用显式的 openid/access/refresh Cookie，不依赖进程内 OAuth 会话。
-                    const refreshed = await wxLogin.refreshLoginBuffer({ openid: String(openid), refreshtoken, accesstoken, cookies: new Map() });
+                    const refreshed = await wxLogin.refreshLoginBuffer({ openid: String(openid), refreshtoken, accesstoken, cookies: new Map() }, {
+                        shouldContinue: supersededByGuard,
+                        onCredentialsRefreshed: async (checkpoint) => {
+                            const credentialCurrent = typeof options.credentialGuard === 'function'
+                                ? options.credentialGuard() : supersededByGuard();
+                            if (!credentialCurrent) throw new Error('请求已被更新的扫码取代');
+                            if (account) persistCredentialFields(account.id, {
+                                refreshtoken: checkpoint.refreshtoken, accesstoken: checkpoint.accesstoken,
+                                ...buildCredentialMetadata(checkpoint, account, false),
+                            });
+                            if (sessionEntry) Object.assign(sessionEntry, checkpoint);
+                        },
+                    });
                     loginBuffer = refreshed.loginBuffer;
                     refreshtoken = refreshed.refreshtoken;
                     accesstoken = refreshed.accesstoken || accesstoken;
                     credentialMetadata = buildCredentialMetadata(refreshed, account || sessionEntry || {}, true);
-                    if (!supersededByGuard()) {
+                    const credentialCurrent = typeof options.credentialGuard === 'function'
+                        ? options.credentialGuard() : supersededByGuard();
+                    if (!credentialCurrent) {
                         return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
                     }
                     // Token rotation has already happened upstream. Persist the complete
@@ -474,6 +489,7 @@ async function issueFarmCode(openid, options = {}) {
                             sessionEntry.refreshTokenObservedAt = Date.now();
                         sessionEntry.credentialLastSuccessAt = Date.now();
                     }
+                    if (!supersededByGuard()) return { Success: false, superseded: true, Message: '请求已取消或被更新的扫码取代' };
                     try {
                         code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
                     } catch (error) {
@@ -620,6 +636,16 @@ async function keepWxCredentialAlive(acc) {
                 refreshtoken: String(latestAccount.refreshtoken),
                 accesstoken: String(latestAccount.accesstoken || ''),
                 cookies: new Map(),
+            }, {
+                onCredentialsRefreshed: async (checkpoint) => {
+                    const current = findAccountByWxid(account.wxid, account.id);
+                    if (!current || String(current.username || '') !== String(latestAccount.username || ''))
+                        throw new Error('微信账号绑定已变更');
+                    persistCredentialFields(account.id, {
+                        refreshtoken: checkpoint.refreshtoken, accesstoken: checkpoint.accesstoken,
+                        ...buildCredentialMetadata(checkpoint, latestAccount, false),
+                    });
+                },
             });
             if (typeof addOrUpdateAccount === 'function') {
                 addOrUpdateAccount({

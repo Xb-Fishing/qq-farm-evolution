@@ -56,6 +56,8 @@ function createDataProvider(deps) {
     const DOG_INFO_TIMEOUT = { _timeoutMs: 600000 };     // 10分钟
 
     return {
+        prepareWxRestart: deps.prepareWxRestart,
+        validateWxRestart: deps.validateWxRestart,
         /** 获取账号运行状态 */
         getStatus: (ref) => {
             const id = resolveAccountId(ref);
@@ -278,7 +280,8 @@ function createDataProvider(deps) {
 
         invalidateAccountCredentialTasks: (ref) => {
             const id = resolveAccountId(ref);
-            if (id && typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(id);
+            if (id && typeof deps.invalidateWxCredentialTasks === 'function') deps.invalidateWxCredentialTasks(id);
+            else if (id && typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(id);
         },
 
         saveAutoCodeRefresh: async (ref, config) => {

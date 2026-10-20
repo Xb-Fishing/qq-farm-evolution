@@ -280,3 +280,94 @@ test('真实 engine.start：rescheduleAll（clearAll）之后恢复任务仍在�
   assert.equal(reloginTasks(id).length, 1, '失败重排后仍只有一个任务');
   assert.equal(workerCalls.start.length + workerCalls.restart.length, 0);
 });
+
+test('更新交接的新 Code 启动时只消费一次，不再申请另一个 Code', async (t) => {
+  cleanupSharedScheduler(t);
+  const id = isolate('509', { code: 'previously-used-code' });
+  const { accountStamp, wxAccountsStamp } = require('../src/runtime/wx-restart-handoff');
+  const targetCommit = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: path.resolve(__dirname, '../..'), encoding: 'utf8',
+  }).trim();
+  const directory = path.resolve(dataDir, 'wx-restart-handoffs');
+  assert.equal(directory.startsWith(path.resolve(dataDir) + path.sep), true);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const nonce = 'fixture-startup-handoff';
+  const file = path.join(directory, `${nonce}.json`);
+  const accounts = store.getAccounts().accounts;
+  const account = accounts.find(a => String(a.id) === id);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, nonce, targetCommit, oldPid: 123, oldStartTicks: '456',
+    createdAt: Date.now(), expiresAt: Date.now() + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
+    accounts: [{ accountId: id, accountStamp: accountStamp(account, store.isAccountAutoLogin), code: 'prepared-one-use-code', generation: 1 }],
+  }), { mode: 0o600 });
+  const env = { ...process.env, FARM_WX_RESTART_HANDOFF_FILE: file,
+    FARM_WX_RESTART_TARGET_COMMIT: targetCommit, FARM_WX_RESTART_NONCE: nonce };
+  const engine = createRuntimeEngine({ processRef: { ...process, env } });
+  await engine.startAllAccounts();
+  assert.equal(codeCalls.n, 0);
+  assert.equal(workerCalls.start.length, 1);
+  assert.equal(workerCalls.start[0].code, 'prepared-one-use-code');
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(env.FARM_WX_RESTART_HANDOFF_FILE, undefined);
+  await engine.startAllAccounts();
+  assert.equal(codeCalls.n, 1, '第二次启动不能重放已消费的 Code');
+});
+
+test('等待凭据锁期间新扫码、暂停或过期，旧交接 Code 不得写回或启动', async (t) => {
+  cleanupSharedScheduler(t);
+  const { accountStamp, wxAccountsStamp } = require('../src/runtime/wx-restart-handoff');
+  const commit = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: path.resolve(__dirname, '../..'), encoding: 'utf8',
+  }).trim();
+  const directory = path.resolve(dataDir, 'wx-restart-handoffs');
+  assert.equal(directory.startsWith(path.resolve(dataDir) + path.sep), true);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  for (const change of ['rescan', 'pause', 'expiry']) {
+    createScheduler('auto_code_refresh').clearAll();
+    const id = isolate('509', { code: 'prior-code', loginBuffer: 'prior-buffer', wxid: 'wx-509' });
+    const accounts = store.getAccounts().accounts;
+    const account = accounts.find(a => String(a.id) === id);
+    const nonce = `fixture-lock-${change}-handoff`;
+    const file = path.join(directory, `${nonce}.json`);
+    fs.writeFileSync(file, JSON.stringify({ version: 1, nonce, targetCommit: commit, oldPid: 123, oldStartTicks: '456',
+      createdAt: Date.now(), expiresAt: Date.now() + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
+      accounts: [{ accountId: id, accountStamp: accountStamp(account, store.isAccountAutoLogin), code: 'stale-prepared-code', generation: 1 }],
+    }), { mode: 0o600 });
+    let unlock; let entered;
+    const gate = new Promise(resolve => { unlock = resolve; });
+    const acquired = new Promise(resolve => { entered = resolve; });
+    const lock = adapter.withAccountCredentialLock('', id, async () => { entered(); await gate; });
+    await acquired;
+    const engine = createRuntimeEngine({ processRef: { ...process, env: { ...process.env,
+      FARM_WX_RESTART_HANDOFF_FILE: file, FARM_WX_RESTART_TARGET_COMMIT: commit, FARM_WX_RESTART_NONCE: nonce } } });
+    const pending = change === 'expiry' ? engine.start({ startAdminServer: false }) : engine.startAllAccounts();
+    const originalNow = Date.now;
+    try {
+      if (change === 'rescan') store.addOrUpdateAccount({ id, code: 'new-scan-code', loginBuffer: 'new-scan-buffer' });
+      else if (change === 'pause') store.addOrUpdateAccount({ id, autoLogin: false });
+      else { const time = Date.now() + 90001; Date.now = () => time; }
+      unlock(); await lock; await pending;
+      assert.equal(workerCalls.start.length + workerCalls.restart.length, 0, change);
+      assert.equal(codeCalls.n, 0, change);
+      const latest = store.getAccounts().accounts.find(a => String(a.id) === id);
+      assert.equal(latest.code, change === 'rescan' ? 'new-scan-code' : 'prior-code');
+      if (change === 'expiry') assert.equal(reloginTasks(id).length, 1);
+    } finally { Date.now = originalNow; unlock(); }
+  }
+});
+
+test('明确失效状态跨引擎重建保留，新扫码后才恢复启动', async (t) => {
+  cleanupSharedScheduler(t);
+  const id = isolate('509', { code: 'already-used-code', wxid: 'wx-509' });
+  const reminder = reminderModule.getSharedWxLoginReminder();
+  await reminder.setUserConfig('owner-509', { enabled: false });
+  await reminder.noteCredentialInvalid({ accountId: id, owner: 'owner-509', wxid: 'wx-509' });
+  assert.equal(reminder.needsRescan(id), true);
+  await createRuntimeEngine({}).startAllAccounts();
+  assert.equal(codeCalls.n, 0);
+  assert.equal(workerCalls.start.length + workerCalls.restart.length, 0);
+  await reminder.noteAcceptedScan(id, { owner: 'owner-509', wxid: 'wx-509' });
+  assert.equal(reminder.needsRescan(id), false);
+  await createRuntimeEngine({}).startAllAccounts();
+  assert.equal(codeCalls.n, 1);
+  assert.equal(workerCalls.restart.length, 1);
+});
