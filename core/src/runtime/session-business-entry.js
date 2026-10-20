@@ -4,6 +4,7 @@ const { createBusinessGate } = require('./business-gate');
 const state = require('../services/business-state');
 const timers = require('../services/session-scheduler');
 const { createSessionBusinessBridge } = require('./session-business-bridge');
+const { businessPolicyConfig } = require('./session-config');
 
 if (!workerData?.sessionBusiness || process.env.FARM_SESSION_BUSINESS !== '1') throw new Error('Business entry requires a session host');
 const gate = createBusinessGate(workerData.epoch);
@@ -11,7 +12,7 @@ state.setBusinessGate(gate);
 const bridge = createSessionBusinessBridge({ port: parentPort, gate, initialFacts: decode(workerData.facts) });
 globalThis.__farmSessionBridge = bridge;
 let worker; let prepared = false; let activated = false; let checkpoint;
-let config = decode(workerData.config);
+let config = businessPolicyConfig(decode(workerData.config));
 
 async function deliver(events) {
   // Start listeners in source order. Their tracked asynchronous bodies retain
@@ -19,6 +20,7 @@ async function deliver(events) {
   for (const event of events || []) bridge.deliver(event).catch(error => parentPort.postMessage({ type: 'error', error: error.message }));
 }
 async function control(method, args) {
+  if (['relabelConfig', 'syncConfig'].includes(method)) args = businessPolicyConfig(args);
   if (method === 'prepare') {
     if (prepared) throw new Error('Business already prepared');
     await gate.prepare('prepare', async () => {
@@ -43,6 +45,7 @@ async function control(method, args) {
       // Revision-only changes do not reset schedules or recreate configuration
       // edge actions. Actual changed policy follows the ordinary config path.
       await gate.run('warmConfig', () => worker.sessionRuntime.applyConfig(config, checkpoint.config));
+      await gate.run('rewardSchedule', () => worker.sessionRuntime.refreshRewardsSchedule());
     }
     await deliver(args); return true;
   }

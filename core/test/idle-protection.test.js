@@ -81,7 +81,7 @@ function wireHarness() {
   const timers = new Map();
   const context = {
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-idle-account' } },
-    getStoreModule: () => ({ getPauseRemainMs: () => paused }),
+    getStoreModule: () => ({ getWirePauseRemainMs: () => paused }),
     ws: { readyState: 1, send: () => { sent++; } }, WebSocket: { OPEN: 1 },
     clientSeq: 1, pendingCallbacks: new Map(),
     encodeMsg: async () => Buffer.from('synthetic'),
@@ -124,6 +124,7 @@ test('real unified scheduling converts a long nap to protection and resumes at i
   const ctx = {
     unifiedSchedulerRunning: true, loginReady: true, Date: { now: () => now },
     nextFarmRunAt: now + 180_000, nextHelpRunAt: now + 240_000,
+    nextActivityRewardsAt: () => now + 86400_000,
     pauseRemainMsNow: () => Math.max(0, protectedUntil - now),
     getFriendQuietHours: () => ({ idleProtectionEnabled: true }),
     setIdleProtectionUntil: n => { protectedUntil = n; }, planIdleProtection: protection.planIdleProtection,

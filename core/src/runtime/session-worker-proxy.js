@@ -3,6 +3,7 @@ const { connectSession, ensureSession, processStarttime } = require('./session-r
 const { resolveBusinessTarget } = require('./session-contract');
 const { SESSION_ATTACH_TIMEOUT_MS } = require('./session-timeouts');
 const { readLifecycleJournal, readLifecycleCursor, acknowledgeLifecycle } = require('./session-lifecycle-journal');
+const { sessionPolicyConfig } = require('./session-config');
 
 async function replayLifecycle({ dataDir, account, onLifecycle }) {
   // Always read the complete durable ring. A single live notification must not
@@ -55,7 +56,7 @@ function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptO
   proxy.reloadBusiness = async () => {
     await proxy.ready;
     const target = resolveBusinessTarget({ runtimeRoot: sourceRoot, dataDir });
-    const attached = await client.call('attach', { target, config: { ...initialConfig, ...initialStart } }, SESSION_ATTACH_TIMEOUT_MS);
+    const attached = await client.call('attach', { target, config: sessionPolicyConfig({ ...initialConfig, ...initialStart }) }, SESSION_ATTACH_TIMEOUT_MS);
     update(attached); return await status();
   };
   proxy.ready = new Promise((resolve, reject) => setImmediate(async () => {
@@ -85,10 +86,10 @@ function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptO
       update(claimed);
       await status();
       const selectedConfig = initialConfig;
-      const attached = await client.call('attach', { target, config: { ...initialConfig, ...initialStart } }, SESSION_ATTACH_TIMEOUT_MS);
+      const attached = await client.call('attach', { target, config: sessionPolicyConfig({ ...initialConfig, ...initialStart }) }, SESSION_ATTACH_TIMEOUT_MS);
       update(attached); initialized = true;
       if (!attached.business?.ready || attached.business.commit !== target.commit) throw new Error('Target business did not become ready');
-      if (initialConfig !== selectedConfig) await client.call('send', { message: { type: 'config_sync', config: initialConfig } });
+      if (initialConfig !== selectedConfig) await client.call('send', { message: { type: 'config_sync', config: sessionPolicyConfig(initialConfig) } });
       await status(); resolve(true);
     } catch (error) {
       client?.close(); proxy.emit('error', error);
@@ -101,6 +102,7 @@ function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptO
   proxy.send = message => {
     if (message?.type === 'start' && !initialized) { initialStart = message.config || {}; return; }
     if (message?.type === 'config_sync') { initialConfig = message.config || {}; if (!initialized) return; }
+    if (message?.type === 'config_sync') message = { ...message, config: sessionPolicyConfig(message.config) };
     if (message?.type === 'stop') { proxy.kill().catch(error => proxy.emit('error', error)); return; }
     control = control.catch(() => {}).then(() => proxy.ready).then(() => client.call('send', { message }))
       .then(facts => update(facts));

@@ -274,6 +274,9 @@ message MilkTeaShopBuyReq {
     int64 count = 2;
 }
 
+message MilkTeaShareFirstReq {}
+// ark field 1 contains private sharing credentials and is deliberately ignored.
+message MilkTeaShareFirstRsp { int64 granted_score = 2; }
 message MilkTeaShareMilestonesReq {
 }
 
@@ -349,6 +352,7 @@ message MilkTeaOperateRequest {
     int64 activity_id = 1;
     int64 operate_type = 2;
     MilkTeaShopBuyReq shop_buy = 101;
+    MilkTeaShareFirstReq share_reward_share = 153;
     MilkTeaShareMilestonesReq share_reward_claim_milestones = 154;
     MilkTeaShareDailyReq share_reward_claim_daily = 157;
     MilkTeaCreateShopReq milk_tea_create_shop = 158;
@@ -491,6 +495,7 @@ message MilkTeaOperateReply {
     int64 operate_type = 2;
     MilkTeaActivityData data = 3;
     MilkTeaShopBuyRsp shop_buy = 101;
+    MilkTeaShareFirstRsp share_reward_share = 153;
     gamepb.activitypb.ShareRewardClaimMilestonesRsp share_reward_claim_milestones = 154;
     gamepb.activitypb.ShareRewardClaimDailyRsp share_reward_claim_daily = 157;
     MilkTeaCreateShopRsp milk_tea_create_shop = 158;

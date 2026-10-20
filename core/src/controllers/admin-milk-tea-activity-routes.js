@@ -139,6 +139,7 @@ function registerAdminMilkTeaActivityRoutes({
       const businessCode = err && err.business === true && typeof err.code === 'string'
         ? err.code
         : '';
+      if (businessCode === 'SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED') activityReader.clear(accountId);
       res.status(businessCode ? 400 : 502).json({
         ok: false,
         error: (err && err.message) || '活动操作失败',

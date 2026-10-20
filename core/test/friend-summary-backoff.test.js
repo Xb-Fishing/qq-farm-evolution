@@ -653,7 +653,7 @@ function realGovernedSender(governor, state) {
   const timers = new Map();
   const sandbox = { requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
-    getStoreModule: () => ({ getPauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
+    getStoreModule: () => ({ getWirePauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
     ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, Date,
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, { delay, fn }), clear: key => timers.delete(key) },
     isConnected: () => true, sendMsg: async (_service, method, _body, callback) => {

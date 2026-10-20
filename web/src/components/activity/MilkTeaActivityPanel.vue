@@ -39,11 +39,13 @@ const shop = computed(() => props.queries.shop.data)
 const hires = computed(() => props.queries.hireList.data)
 const work = computed(() => props.queries.work.data)
 const workshop = computed(() => props.queries.workshop.data)
-const candidates = computed(() => [...(hires.value?.friends || []), ...(hires.value?.robots || [])])
+const hireCandidatesReady = computed(() => !props.queries.hireList.loading && !props.queries.hireList.error && Number(hires.value?.durationId) === Number(durationId.value))
+const candidates = computed(() => hireCandidatesReady.value ? [...(hires.value?.friends || []), ...(hires.value?.robots || [])] : [])
 const hireAvailabilityKnown = computed(() => shop.value?.slotAvailabilityKnown === true && !props.queries.shop.loading && !props.queries.shop.error)
 const freeSlots = computed(() => hireAvailabilityKnown.value
   ? (shop.value?.freeSlotIndexes || []).map((slotIndex: number) => ({ slotIndex }))
   : [])
+const canHire = computed(() => hireCandidatesReady.value && candidates.value.some((entry: any) => String(entry.gid) === targetGid.value) && freeSlots.value.some((slot: any) => Number(slot.slotIndex) === slotIndex.value))
 const hireCost = computed(() => ({ 1: 40, 2: 130, 3: 270 }[Number(durationId.value)] || 0))
 const shopStarted = computed(() => Number(props.activity?.summary?.shopOpenAt) > 0)
 const validShopName = computed(() => Array.from(shopName.value.trim()).length >= 2 && Array.from(shopName.value.trim()).length <= 8)
@@ -56,6 +58,15 @@ const visibleFruits = computed(() => craftableFruits.value.filter((fruit: any) =
   || (workshop.value?.recipes || []).some((recipe: any) => Number(recipe.recipeId) === recipeId.value && Number(recipe.fruitItemId) === Number(fruit.itemId))))
 const selectedFruits = computed(() => craftableFruits.value.filter((fruit: any) => selectedFruitUids.value.includes(String(fruit.uid))))
 const selectedFruitCount = computed(() => selectedFruits.value.reduce((sum: bigint, fruit: any) => sum + BigInt(fruit.count), 0n).toString())
+watch(() => [durationId.value, props.queries.hireList.data, props.queries.hireList.loading, props.queries.hireList.error], () => {
+  targetGid.value = ''
+  if (pending.value?.action === 'hire')
+    closeConfirmation()
+})
+watch(() => [targetGid.value, slotIndex.value], () => {
+  if (pending.value?.action === 'hire')
+    closeConfirmation()
+})
 watch(() => JSON.stringify(workshop.value), (_current, previous) => {
   selectedFruitUids.value = []
   if (previous && pending.value?.action === 'craft') {
@@ -114,6 +125,10 @@ function confirm() {
   if (!pending.value || busy.value)
     return
   const action = pending.value
+  if (action.action === 'hire' && !canHire.value) {
+    closeConfirmation()
+    return
+  }
   closeConfirmation()
   emit('operate', action.action, action.input)
 }
@@ -268,7 +283,7 @@ function exchange(goods: ExchangeGoods) {
       </section>
       <section v-if="!notOpened" data-gameplay="cashier" class="milk-card">
         <div class="milk-card-heading">
-          <span class="i-carbon-wallet" aria-hidden="true" /><div><h3>收银台与宣传喇叭</h3><p>营业收益，记得及时领取</p></div>
+          <span class="i-carbon-wallet" aria-hidden="true" /><div><h3>收银台与宣传喇叭</h3><p>开启自动任务后，满额自动领取营业收益</p></div>
         </div>
         <div class="milk-cashier">
           <span>可收奖励 {{ shop?.pendingRewards?.length == null ? '待确认' : number(shop.pendingRewards.length) }} 项</span><BaseButton class="milk-action" variant="primary" :disabled="busy || noCashierReward" @click="prepare('claimCashier')">
@@ -276,7 +291,9 @@ function exchange(goods: ExchangeGoods) {
           </BaseButton>
         </div>
         <p class="milk-muted">
-          每杯 {{ number(shop?.secPerCup) }} 秒 · 满额时间 {{ shop?.nextFullAt ? new Date(Number(shop.nextFullAt) * 1000).toLocaleString() : shop ? '暂无预计时间' : '待读取店铺状态' }}
+          每杯 {{ number(shop?.secPerCup) }} 秒 · {{ shop?.cashierFull ? '收银台已满' : '预计满额' }} {{ !shop?.cashierFull && shop?.nextFullAt ? new Date(Number(shop.nextFullAt) * 1000).toLocaleString() : '' }}
+        </p><p class="milk-muted">
+          已累计营业 {{ shop?.cashierStateKnown ? number(Number(shop.cashierElapsedSec) / 3600) : '待确认' }} / {{ shop?.cashierStateKnown ? number(Number(shop.cashierCapacitySec) / 3600) : '待确认' }} 小时。满额按累计营业时间确认；库存和加成变化会影响预计时间。
         </p>
         <div class="milk-divider" /><div class="milk-inline-form">
           <label class="milk-field">喇叭数量<input v-model.number="boostCount" type="number" min="1" max="100" aria-label="喇叭数量" class="milk-input"></label><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle" @click="prepare('boost', { count: Number(boostCount), confirmedCosts: [{ itemId: 1042, count: String(boostCount) }] }, `消耗宣传喇叭 × ${number(boostCount)}，确认使用？`)">
@@ -383,12 +400,15 @@ function exchange(goods: ExchangeGoods) {
           </BaseButton>
           <BaseButton class="milk-action" variant="secondary" :loading="queries.hireList.loading" :disabled="busy || queries.hireList.loading" @click="emit('query', 'hireList', { durationId: Number(durationId) })">
             查询雇佣候选
-          </BaseButton><BaseButton class="milk-action" variant="primary" :disabled="busy || settle || !targetGid || !freeSlots.length || Number(hires?.durationId) !== Number(durationId)" @click="prepare('hire', { durationId: Number(durationId), hires: [{ slotIndex: Number(slotIndex), targetGid }], confirmedCosts: [{ itemId: 1041, count: String(hireCost) }] }, `消耗奶茶券 × ${hireCost} 雇佣所选员工，确认？`)">
+          </BaseButton><BaseButton class="milk-action" variant="primary" :disabled="busy || settle || !canHire" @click="prepare('hire', { durationId: Number(durationId), hires: [{ slotIndex: Number(slotIndex), targetGid }], confirmedCosts: [{ itemId: 1041, count: String(hireCost) }] }, `消耗奶茶券 × ${hireCost} 雇佣所选员工，确认？`)">
             雇佣所选员工
           </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !activity?.summary" @click="prepare('hireSetting', { hireDisabled: !activity?.summary?.hireDisabled })">
             {{ activity?.summary?.hireDisabled ? '开启被雇佣' : '暂停被雇佣' }}
           </BaseButton><span class="milk-muted">本次费用：{{ hireCost }} 奶茶券；班次结束后可刷新空位。</span>
         </div>
+        <p v-if="hires && hireCandidatesReady" class="milk-muted">
+          已过滤 {{ number(hires.unavailableCount || 0) }} 位当前不可雇员工。{{ hires.unavailableReason || (!candidates.length ? '暂无符合本班条件的员工，请稍后重新查询。' : '') }}
+        </p>
       </section>
     </div>
     <section id="milk-exchange" data-gameplay="exchange" class="milk-card milk-section">
@@ -467,17 +487,21 @@ function exchange(goods: ExchangeGoods) {
           <div class="milk-subheading">
             <h4>快乐值奖励</h4><span class="milk-badge">{{ number(activity?.shareReward?.currentScore) }} 快乐值</span>
           </div><p class="milk-muted">
-            每日快乐值领取 {{ activity?.shareReward?.daily?.rewardClaimed == null ? '待确认' : activity.shareReward.daily.rewardClaimed ? '已领取' : '未领取' }} · 次数 {{ number(activity?.shareReward?.daily?.claimedCount) }} / {{ number(activity?.shareReward?.daily?.claimLimit) }}
+            每日快乐值 {{ activity?.shareReward?.daily?.rewardClaimed == null ? '待确认' : activity.shareReward.daily.rewardClaimed ? '已领取' : '未领取' }} · 首次分享奖励 {{ activity?.shareReward?.daily?.firstShareAwarded == null ? '待确认' : activity.shareReward.daily.firstShareAwarded ? '已领取' : '未领取' }}
+          </p><p class="milk-muted">
+            好友快乐包今日已领 {{ number(activity?.shareReward?.daily?.claimedCount) }} / {{ number(activity?.shareReward?.daily?.claimLimit) }}；与每日、首次分享奖励分别计算。开启自动任务后自动领取合格快乐值奖励。
           </p><p v-for="(tier, index) in activity?.shareReward?.milestones || []" :key="index" class="milk-list-row">
             快乐值档位 {{ number(tier.threshold) }} · {{ tier.state === 2 ? '可领取' : tier.state === 3 ? '已领取' : '暂不可领取' }}<span v-for="(item, itemIndex) in tier.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item.image" :src="item.image" :alt="item.itemName || '奖励'"><span>{{ item.itemName || '未知物品' }} × {{ number(item.itemCount) }}</span></span>
           </p><div class="milk-actions">
-            <BaseButton class="milk-action" variant="primary" :disabled="busy" @click="prepare('shareDaily')">
+            <BaseButton class="milk-action" variant="primary" :disabled="busy || activity?.shareReward?.daily?.rewardClaimed === true" @click="prepare('shareDaily')">
               领取每日快乐值
+            </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || activity?.shareReward?.daily?.firstShareAwarded !== false" @click="prepare('shareFirst', {}, '领取今日首次分享快乐值奖励？')">
+              领取首次分享奖励
             </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy" @click="prepare('shareMilestones')">
               领取快乐值档位
             </BaseButton>
           </div><p class="milk-muted">
-            分享与好友快乐包链接请在官方客户端使用。
+            好友快乐包链接请在官方客户端使用。
           </p>
         </div>
       </div>

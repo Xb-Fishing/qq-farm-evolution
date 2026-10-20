@@ -618,7 +618,7 @@ export interface ActivityRetiredInfo { reason: ActivityRetireReason }
 export interface MilkTeaItem { id: number, count?: string | number, name?: string, image?: string, iconStatus?: string }
 export interface MilkTeaShareReward {
   currentScore?: number
-  daily?: { rewardClaimed?: boolean, claimedCount?: number, claimLimit?: number }
+  daily?: { rewardClaimed?: boolean, firstShareAwarded?: boolean, claimedCount?: number, claimLimit?: number }
   milestones?: Array<{ id?: number, threshold?: number, state?: number, rewards?: Array<{ itemId?: number, itemCount?: number, itemName?: string, image?: string }> }>
 }
 export interface MilkTeaExchangeBounds {
@@ -959,7 +959,7 @@ export const useActivityStore = defineStore('activity', () => {
       return { ok: false, retired: true, error: '活动已结束' }
     const requestedId = String(accountId)
     const requestId = ++milkTeaQueryIds[kind]
-    milkTeaQueries.value[kind] = { ...milkTeaQueries.value[kind], loading: true, error: '' }
+    milkTeaQueries.value[kind] = { ...milkTeaQueries.value[kind], ...(kind === 'hireList' ? { data: null } : {}), loading: true, error: '' }
     try {
       const { data } = await api.post('/api/activity/milk-tea/query', { kind, params }, {
         headers: { 'x-account-id': accountId },
@@ -1002,12 +1002,16 @@ export const useActivityStore = defineStore('activity', () => {
       // 卸载/切账号（含往返，账号串恰好相等）后的旧响应：不给调用方可消费的结果
       if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
         return { ok: false, cancelled: true, error: '已取消' }
+      if (action === 'hire')
+        milkTeaQueries.value.hireList = { data: null, loading: false, error: '' }
       return data
     }
     catch (err: any) {
       if (lifecycle !== activityLifecycleSeq || !isCurrentAccount(requestedId))
         // 旧代次的迟到异常同迟到成功：标记已取消，不得当普通失败提示
         return { ok: false, cancelled: true, error: '已取消' }
+      if (action === 'hire' && err?.response?.data?.code === 'SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED')
+        milkTeaQueries.value.hireList = { data: null, loading: false, error: '候选资格已变化，请重新查询' }
       return { ok: false, error: err?.response?.data?.error || err.message || '操作失败', status: err?.response?.status, code: err?.response?.data?.code }
     }
     finally {
@@ -1048,7 +1052,8 @@ export const useActivityStore = defineStore('activity', () => {
   // ===== 一键领取（编排层）：只复用上方已证实的手动写入口，不新增协议/命令 =====
   // 迁移为当前快乐值：每日领取 → 重读快照 → 领取已成立档位；其他奶茶动作用独立按钮。
   // 每一项写入仍由后端 List+GetGroup 资格闸门实时校验后才放行；任一读取失败/缺字段/
-  // 活动未下发则显式跳过、零写。绝不自动分享/购买/雇佣/消耗道具。
+  // 活动未下发则显式跳过、零写；首次分享仅执行已证游戏给分动作，不发送好友链接。
+  // 不购买、雇佣或消耗道具。
   function rewardText(rewards: unknown): string {
     if (!Array.isArray(rewards) || !rewards.length)
       return ''
@@ -1102,7 +1107,7 @@ export const useActivityStore = defineStore('activity', () => {
       else {
         push({ key, label, status: 'failed', detail: `${String((result as any)?.error || '操作失败')}（结果未知，不自动重试，请稍后刷新确认）` })
       }
-      return result?.ok === true
+      return result?.ok === true || ((result as any)?.status === 400 && code === 'SEASON_WISH_MILK_TEA_CLAIMED')
     }
 
     try {
@@ -1123,7 +1128,6 @@ export const useActivityStore = defineStore('activity', () => {
 
       // 2) 快乐值每日领取（免费、已证实的领取路径）
       if (shareState?.daily && shareState.daily.rewardClaimed === false
-        && (!Number(shareState.daily.claimLimit) || Number(shareState.daily.claimedCount) < Number(shareState.daily.claimLimit))
         && !activityEndedNow('milkTea')) {
         const dailySucceeded = await step('share:daily', '快乐值每日领取', 'shareDaily', {})
         if (!alive())
@@ -1152,6 +1156,24 @@ export const useActivityStore = defineStore('activity', () => {
       else if (shareState?.daily && shareState.daily.rewardClaimed === false && activityEndedNow('milkTea')) {
         skip('share:daily', '快乐值每日领取', '运行期间活动已到期，每日领取停止（不试写）')
         shareState = null
+      }
+
+      if (shareState?.daily?.firstShareAwarded === false && !activityEndedNow('milkTea')) {
+        const shared = await step('share:first', '首次分享奖励', 'shareFirst', {})
+        if (!alive())
+          return finishRun(runId)
+        if (!shared)
+          return finishRun(runId)
+        const afterShare = await fetchMilkTeaActivity(accountId)
+        if (!alive())
+          return finishRun(runId)
+        if (afterShare?.ok === true && !afterShare?.retired) {
+          shareState = shareRewardOf(milkTeaActivity.value)
+        }
+        else {
+          skip('share:milestones', '快乐值档位奖励', '首次分享后状态未确认，停止依赖领取，请刷新核对')
+          shareState = null
+        }
       }
 
       // 3) 快乐值档位奖励（state===2 为可领取，沿用本仓库已验证解读）

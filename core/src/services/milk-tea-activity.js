@@ -24,16 +24,17 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
  * 编码证据：公开血缘仓库固定提交的官方编码器重构（owner/repo/SHA 只存
  * core/data/client-config-evidence/sources.json），并与当前 ActivityService.List
  * 下发、官方公告正文交叉核对。evidence=official-encoder-reconstruction
- * （非自然成功请求样本）→ 只满足两级写操作策略第①级「面板手动层」；
- * bot 自动循环层在取得官方客户端自然成功样本前禁止接入。
+ * （非自然成功请求样本）。用户明确要求的免费奖励自动领取复用同一资格校验，
+ * 满额收银、每日/首次分享与档位之外的经济操作仍仅走面板确认。
  *
  * 安全边界（照 pet-diary-operate 的手动模式）：
- * - 全部操作只在面板手动触发路径执行；每次操作前重读 List + 根 GetGroup
+ * - 每次操作前重读 List + 根 GetGroup
  *   做服务端前置校验（资格/费用/次数/时间），与官方客户端行为一致。
  * - 显式查询与手动操作共用每 Worker 单例租约：忙时拒绝不排队。
  * - 钻石（1004）与未知/无法证实的费用一律拒绝；费用必须与用户确认值逐项相等。
  * - 写请求发出后传输失败、回复不匹配、解码失败 = 结果未知，不自动重试。
- * - 不开放：基金付费解锁(75)、分享上报(70)、好友链接领取、订阅/引导标记。
+ * - 不开放：基金付费解锁(75)、好友链接领取、订阅/引导标记。
+ * - 首次分享(70)按官方空参数动作独立给分，不伪造外部分享完成结果，敏感Ark不解码。
  * - 时间边界：结算期（公告北京 2026-11-15 00:00 起，或已解码 settle_start_time）
  *   停止营业类操作与活动专属种子购买；最终截止（根 endTime）后停止新增读取与写入。
  */
@@ -79,6 +80,7 @@ const OPERATIONS = {
   hireSetting: [MILK_TEA_MAIN_ACTIVITY_ID, 68, 'milk_tea_set_hire_disable'],
   exchange: [MILK_TEA_SHOP_ACTIVITY_ID, 1, 'shop_buy'],
   fundClaim: [MILK_TEA_FUND_ACTIVITY_ID, 76, '', 'growth_fund_claim'],
+  shareFirst: [MILK_TEA_HAPPY_SHARE_ACTIVITY_ID, 70, 'share_reward_share'],
   shareMilestones: [MILK_TEA_HAPPY_SHARE_ACTIVITY_ID, 71, 'share_reward_claim_milestones'],
   shareDaily: [MILK_TEA_HAPPY_SHARE_ACTIVITY_ID, 74, 'share_reward_claim_daily'],
 };
@@ -106,7 +108,7 @@ const QUERY_PARAM_KEYS = {
 // 手动写白名单（两级写操作策略第①级）
 const MANUAL_ACTIONS = new Set([
   'createShop', 'renameShop', 'hire', 'claimCashier', 'boost', 'upgrade', 'craft',
-  'claimWages', 'interact', 'hireSetting', 'exchange', 'fundClaim', 'shareDaily', 'shareMilestones',
+  'claimWages', 'interact', 'hireSetting', 'exchange', 'fundClaim', 'shareDaily', 'shareFirst', 'shareMilestones',
 ]);
 
 // 结算期必须停止的营业类动作（公告注意事项第 2 条）；领取/工资/基金/快乐值/非种子兑换保留
@@ -655,7 +657,7 @@ async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context
     throw err;
   }
   const data = kind === 'shop' ? shopViewDto(rsp.shop, nowSec())
-    : kind === 'hireList' ? hireListDto(rsp)
+    : kind === 'hireList' ? hireListDto(rsp, nowSec(), timingOf(snapshot, nowSec()))
       : kind === 'workshop' ? workshopDto(rsp)
         : kind === 'work' ? workPageDto(rsp)
           : kind === 'rank' ? rankDto(rsp)
@@ -721,6 +723,9 @@ function shopViewDto(view, now) {
     nextLevelRevenue: num64(view.next_level_revenue),
     cashierCapacitySec: num64(view.cashier_capacity_sec),
     cashierElapsedSec: num64(view.cashier_elapsed_sec),
+    cashierFull: cashierState(view, now).full,
+    cashierStateKnown: cashierState(view, now).known,
+    cashierObservedAt: now,
     slots: list(view.slots).filter(Boolean).slice(0, 10).map(slot => ({
       slotIndex: num64(slot.slot_index),
       isRobot: slot.is_robot === true,
@@ -763,7 +768,27 @@ function longKeyFromHash(key) {
   return Number(value);
 }
 
-function hireListDto(rsp) {
+function hireCandidateEligible(entry, now) {
+  const gid = str64(entry?.friend?.gid);
+  const state = Number(entry?.state ?? 0);
+  const until = Number(entry?.state_until_at ?? 0);
+  const rehire = Number(entry?.rehire_available_at ?? 0);
+  return /^[1-9]\d*$/.test(gid) && state === 0
+    && Number.isSafeInteger(until) && until >= 0 && until <= now
+    && Number.isSafeInteger(rehire) && rehire >= 0 && rehire <= now;
+}
+
+function cashierState(view, now) {
+  const capacity = Number(view?.cashier_capacity_sec);
+  const elapsed = Number(view?.cashier_elapsed_sec);
+  const known = Number.isSafeInteger(capacity) && capacity > 0
+    && Number.isSafeInteger(elapsed) && elapsed >= 0;
+  const full = known && elapsed >= capacity;
+  const forecast = Number(view?.next_full_at);
+  return { known, full, nextCheckAt: !full && Number.isSafeInteger(forecast) && forecast > now ? forecast * 1000 : 0 };
+}
+
+function hireListDto(rsp, now, timing) {
   if (!rsp) return null;
   const friend = entry => ({
     gid: str64(entry && entry.friend && entry.friend.gid),
@@ -775,12 +800,25 @@ function hireListDto(rsp) {
     stateUntilAt: num64(entry && entry.state_until_at),
     rehireAvailableAt: num64(entry && entry.rehire_available_at),
   });
+  const seen = new Set();
+  const eligible = entry => {
+    if (!hireCandidateEligible(entry, now)) return false;
+    const gid = str64(entry.friend.gid);
+    if (seen.has(gid)) return false;
+    seen.add(gid); return true;
+  };
+  const minimum = num64(rsp.min_remain_biz_sec);
+  const windowOpen = !(minimum > 0) || timing.settleStartTime - now >= minimum;
+  const friends = windowOpen ? list(rsp.friends).filter(eligible) : [];
+  const robots = windowOpen ? list(rsp.robots).filter(eligible) : [];
   return {
     durationId: num64(rsp.duration_id),
     wageTotal: num64(rsp.wage_total),
     minRemainBizSec: num64(rsp.min_remain_biz_sec),
-    friends: list(rsp.friends).filter(Boolean).slice(0, 80).map(friend),
-    robots: list(rsp.robots).filter(Boolean).slice(0, 40).map(friend),
+    friends: friends.slice(0, 80).map(friend),
+    robots: robots.slice(0, 40).map(friend),
+    unavailableCount: list(rsp.friends).length + list(rsp.robots).length - friends.length - robots.length,
+    unavailableReason: windowOpen ? '' : '剩余营业时间不足本班最低要求，请选择其他班次',
   };
 }
 
@@ -1003,9 +1041,12 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     // 时间重核动作相位（读取途中跨入结算期/最终截止即停，零后续写）。
     const context = captureConnectionContext(deps);
     let timingSource = null;
+    let minimumHireRemainSec = 0;
     const recheck = () => {
       assertConnectionOwned(deps, context);
+      deps.assertAutomaticAllowed?.();
       if (timingSource) assertActionPhase(action, timingOf(timingSource, nowSec()), nowSec());
+      if (minimumHireRemainSec > 0 && timingOf(timingSource, nowSec()).settleStartTime - nowSec() < minimumHireRemainSec) fail('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED', '剩余营业时间不足本班最低要求，请重新查询并选择其他班次');
     };
     recheck();
     // 每次操作重读 List + 根状态（服务端前置校验，不用本地缓存资格）
@@ -1089,12 +1130,14 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       const hireListReply = await readOperate(OPERATIONS.queryHireList, { duration_id: durationId });
       const hireList = hireListReply && hireListReply.milk_tea_get_hire_list;
       if (!hireList || toNum(hireList.duration_id) !== durationId) fail('SEASON_WISH_MILK_TEA_NO_STATE', '雇佣候选班次与当前选择不符');
+      minimumHireRemainSec = num64(hireList.min_remain_biz_sec);
+      recheck();
       const candidates = new Set([
         ...list(hireList && hireList.friends),
         ...list(hireList && hireList.robots),
-      ].map(entry => str64(entry && entry.friend && entry.friend.gid)).filter(Boolean));
+      ].filter(entry => hireCandidateEligible(entry, nowSec())).map(entry => str64(entry.friend.gid)));
       for (const row of wanted) {
-        if (!candidates.has(row.targetGid)) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '雇佣目标不在本次候选列表中，请刷新后重选');
+        if (!candidates.has(row.targetGid)) fail('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED', '员工当前不可雇佣，已失效旧候选，请重新查询后选择');
       }
       const duration = known.get(durationId);
       const totalCost = [{ itemId: toNum(duration.cost.itemId), count: toNum(duration.cost.count) * wanted.length }];
@@ -1113,6 +1156,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       const shopReply = await readOperate(OPERATIONS.queryShop, {});
       const view = shopReply && shopReply.milk_tea_get_shop && shopReply.milk_tea_get_shop.shop;
       if (!view) fail('SEASON_WISH_MILK_TEA_NO_STATE', '服务端未返回收银台状态');
+      if (deps.assertAutomaticAllowed && !cashierState(view, nowSec()).full) fail('SEASON_WISH_MILK_TEA_NO_CLAIMABLE', '收银台尚未满额');
       if (!list(view.pending_rewards).some(item => num64(item?.id) > 0 && num64(item?.count) > 0)) fail('SEASON_WISH_MILK_TEA_NO_CLAIMABLE', '当前没有可领取的收银台收益');
     }
     else if (action === 'boost') {
@@ -1308,10 +1352,12 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       if (!shareReward || !shareReward.daily) fail('SEASON_WISH_MILK_TEA_NO_STATE', '服务端未返回快乐值状态');
       const daily = shareReward.daily;
       if (daily.rewardClaimed === true) fail('SEASON_WISH_MILK_TEA_CLAIMED', '今日快乐值已领取');
-      if (toNum(daily.claimLimit) > 0 && toNum(daily.claimedCount) >= toNum(daily.claimLimit)) {
-        fail('SEASON_WISH_MILK_TEA_LIMIT', '今日快乐值领取次数已用完');
-      }
       operationName = 'shareDaily';
+      params = {};
+    }
+    else if (action === 'shareFirst') {
+      if (!shareReward?.daily || typeof shareReward.daily.firstShareAwarded !== 'boolean') fail('SEASON_WISH_MILK_TEA_NO_STATE', '服务端未返回首次分享奖励状态');
+      if (shareReward.daily.firstShareAwarded) fail('SEASON_WISH_MILK_TEA_CLAIMED', '今日首次分享奖励已领取');
       params = {};
     }
     else if (action === 'shareMilestones') {
@@ -1325,6 +1371,15 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       params = {};
     }
 
+    recheck();
+    const rewardKeys = rewardAttemptKeys(action, shareReward, nowSec() * 1000);
+    if (rewardKeys.length) {
+      loadAutomaticState();
+      if (deps.assertAutomaticAllowed && rewardKeys.some(key => automaticState.claims[key])) fail('SEASON_WISH_MILK_TEA_NO_CLAIMABLE', '本次奖励已提交，请等待状态对账');
+      for (const key of rewardKeys) automaticState.claims[key] = nowSec() * 1000;
+      persistAutomaticState();
+    }
+    deps.beforeAutomaticWrite?.(action);
     const outcome = await send(operationName, params);
     const { reply, selector, command } = outcome;
     // 写请求已成功送达且回显匹配后，仍要求结果体存在；缺失 = 结果未知（不重试）
@@ -1335,7 +1390,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     const positiveItems = rows => list(rows).some(item => num64(item?.id) > 0 && num64(item?.count) > 0);
     const claimedIds = list(result.claimed_tier_ids).map(num64);
     let confirmed = true;
-    if (action === 'shareDaily') confirmed = num64(result.granted_score) > 0 || positiveItems(result.rewards);
+    if (action === 'shareDaily' || action === 'shareFirst') confirmed = num64(result.granted_score) > 0 || positiveItems(result.rewards);
     else if (action === 'shareMilestones' || action === 'fundClaim') {
       const eligible = action === 'shareMilestones'
         ? list(shareReward?.milestones).filter(tier => toNum(tier.state) === 2 && toNum(shareReward.currentScore) >= toNum(tier.threshold)).map(tier => toNum(tier.id))
@@ -1407,7 +1462,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     else if (action === 'claimWages') {
       extra.claimedCount = num64(result.claimed_count);
     }
-    else if (action === 'shareDaily') {
+    else if (action === 'shareDaily' || action === 'shareFirst') {
       extra.grantedScore = num64(result.granted_score);
     }
     else if (action === 'fundClaim' || action === 'shareMilestones') {
@@ -1427,6 +1482,125 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
   }
   finally {
     releaseLease(lease);
+  }
+}
+
+// Only free, explicitly requested rewards participate. A durable latch is
+// installed immediately before sending; an unknown result is never replayed.
+let automaticState = { nextCheckAt: 0, claims: {}, loaded: false };
+let automaticRunning = false;
+function automaticStateFile() {
+  const account = String(process.env.FARM_ACCOUNT_ID || 'default').replace(/[^\w.-]/g, '_').slice(0, 80);
+  return require('../config/runtime-paths').getDataFile(`milk-tea-auto-${account}.json`);
+}
+function loadAutomaticState() {
+  if (automaticState.loaded) return;
+  try {
+    const value = JSON.parse(require('node:fs').readFileSync(automaticStateFile(), 'utf8'));
+    if (value?.version !== 1 || !value.claims || Array.isArray(value.claims) || typeof value.claims !== 'object') throw new Error('invalid_reward_journal');
+    automaticState.claims = Object.fromEntries(Object.entries(value.claims).filter(([key, time]) => key.length <= 200 && Number.isSafeInteger(time) && time > 0).slice(-50));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  automaticState.loaded = true;
+}
+function persistAutomaticState() {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const file = automaticStateFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, claims: automaticState.claims }), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally { try { fs.unlinkSync(tmp); } catch {} }
+}
+function automaticMilkTeaWakeAt(now = Date.now()) {
+  if (require('../models/store').getAutomation().task !== true || endedEvidenceActive(Math.floor(now / 1000))) return now + 86400_000;
+  return automaticState.nextCheckAt || now;
+}
+function rewardAttemptKeys(action, share, now) {
+  const day = new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
+  if (action === 'claimCashier') return ['cashier'];
+  if (action === 'shareDaily') return [`daily:${day}`];
+  if (action === 'shareFirst') return [`first:${day}`];
+  if (action === 'shareMilestones') return list(share?.milestones).filter(row => toNum(row.state) === 2 && toNum(share.currentScore) >= toNum(row.threshold)).map(row => `tier:${toNum(row.id)}`);
+  return [];
+}
+async function runAutomaticMilkTea(deps = {}) {
+  const nowMs = () => typeof deps.now === 'function' ? deps.now() : Date.now();
+  const enabled = () => typeof deps.enabled === 'function' ? deps.enabled() : require('../models/store').getAutomation().task === true;
+  const paused = () => typeof deps.isPaused === 'function' ? deps.isPaused() : require('../models/store').getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0;
+  if (automaticRunning || !enabled() || paused() || nowMs() < automaticState.nextCheckAt || endedEvidenceActive(Math.floor(nowMs() / 1000))) return;
+  const lease = acquireLease();
+  if (!lease) { automaticState.nextCheckAt = nowMs() + 60_000; return; }
+  automaticRunning = true;
+  let held = true;
+  const results = [];
+  automaticState.nextCheckAt = nowMs() + 15 * 60_000;
+  try {
+    loadAutomaticState();
+    const day = new Date(nowMs() + 8 * 3600_000).toISOString().slice(0, 10);
+    const context = captureConnectionContext(deps);
+    const recheck = () => {
+      assertConnectionOwned(deps, context);
+      if (!enabled() || paused()) fail('SEASON_WISH_MILK_TEA_PAUSED', '自动奖励已暂停');
+      if (typeof deps.canRun === 'function' && deps.canRun() !== true) fail('SEASON_WISH_MILK_TEA_YIELD', '优先处理到点收获');
+      if (new Date(nowMs() + 8 * 3600_000).toISOString().slice(0, 10) !== day) fail('SEASON_WISH_MILK_TEA_PAUSED', '跨日后重新核对奖励');
+    };
+    recheck();
+    const activityService = require('./activity');
+    const listReader = deps.getActivityDiscoveryList || activityService.getActivityDiscoveryList;
+    const snapshotReader = deps.getActivityGroupSnapshot || activityService.getActivityGroupSnapshot;
+    const activities = await listReader(); recheck();
+    if (!findMilkTeaRootNode(activities)) { automaticState.nextCheckAt = nowMs() + 6 * 3600_000; return; }
+    const snapshot = await snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, ''); recheck();
+    if (toNum(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) return;
+    const timing = timingOf(snapshot, Math.floor(nowMs() / 1000));
+    recordEndedEvidence(timing, null);
+    if (!['open', 'settle'].includes(timing.phase)) return;
+    const children = list(snapshot.children);
+    const summary = children.find(row => toNum(row.id) === MILK_TEA_MAIN_ACTIVITY_ID)?.details?.milkTea;
+    const share = children.find(row => toNum(row.id) === MILK_TEA_HAPPY_SHARE_ACTIVITY_ID)?.details?.shareReward;
+    const actions = [];
+    if (summary?.shopOpenAt > 0) {
+      const reply = await operateMilkTeaRequest(OPERATIONS.queryShop, {}, deps, context); recheck();
+      const view = reply?.milk_tea_get_shop?.shop;
+      const cashier = cashierState(view, Math.floor(nowMs() / 1000));
+      if (cashier.known && !cashier.full && automaticState.claims.cashier) {
+        delete automaticState.claims.cashier; persistAutomaticState();
+      }
+      if (cashier.full && list(view?.pending_rewards).some(item => num64(item?.id) > 0 && num64(item?.count) > 0)) actions.push(['claimCashier', 'cashier']);
+      if (timing.phase === 'open' && cashier.nextCheckAt > nowMs()) automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, cashier.nextCheckAt);
+    }
+    if (share?.daily?.rewardClaimed === false) actions.push(['shareDaily', `daily:${day}`]);
+    if (share?.daily?.firstShareAwarded === false) actions.push(['shareFirst', `first:${day}`]);
+    const tiers = list(share?.milestones).filter(row => toNum(row.state) === 2 && toNum(share.currentScore) >= toNum(row.threshold)).map(row => toNum(row.id)).sort((a, b) => a - b);
+    if (tiers.length) actions.push(['shareMilestones', tiers.map(id => `tier:${id}`)]);
+    // Keep only current/previous-day claims plus the current cashier/tier latch.
+    automaticState.claims = Object.fromEntries(Object.entries(automaticState.claims).filter(([key, at]) => key === 'cashier' || key.startsWith('tier:') || nowMs() - at < 2 * 86400_000).slice(-50));
+    releaseLease(lease); held = false;
+    for (const [action, key] of actions) {
+      recheck();
+      const keys = Array.isArray(key) ? key : [key];
+      if (keys.some(id => automaticState.claims[id])) continue;
+      const result = await runManualMilkTeaAction(action, {}, { ...deps,
+        assertAutomaticAllowed: recheck,
+      });
+      results.push(result);
+      if (result?.outcome === 'unknown' || result?.ok !== true) break;
+      // Success may unlock a new tier or reset the cashier. Reconcile shortly,
+      // rather than treating the earlier snapshot as proof of the new state.
+      automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, nowMs() + 60_000);
+    }
+    return results;
+  } catch (error) {
+    automaticState.nextCheckAt = error?.code === 'SEASON_WISH_MILK_TEA_YIELD' ? nowMs() + 1000 : Math.max(automaticState.nextCheckAt, nowMs() + 60_000);
+    if (!['SEASON_WISH_MILK_TEA_PAUSED', 'SEASON_WISH_MILK_TEA_YIELD'].includes(error?.code)) log('活动', '自动奖励本轮未完成，稍后核对状态', { module: 'activity', event: 'milk_tea_auto_check', result: 'error', code: String(error?.code || 'read_failed').slice(0, 80) });
+    return results;
+  } finally {
+    if (held) releaseLease(lease);
+    automaticRunning = false;
   }
 }
 
@@ -1450,12 +1624,24 @@ module.exports = {
   runManualMilkTeaAction,
   // 测试与内部核对用（无网络纯函数）
   timingOf,
+  hireCandidateEligible,
+  cashierState,
+  runAutomaticMilkTea,
+  automaticMilkTeaWakeAt,
 };
 
 // Persistent-session data capsule. No handles, functions or in-flight work.
 if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
-  const { registerDataState } = require('./business-state');
-  registerDataState('services/milk-tea-activity.js', () => ({ endedEvidence }), value => {
-      endedEvidence = value.endedEvidence;
-  }, { idle: () => actionLeaseOwner === null, });
+  const { registerBusinessState } = require('./business-state');
+  registerBusinessState('services/milk-tea-activity.js', {
+    version: 1,
+    capture: () => ({ endedEvidence, automaticState }),
+    validate(value) {
+      const keys = value && Object.keys(value).sort().join(',');
+      if (keys !== 'endedEvidence' && keys !== 'automaticState,endedEvidence') throw new Error('Invalid milk reward checkpoint');
+      if (value.automaticState && (!Number.isFinite(value.automaticState.nextCheckAt) || !value.automaticState.claims || typeof value.automaticState.loaded !== 'boolean')) throw new Error('Invalid milk automatic state');
+    },
+    restore(value) { endedEvidence = value.endedEvidence; automaticState = value.automaticState || { nextCheckAt: 0, claims: {}, loaded: false }; },
+    idle: () => actionLeaseOwner === null && !automaticRunning,
+  });
 }

@@ -53,6 +53,7 @@ async function performLoad() {
         getResourcePath('proto', 'pet-diary.proto'),
         getResourcePath('proto', 'mysteryshoppb.proto'),
         getResourcePath('proto', 'milk-tea.proto'),
+        getResourcePath('proto', 'solar-calendar.proto'),
         getResourcePath('proto', 'acepb.proto'),
         getResourcePath('proto', 'careerpb.proto'),
     ], { keepCase: true });
@@ -164,6 +165,10 @@ async function performLoad() {
     resolved.CoreItem = newRoot.lookupType('corepb.Item');
 
     // 活动
+    for (const method of ['GetSolarTermsV2', 'ClaimSolarTermsV2', 'AnswerSolarTerms', 'ClaimSolarSeason']) {
+        resolved[`${method}Request`] = newRoot.lookupType(`gamepb.solartermspb.${method}Request`);
+        resolved[`${method}Reply`] = newRoot.lookupType(`gamepb.solartermspb.${method}Reply`);
+    }
     resolved.ActivityGetGroupRequest = newRoot.lookupType('gamepb.activitypb.GetGroupRequest');
     resolved.ActivityGetGroupReply = newRoot.lookupType('gamepb.activitypb.GetGroupReply');
     resolved.ActivityOperateRequest = newRoot.lookupType('gamepb.activitypb.OperateRequest');

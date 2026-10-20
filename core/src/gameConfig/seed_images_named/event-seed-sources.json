@@ -949,5 +949,44 @@
       { "seedId": 20021, "plantId": 1020021, "fruitId": 40021, "size": 1, "sourceSize": null }
     ],
     "note": "EventPlants 七行逐字段取自该固定提交 Plant 快照（land_level_need 1、seasons 1、grow_phases 五段 8640 加成熟 0、exp 1440/1680、special_fruit null、mutant_effect_plant 5:1xxxxxx:1、fruit ×10），asset_name 取自同源 ItemInfo 种子行；EventItems 果实行（40525 纠错 official_type 18→6 并补条件售价、40526/40527/40528/40529/41435/40021 新登记）逐字取自同源 ItemInfo（type 6、sells null、sell_cond 活动区间外:2026110101、cond_sells 按行）；不登记黄金变体植物；sells null 不构成自动出售资格；来源为经审阅提取快照交叉，不宣称直接 CDN 观测或新的官方本地提取"
+  },
+  "reviewedFestivalPlantMappings": {
+    "sourceGrade": "reviewed_public_client_snapshot",
+    "repositoryAlias": "public-reference-2",
+    "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+    "configSources": [
+      {
+        "name": "Plant",
+        "sourcePath": "core/src/gameConfig/Plant.json",
+        "sha256": "808ba9312cb07e740e21ab6d8685f3775ad79791ff85cedc208f731ec7476773"
+      },
+      {
+        "name": "ItemInfo",
+        "sourcePath": "core/src/gameConfig/ItemInfo.json",
+        "sha256": "f9e8ac4bf5797d533fc4292980155df40c28e27b6a3b645c8e22fb1ed61779b9"
+      }
+    ],
+    "sizeEvidence": "reviewed_client_default_single_plot",
+    "anchors": [
+      20516,
+      25995,
+      21625,
+      26030,
+      20435,
+      21072
+    ],
+    "reviewedAt": "2026-10-20",
+    "mappings": [
+      {
+        "seedId": 20165,
+        "plantId": 1020165,
+        "fruitId": 40165,
+        "fruitCount": 48,
+        "size": 1,
+        "sourceSize": null,
+        "assetName": "Crop_165"
+      }
+    ],
+    "note": "逐行复核同版Plant与ItemInfo；size null按已有同版缺省单格规则登记1，不外推未知种子。节日签到入口为独立节令日历服务，当前奖励以动态回包为准；普通果实官方sells为金币售价，不等同奶茶条件售价。"
   }
 }

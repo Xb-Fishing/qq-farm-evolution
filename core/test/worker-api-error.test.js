@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), vm = require('node:vm');
-const tmp = fs.realpathSync(os.tmpdir()), prefix = path.resolve(tmp, 'farm-worker-milk-tea-');
+const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os'); const vm = require('node:vm');
+const tmp = fs.realpathSync(os.tmpdir()); const prefix = path.resolve(tmp, 'farm-worker-milk-tea-');
 assert.ok(prefix.startsWith(tmp + path.sep));
 const dataDir = fs.mkdtempSync(prefix); process.env.FARM_DATA_DIR = dataDir;
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -13,6 +13,31 @@ const { registerAdminMilkTeaActivityRoutes } = require('../src/controllers/admin
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
 const workerSrc = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
 const rejectionOf = promise => promise.then(() => null, err => err);
+
+for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structuredClone(value)]) test('festival refusal travels through real Worker, manager, provider and route as a business 400', async () => {
+  await loadProto();
+  const ws = { readyState: 1 }; const calls = []; const responses = [];
+  const files = ['../src/utils/network', '../src/services/solar-calendar'].map(require.resolve); const old = files.map(file => [file, require.cache[file]]);
+  require.cache[files[0]] = { exports: { getWs: () => ws, isConnected: () => true, sendMsgAsync: async (_service, method) => {
+    calls.push(method); assert.equal(method, 'GetSolarTermsV2');
+    return { body: types.GetSolarTermsV2Reply.encode({ server_time: Math.floor(Date.now() / 1000), events: [{ id: 401, direct_claimed: true }] }).finish() };
+  } } }; delete require.cache[files[1]];
+  const service = require(files[1]); const { manager, proc, cleanup } = buildManagerHarness();
+  try {
+    const sandbox = { isRunning: true, loginReady: true, friendSyncPaused: false, getWs: () => ws, isConnected: () => true,
+      sendToMaster: message => responses.push(message), log() {}, require: name => { assert.equal(name, '../services/solar-calendar'); return service; } };
+    const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));
+    proc.send = message => { proc.sent.push(message); if (message.type === 'api_call') Promise.resolve().then(async () => { await entry.handleApiCall(wire(message)); proc.emitMessage(wire(responses.at(-1))); }); };
+    const provider = createDataProvider({ getAccounts: () => ({ accounts: [{ id: 'acct-1' }] }), callWorkerApi: manager.callWorkerApi });
+    provider.getStatus = () => ({ connection: { connected: true } }); provider.isAccountRunning = async () => true;
+    const routes = new Map();
+    require('../src/controllers/admin-solar-calendar-routes').registerAdminSolarCalendarRoutes({ app: { get: (_url, fn) => routes.set('get', fn), post: (_url, fn) => routes.set('post', fn) }, provider, activityReader: createActivityReadCache(),
+      getAccountIdFromRequest: () => 'acct-1', canAccessAccount: () => true, sendProviderError: (res, err) => res.status(502).json({ ok: false, error: err.message }) });
+    let status = 200; let body; const res = { status: value => { status = value; return res; }, json: value => { body = value; } };
+    await routes.get('post')({ body: { action: 'claim', input: { id: 401 } } }, res);
+    assert.equal(status, 400); assert.equal(body.code, 'FESTIVAL_INELIGIBLE'); assert.deepEqual(calls, ['GetSolarTermsV2']);
+  } finally { cleanup(); for (const [file, value] of old) { if (value) require.cache[file] = value; else delete require.cache[file]; } }
+});
 function extractWorkerApiSource() {
   const start = workerSrc.indexOf('const FRIEND_PANEL_ENTRY_METHODS = new Set([');
   assert.ok(start >= 0, 'FRIEND_PANEL_ENTRY_METHODS exists in worker.js');
@@ -252,7 +277,7 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
     provider.getStatus = () => ({ connection: { connected: true } }); provider.isAccountRunning = async()=>true;
     const routes = new Map(); const reader = createActivityReadCache();
     registerAdminMilkTeaActivityRoutes({ app: { get:(url,fn)=>routes.set(url,fn), post:(url,fn)=>routes.set(url,fn) }, provider, activityReader:reader, getAccountIdFromRequest:()=> 'acct-1', canAccessAccount:()=>true, sendProviderError:(res,err)=>res.status(502).json({ok:false,error:err.message}) });
-    async function invoke(url, body) { let status=200, data; const res={status:value=>{status=value;return res;},json:value=>{data=value;}}; await routes.get(url)({body},res); return {status,data}; }
+    async function invoke(url, body) { let status=200; let data; const res={status:value=>{status=value;return res;},json:value=>{data=value;}}; await routes.get(url)({body},res); return {status,data}; }
     const operate = input => invoke('/api/activity/milk-tea/operate',{action:'boost',input});
     try {
       assert.equal(provider.operatePetDiary,undefined); assert.equal(provider.getBearActivity,undefined); assert.equal(provider.operateSeasonWish,undefined);

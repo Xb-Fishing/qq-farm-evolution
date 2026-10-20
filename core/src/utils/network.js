@@ -257,9 +257,9 @@ function businessPauseError(serviceName, methodName) {
     // Exact connection-maintenance methods only; no method-name-only exemption.
     if (serviceName === 'gamepb.userpb.UserService'
         && (methodName === 'Heartbeat' || methodName === 'Login')) return null;
-    const remain = getStoreModule().getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
+    const remain = getStoreModule().getWirePauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
     if (!(remain > 0)) return null;
-    const error = new Error('当前处于静默或重点防护，业务请求已暂停，请到点后重试');
+    const error = new Error('当前处于重点防护，业务请求已暂停，请到点后重试');
     error.code = 'LOCAL_BUSINESS_PAUSED';
     error.pauseRemainMs = remain;
     return error;

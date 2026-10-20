@@ -273,6 +273,68 @@ async function withFreshService(overrides, run) {
 
 const operateCount = env => env.calls.filter(method => method === 'Operate').length;
 const business = code => err => err && err.business === true && err.code === code;
+async function businessOutcome(promise, code) {
+  try { return await promise; }
+  catch (error) {
+    if (error.business === true && error.code === code) return { ok: false, rejected: code };
+    throw error; // Import, environment and unexpected exceptions are not counterevidence.
+  }
+}
+
+test('hire query filters busy/cooling employees and write rechecks the same eligibility at the exact boundary', async () => {
+  await withFreshService({}, async (service, env) => {
+    const now = env.scenario.clock;
+    const row = (gid, state = 0, until = 0, rehire = 0) => ({ friend: { gid, name: '合成员工' }, state, state_until_at: until, rehire_available_at: rehire });
+    env.scenario.operateBodies[56].milk_tea_get_hire_list.friends = [row(201), row(202, 1), row(203, 0, now + 1), row(204, 0, 0, now + 1), row(205, 0, now, now), row(201)];
+    const result = await service.queryMilkTeaActivity('hireList', { durationId: 1 }, env.deps);
+    assert.deepEqual(result.data.friends.map(entry => entry.gid), ['201', '205']);
+    assert.equal(result.data.unavailableCount, 4);
+    env.scenario.operateBodies[56].milk_tea_get_hire_list.robots[0].rehire_available_at = now + 1;
+    await assert.rejects(service.runManualMilkTeaAction('hire', { durationId: 1, hires: [{ slotIndex: 0, targetGid: '101' }], confirmedCosts: [{ itemId: TICKET, count: '40' }] }, env.deps), business('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED'));
+    assert.equal(env.operateRequests.filter(req => req.cmd === 57).length, 0);
+  });
+});
+
+test('S4 first share grants score through empty cmd70/153 and never returns Ark; daily ignores friend-package limits', async () => {
+  await withFreshService({}, async (service, env) => {
+    env.scenario.operateBodies[70] = { share_reward_share: { granted_score: 5, ark: { share_key: 'synthetic-private-value' } } };
+    const result = await businessOutcome(service.runManualMilkTeaAction('shareFirst', {}, env.deps), 'SEASON_WISH_MILK_TEA_UNKNOWN_ACTION');
+    assert.equal(result.ok, true); assert.equal(result.grantedScore, 5);
+    assert.equal(JSON.stringify(result).includes('synthetic-private-value'), false);
+    const sent = env.operateRequests.at(-1); assert.equal(sent.cmd, 70); assert.equal(sent.activityId, HAPPY);
+    assert.ok(types.MilkTeaOperateRequest.decode(sent.buffer).share_reward_share);
+    env.scenario.shareReward.daily.firstShareAwarded = true;
+    await assert.rejects(service.runManualMilkTeaAction('shareFirst', {}, env.deps), business('SEASON_WISH_MILK_TEA_CLAIMED'));
+    env.scenario.shareReward.daily.claimedCount = 99;
+    assert.equal((await service.runManualMilkTeaAction('shareDaily', {}, env.deps)).ok, true);
+  });
+});
+
+test('announced settlement starts at the real Beijing midnight and stays before the final deadline', async () => {
+  await withFreshService({}, async service => {
+    const endTime = 1794844799; const boundary = Date.parse('2026-11-14T16:00:00Z') / 1000;
+    assert.equal(service.timingOf({ endTime }, boundary - 1).phase, 'open');
+    assert.equal(service.timingOf({ endTime }, boundary).phase, 'settle');
+    assert.equal(service.timingOf({ endTime }, endTime).phase, 'ended');
+  });
+});
+
+test('hire queries and writes reject insufficient remaining business time while accepting the exact threshold', async () => {
+  await withFreshService({}, async (service, env) => {
+    env.scenario.settle = env.scenario.clock + 599;
+    env.scenario.operateBodies[56].milk_tea_get_hire_list.min_remain_biz_sec = 600;
+    const result = await service.queryMilkTeaActivity('hireList', { durationId: 1 }, env.deps);
+    assert.deepEqual(result.data.robots, []); assert.match(result.data.unavailableReason, /剩余营业时间不足/);
+    await assert.rejects(service.runManualMilkTeaAction('hire', { durationId: 1, hires: [{ slotIndex: 0, targetGid: '101' }], confirmedCosts: [{ itemId: TICKET, count: '40' }] }, env.deps), business('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED'));
+    assert.equal(env.operateRequests.filter(row => row.cmd === 57).length, 0);
+    env.scenario.settle++;
+    assert.equal((await service.queryMilkTeaActivity('hireList', { durationId: 1 }, env.deps)).data.robots.length, 1);
+    const readBag = env.deps.getBag;
+    env.deps.getBag = async () => { env.scenario.clock++; return readBag(); };
+    await assert.rejects(service.runManualMilkTeaAction('hire', { durationId: 1, hires: [{ slotIndex: 0, targetGid: '101' }], confirmedCosts: [{ itemId: TICKET, count: '40' }] }, env.deps), business('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED'));
+    assert.equal(env.operateRequests.filter(row => row.cmd === 57).length, 0);
+  });
+});
 
 // ===== 六种显式查询 =====
 
@@ -456,7 +518,7 @@ test('雇佣：班次/槽位/成员/费用确认/余额逐项前置校验与官�
     env.scenario.operateBodies[56].milk_tea_get_hire_list.robots = [
       { friend: { gid: 102, name: '实习员工' }, is_robot: true, state: 0 },
     ];
-    await assert.rejects(run(), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
+    await assert.rejects(run(), business('SEASON_WISH_MILK_TEA_CANDIDATE_CHANGED'));
     env.scenario.operateBodies[56].milk_tea_get_hire_list.robots = [
       { friend: { gid: 101, name: '实习员工' }, is_robot: true, state: 0 },
     ];
@@ -712,13 +774,13 @@ test('基金/快乐值：解锁与档位资格、cmd76 空参请求、cmd71/74 �
     const decodedFund = types.MilkTeaOperateRequest.decode(env.operateRequests[0].buffer);
     assert.equal(decodedFund.growth_fund_claim, undefined, 'cmd76 请求无选择子字段');
 
-    // 快乐值每日：已领 / 次数用尽 / 成功
+    // 好友包次数不影响独立每日快乐值资格。
     env.scenario.shareReward.daily.rewardClaimed = true;
     await assert.rejects(run('shareDaily', {}), business('SEASON_WISH_MILK_TEA_CLAIMED'));
     env.scenario.shareReward.daily.rewardClaimed = false;
     env.scenario.shareReward.daily.claimedCount = 1;
     env.scenario.shareReward.daily.claimLimit = 1;
-    await assert.rejects(run('shareDaily', {}), business('SEASON_WISH_MILK_TEA_LIMIT'));
+    assert.equal((await businessOutcome(run('shareDaily', {}), 'SEASON_WISH_MILK_TEA_LIMIT')).ok, true);
     env.scenario.shareReward.daily.claimedCount = 0;
     env.operateRequests.length = 0;
     const daily = await run('shareDaily', {});

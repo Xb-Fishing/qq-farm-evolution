@@ -1467,6 +1467,14 @@ function getPauseRemainMs(accountId) {
     return Math.max(0, (until ? until.getTime() : 0) - now, idleUntil - now);
 }
 
+/** Optional idle protection alone blocks the wire; manual quiet pauses dispatch. */
+function getWirePauseRemainMs(accountId) {
+    const quiet = getFriendQuietHours(accountId);
+    if (quiet.idleProtectionEnabled !== true) return 0;
+    const now = Date.now();
+    return Math.max(0, require('../utils/idle-protection').getIdleProtectionUntil(now) - now);
+}
+
 function getKnownFriendGids(accountId) {
     const cfg = getAccountConfigSnapshot(accountId);
     const gids = cfg.knownFriendGids || [];
@@ -2255,6 +2263,7 @@ module.exports = {
     getFriendQuietHours,
     getKickoutRelogin,
     getPauseRemainMs,
+    getWirePauseRemainMs,
     getKnownFriendGids,
     setKnownFriendGids,
     getFriendBlacklist,

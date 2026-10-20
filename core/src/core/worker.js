@@ -980,6 +980,10 @@ function pauseRemainMsNow() {
     return Math.max(0, getPauseRemainMs(process.env.FARM_ACCOUNT_ID || ''));
 }
 
+function nextActivityRewardsAt(now = Date.now()) {
+    return require('../services/milk-tea-activity').automaticMilkTeaWakeAt(now);
+}
+
 async function runUnifiedTick() {
     if (!unifiedSchedulerRunning || !loginReady || friendSyncPaused) return;
 
@@ -1034,7 +1038,8 @@ async function runUnifiedTick() {
     const shouldHelp = now >= nextHelpRunAt;
     const shouldSteal = stealAt > 0 && now >= stealAt;
 
-    if (!shouldFarm && !shouldHelp && !shouldSteal && !stealIsImminent(1500)) return;
+    const shouldActivity = autoConfig.task === true && now >= nextActivityRewardsAt(now);
+    if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
     if (!autoConfig.friend_steal) {
         nextStealRunAt = now + STEAL_IDLE_MS;
@@ -1050,6 +1055,12 @@ async function runUnifiedTick() {
     }
     if (shouldFarm) await runFarmTick(autoConfig);
     if (shouldHelp) await runHelpTick(autoConfig);
+    if (shouldActivity && loginReady && !friendSyncPaused && pauseRemainMsNow() <= 0) {
+        await require('../services/milk-tea-activity').runAutomaticMilkTea({
+            isReady: () => loginReady && !friendSyncPaused,
+            canRun: () => !ownHarvestIsDue() && !ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS) && !stealIsDue() && !stealIsImminent(1500),
+        });
+    }
 }
 
 function scheduleUnifiedNextTick() {
@@ -1062,11 +1073,12 @@ function scheduleUnifiedNextTick() {
     }
 
     const now = Date.now();
+    const activityAt = nextActivityRewardsAt(now);
     let pauseRemain = pauseRemainMsNow();
     if (pauseRemain <= 0) {
         const until = planIdleProtection({
             enabled: getFriendQuietHours().idleProtectionEnabled,
-            now, farmAt: nextFarmRunAt, helpAt: nextHelpRunAt,
+            now, farmAt: Math.min(nextFarmRunAt, activityAt), helpAt: nextHelpRunAt,
             ownDueAt: ownHarvestDueAt(), stealDueAt: resolveStealDueAt(now),
             horizonMs: nextIdleHorizonMs(now), activeMs: effectiveWakeBeforeMs(now),
         });
@@ -1088,7 +1100,8 @@ function scheduleUnifiedNextTick() {
     const nearest = Math.min(
         Number(nextFarmRunAt) || now + 8000,
         Number(nextHelpRunAt) || now + 30000,
-        Number(stealAt) || now + STEAL_IDLE_MS
+        Number(stealAt) || now + STEAL_IDLE_MS,
+        activityAt
     );
     const waitMs = Math.max(100, nearest - now);
     if (waitMs >= 60_000) {
@@ -1413,7 +1426,7 @@ const BAG_PANEL_ENTRY_METHODS = new Set([
 // 标记与限定格式的固定业务码（PET_DIARY_/WISH_SIGN_/HAPPY_SHARE_/SEASON_WISH_
 // 前缀，2026-09-24 扩展季节活动手动操作），不序列化整个 Error、堆栈、
 // cause 或任意附加属性，也不扩大到其他业务错误。
-const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH)_[A-Z0-9_]{1,48}$/;
+const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH|FESTIVAL)_[A-Z0-9_]{1,48}$/;
 
 function collectPetDiaryErrorMeta(err) {
     if (!err || err.business !== true) return null;
@@ -1711,6 +1724,13 @@ async function handleApiCall(msg) {
                     includeGameplay: true,
                     deps: { getBag, getBagItems, isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
                 });
+                break;
+            }
+            case 'getSolarCalendar':
+            case 'operateSolarCalendar': {
+                const service = require('../services/solar-calendar');
+                const deps = { isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() };
+                result = method === 'getSolarCalendar' ? await service.getSolarCalendar(deps) : await service.operateSolarCalendar(args[0], args[1] || {}, deps);
                 break;
             }
             case 'queryMilkTeaActivity': {
@@ -2088,8 +2108,8 @@ function bindWorkerReadyEvents() {
     if (onDogSkillGiftPending) networkEvents.off('dogSkillGiftPending', onDogSkillGiftPending);
     onDogSkillGiftPending = (count) => {
         const pendingCount = Math.max(0, toNum(count));
-        if (!loginReady || pendingCount <= 0) return;
-        require('../services/dog-skill-gifts').checkAndClaimDogSkillGifts(pendingCount).catch(() => null);
+        if (!loginReady || pendingCount <= 0 || pauseRemainMsNow() > 0) return;
+        require('../services/dog-skill-gifts').checkAndClaimDogSkillGifts(pendingCount, { automatic: true }).catch(() => null);
     };
     networkEvents.on('dogSkillGiftPending', onDogSkillGiftPending);
 
@@ -2319,6 +2339,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
     // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
     onSentinelPreEnterTimer = require('../services/business-state').wrapBusinessFunction('worker:sentinelPreEnter', onSentinelPreEnterTimer);
     module.exports.sessionRuntime = {
+        refreshRewardsSchedule: () => { if (unifiedSchedulerRunning) scheduleUnifiedNextTick(); },
         send: message => sessionMasterHandler(message),
         config: () => ({ ...getConfigSnapshot(), __revision: appliedConfigRevision }),
         restoreConfig(config) {

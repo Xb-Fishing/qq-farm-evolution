@@ -61,10 +61,23 @@ test('new mappings do not allow selling milk-tea recipe ingredients with conditi
   await f.warehouse.sellAllFruits(); assert.deepEqual(f.calls, ['Bag'], 'all conditional-only fruit must produce zero Sell');
 });
 
+test('Cornus bag now has a verified single plot and its ordinary fruit retains an unconditional sale class', async t => {
+  const f = warehouseFixture(t, [{ id: 20165, count: 6, uid: 8101 }]);
+  const bag = await f.warehouse.getBagDetail();
+  assert.equal(bag.items.find(row => row.id === 20165)?.plantSize, 1);
+  assert.equal(bag.seedRecognition.issues.some(row => Number(row.seedId) === 20165 && row.kind === 'seed_footprint_unverified'), false);
+  assert.equal(config.getPlantByFruitId(40165).id, 1020165);
+  assert.equal(config.getItemById(40165).sell_cond == null, true);
+  assert.match(String(config.getItemById(40165).sells), /^1001:/);
+  assert.deepEqual(f.calls, ['Bag']);
+});
+
 test('unrelated entries and rare/golden meanings are preserved; reviewed defaults are explicit', () => {
   const plants = JSON.parse(fs.readFileSync(path.join(base, 'EventPlants.json'))); const items = JSON.parse(fs.readFileSync(path.join(base, 'EventItems.json')));
   const hash = x => crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
-  const selectedPlants = new Set(cases.map(x => x[1])); const selectedFruits = new Set(cases.map(x => x[2]));
+  const selectedPlants = new Set([...cases.map(x => x[1]), 1020165]); const selectedFruits = new Set(cases.map(x => x[2]));
+  assert.equal(plants.filter(row => row.id === 1020165).length, 1);
+  assert.deepEqual([config.getPlantBySeedId(20165)?.id, config.getPlantBySeedId(20165)?.size, config.getPlantBySeedId(20165)?.fruit.id], [1020165, 1, 40165]);
   assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,

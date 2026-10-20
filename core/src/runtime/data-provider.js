@@ -199,6 +199,8 @@ function createDataProvider(deps) {
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
         // 奶茶热销中（S4）：默认只读快照 + 显式查询 + 面板手动操作
         getMilkTeaActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getMilkTeaActivity'),
+        getSolarCalendar: (ref) => callWorkerApi(resolveAccountId(ref), 'getSolarCalendar'),
+        operateSolarCalendar: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateSolarCalendar', action, input),
         queryMilkTeaActivity: (ref, kind, params) => callWorkerApi(resolveAccountId(ref), 'queryMilkTeaActivity', kind, params),
         operateMilkTea: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMilkTea', action, input),
         // S3 萌宠 / 秋祈良愿 / 快乐不独享已随 S4 轮换下架（2026-10-15 退役）：

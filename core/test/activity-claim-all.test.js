@@ -12,6 +12,35 @@ function ready(api) {
   api.setPost(async () => ({ data: { ok: true, rewards: [] } }));
 }
 
+test('一键包含独立首次分享，好友包次数已满也不阻止每日奖励，成功后重读再领档位', async () => {
+  const { store, api } = storeHarness(); let reads = 0;
+  api.setGet(async () => ({ data: { ok: true, activity: snapshot({ shareReward: {
+    currentScore: 30, daily: { rewardClaimed: ++reads > 1, firstShareAwarded: reads > 2, claimedCount: 5, claimLimit: 5 },
+    milestones: [{ id: 1, state: 2, threshold: 20 }],
+  } }) } }));
+  api.setPost(async () => ({ data: { ok: true } }));
+  const result = await store.runClaimAll('acc-1');
+  assert.equal(result.successCount, 3); assert.deepEqual(api.calls.post.map(row => row.body.action), ['shareDaily', 'shareFirst', 'shareMilestones']);
+  store.cancelActivityReads();
+});
+
+test('首次分享已被领取的零写拒绝会刷新后继续档位，未知结果则停止', async () => {
+  for (const already of [true, false]) {
+    const { store, api } = storeHarness(); let read = 0;
+    api.setGet(async () => ({ data: { ok: true, activity: snapshot({ shareReward: { currentScore: 30, daily: { rewardClaimed: true, firstShareAwarded: ++read > 1 }, milestones: [{ id: 1, threshold: 20, state: 2 }] } }) } }));
+    api.setPost(async (_url, body) => {
+      if (body.action === 'shareFirst') {
+        if (already) throw Object.assign(new Error('already claimed'), { response: { status: 400, data: { code: 'SEASON_WISH_MILK_TEA_CLAIMED', error: '已领取' } } });
+        return { data: { ok: false, outcome: 'unknown' } };
+      }
+      return { data: { ok: true } };
+    });
+    await store.runClaimAll('acc-1');
+    assert.deepEqual(api.calls.post.map(row => row.body.action), already ? ['shareFirst', 'shareMilestones'] : ['shareFirst']);
+    store.cancelActivityReads();
+  }
+});
+
 test('一键真实store：每日→重读→档位→收尾；再次运行不重放成功项', async () => {
   const { store, api } = storeHarness(); ready(api);
   assert.equal((await store.runClaimAll('acc-1')).successCount, 2);
@@ -43,7 +72,7 @@ test('一键部分成功、刷新fulfilled失败、不以旧资格继续；资�
     const { store, api } = storeHarness(); let reads = 0;
     api.setGet(async () => { const current = ++reads; return { data: mode === 'refresh' && current > 1 ? { ok: false, error: 'offline' } : { ok: true, activity: snapshot({ shareReward: current > 1 ? after : before }) } }; });
     api.setPost(async (_url, body) => {
-      if (mode === 'precondition') throw { response: { status: 400, data: { code: 'SEASON_WISH_MILK_TEA_CLAIMED', error: '已领' } } };
+      if (mode === 'precondition') throw Object.assign(new Error('already claimed'), { response: { status: 400, data: { code: 'SEASON_WISH_MILK_TEA_CLAIMED', error: '已领' } } });
       return { data: body.action === 'shareMilestones' ? { ok: false, outcome: 'unknown' } : { ok: true } };
     });
     const result = await store.runClaimAll('acc-1');

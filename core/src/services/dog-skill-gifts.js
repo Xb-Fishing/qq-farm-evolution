@@ -88,13 +88,16 @@ function getPendingGiftCount(reply) {
   return Math.max(0, toNum(reply && (reply.pending_gift_count ?? reply.pendingGiftCount)));
 }
 
-async function checkAndClaimDogSkillGifts(pendingCountHint) {
+async function checkAndClaimDogSkillGifts(pendingCountHint, options = {}) {
+  const paused = () => options.automatic === true && require('../models/store').getPauseRemainMs() > 0;
+  if (paused()) return { claimed: 0, pending: Math.max(0, toNum(pendingCountHint)), item: null };
   if (pendingClaim) return pendingClaim;
 
   const request = (async () => {
     try {
       const hintedCount = Math.max(0, toNum(pendingCountHint));
       const pendingCount = hintedCount > 0 ? hintedCount : getPendingGiftCount(await getDogInfo());
+      if (paused()) return { claimed: 0, pending: pendingCount, item: null };
       if (pendingCount <= 0) return { claimed: 0, pending: 0, item: null };
 
       const reply = await claimSkillGifts();

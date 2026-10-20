@@ -31,7 +31,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
  * - 领取图鉴奖励（点券）
  * - 响应任务推送通知进行实时领取
  */
-const { isAutomationOn } = require('../models/store');
+const { isAutomationOn, getPauseRemainMs } = require('../models/store');
 const { sendMsgAsync, isConnected, networkEvents } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
@@ -272,6 +272,7 @@ async function checkAndClaimActives(actives) {
   let errors = 0;
 
   for (const active of list) {
+    if (getPauseRemainMs() > 0) break;
     const type = toNum(active.type);
     const rewards = active.rewards || [];
     const pending = rewards.filter((r) => toNum(r.status) === 2); // ActiveStatus.DONE = 2
@@ -314,7 +315,9 @@ async function checkAndClaimActives(actives) {
 
 async function checkAndClaimIllustratedRewards() {
   try {
+    if (getPauseRemainMs() > 0) return false;
     const beforeTicket = await getTicketBalanceFromBag();
+    if (getPauseRemainMs() > 0) return false;
     const reply = await claimAllIllustratedRewards();
     const allItems = [
       ...(Array.isArray(reply && reply.items) ? reply.items : []),
@@ -345,6 +348,7 @@ async function checkAndClaimIllustratedRewards() {
  */
 async function doClaim(task) {
   try {
+    if (getPauseRemainMs() > 0) return false;
     const doShare = task.shareMultiple > 1;
     const shareLabel = doShare ? ` (${task.shareMultiple}倍)` : '';
     const result = await claimTaskReward(task.id, doShare);
@@ -381,11 +385,13 @@ async function checkAndClaimTasks() {
   if (checking) return;
   if (!isAutomationOn('task')) return;
   if (!isConnected()) return;
+  if (getPauseRemainMs() > 0) return;
 
   checking = true;
 
   try {
     const reply = await getTaskInfo();
+    if (getPauseRemainMs() > 0) return;
     if (!reply.task_info) {
       checking = false;
       return;
@@ -594,6 +600,11 @@ module.exports = {
 };
 
 async function onTaskClaimTimer() {
+  const pause = getPauseRemainMs();
+  if (pause > 0) {
+    taskScheduler.setTimeoutTask('task_claim_debounce', Math.max(5000, pause), onTaskClaimTimer);
+    return;
+  }
   const payload = pendingTaskClaim; pendingTaskClaim = null;
   if (!payload) return;
   if (payload.hasClaimable) await claimTasksFromList(payload.claimable);

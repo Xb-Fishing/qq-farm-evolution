@@ -6,7 +6,7 @@ const { createScheduler } = require('../services/scheduler');
 // WISH_SIGN_/HAPPY_SHARE_/SEASON_WISH_ 前缀的季节活动手动操作）；
 // 缺失、畸形、超长或非标量（含 JSON/structuredClone 往返后的旧式响应）
 // 一律按普通错误处理，堆栈、cause 与额外属性不透传。
-const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH)_[A-Z0-9_]{1,48}$/;
+const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH|FESTIVAL)_[A-Z0-9_]{1,48}$/;
 
 function normalizePetDiaryErrorMeta(meta) {
     if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;

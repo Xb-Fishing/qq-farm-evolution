@@ -2,6 +2,7 @@ const { registerAdminMilkTeaActivityRoutes } = require('./admin-milk-tea-activit
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 const { registerAdminOfficialAnnouncementRoutes } = require('./admin-official-announcement-routes');
 const { createActivityReadCache } = require('./activity-read-cache');
+const { registerAdminSolarCalendarRoutes } = require('./admin-solar-calendar-routes');
 
 // S3 萌宠（bear/pet-diary）与秋祈良愿/快乐不独享（season/wish-operate）已随 S4 轮换
 // 下架（2026-10-15 退役）：四组读写路由不再注册，provider/Worker 转发已断开，
@@ -25,6 +26,7 @@ function registerAdminActivityRoutes({
   };
 
   registerAdminMilkTeaActivityRoutes(routeContext);
+  registerAdminSolarCalendarRoutes(routeContext);
   registerAdminOfficialAnnouncementRoutes(routeContext);
   registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminToken });
 }
