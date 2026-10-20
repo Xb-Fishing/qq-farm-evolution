@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { marked } from 'marked'
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
-
-const updateReadme = '暂无更新日志。'
+import { renderUpdateLog } from '@/utils/update-log'
+import changeLog from '../../../../docs/CHANGELOG.md?raw'
 
 defineProps<{
   show: boolean
@@ -15,10 +14,7 @@ const emit = defineEmits<{
 
 const appStore = useAppStore()
 
-const renderedContent = computed(() => marked.parse(updateReadme, {
-  gfm: true,
-  breaks: false,
-}) as string)
+const renderedContent = computed(() => renderUpdateLog(changeLog))
 
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape')

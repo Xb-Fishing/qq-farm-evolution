@@ -22,6 +22,7 @@ function git(repoRoot, args) {
 }
 
 function isLogicFile(file) {
+    if (file === 'docs/CHANGELOG.md') return true;
     if (/^(?:core\/data|web\/dist|node_modules|logs?|tmp|temp|coverage|\.git)\//.test(file)) return false;
     if (/(?:^|\/)node_modules\//.test(file)) return false;
     if (/^(?:core\/(?:src|test|scripts)|web\/(?:src|public)|scripts)\//.test(file)) return true;

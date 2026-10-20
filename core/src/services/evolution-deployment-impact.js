@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 function nonRuntimeFile(file) {
+  // The login update log imports this document into the frontend bundle.
+  if (file === 'docs/CHANGELOG.md') return false;
   return /^(?:core\/test\/|(?:core\/)?docs\/)/.test(file)
     || /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|AGENTS\.md)$/.test(file);
 }
