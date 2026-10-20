@@ -257,7 +257,7 @@ function autonomyStillEnabled(dataDir) {
  * 公共宿主祖先（tmux server/宿主进程）的子树误放。每个目标按采集时的 starttime 守卫：TERM 有宽限，僵尸视为已停，宽限后
  * 仍存活才 KILL，且 KILL 前再次核对身份，绝不误杀复用 PID。Bot 本体最后停。
  */
-async function stopBotTree(botPid, botStarttime, table) {
+async function stopBotTree(botPid, botStarttime, table, preservedSessions = []) {
   const spared = new Set([process.pid]);
   const chainSeen = new Set([process.pid]);
   let cursor = table.get(process.pid);
@@ -276,6 +276,11 @@ async function stopBotTree(botPid, botStarttime, table) {
   if (!helperUnderBot) {
     spared.clear();
     spared.add(process.pid);
+  }
+  for (const session of preservedSessions) {
+    if (session.pid === botPid || processStarttime(session.pid) !== session.starttime)
+      throw new Error('常驻连接进程身份变化，取消停止');
+    spared.add(session.pid);
   }
   const sparedSubtree = new Set(spared);
   const expand = [...spared];
@@ -528,6 +533,7 @@ async function main() {
       ...(targetRoot ? { runtimeRoot: targetRoot,
         sourceFingerprint: targetRecord ? targetRecord.sourceFingerprint : '',
         holdDigest: targetRecord ? targetRecord.holdDigest : '' } : {}),
+      sessionPreservation: { required: Boolean(wxPreflight?.sessions?.length), verified: false },
       ...fields,
     })}\n`, { mode: 0o600 });
     try { fs.chmodSync(receiptFile, 0o600); } catch {}
@@ -604,7 +610,7 @@ async function main() {
     assertTargetProven();
     stoppingStarted = true;
     writeReceipt({ phase: 'stopping', newPid: 0, newStarttime: '' });
-    await stopBotTree(botPid, botStarttime, table);
+    await stopBotTree(botPid, botStarttime, table, wxPreflight.sessions || []);
 
     // 端口释放失败必须中止：残留持有者会让新 Bot 无法绑定，绝不能换 dist/重启。
     const released = await waitFor(() => portFree(adminPort), 15_000, `端口 ${adminPort} 释放`);
@@ -651,12 +657,15 @@ async function main() {
 
     // ready = 新进程仍存活且身份未复用 + HEAD 未漂移 + 真实持有 adminPort 的
     // LISTEN socket + /api/health 返回 ok:true。任意 TCP 应答不算成功。
+    let sessionReadyProof = { ok: false, outcomes: [] };
     const ready = await waitFor(async () => {
       if (!aliveNonZombie(newBot, newStarttime)) return false;
       if (git(['rev-parse', 'HEAD'], deployRoot) !== expectedHead) return false;
       if (!holdsSocket(newBot, listeningInodes(adminPort))) return false;
-      return await healthOk(adminPort);
-    }, 90_000, `新 Bot 端口 ${adminPort} 监听与健康检查`);
+      if (!await healthOk(adminPort)) return false;
+      try { sessionReadyProof = await wxPreflight.verifyReady(); } catch { return false; }
+      return sessionReadyProof.ok === true;
+    }, wxPreflight.readyTimeoutMs, `新 Bot 端口 ${adminPort} 监听与健康检查`);
     // ready 之后、落盘回执之前再全量重证一次：健康进程不能掩盖「源内容/保留物/
     // 远端在重启窗口内被改写」——此时仍可诚实 failed，而不是把错误对象标记 ready。
     if (ready && targetRoot) {
@@ -667,7 +676,8 @@ async function main() {
       }
     }
     writeReceipt({ phase: ready ? 'ready' : 'ready-timeout', newPid: newBot,
-      newStarttime: processStarttime(newBot) || '', readyAt: ready ? Date.now() : 0 });
+      newStarttime: processStarttime(newBot) || '', readyAt: ready ? Date.now() : 0,
+      sessionPreservation: { required: Boolean(wxPreflight.sessions?.length), verified: ready && sessionReadyProof.ok, outcomes: sessionReadyProof.outcomes } });
     // 真实 ready（源/进程/端口/健康/验证 + 就绪后全量重证全部实测通过）才写「最近
     // 一次 ready」验收证书：原库普通启动据此选择本运行时，而不再依赖会被下一轮
     // 研究合法替换的全局验证/任务记录。ready-timeout/failed 绝不触碰既有证书。
@@ -696,6 +706,8 @@ async function main() {
     }), { mode: 0o600 });
     return fail(error.message || '应用失败');
   } finally {
+    if (contextFile) { try { fs.unlinkSync(contextFile); } catch {} }
+    try { wxPreflight?.cleanup?.(); } catch {}
     if (wxPreflight?.file) { try { fs.unlinkSync(wxPreflight.file); } catch {} }
     try { fs.rmSync(buildRoot, { recursive: true, force: true }); } catch {}
   }
@@ -709,4 +721,5 @@ if (require.main === module) {
 module.exports = {
   collectProcesses, readStat, processStarttime, isDescendantOf, aliveNonZombie,
   signalGuarded, listeningInodes, holdsSocket,
+  stopBotTree,
 };

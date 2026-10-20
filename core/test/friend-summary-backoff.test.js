@@ -633,7 +633,10 @@ test('real own absolute timer chain starts harvest at maturity plus 30-80ms desp
     pauseRemainMsNow: () => h.state.pause, getWs: () => ({ readyState: 1 }), log: () => {}, armStealWake: () => {},
     harvestOwnAtMaturity: async () => { calls.push(h.clock.now); h.state.ownDue = 0; return { harvestedCount: 1 }; },
   };
-  const entry = vm.runInNewContext(`${src.slice(from, to)  }\n;({armOwnHarvestGuard,clearOwnHarvestGuard})`, sandbox, { filename: 'worker.js#actual-own-timer' });
+  const callbackAt = src.indexOf('async function onTimer_own_harvest_guard(');
+  assert.ok(callbackAt >= 0);
+  const timerCallback = src.slice(callbackAt, src.indexOf('\n}', callbackAt) + 2);
+  const entry = vm.runInNewContext(`${src.slice(from, to)}\n${timerCallback}\n;({armOwnHarvestGuard,clearOwnHarvestGuard})`, sandbox, { filename: 'worker.js#actual-own-timer' });
   try {
     entry.armOwnHarvestGuard(); const task = tasks.get('own_harvest_guard');
     assert.ok(task.delay >= 2030 && task.delay <= 2080);
@@ -650,7 +653,7 @@ function realGovernedSender(governor, state) {
   const timers = new Map();
   const sandbox = { requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
-    getStoreModule: () => ({ getPauseRemainMs: () => 0 }),
+    getStoreModule: () => ({ getPauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
     ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, Date,
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, { delay, fn }), clear: key => timers.delete(key) },
     isConnected: () => true, sendMsg: async (_service, method, _body, callback) => {

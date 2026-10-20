@@ -432,12 +432,12 @@ function scheduleCapturedAccountStart({
   delayMs = CAPTURE_ACCOUNT_START_DELAY_MS,
   schedule = setTimeout,
 }) {
-  const timer = schedule(() => {
+  const timer = schedule(async () => {
     try {
       if (isUpdate) {
-        if (wasRunning) provider.restartAccount(account.id);
+        if (wasRunning) await provider.restartAccount(account.id);
       } else {
-        provider.startAccount(account.id);
+        await provider.startAccount(account.id);
       }
     } catch (error) {
       const startError = error.message || "账号启动失败";

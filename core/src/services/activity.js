@@ -1,3 +1,81 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getActivityGroup = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityGroup', getActivityGroup);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  listActivityGroups = require('./business-state').wrapBusinessFunction('services/activity.js:listActivityGroups', listActivityGroups);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getActivityDiscoveryList = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityDiscoveryList', getActivityDiscoveryList);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getActivityGroupSnapshot = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityGroupSnapshot', getActivityGroupSnapshot);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  operateActivity = require('./business-state').wrapBusinessFunction('services/activity.js:operateActivity', operateActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getQixiActivity = require('./business-state').wrapBusinessFunction('services/activity.js:getQixiActivity', getQixiActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  useQixiDew = require('./business-state').wrapBusinessFunction('services/activity.js:useQixiDew', useQixiDew);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  useQixiDewOnLand = require('./business-state').wrapBusinessFunction('services/activity.js:useQixiDewOnLand', useQixiDewOnLand);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  buildQixiBridge = require('./business-state').wrapBusinessFunction('services/activity.js:buildQixiBridge', buildQixiBridge);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  sendQixiSachet = require('./business-state').wrapBusinessFunction('services/activity.js:sendQixiSachet', sendQixiSachet);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  operateActivityReply = require('./business-state').wrapBusinessFunction('services/activity.js:operateActivityReply', operateActivityReply);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  reportQingmeiShareForDouble = require('./business-state').wrapBusinessFunction('services/activity.js:reportQingmeiShareForDouble', reportQingmeiShareForDouble);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getSeasonInfoRaw = require('./business-state').wrapBusinessFunction('services/activity.js:getSeasonInfoRaw', getSeasonInfoRaw);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimSeasonRewardsRaw = require('./business-state').wrapBusinessFunction('services/activity.js:claimSeasonRewardsRaw', claimSeasonRewardsRaw);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getSolarTermsRaw = require('./business-state').wrapBusinessFunction('services/activity.js:getSolarTermsRaw', getSolarTermsRaw);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimSolarTermsRaw = require('./business-state').wrapBusinessFunction('services/activity.js:claimSolarTermsRaw', claimSolarTermsRaw);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  buyNanguaShopItem = require('./business-state').wrapBusinessFunction('services/activity.js:buyNanguaShopItem', buyNanguaShopItem);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  refreshNanguaShop = require('./business-state').wrapBusinessFunction('services/activity.js:refreshNanguaShop', refreshNanguaShop);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getActivityGroupWithUidFallback = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityGroupWithUidFallback', getActivityGroupWithUidFallback);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getHeluBalance = require('./business-state').wrapBusinessFunction('services/activity.js:getHeluBalance', getHeluBalance);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagItemCount = require('./business-state').wrapBusinessFunction('services/activity.js:getBagItemCount', getBagItemCount);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagItemCounts = require('./business-state').wrapBusinessFunction('services/activity.js:getBagItemCounts', getBagItemCounts);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getQingmeiWineMaterialItems = require('./business-state').wrapBusinessFunction('services/activity.js:getQingmeiWineMaterialItems', getQingmeiWineMaterialItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getQingmeiActivity = require('./business-state').wrapBusinessFunction('services/activity.js:getQingmeiActivity', getQingmeiActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimQingmeiSeeds = require('./business-state').wrapBusinessFunction('services/activity.js:claimQingmeiSeeds', claimQingmeiSeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  brewAndSellQingmeiWine = require('./business-state').wrapBusinessFunction('services/activity.js:brewAndSellQingmeiWine', brewAndSellQingmeiWine);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getSeasonPassport = require('./business-state').wrapBusinessFunction('services/activity.js:getSeasonPassport', getSeasonPassport);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimSeasonPassportRewards = require('./business-state').wrapBusinessFunction('services/activity.js:claimSeasonPassportRewards', claimSeasonPassportRewards);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getSolarTermsInfo = require('./business-state').wrapBusinessFunction('services/activity.js:getSolarTermsInfo', getSolarTermsInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimSolarTermsReward = require('./business-state').wrapBusinessFunction('services/activity.js:claimSolarTermsReward', claimSolarTermsReward);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getStarActivity = require('./business-state').wrapBusinessFunction('services/activity.js:getStarActivity', getStarActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimStarRecordRewards = require('./business-state').wrapBusinessFunction('services/activity.js:claimStarRecordRewards', claimStarRecordRewards);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  exchangeStarShopItem = require('./business-state').wrapBusinessFunction('services/activity.js:exchangeStarShopItem', exchangeStarShopItem);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getHeluActivity = require('./business-state').wrapBusinessFunction('services/activity.js:getHeluActivity', getHeluActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  drawHeluGiftLotus = require('./business-state').wrapBusinessFunction('services/activity.js:drawHeluGiftLotus', drawHeluGiftLotus);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  exchangeHeluShopItem = require('./business-state').wrapBusinessFunction('services/activity.js:exchangeHeluShopItem', exchangeHeluShopItem);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getNanguaShop = require('./business-state').wrapBusinessFunction('services/activity.js:getNanguaShop', getNanguaShop);
+}
 /**
  * 活动服务 - 活动商店与限时抽奖
  *
@@ -3428,3 +3506,12 @@ module.exports = {
   normalizeNanguaGroup,
   normalizeHeluGroup,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/activity.js', () => ({ qingmeiClaimedDateByAccount, qixiDewLimitDateByAccount }), value => {
+      restoreContainer(qingmeiClaimedDateByAccount, value.qingmeiClaimedDateByAccount);
+      restoreContainer(qixiDewLimitDateByAccount, value.qixiDewLimitDateByAccount);
+  }, { });
+}

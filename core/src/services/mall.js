@@ -1,3 +1,27 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getMallListBySlotType = require('./business-state').wrapBusinessFunction('services/mall.js:getMallListBySlotType', getMallListBySlotType);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  purchaseMallGoods = require('./business-state').wrapBusinessFunction('services/mall.js:purchaseMallGoods', purchaseMallGoods);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getMallGoodsList = require('./business-state').wrapBusinessFunction('services/mall.js:getMallGoodsList', getMallGoodsList);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoBuyOrganicFertilizerViaMall = require('./business-state').wrapBusinessFunction('services/mall.js:autoBuyOrganicFertilizerViaMall', autoBuyOrganicFertilizerViaMall);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoBuyFertilizerViaMall = require('./business-state').wrapBusinessFunction('services/mall.js:autoBuyFertilizerViaMall', autoBuyFertilizerViaMall);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoBuyOrganicFertilizer = require('./business-state').wrapBusinessFunction('services/mall.js:autoBuyOrganicFertilizer', autoBuyOrganicFertilizer);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoBuyFertilizer = require('./business-state').wrapBusinessFunction('services/mall.js:autoBuyFertilizer', autoBuyFertilizer);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  buyFreeGifts = require('./business-state').wrapBusinessFunction('services/mall.js:buyFreeGifts', buyFreeGifts);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndBuyFertilizerByThreshold = require('./business-state').wrapBusinessFunction('services/mall.js:checkAndBuyFertilizerByThreshold', checkAndBuyFertilizerByThreshold);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndBuyFertilizerBoth = require('./business-state').wrapBusinessFunction('services/mall.js:checkAndBuyFertilizerBoth', checkAndBuyFertilizerBoth);
+}
 /**
  * 商城服务 - 化肥购买、免费礼包领取
  *
@@ -621,3 +645,17 @@ module.exports = {
     lastClaimAt: freeGiftLastAt,
   }),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/mall.js', () => ({ lastBuyAt, buyDoneDateKey, buyLastSuccessAt, buyPausedNoGoldDateKey, freeGiftDoneDateKey, freeGiftLastAt, freeGiftLastCheckAt }), value => {
+      lastBuyAt = value.lastBuyAt;
+      buyDoneDateKey = value.buyDoneDateKey;
+      buyLastSuccessAt = value.buyLastSuccessAt;
+      buyPausedNoGoldDateKey = value.buyPausedNoGoldDateKey;
+      freeGiftDoneDateKey = value.freeGiftDoneDateKey;
+      freeGiftLastAt = value.freeGiftLastAt;
+      freeGiftLastCheckAt = value.freeGiftLastCheckAt;
+  }, { });
+}

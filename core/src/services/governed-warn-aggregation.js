@@ -160,3 +160,12 @@ module.exports = {
     getGovernedWarnRowsForTests,
     resetGovernedWarnAggregationForTests,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/governed-warn-aggregation.js', () => ({ rows, lifecycleSeq }), value => {
+      restoreContainer(rows, value.rows);
+      lifecycleSeq = value.lifecycleSeq;
+  }, { });
+}

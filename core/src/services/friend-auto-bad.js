@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runTickBody = require('./business-state').wrapBusinessFunction('services/friend-auto-bad.js:runTickBody', runTickBody);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  tickBodyInner = require('./business-state').wrapBusinessFunction('services/friend-auto-bad.js:tickBodyInner', tickBodyInner);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runActionPass = require('./business-state').wrapBusinessFunction('services/friend-auto-bad.js:runActionPass', runActionPass);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  tick = require('./business-state').wrapBusinessFunction('services/friend-auto-bad.js:tick', tick);
+}
 /**
  * 好友在线自动捣乱调度（2026-09-26 第三版：纯被动证据触发）。
  *
@@ -542,10 +554,7 @@ function schedulePoll(delayMs) {
   if (pollTimerAt && pollTimerAt <= at) return; // 已有更早的排程在途：合并
   pollTimerAt = at;
   scheduler.clear('auto_bad_poll');
-  scheduler.setTimeoutTask('auto_bad_poll', at - now, () => {
-    pollTimerAt = 0; // 回调运行即清真实 pending 标记
-    tick();
-  });
+  scheduler.setTimeoutTask('auto_bad_poll', at - now, onAutoBadPollTimer);
 }
 
 /** 日暂停专用：覆盖式排到日界（取消一切更早的短 wake，不被事件拉回）。 */
@@ -553,10 +562,7 @@ function scheduleQuotaResume(delayMs) {
   const now = deps.now();
   pollTimerAt = now + Math.max(0, delayMs);
   scheduler.clear('auto_bad_poll');
-  scheduler.setTimeoutTask('auto_bad_poll', pollTimerAt - now, () => {
-    pollTimerAt = 0;
-    tick();
-  });
+  scheduler.setTimeoutTask('auto_bad_poll', pollTimerAt - now, onAutoBadPollTimer);
 }
 
 /** 复位已完成的会话（明确离场确证后）：等待下一次在线证据再出手。 */
@@ -682,3 +688,27 @@ module.exports = {
   OFFLINE_RESUME_MS,
   EVIDENCE_DISPATCH_MAX_MS,
 };
+
+function onAutoBadPollTimer() { pollTimerAt = 0; return tick(); }
+function bindAutoBadSessionState() {
+  scheduler.bindTimeoutTask('auto_bad_poll', onAutoBadPollTimer);
+  if (armed) {
+    unsubscribeOnlineEvidence = friendActivity.onOnlineEvidence(handleOnlineEvidence);
+    unsubscribePresence = friendActivity.onPresenceObservation(handlePresenceObservation);
+  }
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-auto-bad.js', () => ({ diagLastAt, armed, pendingBodies, generation, autoBadSessions, actionCursorGid, lastDispatchAt, pollTimerAt }), value => {
+      restoreContainer(diagLastAt, value.diagLastAt);
+      armed = value.armed;
+      pendingBodies = value.pendingBodies;
+      generation = value.generation;
+      restoreContainer(autoBadSessions, value.autoBadSessions);
+      actionCursorGid = value.actionCursorGid;
+      lastDispatchAt = value.lastDispatchAt;
+      pollTimerAt = value.pollTimerAt;
+  }, { idle: () => pendingBodies === 0, bind: bindAutoBadSessionState, });
+}

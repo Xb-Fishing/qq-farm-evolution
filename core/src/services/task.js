@@ -1,3 +1,27 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getTaskInfo = require('./business-state').wrapBusinessFunction('services/task.js:getTaskInfo', getTaskInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimTaskReward = require('./business-state').wrapBusinessFunction('services/task.js:claimTaskReward', claimTaskReward);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimDailyReward = require('./business-state').wrapBusinessFunction('services/task.js:claimDailyReward', claimDailyReward);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimAllIllustratedRewards = require('./business-state').wrapBusinessFunction('services/task.js:claimAllIllustratedRewards', claimAllIllustratedRewards);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getTicketBalanceFromBag = require('./business-state').wrapBusinessFunction('services/task.js:getTicketBalanceFromBag', getTicketBalanceFromBag);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndClaimActives = require('./business-state').wrapBusinessFunction('services/task.js:checkAndClaimActives', checkAndClaimActives);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndClaimIllustratedRewards = require('./business-state').wrapBusinessFunction('services/task.js:checkAndClaimIllustratedRewards', checkAndClaimIllustratedRewards);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  doClaim = require('./business-state').wrapBusinessFunction('services/task.js:doClaim', doClaim);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimTasksFromList = require('./business-state').wrapBusinessFunction('services/task.js:claimTasksFromList', claimTasksFromList);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndClaimTasks = require('./business-state').wrapBusinessFunction('services/task.js:checkAndClaimTasks', checkAndClaimTasks);
+}
 /**
  * 任务系统服务 - 每日任务、成长任务、活跃奖励自动领取
  *
@@ -18,6 +42,8 @@ const { getItemById } = require('../config/gameConfig');
 // ---- 状态 ----
 
 let checking = false;
+let pendingTaskClaim = null;
+let taskSystemInitialized = false;
 let taskClaimDoneDateKey = '';
 let taskClaimLastAt = 0;
 
@@ -121,7 +147,7 @@ async function getTicketBalanceFromBag() {
       }
     }
     return 0;
-  } catch (_) {
+  } catch {
     return 0;
   }
 }
@@ -307,7 +333,7 @@ async function checkAndClaimIllustratedRewards() {
     taskClaimLastAt = Date.now();
     recordOperation('taskClaim', 1);
     return true;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -337,7 +363,7 @@ async function doClaim(task) {
     recordOperation('taskClaim', 1);
     await sleep(300);
     return true;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -438,24 +464,22 @@ function onTaskInfoNotify(payload) {
     });
   }
 
-  taskScheduler.setTimeoutTask('task_claim_debounce', 5000, async () => {
-    if (hasClaimable) await claimTasksFromList(claimable);
-    await checkAndClaimActives(actives);
-    await checkAndClaimIllustratedRewards();
-  });
+  pendingTaskClaim = { hasClaimable, claimable, actives };
+  taskScheduler.setTimeoutTask('task_claim_debounce', 5000, onTaskClaimTimer);
 }
 
 // ---- 生命周期 ----
 
 function initTaskSystem() {
   cleanupTaskSystem();
+  taskSystemInitialized = true;
   networkEvents.on('taskInfoNotify', onTaskInfoNotify);
-  taskScheduler.setTimeoutTask('task_init_bootstrap', 15000, () => {
-    checkAndClaimTasks();
-  });
+  taskScheduler.setTimeoutTask('task_init_bootstrap', 15000, checkAndClaimTasks);
 }
 
 function cleanupTaskSystem() {
+  taskSystemInitialized = false;
+  pendingTaskClaim = null;
   networkEvents.off('taskInfoNotify', onTaskInfoNotify);
   taskScheduler.clearAll();
   checking = false;
@@ -507,7 +531,7 @@ module.exports = {
         completedCount: progressSummary.completedCount,
         totalCount: progressSummary.totalCount,
       };
-    } catch (_) {
+    } catch {
       return {
         key: 'task_claim',
         doneToday: false,
@@ -557,7 +581,7 @@ module.exports = {
         totalCount,
         tasks,
       };
-    } catch (_) {
+    } catch {
       return {
         key: 'growth_task',
         doneToday: false,
@@ -568,3 +592,28 @@ module.exports = {
     }
   },
 };
+
+async function onTaskClaimTimer() {
+  const payload = pendingTaskClaim; pendingTaskClaim = null;
+  if (!payload) return;
+  if (payload.hasClaimable) await claimTasksFromList(payload.claimable);
+  await checkAndClaimActives(payload.actives);
+  await checkAndClaimIllustratedRewards();
+}
+function bindTaskSessionState() {
+  if (taskSystemInitialized) networkEvents.on('taskInfoNotify', onTaskInfoNotify);
+  taskScheduler.bindTimeoutTask('task_claim_debounce', onTaskClaimTimer);
+  taskScheduler.bindTimeoutTask('task_init_bootstrap', checkAndClaimTasks);
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/task.js', () => ({ checking, taskClaimDoneDateKey, taskClaimLastAt, pendingTaskClaim, taskSystemInitialized }), value => {
+      checking = value.checking;
+      taskClaimDoneDateKey = value.taskClaimDoneDateKey;
+      taskClaimLastAt = value.taskClaimLastAt;
+      pendingTaskClaim = value.pendingTaskClaim;
+      taskSystemInitialized = value.taskSystemInitialized;
+  }, { idle: () => !checking, bind: bindTaskSessionState, });
+}

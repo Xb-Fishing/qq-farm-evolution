@@ -321,7 +321,7 @@ function registerAdminAccountRoutes({
             wxRefreshTokenObservedAt: latest.wxRefreshTokenObservedAt, wxCredentialLastSuccessAt: latest.wxCredentialLastSuccessAt,
           });
         }
-        const saved = addOrUpdateAccount(nextAccount);
+        const saved = addOrUpdateAccount(nextAccount, { newAuthorization: Boolean(body.wxSessionId && body.wxid && currentUser && nextAccount.platform === 'wx') });
         if (isUpdate && body.wxSessionId && typeof provider.invalidateAccountCredentialTasks === "function") {
           // Fence old async completions before the credential lock is released.
           provider.invalidateAccountCredentialTasks(nextAccount.id);
@@ -391,7 +391,7 @@ function registerAdminAccountRoutes({
           });
         }
       } else if (wasRunning && !onlyRenaming) {
-        provider.restartAccount(nextAccount.id);
+        await provider.restartAccount(nextAccount.id);
         // 在线原生重扫：用刚保存的二维码 Code 立即重建一次连接（不追加
         // 授权请求、不改 autoLogin），queued 表示正在用新授权重连。
         if (body.wxSessionId && nextAccount.platform === "wx") startQueued = true;
@@ -420,7 +420,7 @@ function registerAdminAccountRoutes({
     }
   });
 
-  app.delete("/api/accounts/:id", (req, res) => {
+  app.delete("/api/accounts/:id", async (req, res) => {
     try {
       const accountId =
         resolveAccountReference(req.params.id) || String(req.params.id || "");
@@ -430,7 +430,7 @@ function registerAdminAccountRoutes({
 
       const accounts = provider.getAccounts();
       const account = findAccountByRef(accounts.accounts || [], req.params.id);
-      provider.stopAccount(accountId);
+      await provider.stopAccount(accountId);
       const data = deleteAccount(accountId);
       if (provider.addAccountLog) {
         provider.addAccountLog(

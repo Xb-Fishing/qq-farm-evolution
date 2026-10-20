@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  performOwnHarvest = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:performOwnHarvest', performOwnHarvest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  harvestOwnAtMaturity = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:harvestOwnAtMaturity', harvestOwnAtMaturity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkFarm = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:checkFarm', checkFarm);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runFarmOperation = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:runFarmOperation', runFarmOperation);
+}
 const { CONFIG } = require('../config/config');
 const { getUserState, isConnected, networkEvents } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, getServerTimeSec, getServerTimeMs } = require('../utils/utils');
@@ -531,12 +543,7 @@ function getNextMatureDueAtMs() {
 function scheduleNextFarmCheck(intervalMs = CONFIG.farmCheckInterval) {
   if (externalSchedulerMode) return;
   if (!farmLoopRunning) return;
-  farmScheduler.setTimeoutTask('farm_check_loop', Math.max(0, intervalMs), async () => {
-    if (!farmLoopRunning) return;
-    await checkFarm();
-    if (!farmLoopRunning) return;
-    scheduleNextFarmCheck(CONFIG.farmCheckInterval);
-  });
+  farmScheduler.setTimeoutTask('farm_check_loop', Math.max(0, intervalMs), onFarmLoopTimer);
 }
 
 function startFarmCheckLoop(options = {}) {
@@ -569,9 +576,7 @@ function onLandsChangedPush(lands) {
   log('农场', `收到推送: ${lands.length}块土地变化，检查中...`, {
     module: 'farm', event: '土地推送通知', result: 'trigger_check', count: lands.length
   });
-  farmScheduler.setTimeoutTask('farm_push_check', 1000, async () => {
-    if (!isCheckingFarm) await checkFarm({ fromPush: true });
-  });
+  farmScheduler.setTimeoutTask('farm_push_check', 1000, onFarmPushTimer);
 }
 
 function stopFarmCheckLoop() {
@@ -604,3 +609,34 @@ module.exports = {
     isFirstFarmCheck = false;
   },
 };
+
+async function onFarmLoopTimer() {
+  if (!farmLoopRunning) return;
+  await checkFarm();
+  if (farmLoopRunning) scheduleNextFarmCheck(CONFIG.farmCheckInterval);
+}
+async function onFarmPushTimer() {
+  if (!isCheckingFarm) await checkFarm({ fromPush: true });
+}
+function bindFarmSessionState() {
+  if (farmLoopRunning) networkEvents.on('landsChanged', onLandsChangedPush);
+  farmScheduler.bindTimeoutTask('farm_check_loop', onFarmLoopTimer);
+  farmScheduler.bindTimeoutTask('farm_push_check', onFarmPushTimer);
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/farming-orchestrator.js', () => ({ isCheckingFarm, isFirstFarmCheck, farmLoopRunning, externalSchedulerMode, lastPushTime, shouldRefresh2x2Plan, lastNextMatureDueAtMs, lastNextMatureLandIds, ownMatureSchedule, ownNudgeLandSnapshots }), value => {
+      isCheckingFarm = value.isCheckingFarm;
+      isFirstFarmCheck = value.isFirstFarmCheck;
+      farmLoopRunning = value.farmLoopRunning;
+      externalSchedulerMode = value.externalSchedulerMode;
+      lastPushTime = value.lastPushTime;
+      shouldRefresh2x2Plan = value.shouldRefresh2x2Plan;
+      lastNextMatureDueAtMs = value.lastNextMatureDueAtMs;
+      lastNextMatureLandIds = value.lastNextMatureLandIds;
+      ownMatureSchedule = value.ownMatureSchedule;
+      restoreContainer(ownNudgeLandSnapshots, value.ownNudgeLandSnapshots);
+  }, { idle: () => !isCheckingFarm && !ownHarvestInFlight, bind: bindFarmSessionState, });
+}

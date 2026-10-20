@@ -467,3 +467,17 @@ module.exports = {
   getActivityEvidenceSummary,
   resetForTest,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-activity.js', () => ({ activityEvidence, onlineEvidence, friendNames, summaryBaselines, lastLoginBaselines, atHomeStates, presenceStates }), value => {
+      restoreContainer(activityEvidence, value.activityEvidence);
+      restoreContainer(onlineEvidence, value.onlineEvidence);
+      restoreContainer(friendNames, value.friendNames);
+      restoreContainer(summaryBaselines, value.summaryBaselines);
+      restoreContainer(lastLoginBaselines, value.lastLoginBaselines);
+      restoreContainer(atHomeStates, value.atHomeStates);
+      restoreContainer(presenceStates, value.presenceStates);
+  }, { });
+}

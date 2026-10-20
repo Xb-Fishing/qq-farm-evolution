@@ -1,3 +1,23 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  operateMilkTeaRequest = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:operateMilkTeaRequest', operateMilkTeaRequest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  readBalances = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:readBalances', readBalances);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getMilkTeaActivity = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:getMilkTeaActivity', getMilkTeaActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  readMilkTeaOverview = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:readMilkTeaOverview', readMilkTeaOverview);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  readInitialGameplay = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:readInitialGameplay', readInitialGameplay);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  readMilkTeaQueryData = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:readMilkTeaQueryData', readMilkTeaQueryData);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  queryMilkTeaActivity = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:queryMilkTeaActivity', queryMilkTeaActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runManualMilkTeaAction = require('./business-state').wrapBusinessFunction('services/milk-tea-activity.js:runManualMilkTeaAction', runManualMilkTeaAction);
+}
 /**
  * 奶茶热销中（S4，2026110100 族）只读状态 + 面板手动操作服务
  *
@@ -19,6 +39,7 @@
  */
 
 const { toNum, toLong, log } = require('../utils/utils');
+const Long = require('long');
 const { sendMsgAsync, getWs } = require('../utils/network');
 const { types } = require('../utils/proto');
 const CONFIG = require('../gameConfig/MilkTeaActivity.json');
@@ -1179,7 +1200,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       if (fruitUids.some(uid => !unlockedFruitIds.has(num64(uidToItem.get(uid).id)))) {
         fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '所选果实的配方尚未解锁，请刷新后重选');
       }
-      params = { fruit_uids: fruitUids.map(uid => toLong(uid)) };
+      params = { fruit_uids: fruitUids.map(uid => Long.fromString(uid)) };
     }
     else if (action === 'claimWages') {
       const workReply = await readOperate(OPERATIONS.queryWorkPage, {});
@@ -1430,3 +1451,11 @@ module.exports = {
   // 测试与内部核对用（无网络纯函数）
   timingOf,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/milk-tea-activity.js', () => ({ endedEvidence }), value => {
+      endedEvidence = value.endedEvidence;
+  }, { idle: () => actionLeaseOwner === null, });
+}

@@ -1,3 +1,13 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  resolveRemovableHarvestedLands = require('./business-state').wrapBusinessFunction('services/farm-land-analyzer.js:resolveRemovableHarvestedLands', resolveRemovableHarvestedLands);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getLandsDetail = require('./business-state').wrapBusinessFunction('services/farm-land-analyzer.js:getLandsDetail', getLandsDetail);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getLandsDetailForPanel = require('./business-state').wrapBusinessFunction('services/farm-land-analyzer.js:getLandsDetailForPanel', getLandsDetailForPanel);
+}
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
 const { getPlantName, getKnownPlantName, getItemById, getPlantExp, getPlantByIdOrSeedId, getPlantGrowTime, getPlantGrowPhases, getSeedImageBySeedId, isSeedItem, getMutantDisplayPlantId, getMutantPlantImageByPhase, getMutantEffectsByIds } = require('../config/gameConfig');
 const { toNum, toTimeSec, getServerTimeSec, logWarn } = require('../utils/utils');
@@ -666,3 +676,12 @@ module.exports = {
   getLandsDetailForPanel,
   invalidatePanelLandsCache
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/farm-land-analyzer.js', () => ({ panelLandsCache, panelLandsCacheAt }), value => {
+      panelLandsCache = value.panelLandsCache;
+      panelLandsCacheAt = value.panelLandsCacheAt;
+  }, { idle: () => !panelLandsInFlight, });
+}

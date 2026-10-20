@@ -87,10 +87,10 @@ function wireHarness() {
     encodeMsg: async () => Buffer.from('synthetic'),
     requestGovernor: { checkRequest: () => { governed++; return { allowed: true }; }, recordSent: () => { recorded++; } },
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, fn), clear: key => timers.delete(key) },
-    isConnected: () => true, log() {}, GOVERNED_BUDGET_REASONS: new Set(),
+    isConnected: () => true, log() {}, GOVERNED_BUDGET_REASONS: new Set(), sessionTransportHooks: null,
   };
   vm.createContext(context);
-  vm.runInContext(['businessPauseError', 'sendMsg', 'sendMsgAsync'].map(n => actualFunction('utils/network.js', n)).join('\n'), context);
+  vm.runInContext(['sessionAuthorityError', 'businessPauseError', 'sendMsg', 'sendMsgAsync'].map(n => actualFunction('utils/network.js', n)).join('\n'), context);
   return { context, timers, pause: n => { paused = n; }, counters: () => ({ sent, governed, recorded }),
     blockEncoding() { context.encodeMsg = () => new Promise(r => { release = r; }); }, release() { release(Buffer.from('synthetic')); } };
 }
@@ -134,7 +134,7 @@ test('real unified scheduling converts a long nap to protection and resumes at i
     nextScheduledStealAt: () => now + 30_000, STEAL_IDLE_MS: 86400_000,
     runUnifiedTick: async () => { ran++; ctx.nextFarmRunAt = now + 8000; ctx.nextHelpRunAt = now + 30_000; },
   };
-  vm.createContext(ctx); vm.runInContext(actualFunction('core/worker.js', 'scheduleUnifiedNextTick'), ctx);
+  vm.createContext(ctx); vm.runInContext(['scheduleUnifiedNextTick', 'onTimer_unified_next_tick'].map(name => actualFunction('core/worker.js', name)).join('\n'), ctx);
   ctx.scheduleUnifiedNextTick();
   assert.equal(scheduled.delay, 180_000); assert.equal(protectedUntil, now + 180_000);
   assert.equal(ran, 0); now += 180_000;
@@ -162,11 +162,11 @@ test('queued push fast-lane rechecks protection before harvest, with normal beha
 test('already armed pre-entry timer does not enter a friend farm after protection begins', async () => {
   let callback; let calls = 0;
   const now = Date.now();
-  const ctx = { Date, Number, sentinelArmedFor: { gid: 42 }, sentinelPreEnterTimer: null,
+  const ctx = { Date, Number, sentinelArmedFor: { gid: 42 }, sentinelPreEnterTimer: null, sentinelPendingPreEnter: null, sentinelEntrySeq: 0,
     clearSentinelPreEnter() {}, SENTINEL_PRE_ENTER_AHEAD_MS: 500,
     setTimeout: fn => { callback = fn; return { unref() {} }; }, pauseRemainMsNow: () => 60_000,
     require: () => { calls++; throw new Error('must not dispatch'); } };
-  vm.createContext(ctx); vm.runInContext(actualFunction('core/worker.js', 'armSentinelPreEnter'), ctx);
+  vm.createContext(ctx); vm.runInContext(['armSentinelPreEnter', 'scheduleSentinelTimer', 'onSentinelPreEnterTimer'].map(name => actualFunction('core/worker.js', name)).join('\n'), ctx);
   ctx.armSentinelPreEnter({ gid: 42, dueAt: now + 1000 }); await callback(); assert.equal(calls, 0);
 });
 
@@ -180,7 +180,7 @@ for (const pausedAtStartup of [false, true]) test(`daily routines catch up after
     runBadOnceOnStartup: async () => {},
     workerScheduler: { setIntervalTask: (_key, _ms, fn) => { tick = fn; } },
   };
-  vm.createContext(ctx); vm.runInContext(actualFunction('core/worker.js', 'startDailyRoutineTimer'), ctx);
+  vm.createContext(ctx); vm.runInContext(['startDailyRoutineTimer', 'onTimer_daily_routine_interval'].map(name => actualFunction('core/worker.js', name)).join('\n'), ctx);
   ctx.startDailyRoutineTimer(); await Promise.resolve();
   if (!pausedAtStartup) { paused = true; day = 'synthetic-day-two'; }
   tick(); await Promise.resolve();

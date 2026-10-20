@@ -55,7 +55,7 @@ function isInsideOrEqualDir(candidate, base) {
 // 预期目标任一越界/非法，都在调用创建原语之前拒绝
 function createPrivateDataDir(prefix) {
     if (typeof prefix !== 'string' || prefix.includes('..')
-        || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(prefix))
+        || !/^[A-Z0-9][\w.-]*$/i.test(prefix))
         throw new Error(`非法创建前缀: ${prefix}`);
     const tempRoot = fs.realpathSync(path.resolve(os.tmpdir()));
     if (isInsideOrEqualDir(tempRoot, repoRootReal))
@@ -671,8 +671,8 @@ test('worker 接线：播种先于首次配置应用；reconcile 紧随配置应
     assert.ok(applyAt >= 0 && reconcileAt >= 0 && applyAt < reconcileAt,
         'reconcile 必须在 applyConfigSnapshot 完成配置应用之后执行');
 
-    const arm = sourceFunction(workerSource, 'armSentinelPreEnter');
-    assert.ok(arm.includes('sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply };'),
+    const arm = sourceFunction(workerSource, 'onSentinelPreEnterTimer');
+    assert.ok(arm.includes('sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply, entryId };'),
         '哨兵驻留标记原始字段保持不变');
     assert.ok(arm.includes('sentinelPreEnter.epochAtSend = wlAttempt ? wlAttempt.epoch : 0;'));
     const noteAt = arm.indexOf('noteWatchlistEnterAttempt');

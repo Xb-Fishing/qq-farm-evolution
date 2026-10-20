@@ -27,7 +27,7 @@ function validEnvelope(handoff, expected, now) {
     && handoff.expiresAt > now && handoff.expiresAt <= handoff.createdAt + HANDOFF_TTL_MS;
 }
 
-function createWxRestartCoordinator({ getAccounts, isAutoLogin, workers, autoCodeRefresh, now = Date.now }) {
+function createWxRestartCoordinator({ getAccounts, isAutoLogin, workers, autoCodeRefresh, preparePersistentSessions, validatePersistentSessions, releasePersistentSessions, now = Date.now }) {
   const list = () => getAccounts().accounts || [];
   const unknownConnection = () => list().some(a => a.platform === 'wx' && isAutoLogin(a)
     && workers[String(a.id)] && typeof workers[String(a.id)].status?.connection?.connected !== 'boolean');
@@ -39,13 +39,20 @@ function createWxRestartCoordinator({ getAccounts, isAutoLogin, workers, autoCod
     const time = now();
     if (unknownConnection() || !validEnvelope(handoff, handoff || {}, time)
       || wxAccountsStamp(list(), isAutoLogin) !== handoff.accountsStamp
-      || JSON.stringify(liveIds()) !== JSON.stringify(handoff.accounts.map(a => a.accountId).sort())) return false;
-    return handoff.accounts.every(item => autoCodeRefresh.isRestartGenerationCurrent(item.accountId, item.generation));
+      || JSON.stringify(liveIds()) !== JSON.stringify([...handoff.accounts.map(a => a.accountId), ...(handoff.sessions || []).filter(s => list().some(a => a.platform === 'wx' && String(a.id) === s.accountId && s.connected)).map(s => s.accountId)].sort())) return false;
+    const current = handoff.accounts.every(item => autoCodeRefresh.isRestartGenerationCurrent(item.accountId, item.generation));
+    if (!current) return false;
+    return typeof validatePersistentSessions === 'function'
+      ? validatePersistentSessions(handoff.sessions, handoff) : current;
   }
 
   async function prepareWxRestart(request) {
+    let transferred = false;
+    try {
     if (unknownConnection()) return unavailable('unknown_connection');
-    const selected = connected();
+    const sessions = typeof preparePersistentSessions === 'function' ? await preparePersistentSessions(request) : [];
+    const preservedIds = new Set(sessions.map(item => item.accountId));
+    const selected = connected().filter(account => !preservedIds.has(String(account.id)));
     const entries = [];
     const createdAt = now();
     const initialStamp = wxAccountsStamp(list(), isAutoLogin);
@@ -73,15 +80,17 @@ function createWxRestartCoordinator({ getAccounts, isAutoLogin, workers, autoCod
       || current.filter(a => a.platform === 'wx').length !== initialAccounts.size;
     const handoff = { version: 1, targetCommit: request.targetCommit, nonce: request.nonce,
       oldPid: request.oldPid, oldStartTicks: request.oldStartTicks, createdAt,
-      expiresAt: createdAt + HANDOFF_TTL_MS, accountsStamp: wxAccountsStamp(current, isAutoLogin), accounts: entries };
+      expiresAt: createdAt + HANDOFF_TTL_MS, accountsStamp: wxAccountsStamp(current, isAutoLogin), accounts: entries, sessions };
     // Per-account preparation guards handle selected accounts; unchanged empty
     // batches must also reject a concurrent rescan or new account.
     if ((request.guard && !request.guard()) || untouchedChanged || (!entries.length && handoff.accountsStamp !== initialStamp)
       || entries.some(item => item.accountStamp !== accountStamp(current.find(a => String(a.id) === item.accountId) || {}, isAutoLogin))
-      || !validateWxRestart(handoff)) return unavailable('account_changed');
+      || !await validateWxRestart(handoff)) return unavailable('account_changed');
+    transferred = true;
     return { ok: true, handoff };
+    } finally { if (!transferred) releasePersistentSessions?.(request); }
   }
-  return { prepareWxRestart, validateWxRestart };
+  return { prepareWxRestart, validateWxRestart, cancelWxRestart: request => releasePersistentSessions?.(request) };
 }
 
 /** Claim a private file once, validate against canonical accounts, then return Codes.

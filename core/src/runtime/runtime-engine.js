@@ -63,7 +63,11 @@ function settleScanCheckpointOnConnect({ reminder, workers, getAccounts, account
         const worker = workers ? workers[id] : null;
         if (!worker || worker.stopping === true) return null;
         // 旧 Worker（检查点写入前已启动）的连接消息不清检查点。
-        if (!((Number(worker.startedAt) || 0) > Number(checkpoint.savedAt))) return null;
+        if (worker.process?.persistentSession) {
+            const actual = worker.sessionFacts?.game;
+            if (!actual || actual.connected !== true || actual.loginCredentialGeneration !== account.credentialGeneration
+                || !(actual.firstLoginReadyAt > Number(checkpoint.savedAt))) return null;
+        } else if (!((Number(worker.startedAt) || 0) > Number(checkpoint.savedAt))) return null;
         const capturedWorker = worker;
         const settled = reminder.noteScanCodeResolved(id, {
             generation: checkpoint.generation,
@@ -111,7 +115,7 @@ function createRuntimeEngine(options = {}) {
     const startAdminServer = typeof options.startAdminServer === 'function' ? options.startAdminServer : null;
 
     // Worker 启动/重启的引用占位
-    const engine = { startWorker: null, restartWorker: null };
+    const engine = { startWorker: null, restartWorker: null, tryAdoptAccountSession: null };
 
     // 创建运行时状态
     const runtimeState = createRuntimeState({
@@ -169,7 +173,7 @@ function createRuntimeEngine(options = {}) {
         startWorker,
         stopWorker,
         restartWorker,
-        callWorkerApi
+        callWorkerApi, tryAdoptAccountSession, detachAll: detachWorkers
     } = createWorkerManager({
         fork,
         WorkerThread: Worker,
@@ -202,6 +206,20 @@ function createRuntimeEngine(options = {}) {
             if (saved) updateRuntimeConfig(saved);
             return !!saved;
         },
+        onSessionLifecycle: async (accountId, event) => {
+            const reminder = getSharedWxLoginReminder();
+            const account = (store.getAccounts().accounts || []).find(item => String(item.id) === String(accountId));
+            if (!account || account.credentialGeneration !== event.credentialGeneration) return;
+            const options = { observedAt: event.observedAt, sourceId: event.eventId,
+                requireDurable: true, deferDispatch: true,
+                expectedCredentialGeneration: event.credentialGeneration,
+                binding: event.binding, connectionEpoch: event.connectionEpoch };
+            if (event.kind === 'kickout' && event.otherTerminal === true)
+                await reminder.noteOtherTerminalLogin(accountId, options);
+            if (event.kind === 'login_ready' && typeof reminder.noteFirstSuccessfulLogin === 'function'
+                && event.loginCredentialGeneration === account.credentialGeneration)
+                await reminder.noteFirstSuccessfulLogin(accountId, { ...options, loginSucceededAt: event.firstLoginReadyAt || event.loginReadyAt });
+        },
         onStatusSync: (accountId, status, accountName) => {
             runtimeEvents.emit('status', { accountId, status, accountName });
             // Worker 真正连上 = 登录已收口：解掉该账号的「授权已保存/登录未
@@ -226,17 +244,27 @@ function createRuntimeEngine(options = {}) {
 
     engine.startWorker = startWorker;
     engine.restartWorker = restartWorker;
+    engine.tryAdoptAccountSession = tryAdoptAccountSession;
 
     const wxRestart = createWxRestartCoordinator({
         getAccounts: store.getAccounts, isAutoLogin: store.isAccountAutoLogin,
         workers, autoCodeRefresh,
+        preparePersistentSessions: runtimeMode === 'persistent' ? request => require('./session-update').collectSessionProofs(
+            require('../config/runtime-paths').getDataDir(), { barrier: { nonce: request.nonce,
+                blockedPid: request.oldPid, blockedStarttime: request.oldStartTicks }, guard: request.guard }) : undefined,
+        validatePersistentSessions: runtimeMode === 'persistent' ? async (proofs, handoff) => (await require('./session-update').verifySessionProofs({
+            dataDir: require('../config/runtime-paths').getDataDir(), proofs, barrierNonce: handoff.nonce })).ok : undefined,
+        releasePersistentSessions: runtimeMode === 'persistent' ? request => require('./session-handoff-barrier').releaseSessionBarrier(
+            require('../config/runtime-paths').getDataDir(), request.nonce) : undefined,
     });
 
     // 创建数据提供器
     const dataProviderDeps = {
+        tryAdoptAccountSession,
         invalidateWxCredentialTasks: autoCodeRefresh.invalidateCredentialTasks,
         prepareWxRestart: wxRestart.prepareWxRestart,
         validateWxRestart: wxRestart.validateWxRestart,
+        cancelWxRestart: wxRestart.cancelWxRestart,
         workers,
         globalLogs,
         accountLogs,
@@ -282,7 +310,7 @@ function createRuntimeEngine(options = {}) {
         // 「已在其他终端登录」踢下线：作为用户手机进场的参考信号记录（维护
         // 计划前置条件）。绑定快照在调用内同步捕获；异步落盘失败静默放弃，
         // 不影响踢下线/接管主流程，也不代表能检测到全部手机进场。
-        if (entry && entry.action === 'kickout_stop'
+        if (entry && !entry.sessionEvidence && entry.action === 'kickout_stop'
             && String(entry.reason || '').trim() === '已在其他终端登录') {
             try {
                 const recorded = getSharedWxLoginReminder().noteOtherTerminalLogin(entry.accountId);
@@ -354,6 +382,17 @@ function createRuntimeEngine(options = {}) {
         delete processRef.env.FARM_WX_RESTART_TARGET_COMMIT;
         delete processRef.env.FARM_WX_RESTART_NONCE;
         const preparedIds = new Set(preparedCodes.keys());
+        const preservedIds = new Set();
+        for (const account of store.getAccounts().accounts || []) {
+            if (!store.isAccountAutoLogin(account)) continue;
+            const adoption = await tryAdoptAccountSession(account);
+            if (adoption.state === 'adopted' || adoption.state === 'unknown' || adoption.state === 'disabled') {
+                preservedIds.add(String(account.id)); preparedCodes.delete(String(account.id));
+                if (adoption.state === 'adopted' && account.credentialGeneration
+                    && adoption.facts?.game?.loginCredentialGeneration !== account.credentialGeneration)
+                    armStartupWxRecovery(account.id);
+            }
+        }
         // Settle every handoff before ordinary startup can await an upstream
         // request. Re-read identity, pause and TTL inside the credential lock.
         for (const [id, prepared] of preparedCodes) {
@@ -377,7 +416,7 @@ function createRuntimeEngine(options = {}) {
         if (accounts.length > 0) {
             log('系统', `发现 ${  accounts.length  } 个账号，正在启动...`);
             for (const acc of accounts) {
-                if (preparedIds.has(String(acc.id))) continue;
+                if (preparedIds.has(String(acc.id)) || preservedIds.has(String(acc.id))) continue;
                 // 为移植前已扫码保存凭证的微信账号执行一次默认策略迁移。
                 if (acc.platform === 'wx' && acc.loginBuffer && acc.wxDefaultsApplied !== true) {
                     const currentRefresh = store.getAutoCodeRefresh(acc.id);
@@ -406,7 +445,7 @@ function createRuntimeEngine(options = {}) {
                     if (!refreshed && !credentialBlocked) {
                         const decision = resolveStartupWxRecovery(acc.id);
                         if (decision && decision.fallback) {
-                            startWorker(decision.fallback);
+                            await startWorker(decision.fallback);
                         } else if (decision) {
                             // 沿既有自动恢复排程收口（原间隔 + 每日 5 次/连续
                             // 失败 3 次预算；熔断/失败后仍保留用户显式重试入口）。
@@ -415,7 +454,7 @@ function createRuntimeEngine(options = {}) {
                         // decision === null：await 期间已暂停/删除，不启动不排程。
                     }
                 } else {
-                    startWorker(acc);
+                    await startWorker(acc);
                 }
             }
         } else {
@@ -463,6 +502,12 @@ function createRuntimeEngine(options = {}) {
         }
     }
 
+    async function detachAll() {
+        try { getSharedWxLoginReminder().stopMaintenanceSweep(); } catch {}
+        for (const account of store.getAccounts().accounts || []) autoCodeRefresh.stopAccount(account.id);
+        await detachWorkers();
+    }
+
     /** 停止所有账号 */
     function stopAllAccounts() {
         try { getSharedWxLoginReminder().stopMaintenanceSweep(); } catch { /* 未启动即可 */ }
@@ -478,7 +523,7 @@ function createRuntimeEngine(options = {}) {
         dataProvider,
         start,
         startAllAccounts,
-        stopAllAccounts,
+        stopAllAccounts, detachAll, tryAdoptAccountSession,
         broadcastConfigToWorkers,
         startWorker,
         stopWorker,

@@ -1,3 +1,25 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runBatchWithFallback = require('./business-state').wrapBusinessFunction('services/friend-visit.js:runBatchWithFallback', runBatchWithFallback);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  doFriendOperation = require('./business-state').wrapBusinessFunction('services/friend-visit.js:doFriendOperation', doFriendOperation);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriend = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriend', visitFriend);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fastLaneSteal = require('./business-state').wrapBusinessFunction('services/friend-visit.js:fastLaneSteal', fastLaneSteal);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  maybeLurkLeave = require('./business-state').wrapBusinessFunction('services/friend-visit.js:maybeLurkLeave', maybeLurkLeave);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForSteal = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForSteal', visitFriendForSteal);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForHelp = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForHelp', visitFriendForHelp);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  placeAutoBadItems = require('./business-state').wrapBusinessFunction('services/friend-visit.js:placeAutoBadItems', placeAutoBadItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForAutoBad = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForAutoBad', visitFriendForAutoBad);
+}
 const { PlantPhase } = require('../config/config');
 const { getPlantById } = require('../config/gameConfig');
 const { getPlantBlacklist, isAutomationOn, getPauseRemainMs } = require('../models/store');
@@ -687,7 +709,7 @@ async function fastLaneSteal(gid, lands) {
 
   // 串行化：同好友同一时刻只 1 个在途 Harvest，后到的地块并进下一次
   const prev = fastLaneInFlight.get(id) || Promise.resolve();
-  const run = prev.catch(() => undefined).then(async () => {
+  const chain = () => prev.catch(() => undefined).then(async () => {
     if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
     try {
       const reply = await stealHarvest(id, targets);
@@ -703,6 +725,8 @@ async function fastLaneSteal(gid, lands) {
       void sellAllFruits().catch(() => {});
     } catch { /* 已被主人收走等预期失败，静默 */ }
   });
+  const run = globalThis.process?.env?.FARM_SESSION_BUSINESS === '1'
+    ? require('./business-state').businessTask('friend:fast-lane-chain', chain) : chain();
   fastLaneInFlight.set(id, run);
   void run.catch(() => {}).then(() => { if (fastLaneInFlight.get(id) === run) fastLaneInFlight.delete(id); });
 }
@@ -1272,3 +1296,11 @@ module.exports = {
   visitFriendForAutoBad,
   placeAutoBadItems,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-visit.js', () => ({ fastLaneRecent }), value => {
+      restoreContainer(fastLaneRecent, value.fastLaneRecent);
+  }, { idle: () => fastLaneInFlight.size === 0, });
+}

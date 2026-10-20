@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { sessionReadyTimeoutMs } = require('../runtime/session-timeouts');
 
 const PREFLIGHT_REASONS = Object.freeze({
   cancelled: '更新准备已取消，当前服务保留',
@@ -45,12 +46,12 @@ function requestParent(processRef, request, timeoutMs = 35000) {
 
 // Legacy initial migration has no IPC. Prove through the authenticated live
 // provider that it will not terminate a working WX connection; unknown fails closed.
-async function legacyHasNoLiveWx({ dataDir, adminPort, fetchImpl = fetch }) {
+async function legacyHasNoLiveWx({ dataDir, adminPort, fetchImpl = fetch, preservedIds = new Set() }) {
   let accounts;
   try { accounts = JSON.parse(fs.readFileSync(path.join(dataDir, 'accounts.json'), 'utf8')).accounts; }
   catch (error) { if (error.code === 'ENOENT') return true; return false; }
   if (!Array.isArray(accounts)) return false;
-  const wx = accounts.filter(a => a?.platform === 'wx');
+  const wx = accounts.filter(a => a?.platform === 'wx' && !preservedIds.has(String(a.id)));
   if (!wx.length) return true;
   try {
     const sessions = JSON.parse(fs.readFileSync(path.join(dataDir, 'admin-sessions.json'), 'utf8'));
@@ -70,14 +71,35 @@ async function legacyHasNoLiveWx({ dataDir, adminPort, fetchImpl = fetch }) {
 
 async function prepareUpdatePreflight({ processRef = process, targetCommit, oldPid, oldStartTicks,
   dataDir, adminPort, timeoutMs }) {
+  const readyTimeoutMs = sessionReadyTimeoutMs(require('../runtime/session-update').accountsAt(dataDir)
+    .filter(account => account.autoLogin !== false).length);
   if (!processRef.connected || typeof processRef.send !== 'function') {
-    if (!await legacyHasNoLiveWx({ dataDir, adminPort }))
-      throw preflightError('legacy');
-    return { file: '', env: {}, validate: () => legacyHasNoLiveWx({ dataDir, adminPort }) };
+    let canCreateHosts = fs.existsSync(path.join(dataDir, 'persistent-sessions'));
+    try {
+      const oldCwd = fs.readlinkSync(`/proc/${oldPid}/cwd`);
+      canCreateHosts ||= ['src/runtime/session-host.js', 'core/src/runtime/session-host.js']
+        .some(relative => fs.existsSync(path.join(oldCwd, relative)));
+    } catch { /* Legacy fixtures/old versions have no persistent host launcher. */ }
+    const barrierNonce = canCreateHosts ? crypto.randomUUID() : '';
+    try {
+    const sessions = await require('../runtime/session-update').collectSessionProofs(dataDir, canCreateHosts ? {
+      barrier: { nonce: barrierNonce, blockedPid: oldPid, blockedStarttime: oldStartTicks },
+    } : {});
+    const preservedIds = new Set(sessions.map(item => item.accountId));
+    if (!await legacyHasNoLiveWx({ dataDir, adminPort, preservedIds })) throw preflightError('legacy');
+    return { file: '', env: {}, sessions, readyTimeoutMs, cleanup: () => { if (barrierNonce) require('../runtime/session-handoff-barrier').releaseSessionBarrier(dataDir, barrierNonce); },
+      verifyReady: () => require('../runtime/session-update').verifySessionProofs({ dataDir, proofs: sessions, expectedBusinessCommit: targetCommit, final: true }),
+      validate: async () => await legacyHasNoLiveWx({ dataDir, adminPort, preservedIds })
+        && (await require('../runtime/session-update').verifySessionProofs({ dataDir, proofs: sessions, barrierNonce })).ok };
+    } catch (error) {
+      if (barrierNonce) require('../runtime/session-handoff-barrier').releaseSessionBarrier(dataDir, barrierNonce);
+      throw error;
+    }
   }
   const nonce = crypto.randomUUID();
   const request = action => ({ type: 'wx_restart_request', action, nonce, targetCommit, oldPid, oldStartTicks,
     requestId: crypto.randomUUID() });
+  try {
   const prepared = await requestParent(processRef, request('prepare'), timeoutMs);
   const handoff = prepared.handoff;
   const now = Date.now();
@@ -91,7 +113,9 @@ async function prepareUpdatePreflight({ processRef = process, targetCommit, oldP
   if (fs.realpathSync(directory) !== path.resolve(directory)) throw new Error('交接目录不可用');
   const file = path.join(directory, `${nonce}.json`);
   fs.writeFileSync(file, JSON.stringify(handoff), { mode: 0o600, flag: 'wx' });
-  return { file, env: { FARM_WX_RESTART_HANDOFF_FILE: file, FARM_WX_RESTART_TARGET_COMMIT: targetCommit,
+  return { file, sessions: handoff.sessions || [], readyTimeoutMs, cleanup: () => require('../runtime/session-handoff-barrier').releaseSessionBarrier(dataDir, nonce),
+    verifyReady: () => require('../runtime/session-update').verifySessionProofs({ dataDir, proofs: handoff.sessions || [], expectedBusinessCommit: targetCommit, final: true }),
+    env: { FARM_WX_RESTART_HANDOFF_FILE: file, FARM_WX_RESTART_TARGET_COMMIT: targetCommit,
     FARM_WX_RESTART_NONCE: nonce },
   validate: async () => {
     if (handoff.expiresAt <= Date.now()) throw preflightError('expired');
@@ -99,6 +123,13 @@ async function prepareUpdatePreflight({ processRef = process, targetCommit, oldP
     if (handoff.expiresAt <= Date.now()) throw preflightError('expired');
     return response.ok === true;
   } };
+  } catch (error) {
+    require('../runtime/session-handoff-barrier').releaseSessionBarrier(dataDir, nonce);
+    if (processRef.connected !== false) {
+      try { processRef.send({ ...request('prepare'), type: 'wx_restart_cancel' }, () => {}); } catch { /* disconnected */ }
+    }
+    throw error;
+  }
 }
 
 module.exports = { prepareUpdatePreflight, legacyHasNoLiveWx, requestParent, PREFLIGHT_REASONS, preflightError };

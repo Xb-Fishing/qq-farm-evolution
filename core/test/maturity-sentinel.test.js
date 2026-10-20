@@ -73,7 +73,7 @@ test('steal tick protects own crops before entering any friend farm', () => {
 });
 
 test('friend sentinel keeps its own short timer without sharing own-harvest state', () => {
-  assert.match(src, /sentinelTimer = setTimeout\(runSentinelStrike/);
+  assert.match(src, /sentinelTimer = scheduleSentinelTimer\('sentinel_strike', (?:delay|pauseRemain \+ 100), runSentinelStrike/);
   assert.match(src, /SENTINEL_ARM_WATCHLIST_MS = 5_000/);
   assert.match(src, /SENTINEL_ARM_NORMAL_MS = 2_000/);
   const clearAt = src.indexOf('clearSentinel();');
@@ -85,7 +85,7 @@ test('哨兵到点链路有预进门驻留与请求治理紧急通道（2026-09-
   assert.match(src, /SENTINEL_PRE_ENTER_AHEAD_MS = 3_000/);
   assert.match(src, /function armSentinelPreEnter/);
   assert.match(src, /armSentinelPreEnter\(sentinelArmedFor\)/);
-  assert.match(src, /sentinelPreEnter = \{ gid, dueAt, enteredAt: Date\.now\(\), enterReply \}/);
+  assert.match(src, /sentinelPreEnter = \{ gid, dueAt, enteredAt: Date\.now\(\), enterReply, entryId \}/);
   // Strike 打开 15s 紧急窗口并把会话传给 checkFriends 快路径。
   const strike = src.slice(
     src.indexOf('async function runSentinelStrike'),
@@ -422,6 +422,8 @@ function extractRevenueEntrySource() {
   take('async function handleApiCall', '// ==================== 每日礼包总览', 'handleApiCall');
   take('async function runOwnHarvestStrike', '// ==================== 好友成熟哨兵', 'runOwnHarvestStrike');
   take('function clearSentinel()', '// 偷菜 due 连续', 'sentinel block');
+  take('function scheduleSentinelTimer(', 'async function onSentinelPreEnterTimer', 'sentinel timer bridge');
+  take('async function onSentinelPreEnterTimer', '// Persistent-session data capsule.', 'sentinel pre-entry callback');
   take('async function runStealTick', '// ==================== 统一调度器', 'runStealTick');
   take('async function runUnifiedTick', 'function scheduleUnifiedNextTick', 'runUnifiedTick');
   return `${slices.join('\n')}\n;({ handleApiCall, runOwnHarvestStrike, runStealTick, runUnifiedTick, runSentinelStrike, armMaturitySentinel, clearSentinel })`;
@@ -504,7 +506,7 @@ test('普通面板 getFriends 在途：自己成熟收获、好友到点偷菜�
       sentinelTimer: null,
       sentinelArmedFor: null,
       sentinelPreEnter: null,
-      sentinelPreEnterTimer: null,
+      sentinelPreEnterTimer: null, sentinelPendingPreEnter: null, sentinelEntrySeq: 0,
       getDueWatchFriends: () => [],
       __setUrgentStrikeMode: () => {},
       getNextStealDueAtMs: () => 0,

@@ -1,3 +1,19 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getFriendDogInfo = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:getFriendDogInfo', getFriendDogInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  batchGetFriendDogInfo = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:batchGetFriendDogInfo', batchGetFriendDogInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getFriendsList = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:getFriendsList', getFriendsList);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchFriendsListOnce = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:fetchFriendsListOnce', fetchFriendsListOnce);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchFriendsDogInfo = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:fetchFriendsDogInfo', fetchFriendsDogInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getFriendLandsDetail = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:getFriendLandsDetail', getFriendLandsDetail);
+}
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
 const {
   getPlantName,
@@ -718,3 +734,12 @@ module.exports = {
   getFriendsListCache,
   setFriendsListCache,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/friend-land-analyzer.js', () => ({ friendsListCache, friendsListGeneration }), value => {
+      friendsListCache = value.friendsListCache;
+      friendsListGeneration = value.friendsListGeneration;
+  }, { idle: () => !friendsListInFlight, });
+}

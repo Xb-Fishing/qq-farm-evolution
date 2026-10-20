@@ -625,7 +625,7 @@ function createWxLoginReminderService(deps = {}) {
    * 任何失败都静默放弃（信号缺失只会少发提醒，fail closed），不影响
    * 踢下线/接管主流程。不推进代次、不重置计划、不触发任何外发。
    */
-  function noteOtherTerminalLogin(accountId) {
+  function noteOtherTerminalLogin(accountId, options = {}) {
     const key = String(accountId || '');
     if (!key || !SAFE_KEY_RE.test(key)) return Promise.resolve(false);
     const account = findAccount(key);
@@ -634,20 +634,25 @@ function createWxLoginReminderService(deps = {}) {
     const wxid = String(account.wxid || '');
     // 缺原生微信身份（wxid 为空）的账号没有可绑定的进场参考，不记录。
     if (!owner || !wxid) return Promise.resolve(false);
-    const at = now();
+    const at = options.observedAt === undefined ? now() : Number(options.observedAt);
+    if (!Number.isSafeInteger(at) || at < 0 || at > now()) return Promise.resolve(false);
+    const expectedCredential = options.expectedCredentialGeneration;
+    if (expectedCredential !== undefined && account.credentialGeneration !== expectedCredential) return Promise.resolve(false);
     return withRegistry(() => {
       const data = loadRegistry();
-      if (registryBlocked) return false;
+      if (registryBlocked) { if (options.requireDurable) throw new Error('REGISTRY_UNAVAILABLE'); return false; }
       const liveAccount = findAccount(key);
       if (!liveAccount || String(liveAccount.platform || '') !== 'wx') return false;
       if (String(liveAccount.username || '').trim() !== owner
         || String(liveAccount.wxid || '') !== wxid) return false;
+      if (expectedCredential !== undefined && liveAccount.credentialGeneration !== expectedCredential) return false;
       const previous = data.otherTerminalLogins[key];
       if (previous && Number(previous.at) > at) return false; // 迟到旧信号不得回拨最新值
       const otherTerminalLogins = { ...data.otherTerminalLogins, [key]: { at, owner, wxid } };
       try {
         writeRegistryFilePrivate(registryFile(), { ...data, otherTerminalLogins });
-      } catch {
+      } catch (error) {
+        if (options.requireDurable) throw error;
         return false; // 写失败：不更新内存态，信号缺失宁可少发
       }
       registryState = { ...data, otherTerminalLogins };

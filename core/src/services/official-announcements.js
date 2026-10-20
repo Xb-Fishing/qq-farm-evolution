@@ -1,3 +1,11 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchAnnouncements = require('./business-state').wrapBusinessFunction('services/official-announcements.js:fetchAnnouncements', fetchAnnouncements);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getOfficialAnnouncements = require('./business-state').wrapBusinessFunction('services/official-announcements.js:getOfficialAnnouncements', getOfficialAnnouncements);
+}
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -129,3 +137,14 @@ async function getOfficialAnnouncements() {
 }
 
 module.exports = { getOfficialAnnouncements };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/official-announcements.js', () => ({ cached, cachedUntil, failedUntil, lastError }), value => {
+      cached = value.cached;
+      cachedUntil = value.cachedUntil;
+      failedUntil = value.failedUntil;
+      lastError = value.lastError;
+  }, { idle: () => !inFlight, });
+}

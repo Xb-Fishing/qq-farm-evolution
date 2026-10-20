@@ -1,3 +1,25 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  plant2x2Seed = require('./business-state').wrapBusinessFunction('services/planting-service.js:plant2x2Seed', plant2x2Seed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  plantPrioritized2x2Crops = require('./business-state').wrapBusinessFunction('services/planting-service.js:plantPrioritized2x2Crops', plantPrioritized2x2Crops);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  plantSeeds = require('./business-state').wrapBusinessFunction('services/planting-service.js:plantSeeds', plantSeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  plantFromBagSeeds = require('./business-state').wrapBusinessFunction('services/planting-service.js:plantFromBagSeeds', plantFromBagSeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  findBestSeed = require('./business-state').wrapBusinessFunction('services/planting-service.js:findBestSeed', findBestSeed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  findBestSeedFromLocal = require('./business-state').wrapBusinessFunction('services/planting-service.js:findBestSeedFromLocal', findBestSeedFromLocal);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getAvailableSeeds = require('./business-state').wrapBusinessFunction('services/planting-service.js:getAvailableSeeds', getAvailableSeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoPlantEmptyLands = require('./business-state').wrapBusinessFunction('services/planting-service.js:autoPlantEmptyLands', autoPlantEmptyLands);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  plantFromShop = require('./business-state').wrapBusinessFunction('services/planting-service.js:plantFromShop', plantFromShop);
+}
 const { sendMsgAsync, getUserState, getWsErrorState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum, toLong, toTimeSec, getServerTimeSec, log, logWarn } = require('../utils/utils');
@@ -1165,8 +1187,10 @@ async function plantFromShop(landIds, userState, overrideStrategy, accountId = g
       }
       // 更新金币（扣除花费）
       if (buyResult.cost_items) {
-        for (const costItem of buyResult.cost_items) {
-          userState.gold -= toNum(costItem.count);
+        if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+          require('../utils/network').correctSessionWallet('seedCost', { amounts: buyResult.cost_items.map(item => toNum(item.count)) });
+        } else {
+          for (const costItem of buyResult.cost_items) userState.gold -= toNum(costItem.count);
         }
       }
       const boughtName = getPlantNameBySeedId(finalSeedId);
@@ -1229,3 +1253,15 @@ module.exports = {
   autoPlantEmptyLands,
   plantFromShop
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/planting-service.js', () => ({ reserved2x2GroupKeys, last2x2WaitingSignature, waiting2x2Deadlines, released2x2Keys, failed2x2Retries }), value => {
+      reserved2x2GroupKeys = value.reserved2x2GroupKeys;
+      last2x2WaitingSignature = value.last2x2WaitingSignature;
+      waiting2x2Deadlines = value.waiting2x2Deadlines;
+      released2x2Keys = value.released2x2Keys;
+      restoreContainer(failed2x2Retries, value.failed2x2Retries);
+  }, { });
+}

@@ -97,6 +97,9 @@ const SPECIAL_ENV = 'a"b $d \\e 空格 ;分号 $(echo hi) `tick`';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const shq = value => `'${String(value).replace(/'/g, `'\\''`)}'`;
 const tmux = args => execFileSync('tmux', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+// Explicit fixture shells retain real job control without running the owner's
+// login/profile hooks. Existing tmux servers otherwise ignore -f /dev/null.
+
 
 const BOT_SCRIPT = `
 const http = require('node:http');
@@ -194,7 +197,9 @@ function buildFixture(t, { helperSource = HELPER_CODE } = {}) {
   const preflight = path.resolve(root, 'core/src/services/wx-update-preflight.js');
   assert.equal(preflight.startsWith(root + path.sep), true);
   fs.mkdirSync(path.dirname(preflight), { recursive: true });
-  fs.copyFileSync(path.join(__dirname, '../src/services/wx-update-preflight.js'), preflight);
+  // Resolve new preflight dependencies from the real candidate. The fixture
+  // source remains isolated and every shim target is read-only.
+  fs.writeFileSync(preflight, `module.exports=require(${JSON.stringify(path.join(__dirname, '../src/services/wx-update-preflight.js'))});\n`);
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ name: 'web', private: true, scripts: { build: 'node build.cjs' } }));
   fs.writeFileSync(path.join(root, 'web/build.cjs'),
     "const fs=require('fs');let out='dist';for(let i=2;i<process.argv.length;i++){if(process.argv[i]==='--outDir')out=process.argv[i+1];}"
@@ -209,7 +214,7 @@ function buildFixture(t, { helperSource = HELPER_CODE } = {}) {
   git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'add', '.']);
   git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'commit', '-qm', 'fixture']);
   const head = git(['rev-parse', 'HEAD']);
-  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', session, '-c', root, '-x', '200', '-y', '50']);
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', session, '-c', root, '-x', '200', '-y', '50', '/bin/bash', '--noprofile', '--norc']);
   // 只清理本 fixture 自己创建的会话；默认 tmux server 上其他会话（farm 等）绝不触碰。
   t.after(() => { try { tmux(['kill-session', '-t', session]); } catch {} });
   return {
@@ -345,7 +350,7 @@ test('真实 tmux pane 中连续两次应用：进程树保持原 pane、回执�
   tmux(['send-keys', '-t', f.target, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(bgPidFile)} &`]);
   tmux(['send-keys', '-t', f.target, 'Enter']);
   const otherSession = `${f.session}-other`;
-  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', otherSession, '-c', f.root, '-x', '80', '-y', '24']);
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', otherSession, '-c', f.root, '-x', '80', '-y', '24', '/bin/bash', '--noprofile', '--norc']);
   t.after(() => { try { tmux(['kill-session', '-t', otherSession]); } catch {} });
   const otherPidFile = path.join(f.dataDir, 'other-pane.pid');
   tmux(['send-keys', '-t', `${otherSession}:0.0`, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(otherPidFile)}`]);
@@ -554,7 +559,7 @@ function buildTargetFixture(t) {
   // 脏原库上运行——这正是 Stage C 要保护的真实形态）。
   fs.writeFileSync(path.join(root, 'core/src/example.js'), 'module.exports = 2; // dirty hold\n');
   fs.writeFileSync(path.join(root, 'core/src/untracked-hold.js'), 'module.exports = "untracked";\n');
-  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', session, '-c', root, '-x', '200', '-y', '50']);
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', session, '-c', root, '-x', '200', '-y', '50', '/bin/bash', '--noprofile', '--norc']);
   t.after(() => { try { tmux(['kill-session', '-t', session]); } catch {} });
   return {
     root, dataDir, session, target: `${session}:0.0`, git,
@@ -617,7 +622,7 @@ test('目标根切换 e2e：真实远端+任务/运行时区、正式脚本形�
   tmux(['send-keys', '-t', f.target, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(bgPidFile)} &`]);
   tmux(['send-keys', '-t', f.target, 'Enter']);
   const otherSession = `${f.session}-other`;
-  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', otherSession, '-c', f.root, '-x', '80', '-y', '24']);
+  tmux(['-f', '/dev/null', 'new-session', '-d', '-s', otherSession, '-c', f.root, '-x', '80', '-y', '24', '/bin/bash', '--noprofile', '--norc']);
   t.after(() => { try { tmux(['kill-session', '-t', otherSession]); } catch {} });
   const otherPidFile = path.join(f.dataDir, 'other-pane.pid');
   tmux(['send-keys', '-t', `${otherSession}:0.0`, '-l', `${shq(process.execPath)} -e ${shq(markerScript)} ${shq(otherPidFile)}`]);

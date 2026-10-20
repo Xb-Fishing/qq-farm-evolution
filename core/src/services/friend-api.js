@@ -1,3 +1,33 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  syncKnownFriendGidsFromRecentVisitorsOnce = require('./business-state').wrapBusinessFunction('services/friend-api.js:syncKnownFriendGidsFromRecentVisitorsOnce', syncKnownFriendGidsFromRecentVisitorsOnce);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchQqFriendsByKnownGids = require('./business-state').wrapBusinessFunction('services/friend-api.js:fetchQqFriendsByKnownGids', fetchQqFriendsByKnownGids);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchQqFriendsByLegacyMethod = require('./business-state').wrapBusinessFunction('services/friend-api.js:fetchQqFriendsByLegacyMethod', fetchQqFriendsByLegacyMethod);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getAllFriends = require('./business-state').wrapBusinessFunction('services/friend-api.js:getAllFriends', getAllFriends);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getAllFriendsObserved = require('./business-state').wrapBusinessFunction('services/friend-api.js:getAllFriendsObserved', getAllFriendsObserved);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getApplications = require('./business-state').wrapBusinessFunction('services/friend-api.js:getApplications', getApplications);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  acceptFriends = require('./business-state').wrapBusinessFunction('services/friend-api.js:acceptFriends', acceptFriends);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  delFriend = require('./business-state').wrapBusinessFunction('services/friend-api.js:delFriend', delFriend);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  batchGetBasicInfo = require('./business-state').wrapBusinessFunction('services/friend-api.js:batchGetBasicInfo', batchGetBasicInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  briefGetBasicInfo = require('./business-state').wrapBusinessFunction('services/friend-api.js:briefGetBasicInfo', briefGetBasicInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  enterFriendFarm = require('./business-state').wrapBusinessFunction('services/friend-api.js:enterFriendFarm', enterFriendFarm);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  leaveFriendFarm = require('./business-state').wrapBusinessFunction('services/friend-api.js:leaveFriendFarm', leaveFriendFarm);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkCanOperateRemote = require('./business-state').wrapBusinessFunction('services/friend-api.js:checkCanOperateRemote', checkCanOperateRemote);
+}
 const protobuf = require('protobufjs/minimal');
 const { parentPort } = require('node:worker_threads');
 const { CONFIG } = require('../config/config');
@@ -1102,3 +1132,17 @@ module.exports = {
   extractVisitEnterBriefDogInfo,
   clearAllInvalidKnownFriendGidCooldown,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-api.js', () => ({ hasInitializedFromVisitors, invalidKnownFriendGidCooldownUntil, rosterSnapshot, rosterReqSeq, latestSuccessfulSeq, precheckFailureSignatures, precheckFailureLogCount }), value => {
+      hasInitializedFromVisitors = value.hasInitializedFromVisitors;
+      restoreContainer(invalidKnownFriendGidCooldownUntil, value.invalidKnownFriendGidCooldownUntil);
+      rosterSnapshot = value.rosterSnapshot;
+      rosterReqSeq = value.rosterReqSeq;
+      latestSuccessfulSeq = value.latestSuccessfulSeq;
+      restoreContainer(precheckFailureSignatures, value.precheckFailureSignatures);
+      precheckFailureLogCount = value.precheckFailureLogCount;
+  }, { });
+}

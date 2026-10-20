@@ -71,6 +71,10 @@ function createWorkerManager(deps) {
 
     /** 是否支持 Thread 模式（非 pkg 打包 + Worker 可用） */
     const threadMode = runtimeMode === 'thread' && !processRef.pkg && typeof WorkerThread === 'function';
+    const persistentMode = runtimeMode === 'persistent' && !processRef.pkg;
+    const dataDir = persistentMode ? require('../config/runtime-paths').getDataDir() : '';
+    const sourceRoot = persistentMode ? require('node:path').resolve(require('node:path').dirname(mainEntryPath), '..') : '';
+    const sessionStarts = new Map();
 
     function cleanText(value) {
         return String(value || '').trim();
@@ -175,7 +179,12 @@ function createWorkerManager(deps) {
     /**
      * 根据运行模式创建 Worker
      */
-    function createWorker(account) {
+    function createWorker(account, startOptions = {}) {
+        if (persistentMode) return require('./session-worker-proxy').createSessionWorkerProxy({
+            dataDir, account, sourceRoot, adoptOnly: startOptions.adoptOnly === true,
+            logDir: processRef.env.FARM_SESSION_LOG_DIR,
+            onLifecycle: event => handleSessionLifecycle(account.id, event),
+        });
         if (threadMode) return createThreadWorker(account);
         return createForkWorker(account);
     }
@@ -183,13 +192,13 @@ function createWorkerManager(deps) {
     /**
      * 启动账号 Worker
      */
-    function startWorker(account) {
+    function startWorker(account, startOptions = {}) {
         if (!account || !account.id) return false;
         // 全程使用 canonical latest：restartWorker 闭包捕获的是排队重启时的
         // 快照，两轮扫码并发时旧快照会把上一轮 Code/身份元数据发给新 Worker。
         // 持久层没有该账号时保留传入快照兜底（等价于旧行为）。
         const data = typeof getAccounts === 'function' ? getAccounts() : {};
-        const latest = (Array.isArray(data.accounts) ? data.accounts : [])
+        let latest = (Array.isArray(data.accounts) ? data.accounts : [])
             .find(item => String(item.id) === String(account.id)) || account;
         if (latest.autoLogin === false) {
             log('系统', `账号 ${latest.name || account.id} 已设为不登录，跳过启动`, {
@@ -199,6 +208,7 @@ function createWorkerManager(deps) {
             return false;
         }
         if (workers[latest.id]) return false;
+        if (persistentMode) latest = deps.store.ensureAccountSessionMetadata(latest.id) || latest;
 
         log('系统', `正在启动账号: ${  latest.name}`, {
             accountId: String(latest.id),
@@ -207,7 +217,7 @@ function createWorkerManager(deps) {
 
         let proc = null;
         try {
-            proc = createWorker(latest);
+            proc = createWorker(latest, startOptions);
         } catch (err) {
             const errorMsg = err && err.message ? err.message : String(err || 'unknown error');
             log('错误', `账号 ${  latest.name  } 启动失败: ${  errorMsg}`, {
@@ -229,6 +239,8 @@ function createWorkerManager(deps) {
             name: latest.name,
             username: latest.username || '',
             platform: latest.platform || 'qq',
+            credentialGeneration: latest.credentialGeneration || '',
+            sessionGeneration: latest.sessionGeneration || '',
             gid: latest.gid || '',
             openId: latest.openId || latest.open_id || '',
             qq: latest.qq || latest.uin || '',
@@ -240,6 +252,7 @@ function createWorkerManager(deps) {
             offlineReminderTriggered: false,
             autoDeleteTriggered: false,
             wsError: null,
+            sessionFacts: null,
             lastPongAt: Date.now()
         };
 
@@ -259,7 +272,15 @@ function createWorkerManager(deps) {
         proc.on('message', (msg) => {
             const current = workers[latest.id];
             if (!current || current.process !== proc) return;
+            current.sessionFacts = proc.sessionFacts || null;
             handleWorkerMessage(latest.id, msg);
+        });
+
+        if (proc.persistentSession) proc.on('session_unknown', () => {
+            const current = workers[latest.id];
+            if (current?.process !== proc) return;
+            current.sessionFacts = null;
+            current.status = { ...(current.status || {}), connection: { connected: undefined, state: 'unknown' } };
         });
 
         // 监听 Worker 错误
@@ -282,7 +303,7 @@ function createWorkerManager(deps) {
                 }, signal=${  signal || 'none'  })`, {
                 accountId: String(latest.id),
                 accountName: displayName,
-                runtimeMode: threadMode ? 'thread' : 'fork'
+                runtimeMode: persistentMode ? 'persistent' : threadMode ? 'thread' : 'fork'
             });
 
             // force_kill/restart_fallback 按账号命名：只有本代次还持有
@@ -307,6 +328,7 @@ function createWorkerManager(deps) {
         // 因此必须由新 Worker 生命周期重新建立，避免重启一次后保活永久消失。
         if (typeof scheduleAccountRefresh === 'function') scheduleAccountRefresh(latest.id);
 
+        if (persistentMode) return proc.ready.then(() => true, () => false);
         return true;
     }
 
@@ -314,6 +336,7 @@ function createWorkerManager(deps) {
      * 停止账号 Worker
      */
     function stopWorker(accountId) {
+        if (persistentMode) return stopPersistentSession(accountId);
         const wrk = workers[accountId];
         if (!wrk) return;
 
@@ -349,6 +372,11 @@ function createWorkerManager(deps) {
     function restartWorker(account) {
         if (!account) return;
         const accountId = account.id;
+        if (persistentMode) return (async () => {
+            await stopPersistentSession(accountId);
+            const latest = findAccount(accountId);
+            return latest ? await startWorker(latest) : false;
+        })();
         const wrk = workers[accountId];
 
         // 如果未运行，直接启动
@@ -441,7 +469,7 @@ function createWorkerManager(deps) {
                 wrk.offlineReminderTriggered = false;
                 wrk.autoDeleteTriggered = false;
                 wrk.wsError = null;
-            } else if (!wrk.stopping) {
+            } else if (!wrk.stopping && (!wrk.process.persistentSession || msg.data?.connection?.connected === false)) {
                 const now = Date.now();
                 if (!wrk.disconnectedSince) wrk.disconnectedSince = now;
 
@@ -483,7 +511,7 @@ function createWorkerManager(deps) {
                     addAccountLog('offline_delete',
                         `账号 ${  wrk.name  } 持续离线 ${  offlineMinutes  } 分钟，已自动删除`,
                         accountId, wrk.name, { reason: 'offline_timeout', offlineMs: offlineDuration });
-                    stopWorker(accountId);
+                    stopWorkerForRecovery(accountId);
                     try {
                         if (typeof deleteAccount === 'function') deleteAccount(accountId);
                     } catch (err) {
@@ -543,7 +571,8 @@ function createWorkerManager(deps) {
         } else if (msg.type === 'account_kicked') {
             // 被踢下线
             const reason = msg.reason || '未知';
-            const sessionMs = wrk.startedAt ? Date.now() - wrk.startedAt : 0;
+            const actualStart = wrk.sessionFacts?.game?.firstLoginReadyAt || wrk.startedAt;
+            const sessionMs = actualStart ? Date.now() - actualStart : 0;
             log('系统', `账号 ${  wrk.name  } 被踢下线，已自动停止账号`, {
                 accountId: String(accountId),
                 accountName: wrk.name
@@ -557,9 +586,9 @@ function createWorkerManager(deps) {
             });
             addAccountLog('kickout_stop',
                 `账号 ${  wrk.name  } 被踢下线，已自动停止`,
-                accountId, wrk.name, { reason });
+                accountId, wrk.name, { reason, sessionEvidence: msg.sessionEvidence });
 
-            stopWorker(accountId);
+            stopWorkerForRecovery(accountId);
             const scheduledTakeover = typeof scheduleKickoutRelogin === 'function'
                 && scheduleKickoutRelogin(accountId, `kickout:${reason}`, sessionMs);
             if (!scheduledTakeover && typeof scheduleAutoRelogin === 'function') {
@@ -582,7 +611,7 @@ function createWorkerManager(deps) {
                 `账号 ${  wrk.name  } 连接多次重试失败，已自动停止`,
                 accountId, wrk.name, { reason });
 
-            stopWorker(accountId);
+            stopWorkerForRecovery(accountId);
             if (typeof scheduleAutoRelogin === 'function') {
                 scheduleAutoRelogin(accountId, `ws_reconnect_failed:${reason}`);
             }
@@ -696,6 +725,120 @@ function createWorkerManager(deps) {
         return (data.accounts || []).find(account => String(account.id) === String(accountId));
     }
 
+    async function handleSessionLifecycle(accountId, event) {
+        const account = findAccount(accountId);
+        if (event.kind === 'gap') {
+            addAccountLog('session_event_gap', '连接事件记录存在缺口，已读取当前实际状态', accountId, account?.name || '');
+            return;
+        }
+        if (!account || event.accountId !== String(accountId)
+            || event.binding !== require('./session-registry').bindingIdentity(account)
+            || event.credentialGeneration !== account.credentialGeneration) return;
+        const wrk = workers[accountId];
+        if (typeof deps.onSessionLifecycle === 'function') await deps.onSessionLifecycle(accountId, event, wrk);
+        const latest = findAccount(accountId);
+        if (!latest || event.binding !== require('./session-registry').bindingIdentity(latest)
+            || event.credentialGeneration !== latest.credentialGeneration) return;
+        const current = workers[accountId];
+        if (current && (current.sessionFacts?.host?.hostId !== event.hostId
+            || current.sessionFacts?.game?.connectionEpoch !== event.connectionEpoch)) return;
+        if (event.kind === 'kickout' || event.kind === 'reconnect_failed' || (event.kind === 'ws_error' && event.code === 400)) {
+            const message = event.kind === 'kickout' ? { type: 'account_kicked', reason: event.reason || '未知' }
+                : event.kind === 'ws_error' ? { type: 'ws_error', code: 400, message: '' }
+                    : { type: 'ws_reconnect_failed', reason: '网络连接多次重试失败' };
+            message.sessionEvidence = event;
+            if (current) handleWorkerMessage(accountId, message);
+            else if (event.kind === 'kickout' || event.kind === 'reconnect_failed') {
+                const reason = event.kind === 'kickout' ? `kickout:${  event.reason || '未知'}` : 'ws_reconnect_failed:replayed';
+                addAccountLog(event.kind === 'kickout' ? 'kickout_stop' : 'ws_reconnect_failed',
+                    '已恢复管理停机期间的真实连接事件', accountId, account.name, { reason: event.reason, sessionEvidence: event });
+                const sessionMs = Math.max(0, event.observedAt - (event.firstLoginReadyAt || event.loginReadyAt || event.observedAt));
+                const scheduled = event.kind === 'kickout' && typeof scheduleKickoutRelogin === 'function'
+                    && scheduleKickoutRelogin(accountId, reason, sessionMs);
+                if (!scheduled) scheduleAutoRelogin?.(accountId, reason);
+            }
+        }
+    }
+
+    function stopWorkerForRecovery(accountId) {
+        const result = stopWorker(accountId);
+        if (result && typeof result.catch === 'function') result.catch(() => {
+            log('错误', '连接停止确认未完成，账号发送权限已撤销', { accountId: String(accountId) });
+        });
+    }
+
+    async function stopPersistentSession(accountId) {
+        const account = findAccount(accountId); const wrk = workers[accountId];
+        if (wrk) wrk.stopping = true;
+        stopAccountRefresh?.(accountId);
+        // Revoke the canonical fence synchronously, even without a proxy record.
+        if (account) deps.store.addOrUpdateAccount({ id: accountId }, { revokeSession: true });
+        try {
+            if (wrk?.process?.persistentSession) await wrk.process.kill();
+            else if (account) {
+                const found = await require('./session-registry').connectSession(dataDir, account);
+                if (found.state === 'present') {
+                    try { await found.client.call('revoke'); } finally { found.client.close(); }
+                } else if (found.state === 'unknown' || (found.state === 'stale'
+                    && require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime)))
+                    throw new Error('Existing account session could not be verified for stop');
+            }
+        } finally {
+            if (wrk) { settleWorkerRequests(wrk); if (workers[accountId] === wrk) delete workers[accountId]; }
+        }
+        return true;
+    }
+
+    async function tryAdoptAccountSession(accountOrId) {
+        if (!persistentMode) return { state: 'absent' };
+        const id = String(typeof accountOrId === 'object' ? accountOrId.id : accountOrId);
+        if (sessionStarts.has(id)) return sessionStarts.get(id);
+        const task = (async () => {
+            let account = findAccount(id);
+            if (!account || account.autoLogin === false) return { state: 'disabled' };
+            account = deps.store.ensureAccountSessionMetadata(id) || account;
+            const existing = workers[id];
+            if (existing?.process?.persistentSession) {
+                try { await existing.process.ready; let actual = await existing.process.refreshSession();
+                    if (actual.facts.game.terminal === true) { await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true }; }
+                    if (actual.facts.business?.ready !== true) actual = await existing.process.reloadBusiness();
+                    existing.sessionFacts = actual.facts;
+                    return { state: 'adopted', facts: actual.facts };
+                } catch {
+                    // Reauthenticate a lost management socket; never turn a
+                    // control failure into a transport stop or Code request.
+                    settleWorkerRequests(existing);
+                    await existing.process.detach().catch(() => {});
+                    if (workers[id] === existing) delete workers[id];
+                }
+            }
+            await require('./session-worker-proxy').replayLifecycle({ dataDir, account, onLifecycle: event => handleSessionLifecycle(id, event) });
+            const found = await require('./session-registry').connectSession(dataDir, account);
+            if (found.state === 'absent' || (found.state === 'stale'
+                && !require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime))) return { state: 'absent' };
+            if (found.state !== 'present') return { state: 'unknown' };
+            const actual = await found.client.call('status'); found.client.close();
+            if (actual.facts.game.terminal === true) {
+                await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true };
+            }
+            const started = await startWorker(account, { adoptOnly: true });
+            return started ? { state: 'adopted', facts: workers[id]?.process?.sessionFacts } : { state: 'unknown' };
+        })();
+        sessionStarts.set(id, task);
+        try { return await task; } catch { return { state: 'unknown' }; }
+        finally { if (sessionStarts.get(id) === task) sessionStarts.delete(id); }
+    }
+
+    async function detachAll() {
+        scheduler.clearAll();
+        for (const [id, wrk] of Object.entries(workers)) {
+            if (!wrk.process?.persistentSession) continue;
+            settleWorkerRequests(wrk);
+            await wrk.process.detach();
+            if (workers[id] === wrk) delete workers[id];
+        }
+    }
+
     scheduler.setIntervalTask('watchdog_tick', WATCHDOG_PING_MS, () => {
         const now = Date.now();
         for (const [accountId, wrk] of Object.entries(workers)) {
@@ -705,7 +848,7 @@ function createWorkerManager(deps) {
                     .filter(at => now - at < 60 * 60 * 1000);
                 if (history.length >= WATCHDOG_MAX_RESTARTS) {
                     wrk.stopping = true;
-                    stopWorker(accountId);
+                    if (!persistentMode) stopWorkerForRecovery(accountId);
                     log('错误', `账号 ${wrk.name} Worker 连续无响应，已停止自动重启`, {
                         accountId, accountName: wrk.name
                     });
@@ -720,7 +863,11 @@ function createWorkerManager(deps) {
                 log('错误', `账号 ${wrk.name} Worker 超过 90 秒无响应，正在自动重启`, {
                     accountId, accountName: wrk.name
                 });
-                if (account) restartWorker(account);
+                if (account && !persistentMode) restartWorker(account);
+                else if (account) {
+                    wrk.lastPongAt = now;
+                    tryAdoptAccountSession(account).catch(() => {});
+                }
                 continue;
             }
             try { wrk.process.send({ type: 'watchdog_ping', at: now }); } catch { }
@@ -771,7 +918,7 @@ function createWorkerManager(deps) {
         startWorker,
         stopWorker,
         restartWorker,
-        callWorkerApi
+        callWorkerApi, tryAdoptAccountSession, detachAll
     };
 }
 

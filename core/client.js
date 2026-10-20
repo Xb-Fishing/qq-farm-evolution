@@ -60,6 +60,10 @@ async function bootstrap() {
 
     const runtimeEngine = createRuntimeEngine({
         processRef: process,
+        runtimeMode: process.env.FARM_RUNTIME_MODE || require('./src/runtime/session-contract').defaultSessionMode({
+            runtimeRoot: require('node:path').resolve(__dirname, '..'),
+            dataDir: require('./src/config/runtime-paths').getDataDir(), packaged: Boolean(process.pkg),
+        }),
         mainEntryPath: __filename,
         startAdminServer,
         onStatusSync: (accountId, status) => {
@@ -75,6 +79,16 @@ async function bootstrap() {
             emitRealtimeAccountLog(entry);
         },
     });
+
+    let shuttingDown = false;
+    const detach = async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        const timeout = setTimeout(() => process.exit(1), 10000);
+        try { await runtimeEngine.detachAll(); clearTimeout(timeout); process.exit(0); }
+        catch { process.exit(1); }
+    };
+    process.on('SIGTERM', detach); process.on('SIGINT', detach);
 
     runtimeEngine.start({
         startAdminServer: true,

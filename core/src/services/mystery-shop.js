@@ -1,3 +1,17 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getActiveMysteryShop = require('./business-state').wrapBusinessFunction('services/mystery-shop.js:getActiveMysteryShop', getActiveMysteryShop);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getMysteryShopForPanel = require('./business-state').wrapBusinessFunction('services/mystery-shop.js:getMysteryShopForPanel', getMysteryShopForPanel);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  buyMysteryShopGoods = require('./business-state').wrapBusinessFunction('services/mystery-shop.js:buyMysteryShopGoods', buyMysteryShopGoods);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  abandonMysteryShop = require('./business-state').wrapBusinessFunction('services/mystery-shop.js:abandonMysteryShop', abandonMysteryShop);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndAutoBuyMysteryShop = require('./business-state').wrapBusinessFunction('services/mystery-shop.js:checkAndAutoBuyMysteryShop', checkAndAutoBuyMysteryShop);
+}
 const { getItemById, getItemImageById } = require('../config/gameConfig');
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
@@ -190,3 +204,13 @@ module.exports = {
   isCurrencyAllowed,
   normalizeNPC,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/mystery-shop.js', () => ({ panelMysteryCache, panelMysteryCacheAt, panelMysteryRetryAfter }), value => {
+      panelMysteryCache = value.panelMysteryCache;
+      panelMysteryCacheAt = value.panelMysteryCacheAt;
+      panelMysteryRetryAfter = value.panelMysteryRetryAfter;
+  }, { idle: () => !panelMysteryInFlight, });
+}

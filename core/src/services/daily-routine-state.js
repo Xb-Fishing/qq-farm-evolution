@@ -78,3 +78,11 @@ module.exports = {
   markDailyRoutineDone,
   resetMemoryForTest,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/daily-routine-state.js', () => ({ stateByAccount }), value => {
+      restoreContainer(stateByAccount, value.stateByAccount);
+  }, { });
+}

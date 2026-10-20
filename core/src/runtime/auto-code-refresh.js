@@ -270,7 +270,16 @@ function createAutoCodeRefreshService(deps) {
     const generation = keepaliveGeneration.get(key) || 0;
     const stillCurrent = () => (keepaliveGeneration.get(key) || 0) === generation;
     let account = findAccount(accountId);
-    if (!account || isCredentialBlocked(accountId)) return false;
+    if (!account) return false;
+    const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
+    if (typeof controls.tryAdoptAccountSession === 'function') {
+      const adoption = await controls.tryAdoptAccountSession(account);
+      if (!stillCurrent()) return false;
+      if (adoption.state === 'adopted'
+        && (!account.credentialGeneration || adoption.facts?.game?.loginCredentialGeneration === account.credentialGeneration)) return true;
+      if (!['adopted', 'absent'].includes(adoption.state)) return false;
+    }
+    if (isCredentialBlocked(accountId)) return false;
     const manualReason = reason === 'manual_start' || reason === 'manual_relogin';
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account) && !manualReason) {
       return false;
@@ -318,7 +327,10 @@ function createAutoCodeRefreshService(deps) {
       const nextAccount = findAccount(accountId) || { ...account, code };
 
       const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
-      if (typeof controls.restartWorker === 'function') controls.restartWorker(nextAccount);
+      if (typeof controls.restartWorker === 'function') {
+        const started = await controls.restartWorker(nextAccount);
+        if (started === false) throw new Error('账号启动被拒绝');
+      }
 
       addAccountLog('auto_code_refresh', `自动刷新 Code 成功，已重启账号: ${  account.name}`,
         account.id, account.name, { reason });

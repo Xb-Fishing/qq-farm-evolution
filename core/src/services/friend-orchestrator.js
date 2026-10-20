@@ -1,3 +1,31 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  dispatchDueCacheStealTargets = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:dispatchDueCacheStealTargets', dispatchDueCacheStealTargets);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  bootstrapFriendDogInfoCacheIfNeeded = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:bootstrapFriendDogInfoCacheIfNeeded', bootstrapFriendDogInfoCacheIfNeeded);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkFriends = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:checkFriends', checkFriends);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  friendCheckLoop = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:friendCheckLoop', friendCheckLoop);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndAcceptApplications = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:checkAndAcceptApplications', checkAndAcceptApplications);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  acceptFriendsWithRetry = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:acceptFriendsWithRetry', acceptFriendsWithRetry);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runBadOnceOnStartup = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:runBadOnceOnStartup', runBadOnceOnStartup);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  syncFriendsFromGids = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:syncFriendsFromGids', syncFriendsFromGids);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  pullInteractActivity = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:pullInteractActivity', pullInteractActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  refreshFriendRipeSchedule = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:refreshFriendRipeSchedule', refreshFriendRipeSchedule);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  presencePollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:presencePollTick', presencePollTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  watchlistPollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:watchlistPollTick', watchlistPollTick);
+}
 const { CONFIG } = require('../config/config');
 const {
   isAutomationOn,
@@ -1433,7 +1461,7 @@ function onFriendApplicationReceived(applications) {
   if (toAccept.length === 0) return;
 
   const gids = toAccept.map(app => toNum(app.gid));
-  acceptFriendsWithRetry(gids);
+  return acceptFriendsWithRetry(gids);
 }
 
 async function checkAndAcceptApplications() {
@@ -2376,3 +2404,50 @@ module.exports = {
   getFriendReadStateForTests,
   resetFriendReadStateForTests,
 };
+
+function bindFriendSessionState() {
+  if (friendLoopRunning) {
+    setOperationLimitsCallback(updateOperationLimits);
+    networkEvents.on('friendApplicationReceived', onFriendApplicationReceived);
+  }
+  friendScheduler.bindTimeoutTask('friend_check_loop', friendCheckLoop);
+  friendScheduler.bindTimeoutTask('friend_check_bootstrap_applications', checkAndAcceptApplications);
+  friendScheduler.bindTimeoutTask('watchlist_poll', watchlistPollTick);
+  friendScheduler.bindTimeoutTask('presence_poll', presencePollTick);
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-orchestrator.js', () => ({ isCheckingFriends, watchlistVisitInFlight, friendLoopRunning, externalSchedulerMode, badExecutedOnStartup, consecutiveBadFailureCount, dogInfoBootstrapAttempted, dogInfoBootstrapReadyAt, nextFriendStealDueAtMs, friendSummaryDueByGid, friendReadLifecycleSeq, summaryReadGate, summaryDueActionCache, nextWatchlistStealDueAtMs, lastWatchlistKey, watchlistWindowAnnounced, watchlistPollNextAt, watchlistPollRipeAt, watchlistNames, watchlistPollLoopArmed, lastRipeRefreshAt, watchlistPauseRows, watchlistEntryEpochs, watchlistConsumedOpSeq, watchlistStateSeeded, lastWatchlistStatePush, lastInteractActivityAt, presencePollArmed, presenceBaselineLogged }), value => {
+      isCheckingFriends = value.isCheckingFriends;
+      watchlistVisitInFlight = value.watchlistVisitInFlight;
+      friendLoopRunning = value.friendLoopRunning;
+      externalSchedulerMode = value.externalSchedulerMode;
+      badExecutedOnStartup = value.badExecutedOnStartup;
+      consecutiveBadFailureCount = value.consecutiveBadFailureCount;
+      dogInfoBootstrapAttempted = value.dogInfoBootstrapAttempted;
+      dogInfoBootstrapReadyAt = value.dogInfoBootstrapReadyAt;
+      nextFriendStealDueAtMs = value.nextFriendStealDueAtMs;
+      restoreContainer(friendSummaryDueByGid, value.friendSummaryDueByGid);
+      friendReadLifecycleSeq = value.friendReadLifecycleSeq;
+      restoreContainer(summaryReadGate, value.summaryReadGate);
+      restoreContainer(summaryDueActionCache, value.summaryDueActionCache);
+      nextWatchlistStealDueAtMs = value.nextWatchlistStealDueAtMs;
+      lastWatchlistKey = value.lastWatchlistKey;
+      restoreContainer(watchlistWindowAnnounced, value.watchlistWindowAnnounced);
+      restoreContainer(watchlistPollNextAt, value.watchlistPollNextAt);
+      restoreContainer(watchlistPollRipeAt, value.watchlistPollRipeAt);
+      restoreContainer(watchlistNames, value.watchlistNames);
+      watchlistPollLoopArmed = value.watchlistPollLoopArmed;
+      lastRipeRefreshAt = value.lastRipeRefreshAt;
+      restoreContainer(watchlistPauseRows, value.watchlistPauseRows);
+      restoreContainer(watchlistEntryEpochs, value.watchlistEntryEpochs);
+      watchlistConsumedOpSeq = value.watchlistConsumedOpSeq;
+      watchlistStateSeeded = value.watchlistStateSeeded;
+      lastWatchlistStatePush = value.lastWatchlistStatePush;
+      lastInteractActivityAt = value.lastInteractActivityAt;
+      presencePollArmed = value.presencePollArmed;
+      presenceBaselineLogged = value.presenceBaselineLogged;
+  }, { idle: () => !isCheckingFriends && !watchlistVisitInFlight && !checkingPlaceholder, bind: bindFriendSessionState, });
+}

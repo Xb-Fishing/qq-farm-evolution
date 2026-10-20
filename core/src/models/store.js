@@ -1,6 +1,7 @@
 const process = require('node:process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { getDataFile, ensureDataDir } = require('../config/runtime-paths');
 const { readTextFile, readJsonFile, writeJsonFileAtomic } = require('../services/json-db');
 const { parsePauseUntilMs, normalizePauseUntil } = require('../utils/pause-until');
@@ -1720,7 +1721,26 @@ function normalizeAccountsData(data) {
     return { accounts, nextId };
 }
 
-function addOrUpdateAccount(account) {
+function validGeneration(value) {
+    return typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+}
+
+function ensureAccountSessionMetadata(accountId) {
+    const data = loadAccounts(); const account = data.accounts.find(item => String(item.id) === String(accountId));
+    if (!account) return null;
+    let changed = false;
+    for (const key of ['credentialGeneration', 'sessionGeneration']) {
+        if (!validGeneration(account[key])) { account[key] = randomUUID(); changed = true; }
+    }
+    if (changed) saveAccounts(data);
+    return account;
+}
+
+function addOrUpdateAccount(account, options = {}) {
+    // Authorization identities are server-owned. Request bodies and imports
+    // cannot supply a live session's identity.
+    account = { ...account };
+    delete account.credentialGeneration; delete account.sessionGeneration;
     const data = normalizeAccountsData(loadAccounts());
     let accountId = '';
     let created = false;
@@ -1731,12 +1751,22 @@ function addOrUpdateAccount(account) {
         // 更新已有账号
         const idx = data.accounts.findIndex(a => a.id === account.id);
         if (idx >= 0) {
+            const previous = data.accounts[idx];
+            const rebound = ['username', 'platform', 'wxid'].some(key => account[key] !== undefined
+                && String(account[key] || '') !== String(previous[key] || ''));
+            const credentialGeneration = options.newAuthorization === true || rebound || !validGeneration(previous.credentialGeneration)
+                ? randomUUID() : previous.credentialGeneration;
+            // A same-subject scan may still be waiting for a new one-use Code.
+            // Keep its existing physical connection until the real switch.
+            const sessionGeneration = options.activateSession === true || options.revokeSession === true || rebound
+                || !validGeneration(previous.sessionGeneration) ? randomUUID() : previous.sessionGeneration;
             data.accounts[idx] = {
                 ...data.accounts[idx],
                 ...account,
                 name: account.name !== undefined ? account.name : data.accounts[idx].name,
                 ...(nextAvatar !== undefined ? { avatar: nextAvatar } : {}),
                 ...(nextOpenId !== undefined ? { openId: nextOpenId } : {}),
+                credentialGeneration, sessionGeneration,
                 updatedAt: Date.now()
             };
             accountId = String(data.accounts[idx].id || '');
@@ -1748,6 +1778,7 @@ function addOrUpdateAccount(account) {
         accountId = String(id);
         data.accounts.push({
             id: accountId,
+            credentialGeneration: randomUUID(), sessionGeneration: randomUUID(),
             name: account.name || `账号${  id}`,
             code: account.code || '',
             platform: account.platform || 'qq',
@@ -2206,6 +2237,7 @@ function setAntiResaleConfig(config) {
 // ==================== 模块导出 ====================
 
 module.exports = {
+    ensureAccountSessionMetadata,
     getConfigSnapshot,
     applyConfigSnapshot,
     getAutomation,

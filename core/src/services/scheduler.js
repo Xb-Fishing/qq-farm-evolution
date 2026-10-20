@@ -84,6 +84,9 @@ function createScheduler(namespace = 'default') {
   const ns = String(namespace || 'default');
   const store = ensureNamespaceStore(ns);
   const timers = store.timers;
+    if (require('./business-state').getBusinessGate()) {
+      return require('./session-scheduler').createSessionScheduler(ns, store, schedulerLogger);
+    }
 
   /** 清除单个任务 */
   function clearTask(taskName) {

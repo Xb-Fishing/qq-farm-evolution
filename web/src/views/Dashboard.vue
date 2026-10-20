@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/api'
 import AccountModal from '@/components/AccountModal.vue'
+import SessionRuntimeStatus from '@/components/SessionRuntimeStatus.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -1001,6 +1002,7 @@ useIntervalFn(updateCountdowns, 1000)
               {{ formatDuration(localUptime) }}
             </div>
           </div>
+          <SessionRuntimeStatus v-if="currentStatusReady" :runtime="status?.sessionRuntime" />
         </div>
       </div>
 

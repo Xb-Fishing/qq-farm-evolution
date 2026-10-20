@@ -1,3 +1,29 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  withSelfEchoTicket = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:withSelfEchoTicket', withSelfEchoTicket);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpWater = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpWater', helpWater);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpWeed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpWeed', helpWeed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpInsecticide = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpInsecticide', helpInsecticide);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  stealHarvest = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:stealHarvest', stealHarvest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putPlantItems = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putPlantItems', putPlantItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putPlantItemsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putPlantItemsDetailed', putPlantItemsDetailed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putInsects = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putInsects', putInsects);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putWeeds = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putWeeds', putWeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putInsectsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putInsectsDetailed', putInsectsDetailed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putWeedsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putWeedsDetailed', putWeedsDetailed);
+}
 const { toNum, log, sleep } = require('../utils/utils');
 const { getPlantByFruitId, getItemById } = require('../config/gameConfig');
 const { getUserState } = require('../utils/network');
@@ -571,3 +597,15 @@ module.exports = {
   putInsectsDetailed,
   putWeedsDetailed,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-operation-limits.js', () => ({ operationLimits, lastResetDate, canGetHelpExp, helpAutoDisabledByLimit, localBadOperationCount }), value => {
+      restoreContainer(operationLimits, value.operationLimits);
+      lastResetDate = value.lastResetDate;
+      canGetHelpExp = value.canGetHelpExp;
+      helpAutoDisabledByLimit = value.helpAutoDisabledByLimit;
+      localBadOperationCount = value.localBadOperationCount;
+  }, { });
+}

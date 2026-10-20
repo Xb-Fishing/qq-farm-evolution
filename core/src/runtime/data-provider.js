@@ -58,13 +58,15 @@ function createDataProvider(deps) {
     return {
         prepareWxRestart: deps.prepareWxRestart,
         validateWxRestart: deps.validateWxRestart,
+        cancelWxRestart: deps.cancelWxRestart,
         /** 获取账号运行状态 */
         getStatus: (ref) => {
             const id = resolveAccountId(ref);
             if (!id) return buildDefaultStatus('');
 
             const worker = workers[id];
-            if (!worker || !worker.status) return buildDefaultStatus(id);
+            if (!worker || !worker.status) return worker?.process?.persistentSession
+                ? { ...buildDefaultStatus(id), connection: { connected: undefined, state: 'unknown' } } : buildDefaultStatus(id);
 
             return {
                 ...buildDefaultStatus(id),
@@ -380,20 +382,25 @@ function createDataProvider(deps) {
             store.addOrUpdateAccount({ id: account.id, autoLogin: true });
             if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
             const latest = findAccount(id || ref) || account;
+            if (typeof deps.tryAdoptAccountSession === 'function') {
+                const adoption = await deps.tryAdoptAccountSession(latest);
+                if (adoption.state === 'adopted'
+                    && (!latest.credentialGeneration || adoption.facts?.game?.loginCredentialGeneration === latest.credentialGeneration)) return true;
+                if (!['adopted', 'absent'].includes(adoption.state)) return false;
+            }
             if (latest.platform === 'wx' && latest.loginBuffer && typeof refreshAccountCode === 'function') {
                 const refreshed = await refreshAccountCode(latest.id, 'manual_start');
                 if (refreshed) return true;
             }
-            startWorker(latest);
-            return true;
+            return await startWorker(latest);
         },
 
         stopAccount: (ref) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account) return false;
-            if (id) stopWorker(id);
-            return true;
+            const result = id ? stopWorker(id) : null;
+            return result && typeof result.then === 'function' ? result.then(() => true) : true;
         },
 
         holdAccountOffline: (ref) => {
@@ -402,8 +409,8 @@ function createDataProvider(deps) {
             if (!account) return false;
             store.addOrUpdateAccount({ id: account.id, autoLogin: false });
             if (typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(account.id);
-            if (id) stopWorker(id);
-            return true;
+            const result = id ? stopWorker(id) : null;
+            return result && typeof result.then === 'function' ? result.then(() => true) : true;
         },
 
         restartAccount: (ref) => {

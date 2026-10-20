@@ -306,7 +306,7 @@ async function completeOwnedWxRescan({ accountId, sessionId, openid, owner, isCu
         avatar: grant.avatar || account.avatar || '',
         autoLogin: true,
         wxDefaultsApplied: true,
-      });
+      }, { newAuthorization: true });
       if (typeof runtimeProvider.invalidateAccountCredentialTasks === 'function') {
         runtimeProvider.invalidateAccountCredentialTasks(key);
       }

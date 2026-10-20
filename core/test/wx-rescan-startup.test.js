@@ -58,6 +58,8 @@ require.cache[workerManagerPath] = {
         restartWorker: (account) => { workerCalls.restart.push(mark(account)); return true; },
         stopWorker: (id) => { workerCalls.stop.push(String(id)); delete workers[String(id)]; },
         callWorkerApi: async () => { throw new Error('not running'); },
+        tryAdoptAccountSession: async () => ({ state: 'absent' }),
+        detachAll: async () => {},
       };
     },
   },

@@ -166,3 +166,13 @@ module.exports = {
   markIdleQuietUntil,
   isIdleQuiet,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('../services/business-state');
+  registerDataState('utils/behavior.js', () => ({ stealDueAt, ownHarvestDueAt, idleQuietUntil }), value => {
+      stealDueAt = value.stealDueAt;
+      ownHarvestDueAt = value.ownHarvestDueAt;
+      idleQuietUntil = value.idleQuietUntil;
+  }, { });
+}

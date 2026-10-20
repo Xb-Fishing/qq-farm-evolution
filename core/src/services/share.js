@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkCanShare = require('./business-state').wrapBusinessFunction('services/share.js:checkCanShare', checkCanShare);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  reportShare = require('./business-state').wrapBusinessFunction('services/share.js:reportShare', reportShare);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimShareReward = require('./business-state').wrapBusinessFunction('services/share.js:claimShareReward', claimShareReward);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  performDailyShare = require('./business-state').wrapBusinessFunction('services/share.js:performDailyShare', performDailyShare);
+}
 /**
  * 分享服务 - 每日自动完成分享并领取奖励
  *
@@ -172,3 +184,13 @@ module.exports = {
     lastClaimAt,
   }),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/share.js', () => ({ doneDateKey, lastCheckAt, lastClaimAt }), value => {
+      doneDateKey = value.doneDateKey;
+      lastCheckAt = value.lastCheckAt;
+      lastClaimAt = value.lastClaimAt;
+  }, { });
+}

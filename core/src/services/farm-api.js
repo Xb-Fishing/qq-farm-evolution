@@ -1,6 +1,40 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  sendPlantRequest = require('./business-state').wrapBusinessFunction('services/farm-api.js:sendPlantRequest', sendPlantRequest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getAllLands = require('./business-state').wrapBusinessFunction('services/farm-api.js:getAllLands', getAllLands);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  harvest = require('./business-state').wrapBusinessFunction('services/farm-api.js:harvest', harvest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  waterLand = require('./business-state').wrapBusinessFunction('services/farm-api.js:waterLand', waterLand);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  farming = require('./business-state').wrapBusinessFunction('services/farm-api.js:farming', farming);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  weedOut = require('./business-state').wrapBusinessFunction('services/farm-api.js:weedOut', weedOut);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  insecticide = require('./business-state').wrapBusinessFunction('services/farm-api.js:insecticide', insecticide);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fertilize = require('./business-state').wrapBusinessFunction('services/farm-api.js:fertilize', fertilize);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  removePlant = require('./business-state').wrapBusinessFunction('services/farm-api.js:removePlant', removePlant);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  upgradeLand = require('./business-state').wrapBusinessFunction('services/farm-api.js:upgradeLand', upgradeLand);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  unlockLand = require('./business-state').wrapBusinessFunction('services/farm-api.js:unlockLand', unlockLand);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getShopProfiles = require('./business-state').wrapBusinessFunction('services/farm-api.js:getShopProfiles', getShopProfiles);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getSeedShopId = require('./business-state').wrapBusinessFunction('services/farm-api.js:getSeedShopId', getSeedShopId);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getShopInfo = require('./business-state').wrapBusinessFunction('services/farm-api.js:getShopInfo', getShopInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  buyGoods = require('./business-state').wrapBusinessFunction('services/farm-api.js:buyGoods', buyGoods);
+}
 const { sendMsgAsync, getUserState } = require('../utils/network');
 const { types, waitForProtoReady } = require('../utils/proto');
-const { toLong, sleep, log } = require('../utils/utils');
+const { toLong, sleep } = require('../utils/utils');
 
 /** 普通化肥 ID */
 const NORMAL_FERTILIZER_ID = 1011;

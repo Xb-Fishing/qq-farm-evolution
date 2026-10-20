@@ -60,6 +60,13 @@ function getStoreModule() {
 
 // ============ 事件发射器 (用于推送通知) ============
 const networkEvents = new EventEmitter();
+let sessionTransportHooks = null;
+function setSessionTransportHooks(hooks) { sessionTransportHooks = hooks; }
+function sessionAuthorityError(serviceName, methodName) {
+    if (!sessionTransportHooks?.assertSend) return null;
+    try { sessionTransportHooks.assertSend(serviceName, methodName); return null; }
+    catch (error) { error.isSessionAuthorityRejection = true; return error; }
+}
 
 // ============ 内部状态 ============
 let ws = null;
@@ -194,6 +201,10 @@ function logLoginSummary(loginTimeMs) {
 
 // 登录后从背包获取钻石、金豆豆数量
 async function fetchGoldBeanFromBag() {
+    if (sessionTransportHooks?.onInitialBag) {
+        try { sessionTransportHooks.onInitialBag(); } catch { /* Business failure cannot break the physical login callback. */ }
+        return;
+    }
     try {
         const warehouse = getWarehouseModule();
         const bagReply = await warehouse.getBag();
@@ -259,6 +270,8 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
         log('系统', '[WS] 连接未打开');
         return false;
     }
+    const authorityBeforeEncoding = sessionAuthorityError(serviceName, methodName);
+    if (authorityBeforeEncoding) { if (callback) callback(authorityBeforeEncoding); return false; }
     const pausedBeforeEncoding = businessPauseError(serviceName, methodName);
     if (pausedBeforeEncoding) {
         if (callback) callback(pausedBeforeEncoding);
@@ -267,6 +280,8 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
     const seq = clientSeq;
     clientSeq += 1;
     const encoded = await encodeMsg(serviceName, methodName, bodyBytes, seq);
+    const authorityBeforeSend = sessionAuthorityError(serviceName, methodName);
+    if (authorityBeforeSend) { if (callback) callback(authorityBeforeSend); return false; }
     // Encoding awaits encryption; a pause may begin while this request is queued.
     const pausedBeforeSend = businessPauseError(serviceName, methodName);
     if (pausedBeforeSend) {
@@ -290,6 +305,8 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
+        const authority = sessionAuthorityError(serviceName, methodName);
+        if (authority) { reject(authority); return; }
         const paused = businessPauseError(serviceName, methodName);
         if (paused) { reject(paused); return; }
         // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
@@ -335,7 +352,7 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
             if (settled) return;
             settled = true;
             if (err) {
-                if (isConnected() && err.code !== 'LOCAL_BUSINESS_PAUSED') {
+                if (isConnected() && err.code !== 'LOCAL_BUSINESS_PAUSED' && err.isSessionAuthorityRejection !== true) {
                     // 只允许调用方豁免明确的服务端业务错误。超时、断线、发送失败仍是
                     // 真实通信异常，不能因为探测模式而从异常统计里消失。
                     const breakerExempt = options.breakerExemptBusinessError === true
@@ -448,6 +465,7 @@ function handleNotify(msg) {
         const event = types.EventMessage.decode(msg.body);
         const type = event.message_type || '';
         const eventBody = event.body;
+        try { sessionTransportHooks?.onRawNotify?.(type, eventBody); } catch { /* Preserve canonical notify handling. */ }
 
         // 被踢下线
         if (type.includes('Kickout')) {
@@ -1007,6 +1025,7 @@ function getAceStatus() {
 }
 
 module.exports = {
+    setSessionTransportHooks,
     connect, reconnect, cleanup, stopNetwork, getWs, isConnected,
     sendMsg, sendMsgAsync,
     getUserState,
