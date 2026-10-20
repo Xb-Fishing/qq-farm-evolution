@@ -1038,7 +1038,7 @@ async function runUnifiedTick() {
     const shouldHelp = now >= nextHelpRunAt;
     const shouldSteal = stealAt > 0 && now >= stealAt;
 
-    const shouldActivity = autoConfig.task === true && now >= nextActivityRewardsAt(now);
+    const shouldActivity = autoConfig.milk_tea_auto_rewards === true && now >= nextActivityRewardsAt(now);
     if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
     if (!autoConfig.friend_steal) {

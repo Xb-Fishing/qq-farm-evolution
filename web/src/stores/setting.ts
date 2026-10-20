@@ -11,6 +11,7 @@ export interface AutomationConfig {
   land_upgrade?: boolean
   friend?: boolean
   task?: boolean
+  milk_tea_auto_rewards?: boolean
   sell?: boolean
   fertilizer_gift?: boolean
   fertilizer_buy_organic?: boolean

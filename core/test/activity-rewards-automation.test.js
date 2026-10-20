@@ -9,6 +9,7 @@ before(loadProto); after(() => fs.rmSync(data, { recursive: true, force: true })
 let ordinal = 0;
 function fixture() {
   process.env.FARM_ACCOUNT_ID = `synthetic-rewards-${++ordinal}`;
+  require('../src/models/store').applyConfigSnapshot({ automation: { milk_tea_auto_rewards: true } }, { persist: false });
   const clock = { now: Date.parse('2026-10-20T10:00:00Z') };
   let enabled = true; let paused = false; let ready = true; let unknown = false;
   const socket = {};

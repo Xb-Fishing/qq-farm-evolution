@@ -283,7 +283,7 @@ function exchange(goods: ExchangeGoods) {
       </section>
       <section v-if="!notOpened" data-gameplay="cashier" class="milk-card">
         <div class="milk-card-heading">
-          <span class="i-carbon-wallet" aria-hidden="true" /><div><h3>收银台与宣传喇叭</h3><p>开启自动任务后，满额自动领取营业收益</p></div>
+          <span class="i-carbon-wallet" aria-hidden="true" /><div><h3>收银台与宣传喇叭</h3><p>开启奶茶自动领奖后，满额自动领取营业收益</p></div>
         </div>
         <div class="milk-cashier">
           <span>可收奖励 {{ shop?.pendingRewards?.length == null ? '待确认' : number(shop.pendingRewards.length) }} 项</span><BaseButton class="milk-action" variant="primary" :disabled="busy || noCashierReward" @click="prepare('claimCashier')">
@@ -489,7 +489,7 @@ function exchange(goods: ExchangeGoods) {
           </div><p class="milk-muted">
             每日快乐值 {{ activity?.shareReward?.daily?.rewardClaimed == null ? '待确认' : activity.shareReward.daily.rewardClaimed ? '已领取' : '未领取' }} · 首次分享奖励 {{ activity?.shareReward?.daily?.firstShareAwarded == null ? '待确认' : activity.shareReward.daily.firstShareAwarded ? '已领取' : '未领取' }}
           </p><p class="milk-muted">
-            好友快乐包今日已领 {{ number(activity?.shareReward?.daily?.claimedCount) }} / {{ number(activity?.shareReward?.daily?.claimLimit) }}；与每日、首次分享奖励分别计算。开启自动任务后自动领取合格快乐值奖励。
+            好友快乐包今日已领 {{ number(activity?.shareReward?.daily?.claimedCount) }} / {{ number(activity?.shareReward?.daily?.claimLimit) }}；与每日、首次分享奖励分别计算。开启奶茶自动领奖后自动领取合格快乐值奖励。
           </p><p v-for="(tier, index) in activity?.shareReward?.milestones || []" :key="index" class="milk-list-row">
             快乐值档位 {{ number(tier.threshold) }} · {{ tier.state === 2 ? '可领取' : tier.state === 3 ? '已领取' : '暂不可领取' }}<span v-for="(item, itemIndex) in tier.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item.image" :src="item.image" :alt="item.itemName || '奖励'"><span>{{ item.itemName || '未知物品' }} × {{ number(item.itemCount) }}</span></span>
           </p><div class="milk-actions">

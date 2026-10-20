@@ -1516,7 +1516,7 @@ function persistAutomaticState() {
   } finally { try { fs.unlinkSync(tmp); } catch {} }
 }
 function automaticMilkTeaWakeAt(now = Date.now()) {
-  if (require('../models/store').getAutomation().task !== true || endedEvidenceActive(Math.floor(now / 1000))) return now + 86400_000;
+  if (require('../models/store').getAutomation().milk_tea_auto_rewards !== true || endedEvidenceActive(Math.floor(now / 1000))) return now + 86400_000;
   return automaticState.nextCheckAt || now;
 }
 function rewardAttemptKeys(action, share, now) {
@@ -1529,7 +1529,7 @@ function rewardAttemptKeys(action, share, now) {
 }
 async function runAutomaticMilkTea(deps = {}) {
   const nowMs = () => typeof deps.now === 'function' ? deps.now() : Date.now();
-  const enabled = () => typeof deps.enabled === 'function' ? deps.enabled() : require('../models/store').getAutomation().task === true;
+  const enabled = () => typeof deps.enabled === 'function' ? deps.enabled() : require('../models/store').getAutomation().milk_tea_auto_rewards === true;
   const paused = () => typeof deps.isPaused === 'function' ? deps.isPaused() : require('../models/store').getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0;
   if (automaticRunning || !enabled() || paused() || nowMs() < automaticState.nextCheckAt || endedEvidenceActive(Math.floor(nowMs() / 1000))) return;
   const lease = acquireLease();

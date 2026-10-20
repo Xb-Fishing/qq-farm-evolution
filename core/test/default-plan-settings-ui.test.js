@@ -145,6 +145,23 @@ async function setSwitch(page, label, value) {
   assert.equal(input(page.root, label).checked, value, 'real checkbox must reflect the emitted value');
 }
 
+test('dedicated milk rewards switch saves and remounts without enabling ordinary tasks', async t => {
+  const config = completeConfig();
+  config.automation.milk_tea_auto_rewards = false;
+  const page = await mountPage(t, config);
+  click(button(page.root, '自动控制')); await vue.nextTick();
+  await setSwitch(page, '奶茶自动领奖（满额收银、快乐值）', true);
+  const saved = await save(page);
+  assert.equal(saved.automation.milk_tea_auto_rewards, true);
+  assert.equal(saved.automation.task, false);
+  await page.reload();
+  click(button(page.root, '自动控制')); await vue.nextTick();
+  assert.equal(input(page.root, '奶茶自动领奖（满额收银、快乐值）').checked, true);
+  assert.equal(input(page.root, '自动做任务').checked, false);
+  await setSwitch(page, '奶茶自动领奖（满额收银、快乐值）', false);
+  assert.equal((await save(page)).automation.milk_tea_auto_rewards, false);
+});
+
 async function setInput(page, label, value) {
   const control = input(page.root, label);
   assert.equal(typeof control.props.onInput, 'function');

@@ -69,6 +69,7 @@ function createAutomationSettings() {
       harvest: false,
       plant: false,
       task: false,
+      milk_tea_auto_rewards: false,
       sell: false,
       friend: false,
       farm_push: false,

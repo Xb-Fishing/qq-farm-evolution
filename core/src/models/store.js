@@ -255,6 +255,7 @@ const DEFAULT_AUTOMATION = {
     friend_bad: false,
     friend_golden_bug: false,
     task: true,
+    milk_tea_auto_rewards: false,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
