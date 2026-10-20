@@ -55,6 +55,14 @@ function createDataProvider(deps) {
     const SYNC_TIMEOUT = { _timeoutMs: 180000 };          // 3分钟
     const DOG_INFO_TIMEOUT = { _timeoutMs: 600000 };     // 10分钟
 
+    function persistClearedLogs(previousRuntime, previousAccounts) {
+        if (!deps.persistLogHistory) return;
+        try { if (deps.persistLogHistory()) return; } catch {}
+        globalLogs.splice(0, globalLogs.length, ...previousRuntime);
+        accountLogs.splice(0, accountLogs.length, ...previousAccounts);
+        throw new Error('日志清除未能保存，请稍后重试');
+    }
+
     return {
         prepareWxRestart: deps.prepareWxRestart,
         validateWxRestart: deps.validateWxRestart,
@@ -103,12 +111,15 @@ function createDataProvider(deps) {
         clearLogs: (ref) => {
             const normalized = normalizeAccountRef(ref);
             const id = resolveAccountId(ref);
+            const previousRuntime = globalLogs.slice();
+            const previousAccounts = accountLogs.slice();
 
             if (!normalized || normalized === 'all') {
                 const clearedRuntimeLogs = globalLogs.length;
                 const clearedAccountLogs = accountLogs.length;
                 globalLogs.length = 0;
                 accountLogs.length = 0;
+                persistClearedLogs(previousRuntime, previousAccounts);
                 return {
                     cleared: 'all',
                     clearedRuntimeLogs,
@@ -140,6 +151,7 @@ function createDataProvider(deps) {
             result.clearedRuntimeLogs = runtimeLogsBefore - globalLogs.length;
             result.clearedAccountLogs = accountLogsBefore - accountLogs.length;
             result.cleared = result.clearedRuntimeLogs + result.clearedAccountLogs;
+            persistClearedLogs(previousRuntime, previousAccounts);
             return { ...result, accountId: id };
         },
 

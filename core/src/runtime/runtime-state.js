@@ -1,6 +1,7 @@
 const EventEmitter = require('node:events');
 const { createModuleLogger } = require('../services/logger');
 const { getTodayKey, loadPersistedStats } = require('../services/stats');
+const { createRuntimeLogHistory } = require('./runtime-log-history');
 
 // ==================== 格式化工具 ====================
 
@@ -30,10 +31,18 @@ function createRuntimeState(deps) {
     const workers = {};
     const globalLogs = [];
     const accountLogs = [];
+    const logHistory = createRuntimeLogHistory({ globalLogs, accountLogs });
     const runtimeEvents = new EventEmitter();
 
     let configRevision = Date.now();
     const moduleLogger = createModuleLogger('runtime');
+
+    function appendRuntimeLog(entry) {
+        entry._searchText = `${entry.msg || ''} ${entry.tag || ''} ${JSON.stringify(entry.meta || {})}`.toLowerCase();
+        globalLogs.push(entry);
+        if (globalLogs.length > 2000) globalLogs.shift();
+        logHistory.recordRuntime(entry);
+    }
 
     /** 递增配置版本号 */
     function nextConfigRevision() {
@@ -91,8 +100,7 @@ function createRuntimeState(deps) {
         };
         entry._searchText = (`${entry.msg || ''  } ${  entry.tag || ''  } ${  JSON.stringify(entry.meta || {})}`).toLowerCase();
 
-        globalLogs.push(entry);
-        if (globalLogs.length > 2000) globalLogs.shift();
+        appendRuntimeLog(entry);
         runtimeEvents.emit('log', entry);
     }
 
@@ -100,6 +108,7 @@ function createRuntimeState(deps) {
     function addAccountLog(action, msg, accountId = '', accountName = '', meta = {}) {
         const entry = {
             time: formatLocalDateTime24(new Date()),
+            ts: Date.now(),
             action,
             msg,
             accountId: accountId ? String(accountId) : '',
@@ -108,6 +117,7 @@ function createRuntimeState(deps) {
         };
         accountLogs.push(entry);
         if (accountLogs.length > 2000) accountLogs.shift();
+        logHistory.recordAccount(entry);
         runtimeEvents.emit('account_log', entry);
     }
 
@@ -237,6 +247,8 @@ function createRuntimeState(deps) {
         workers,
         globalLogs,
         accountLogs,
+        appendRuntimeLog,
+        persistLogHistory: logHistory.snapshot,
         runtimeEvents,
         nextConfigRevision,
         buildConfigSnapshotForAccount,

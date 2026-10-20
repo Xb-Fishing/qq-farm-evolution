@@ -30,6 +30,7 @@ function createWorkerManager(deps) {
         workerScriptPath,
         workers,
         globalLogs,
+        appendRuntimeLog,
         log,
         addAccountLog,
         normalizeStatusForPanel,
@@ -534,8 +535,11 @@ function createWorkerManager(deps) {
             wrk.logs.push(entry);
             if (wrk.logs.length > 1000) wrk.logs.shift();
 
-            globalLogs.push(entry);
-            if (globalLogs.length > 2000) globalLogs.shift();
+            if (typeof appendRuntimeLog === 'function') appendRuntimeLog(entry);
+            else {
+                globalLogs.push(entry);
+                if (globalLogs.length > 2000) globalLogs.shift();
+            }
 
             if (typeof onWorkerLog === 'function') {
                 onWorkerLog(entry, accountId, wrk.name);
