@@ -1071,7 +1071,7 @@ function parseTimeToMinutes(timeStr) {
   return h * 60 + m;
 }
 
-/** Check if the current time falls within the friend quiet hours. */
+/** Daily quiet hours use Beijing time (UTC+8), independently of the host timezone. */
 function inFriendQuietHours(now = new Date()) {
   const { getFriendQuietHours } = require('../models/store');
   const quietHours = getFriendQuietHours();
@@ -1081,7 +1081,8 @@ function inFriendQuietHours(now = new Date()) {
   const endMin = parseTimeToMinutes(quietHours.end);
   if (startMin === null || endMin === null) return false;
 
-  const currentMin = now.getHours() * 60 + now.getMinutes();
+  const beijingNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  const currentMin = beijingNow.getUTCHours() * 60 + beijingNow.getUTCMinutes();
 
   if (startMin === endMin) return true; // All-day quiet
   if (startMin < endMin) {

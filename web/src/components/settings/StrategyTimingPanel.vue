@@ -263,6 +263,9 @@ async function restartAccount() {
           :disabled="!settings.friendQuietHours.enabled"
         >
       </div>
+      <p class="w-full text-xs text-gray-400 dark:text-gray-500">
+        每日静默时段按北京时间（UTC+8）执行，不受服务器时区影响。
+      </p>
     </div>
 
     <div class="border-t pt-3 space-y-3 dark:border-gray-700">
