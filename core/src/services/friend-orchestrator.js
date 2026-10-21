@@ -949,7 +949,7 @@ async function checkFriends(options = {}) {
   // 惰性 require 规避循环依赖，但不吞异常——函数缺失必须当场暴露。
   if (isCheckingFriends || !userState.gid || !shouldRun) return false;
   if (require('./friend-auto-bad').isAutoBadRunning()) return false;
-  // 静默时段不再挡偷菜；帮助/捣乱在时段内直接歇着
+  // 每日静默已由入口的统一暂停门覆盖；此处保持帮助/捣乱的独立复查。
   if (inFriendQuietHours() && !doSteal) return false;
 
   // 权威读取代次：本轮摘要读取/访问结算/警告聚合都以它为所有者令牌
@@ -1432,6 +1432,15 @@ function refreshFriendCheckLoop(delayMs = 0) {
 
 // ===== Friend application handling =====
 
+function deferFriendApplicationsDuringQuiet() {
+  const remaining = getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
+  if (remaining <= 0) return false;
+  if (friendLoopRunning) {
+    friendScheduler.setTimeoutTask('friend_check_bootstrap_applications', remaining, () => checkAndAcceptApplications());
+  }
+  return true;
+}
+
 function onFriendApplicationReceived(applications) {
   const names = applications
     .map(app => app.name || `GID:${toNum(app.gid)}`)
@@ -1444,6 +1453,7 @@ function onFriendApplicationReceived(applications) {
     );
   }
 
+  if (deferFriendApplicationsDuringQuiet()) return;
   const minLevel = getAutoAcceptFriendMinLevel();
   let toAccept = applications;
 
@@ -1461,12 +1471,14 @@ function onFriendApplicationReceived(applications) {
   if (toAccept.length === 0) return;
 
   const gids = toAccept.map(app => toNum(app.gid));
-  return acceptFriendsWithRetry(gids);
+  return acceptFriendsWithRetry(gids, { automatic: true });
 }
 
 async function checkAndAcceptApplications() {
+  if (deferFriendApplicationsDuringQuiet()) return;
   try {
     const reply = await getApplications();
+    if (deferFriendApplicationsDuringQuiet()) return;
     const apps = reply.applications || [];
     if (apps.length === 0) return;
 
@@ -1492,13 +1504,14 @@ async function checkAndAcceptApplications() {
     if (toAccept.length === 0) return;
 
     const gids = toAccept.map(app => toNum(app.gid));
-    await acceptFriendsWithRetry(gids);
+    await acceptFriendsWithRetry(gids, { automatic: true });
   } catch {
     // Ignore application check errors
   }
 }
 
-async function acceptFriendsWithRetry(gids) {
+async function acceptFriendsWithRetry(gids, options = {}) {
+  if (options.automatic === true && deferFriendApplicationsDuringQuiet()) return;
   if (gids.length === 0) return;
 
   try {
@@ -1548,6 +1561,7 @@ async function acceptFriendsWithRetry(gids) {
 
         // Refresh friends list cache
         clearFriendsListCache();
+        if (options.automatic === true && deferFriendApplicationsDuringQuiet()) return;
         try {
           await getFriendsList(true);
           log('申请', '已刷新好友列表', {
@@ -1571,6 +1585,7 @@ async function acceptFriendsWithRetry(gids) {
  * Run a one-time "bad" operation on startup to put weeds/insects on friends' farms.
  */
 async function runBadOnceOnStartup(force = false) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   if (!force && badExecutedOnStartup) return;
 
   const badEnabled = isAutomationOn('friend_bad');
@@ -1596,6 +1611,7 @@ async function runBadOnceOnStartup(force = false) {
 
   try {
     const allFriendsReply = await getAllFriends();
+    if (getPauseRemainMs(accountId) > 0) return;
     const rawFriends = extractReplyFriends(allFriendsReply);
 
     if (rawFriends.length === 0) {
@@ -1649,6 +1665,7 @@ async function runBadOnceOnStartup(force = false) {
     let processedCount = 0;
 
     for (let i = 0; i < topTargets.length; i++) {
+      if (getPauseRemainMs(accountId) > 0) break;
       const target = topTargets[i];
       if (!canOperateBad()) {
         log('好友', `放虫放草次数已用完，停止执行。已处理 ${processedCount} 个好友`, {
@@ -1697,7 +1714,7 @@ async function runBadOnceOnStartup(force = false) {
       await randomDelay(500, 1500);
     }
 
-    badExecutedOnStartup = true;
+    if (getPauseRemainMs(accountId) <= 0) badExecutedOnStartup = true;
 
     const summary = [];
     if (tally.putBug > 0) summary.push(`放虫${tally.putBug}`);

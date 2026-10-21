@@ -281,6 +281,7 @@ const workerScheduler = createScheduler('worker');
 function isDailyRoutineEnabled() { return true; }
 
 async function runDailyRoutineStep(key, runner, getState, force = false) {
+    if (pauseRemainMsNow() > 0) { lastDailyRunDate = ''; return; }
     const accountId = process.env.FARM_ACCOUNT_ID || '';
     if (!force && isDailyRoutineDone(accountId, key)) return;
     await runner(force);
@@ -425,14 +426,18 @@ function resetUnifiedSchedule() {
 // ==================== 农场 Tick ====================
 
 async function runFarmTick(autoConfig) {
+    if (pauseRemainMsNow() > 0) return;
     if (farmTaskRunning || friendSyncPaused) return;
     if ((stealIsDue() || stealIsImminent(1500)) && !ownHarvestIsDue()) return;
     farmTaskRunning = true;
 
     try {
         if (autoConfig.farm) await checkFarm();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.task) await checkAndClaimTasks();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.email) await checkAndClaimEmails();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.fertilizer_gift) await openFertilizerGiftPacksSilently();
     } catch { } finally {
         const patrol = randomIntervalMs(
@@ -1054,6 +1059,7 @@ async function runUnifiedTick() {
         return;
     }
     if (shouldFarm) await runFarmTick(autoConfig);
+    if (pauseRemainMsNow() > 0) return;
     if (shouldHelp) await runHelpTick(autoConfig);
     if (shouldActivity && loginReady && !friendSyncPaused && pauseRemainMsNow() <= 0) {
         await require('../services/milk-tea-activity').runAutomaticMilkTea({
@@ -2267,7 +2273,7 @@ function onTimer_daily_routine_immediate() {
                 }
 
 async function onTimer_fertilizer_immediate_after_save() {
-                    if (!loginReady) return;
+                    if (!loginReady || pauseRemainMsNow() > 0) return;
                     try {
                         await runFertilizerByConfig([], { skipNormal: true });
                     } catch (err) {

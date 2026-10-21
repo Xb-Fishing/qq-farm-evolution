@@ -15,7 +15,8 @@ const {
   getFertilizerBuyOrganicThresholdHours,
   getFertilizerBuyNormalCount,
   getFertilizerBuyNormalThresholdHours,
-  getFertilizerBuyCheckIntervalMinutes
+  getFertilizerBuyCheckIntervalMinutes,
+  getPauseRemainMs
 } = require('../models/store');
 const { checkAndBuyFertilizerBoth } = require('./mall');
 
@@ -60,10 +61,12 @@ function stopFertilizerBuyCheckTimer() {
 
 /** 执行一次化肥购买检测 */
 async function checkFertilizerBuyOnce() {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   if (!isAutomationOn('fertilizer_buy_organic') && !isAutomationOn('fertilizer_buy_normal')) return;
 
   try {
     const config = {
+      automatic: true,
       buyOrganic: isAutomationOn('fertilizer_buy_organic'),
       buyNormal: isAutomationOn('fertilizer_buy_normal'),
       organicCount: getFertilizerBuyOrganicCount(),

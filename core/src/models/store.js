@@ -4,7 +4,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { getDataFile, ensureDataDir } = require('../config/runtime-paths');
 const { readTextFile, readJsonFile, writeJsonFileAtomic } = require('../services/json-db');
-const { parsePauseUntilMs, normalizePauseUntil } = require('../utils/pause-until');
+const { parsePauseUntilMs, normalizePauseUntil, getDailyQuietRemainMs } = require('../utils/pause-until');
 
 // ==================== 文件路径 ====================
 
@@ -1458,14 +1458,14 @@ function getKickoutRelogin(accountId) {
     return normalizeKickoutRelogin(getAccountConfigSnapshot(accountId).kickoutRelogin);
 }
 
-/** 免打扰剩余毫秒；未设置/已过期返回 0 */
+/** Automatic pause: daily Beijing window, manual deadline and optional idle protection. */
 function getPauseRemainMs(accountId) {
     const quiet = getFriendQuietHours(accountId);
     const until = parsePauseUntil(quiet.pauseUntil);
     const now = Date.now();
     const idleUntil = quiet.idleProtectionEnabled === true
         ? require('../utils/idle-protection').getIdleProtectionUntil(now) : 0;
-    return Math.max(0, (until ? until.getTime() : 0) - now, idleUntil - now);
+    return Math.max(0, getDailyQuietRemainMs(quiet, now), (until ? until.getTime() : 0) - now, idleUntil - now);
 }
 
 /** Optional idle protection alone blocks the wire; manual quiet pauses dispatch. */

@@ -1071,25 +1071,11 @@ function parseTimeToMinutes(timeStr) {
   return h * 60 + m;
 }
 
-/** Daily quiet hours use Beijing time (UTC+8), independently of the host timezone. */
+/** Daily quiet shares the same Beijing clock as automatic dispatch. */
 function inFriendQuietHours(now = new Date()) {
   const { getFriendQuietHours } = require('../models/store');
-  const quietHours = getFriendQuietHours();
-  if (!quietHours || !quietHours.enabled) return false;
-
-  const startMin = parseTimeToMinutes(quietHours.start);
-  const endMin = parseTimeToMinutes(quietHours.end);
-  if (startMin === null || endMin === null) return false;
-
-  const beijingNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-  const currentMin = beijingNow.getUTCHours() * 60 + beijingNow.getUTCMinutes();
-
-  if (startMin === endMin) return true; // All-day quiet
-  if (startMin < endMin) {
-    return currentMin >= startMin && currentMin < endMin;
-  }
-  // Crosses midnight (e.g. 23:00 - 03:00)
-  return currentMin >= startMin || currentMin < endMin;
+  const { getDailyQuietRemainMs } = require('../utils/pause-until');
+  return getDailyQuietRemainMs(getFriendQuietHours(), now.getTime()) > 0;
 }
 
 /** Clear all cooldown marks for invalid friend GIDs. */

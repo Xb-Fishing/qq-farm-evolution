@@ -266,6 +266,9 @@ async function restartAccount() {
       <p class="w-full text-xs text-gray-400 dark:text-gray-500">
         每日静默时段按北京时间（UTC+8）执行，不受服务器时区影响。
       </p>
+      <p class="w-full text-xs text-gray-400 dark:text-gray-500">
+        时段内暂停自动农场、偷菜、帮助、捣乱和重点好友动作，保留连接心跳与手动查询，到点自动恢复。
+      </p>
     </div>
 
     <div class="border-t pt-3 space-y-3 dark:border-gray-700">

@@ -13,7 +13,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
 const { CONFIG, PlantPhase } = require('../config/config');
 const { getUserState, isConnected, networkEvents } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, getServerTimeSec, getServerTimeMs } = require('../utils/utils');
-const { isAutomationOn, getAutomation, getPrioritize2x2Crops } = require('../models/store');
+const { isAutomationOn, getAutomation, getPrioritize2x2Crops, getPauseRemainMs } = require('../models/store');
 const { recordOperation } = require('./stats');
 const { recordEvent } = require('./daily-events');
 const { createScheduler } = require('./scheduler');
@@ -295,6 +295,7 @@ function isTransientNetworkError(err) {
  * @returns {boolean} 是否有需要执行的操作
  */
 async function checkFarm(options = {}) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return false;
   const userState = getUserState();
   if (isCheckingFarm || !userState.gid || !isAutomationOn('farm') || !isConnected()) {
     return false;
@@ -305,7 +306,7 @@ async function checkFarm(options = {}) {
 
   isCheckingFarm = true;
   try {
-    const result = await runFarmOperation('all');
+    const result = await runFarmOperation('all', { automatic: true });
     isFirstFarmCheck = false;
     return !!(result && result.hadWork);
   } catch (err) {
@@ -322,8 +323,11 @@ async function checkFarm(options = {}) {
  * 执行农场操作
  * @param {string} opType - 操作类型：'all' | 'harvest' | 'plant' | 'clear' | 'upgrade'
  */
-async function runFarmOperation(opType) {
+async function runFarmOperation(opType, options = {}) {
+  const automaticPaused = () => options.automatic === true && getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0;
+  if (automaticPaused()) return { hadWork: false, actions: [], harvestedCount: 0 };
   const landsReply = await getAllLands();
+  if (automaticPaused()) return { hadWork: false, actions: [], harvestedCount: 0 };
   if (!landsReply.lands || landsReply.lands.length === 0) {
     if (opType !== 'all') log('农场', '没有土地数据');
     return { hadWork: false, actions: [], harvestedCount: 0 };
@@ -353,6 +357,7 @@ async function runFarmOperation(opType) {
   let harvestedLands = [];
   let harvestResult = null;
   let removeResult = null;
+  const pausedResult = () => ({ hadWork: actions.length > 0, actions, harvestedCount: harvestedLands.length });
 
   if (opType === 'harvest' || (opType === 'all' && isAutomationOn('harvest'))) {
     if (analysis.harvestable.length > 0) {
@@ -367,6 +372,8 @@ async function runFarmOperation(opType) {
       }
     }
   }
+
+  if (automaticPaused()) return pausedResult();
 
   // 保护自己的下一批成熟作物：最后十秒不再启动非必要业务；若好友已到点，
   // 也只在自己的当批收获完成后才让出执行权。
@@ -419,6 +426,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 种植 ──
   if (opType === 'plant' || (opType === 'all' && isAutomationOn('plant'))) {
     const emptyLands = [...new Set(analysis.empty)];
@@ -427,10 +436,12 @@ async function runFarmOperation(opType) {
     // 收获后检查可铲除的地块
     if (opType === 'all' && harvestedLands.length > 0) {
       await randomDelay(200, 800);
+      if (automaticPaused()) return pausedResult();
       removeResult = await resolveRemovableHarvestedLands(harvestedLands, harvestResult);
       deadLands = [...new Set([...deadLands, ...removeResult.removable])];
     }
 
+    if (automaticPaused()) return pausedResult();
     const shouldRefresh2x2 = shouldRefresh2x2Plan && getPrioritize2x2Crops();
     if (deadLands.length > 0 || emptyLands.length > 0 || shouldRefresh2x2) {
       try {
@@ -456,6 +467,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 多季作物补肥 ──
   if (opType === 'all' && removeResult && Array.isArray(removeResult.growing) &&
       removeResult.growing.length > 0 && isAutomationOn('fertilizer_multi_season') &&
@@ -478,6 +491,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 土地升级/解锁 ──
   const shouldUpgrade = opType === 'all' && isAutomationOn('land_upgrade');
   if (shouldUpgrade || opType === 'upgrade') {
@@ -485,6 +500,7 @@ async function runFarmOperation(opType) {
     if (analysis.unlockable.length > 0) {
       let unlockedCount = 0;
       for (const landId of analysis.unlockable) {
+        if (automaticPaused()) break;
         try {
           await unlockLand(landId, false);
           log('解锁', `土地#${landId} 解锁成功`, {
@@ -505,6 +521,7 @@ async function runFarmOperation(opType) {
     if (analysis.upgradable.length > 0) {
       let upgradedCount = 0;
       for (const landId of analysis.upgradable) {
+        if (automaticPaused()) break;
         try {
           const result = await upgradeLand(landId);
           const newLevel = result.land ? toNum(result.land.level) : '?';
@@ -525,6 +542,8 @@ async function runFarmOperation(opType) {
       }
     }
   }
+
+  if (automaticPaused()) return pausedResult();
 
   // ── 智能施肥（巡田时触发）──
   if (opType === 'all') {
@@ -594,6 +613,7 @@ function onLandsChangedPush(lands) {
     friendActivity.noteSocialItems(lands, getUserState().gid, Date.now());
     friendActivity.noteMischiefOwners(lands, getUserState().gid, Date.now());
   } catch { /* 证据失败不影响主流程 */ }
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   if (!isAutomationOn('farm_push')) return;
   if (isIdleQuiet()) return;
   shouldRefresh2x2Plan = true;
@@ -644,7 +664,7 @@ async function onFarmLoopTimer() {
   if (farmLoopRunning) scheduleNextFarmCheck(CONFIG.farmCheckInterval);
 }
 async function onFarmPushTimer() {
-  if (!isCheckingFarm) await checkFarm({ fromPush: true });
+  if (!isCheckingFarm && getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') <= 0) await checkFarm({ fromPush: true });
 }
 function bindFarmSessionState() {
   if (farmLoopRunning) networkEvents.on('landsChanged', onLandsChangedPush);

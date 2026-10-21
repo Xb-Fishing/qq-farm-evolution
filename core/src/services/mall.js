@@ -312,13 +312,20 @@ async function autoBuyOrganicFertilizerViaMall() {
 /**
  * 通过商城自动购买指定类型化肥
  */
-async function autoBuyFertilizerViaMall(type = 'organic', targetCount = 0) {
+function isAutomaticMallPaused(options) {
+  return options?.automatic === true
+    && require('../models/store').getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0;
+}
+
+async function autoBuyFertilizerViaMall(type = 'organic', targetCount = 0, options = {}) {
+  if (isAutomaticMallPaused(options)) return 0;
   const typeLabel = type === 'normal' ? '无机化肥' : '有机化肥';
   log('商城', `开始购买化肥, 类型: ${typeLabel}, 数量: ${targetCount || '不限'}`, {
     module: 'warehouse', event: '购买化肥', type, targetCount,
   });
 
   const goodsList = await getMallGoodsList(1);
+  if (isAutomaticMallPaused(options)) return 0;
   const goods = findFertilizerMallGoods(goodsList, type);
   if (!goods) {
     log('商城', '未找到化肥商品', {
@@ -346,6 +353,7 @@ async function autoBuyFertilizerViaMall(type = 'organic', targetCount = 0) {
   const limit = targetCount > 0 ? targetCount : Infinity;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (isAutomaticMallPaused(options)) break;
     if (targetCount > 0 && totalBought >= limit) break;
 
     if (price > 0 && ticket > 0 && ticket < price) {
@@ -417,14 +425,15 @@ async function autoBuyOrganicFertilizer(force = false) {
 /**
  * 自动购买化肥（带冷却检查，通用版）
  */
-async function autoBuyFertilizer(force = false, type = 'organic', targetCount = 0) {
+async function autoBuyFertilizer(force = false, type = 'organic', targetCount = 0, options = {}) {
+  if (isAutomaticMallPaused(options)) return 0;
   const now = Date.now();
   if (!force && now - lastBuyAt < BUY_COOLDOWN_MS) return 0;
 
   lastBuyAt = now;
 
   try {
-    const bought = await autoBuyFertilizerViaMall(type, targetCount);
+    const bought = await autoBuyFertilizerViaMall(type, targetCount, options);
     if (bought > 0) {
       buyDoneDateKey = getDateKey();
       buyLastSuccessAt = Date.now();
@@ -569,7 +578,7 @@ async function checkAndBuyFertilizerBoth(options = {}) {
 
   const result = { organicBought: 0, normalBought: 0, organicCurrentHours: 0, normalCurrentHours: 0 };
 
-  if (!buyOrganic && !buyNormal) return result;
+  if (!buyOrganic && !buyNormal || isAutomaticMallPaused(options)) return result;
 
   try {
     const bag = await getBag();
@@ -578,6 +587,7 @@ async function checkAndBuyFertilizerBoth(options = {}) {
 
     result.organicCurrentHours = hours.organic;
     result.normalCurrentHours = hours.normal;
+    if (isAutomaticMallPaused(options)) return result;
 
     // 有机化肥
     if (buyOrganic && organicCount > 0 && organicThresholdHours > 0) {
@@ -586,7 +596,7 @@ async function checkAndBuyFertilizerBoth(options = {}) {
       });
 
       if (hours.organic < organicThresholdHours) {
-        result.organicBought = await autoBuyFertilizer(true, 'organic', organicCount);
+        result.organicBought = await autoBuyFertilizer(true, 'organic', organicCount, options);
       }
     }
 
@@ -596,6 +606,7 @@ async function checkAndBuyFertilizerBoth(options = {}) {
       await sleep(delay);
     }
 
+    if (isAutomaticMallPaused(options)) return result;
     // 无机化肥
     if (buyNormal && normalCount > 0 && normalThresholdHours > 0) {
       log('商城', `检测无机化肥容器: 剩余 ${hours.normal.toFixed(1)} 小时，阈值 ${normalThresholdHours} 小时`, {
@@ -603,7 +614,7 @@ async function checkAndBuyFertilizerBoth(options = {}) {
       });
 
       if (hours.normal < normalThresholdHours) {
-        result.normalBought = await autoBuyFertilizer(true, 'normal', normalCount);
+        result.normalBought = await autoBuyFertilizer(true, 'normal', normalCount, options);
       }
     }
 
