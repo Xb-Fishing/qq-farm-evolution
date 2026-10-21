@@ -5,11 +5,29 @@ const state = require('../services/business-state');
 const timers = require('../services/session-scheduler');
 const { createSessionBusinessBridge } = require('./session-business-bridge');
 const { businessPolicyConfig } = require('./session-config');
+const { createModuleLogger, redactString } = require('../services/logger');
+const faultLogger = createModuleLogger('session-business');
 
 if (!workerData?.sessionBusiness || process.env.FARM_SESSION_BUSINESS !== '1') throw new Error('Business entry requires a session host');
 const gate = createBusinessGate(workerData.epoch);
 state.setBusinessGate(gate);
-const bridge = createSessionBusinessBridge({ port: parentPort, gate, initialFacts: decode(workerData.facts) });
+let businessFailure;
+function suspendFailedBusiness(detail = {}) {
+  if (businessFailure) return;
+  const reason = typeof detail.reason === 'string' && /^SESSION_[A-Z_]{1,64}$/.test(detail.reason)
+    ? detail.reason : 'SESSION_EVENT_DELIVERY_FAILED';
+  businessFailure = Object.assign(new Error(reason), { code: reason });
+  timers.pauseSessionSchedulers(); gate.suspend(); bridge.blockControl(reason);
+  faultLogger.error('常驻业务控制链异常', { event: 'session_business_fault', reason,
+    phase: detail.phase || 'event_delivery', operation: detail.operation || '', method: detail.method || '',
+    detail: redactString(String(detail.error?.stack || detail.error?.message || '')).slice(0, 3000) });
+  parentPort.postMessage({ type: 'session_business_diagnostic', data: {
+    reason, phase: detail.phase || 'event_delivery', operation: String(detail.operation || '').slice(0, 48),
+    method: /^[a-z.]{0,96}$/i.test(detail.method || '') ? detail.method || '' : '',
+    businessEpoch: workerData.epoch,
+  } });
+}
+const bridge = createSessionBusinessBridge({ port: parentPort, gate, initialFacts: decode(workerData.facts), onControlFailure: suspendFailedBusiness });
 globalThis.__farmSessionBridge = bridge;
 let worker; let prepared = false; let activated = false; let checkpoint;
 let config = businessPolicyConfig(decode(workerData.config));
@@ -17,7 +35,10 @@ let config = businessPolicyConfig(decode(workerData.config));
 async function deliver(events) {
   // Start listeners in source order. Their tracked asynchronous bodies retain
   // the legacy EventEmitter concurrency and are drained before any checkpoint.
-  for (const event of events || []) bridge.deliver(event).catch(error => parentPort.postMessage({ type: 'error', error: error.message }));
+  for (const event of events || []) {
+    try { bridge.deliver(event).catch(error => parentPort.postMessage({ type: 'error', error: error.message })); }
+    catch (error) { suspendFailedBusiness({ reason: error.code, phase: 'event_delivery', error }); throw error; }
+  }
 }
 async function control(method, args) {
   if (['relabelConfig', 'syncConfig'].includes(method)) args = businessPolicyConfig(args);
@@ -38,6 +59,9 @@ async function control(method, args) {
     prepared = true; return true;
   }
   if (!prepared) throw new Error('Business not prepared');
+  // A legacy host may attempt rollback after replacement preparation fails.
+  // A known-failed instance can still drain/checkpoint, but cannot resume work.
+  if (businessFailure && method !== 'quiesce') throw businessFailure;
   if (method === 'activate') {
     gate.activate(); activated = true;
     if (!checkpoint) await gate.run('coldStart', () => worker.sessionRuntime.send({ type: 'start', config }));

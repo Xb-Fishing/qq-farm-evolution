@@ -19,7 +19,7 @@ message ReportShareRequest {
 }
 
 message ReportShareReply {
-    bool success = 1;  // 是否成功
+    bytes result = 1;  // 分享结果；内容可能包含分享凭据，不记录或向页面透传
 }
 
 // --- 领取分享奖励 ---
@@ -28,7 +28,5 @@ message ClaimShareRewardRequest {
 }
 
 message ClaimShareRewardReply {
-    bool success = 1;           // 是否成功
-    bool has_reward = 2;        // 是否有奖励
-    repeated corepb.Item items = 3;  // 奖励物品列表
+    repeated corepb.Item items = 1;  // 奖励物品列表
 }

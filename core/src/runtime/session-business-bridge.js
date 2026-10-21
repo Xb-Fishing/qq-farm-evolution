@@ -3,10 +3,26 @@ const { encode, decode } = require('./session-codec');
 const { STATS_METHODS, STATS_READ_METHODS, GOVERNOR_METHODS, GOVERNOR_READ_METHODS,
   STATUS_METHODS, NETWORK_READ_METHODS } = require('./session-game-adapter');
 
-function createSessionBusinessBridge({ port, gate, initialFacts }) {
+function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailure }) {
   let facts = initialFacts; let sequence = 0; let appliedRevision = 0; let onReady; let readinessObserver;
   const pending = new Map(); const sockets = new Map(); const userState = {}; const statusData = {};
   const syncBuffer = new SharedArrayBuffer(8 + 8 * 1024 * 1024); let syncHealthy = true;
+  let controlFailure;
+  function blockControl(reason = 'SESSION_CONTROL_UNAVAILABLE') {
+    syncHealthy = false;
+    controlFailure ||= Object.assign(new Error(reason), { code: reason });
+    return controlFailure;
+  }
+  function failControl(reason, kind, method, originalError) {
+    const first = syncHealthy;
+    const error = blockControl(reason);
+    if (first) {
+      try { onControlFailure?.({ reason, phase: kind === 'request' ? 'game_reply' : 'sync_channel', operation: kind, method: method || '', error: originalError }); } catch {}
+    }
+    return error;
+  }
+  const fatalControlError = error => ['SESSION_EPOCH_RETIRED', 'SESSION_REVOKED', 'SESSION_BINDING_REVOKED',
+    'SESSION_CONTROL_UNAVAILABLE', 'SESSION_BAD_SYNC_REPLY'].includes(error?.code);
   const utils = require('../utils/utils'); const idle = require('../utils/idle-protection');
   function lookupType(name) { return require('../utils/proto').getRoot().lookupType(name); }
   function socketFor(epoch) {
@@ -30,30 +46,38 @@ function createSessionBusinessBridge({ port, gate, initialFacts }) {
   }
   applyFacts(initialFacts);
   function sync(kind, method, args = []) {
-    if (!syncHealthy) throw new Error('Session synchronous channel failed; discard this business instance');
+    if (!syncHealthy) throw controlFailure;
     const buffer = syncBuffer; const header = new Int32Array(buffer, 0, 2);
     Atomics.store(header, 0, 0); Atomics.store(header, 1, 0);
-    port.postMessage({ kind: 'business_sync', buffer, body: encode({ kind, method, args,
-      connectionEpoch: kind === 'command' ? gate.operation()?.connectionEpoch : undefined }) });
+    try { port.postMessage({ kind: 'business_sync', buffer, body: encode({ kind, method, args,
+      connectionEpoch: kind === 'command' ? gate.operation()?.connectionEpoch : undefined }) }); }
+    catch (error) { throw failControl('SESSION_CONTROL_UNAVAILABLE', kind, method, error); }
     if (Atomics.wait(header, 0, 0, 15000) === 'timed-out' || Atomics.load(header, 0) !== 1) {
-      syncHealthy = false;
-      throw Object.assign(new Error('Session host unavailable'), { code: 'SESSION_CONTROL_UNAVAILABLE' });
+      throw failControl('SESSION_CONTROL_UNAVAILABLE', kind, method);
     }
     const length = Atomics.load(header, 1);
-    if (length < 1 || length > buffer.byteLength - 8) throw new Error('Invalid synchronous session reply');
-    const reply = decode(Buffer.from(new Uint8Array(buffer, 8, length)), { lookupType });
-    if (reply.error) throw reply.error;
-    applyFacts(reply.value.facts); return reply.value.value;
+    if (length < 1 || length > buffer.byteLength - 8) throw failControl('SESSION_BAD_SYNC_REPLY', kind, method);
+    let reply;
+    try { reply = decode(Buffer.from(new Uint8Array(buffer, 8, length)), { lookupType }); }
+    catch (error) { throw failControl('SESSION_BAD_SYNC_REPLY', kind, method, error); }
+    if (reply.error) {
+      if (fatalControlError(reply.error)) throw failControl(reply.error.code, kind, method, reply.error);
+      throw reply.error;
+    }
+    try { applyFacts(reply.value.facts); return reply.value.value; }
+    catch (error) { throw failControl('SESSION_BAD_SYNC_REPLY', kind, method, error); }
   }
   function readFacts() { sync('facts'); return facts; }
   function query(method, args = []) { return sync('query', method, args); }
   function command(method, args = []) {
+    if (!syncHealthy) throw controlFailure;
     const operation = gate.operation();
     if (!operation || operation.preparation) throw Object.assign(new Error('Business authority is not active'), { code: 'SESSION_EPOCH_RETIRED' });
     operation.connectionEpoch ??= readFacts().game.connectionEpoch;
     return sync('command', method, args);
   }
   function sendMsgAsync(service, method, body, timeout, options) {
+    if (!syncHealthy) return Promise.reject(controlFailure);
     const operation = gate.operation();
     if (!operation || operation.preparation) return Promise.reject(Object.assign(new Error('Business authority is not active'), { code: 'SESSION_EPOCH_RETIRED' }));
     const id = ++sequence;
@@ -62,7 +86,7 @@ function createSessionBusinessBridge({ port, gate, initialFacts }) {
     const args = { service, method, body: Buffer.from(body || []), timeout, options,
       configRevision: operation.configRevision, connectionEpoch: operation.connectionEpoch };
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, method: `${service}.${method}` });
       try { port.postMessage({ kind: 'business_request', id, sequence: id, body: encode(args) }); }
       catch (error) { pending.delete(id); reject(error); }
     });
@@ -127,9 +151,10 @@ function createSessionBusinessBridge({ port, gate, initialFacts }) {
     pending.delete(message.id);
     try {
       const reply = decode(message.body, { lookupType });
-      if (reply.error) callback.reject(reply.error);
+      if (reply.error) callback.reject(fatalControlError(reply.error)
+        ? failControl(reply.error.code, 'request', callback.method, reply.error) : reply.error);
       else { applyFacts(reply.value.facts); callback.resolve(reply.value.value); }
-    } catch (error) { callback.reject(error); }
+    } catch (error) { callback.reject(failControl('SESSION_BAD_GAME_REPLY', 'request', callback.method, error)); }
   });
   function deliver(event) {
     applyFacts(event.facts);
@@ -154,7 +179,7 @@ function createSessionBusinessBridge({ port, gate, initialFacts }) {
     }, event.facts.game.connectionEpoch);
   }
   gate.setAuthorityProvider(() => ({ connectionEpoch: facts.game.connectionEpoch, configRevision: appliedRevision }));
-  return { deliver, applyFacts, readFacts, command, query, network, pending,
+  return { deliver, applyFacts, readFacts, command, query, network, pending, blockControl,
     observeReadiness: callback => { readinessObserver = callback; callback(facts.game); },
     setLoginCallback: callback => { onReady = callback; },
     setAppliedRevision: revision => { appliedRevision = Number(revision) || 0; },

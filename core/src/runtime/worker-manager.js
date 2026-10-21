@@ -76,6 +76,116 @@ function createWorkerManager(deps) {
     const dataDir = persistentMode ? require('../config/runtime-paths').getDataDir() : '';
     const sourceRoot = persistentMode ? require('node:path').resolve(require('node:path').dirname(mainEntryPath), '..') : '';
     const sessionStarts = new Map();
+    const businessRecoveries = new Map();
+    const businessRecoveryHistory = new Map();
+    let managerClosing = false;
+
+    function cancelBusinessRecovery(id) {
+        const job = businessRecoveries.get(String(id));
+        if (job) { job.cancelled = true; scheduler.clear(job.timerKey); businessRecoveries.delete(String(id)); }
+    }
+    function queueBusinessRecovery(accountId, proc, reason = 'SESSION_EVENT_DELIVERY_FAILED') {
+        const id = String(accountId);
+        if (!persistentMode || managerClosing || (proc.businessInitialized === false && proc.recoverableAttach !== true)
+            || businessRecoveries.has(id)) return;
+        let record = workers[id]; const account = findAccount(id);
+        if (!record || record.process !== proc || record.stopping || !account || account.autoLogin === false
+            || record.credentialGeneration !== (account.credentialGeneration || '')
+            || record.sessionGeneration !== (account.sessionGeneration || '')) return;
+        const stamp = require('./session-registry').bindingIdentity(account);
+        const credentialGeneration = account.credentialGeneration || '';
+        let knownFaultEpoch = proc.businessFaultEpoch || '';
+        const job = { cancelled: false, tries: 0, probes: 0, failures: 0, timerKey: `session_business_recovery_${id}` };
+        businessRecoveries.set(id, job);
+        const accountIdentityCurrent = () => {
+            const current = findAccount(id);
+            return !managerClosing && !job.cancelled && current?.autoLogin !== false && current
+                && !record.stopping
+                && (current.credentialGeneration || '') === credentialGeneration
+                && require('./session-registry').bindingIdentity(current) === stamp;
+        };
+        const accountCurrent = () => accountIdentityCurrent() && (!workers[id] || workers[id] === record);
+        const owns = () => accountCurrent() && workers[id] === record && !record.stopping;
+        const finish = () => { if (businessRecoveries.get(id) === job) businessRecoveries.delete(id); };
+        const schedule = delay => scheduler.setTimeoutTask(job.timerKey, delay, async () => {
+            if (!owns()) { finish(); return; }
+            try {
+                let before; let controlReconnect = false;
+                try { before = await proc.refreshSession(); }
+                catch {
+                    if (!owns()) { finish(); return; }
+                    const found = await require('./session-registry').connectSession(dataDir, findAccount(id));
+                    if (found.state !== 'present') throw new Error('SESSION_CONTROL_UNAVAILABLE');
+                    try { before = await found.client.call('status'); } finally { found.client.close(); }
+                    controlReconnect = true;
+                }
+                if (!owns()) { finish(); return; }
+                const facts = before.facts;
+                if (facts.game.connected !== true || facts.game.terminal === true) { finish(); return; }
+                const hostKey = `${facts.host.hostId}:${facts.host.starttime}`;
+                let history = businessRecoveryHistory.get(id);
+                if (!history || history.hostKey !== hostKey) history = { hostKey, times: [], warnedEpoch: '' };
+                const now = Date.now(); history.times = history.times.filter(at => now - at < 600000);
+                businessRecoveryHistory.set(id, history);
+                knownFaultEpoch ||= proc.businessFaultEpoch || '';
+                const locallyFailed = knownFaultEpoch === facts.business?.epoch;
+                if (facts.business?.ready === true && (!controlReconnect || locallyFailed)) {
+                    if (locallyFailed) {
+                        // The already resident legacy host learns a local fault
+                        // only on its next real event rejection. Do not invent a
+                        // game event or misreport its stale ready flag as health.
+                        if (++job.probes < 7) { schedule(5000); return; }
+                        if (history.pendingWarnedEpoch !== facts.business.epoch) {
+                            history.pendingWarnedEpoch = facts.business.epoch;
+                            log('系统', '业务已暂停，等待宿主事件确认后恢复；游戏连接保持在线', {
+                                accountId: id, accountName: record.name, event: 'session_business_recovery_pending', reason,
+                            });
+                        }
+                    }
+                    finish(); return;
+                }
+                if (history.times.length >= 3) {
+                    if (history.warnedEpoch !== facts.business.epoch) {
+                        history.warnedEpoch = facts.business.epoch;
+                        log('系统', '业务会话连续恢复失败，保留连接等待后续恢复', {
+                            accountId: id, accountName: record.name, event: 'session_business_recovery_limited', reason,
+                        });
+                    }
+                    finish(); return;
+                }
+                history.times.push(now);
+                job.tries++;
+                log('系统', '正在恢复异常业务会话，保留原游戏连接', {
+                    accountId: id, accountName: record.name, event: 'session_business_recovering', reason, attempt: job.tries,
+                });
+                const result = await tryAdoptAccountSession(id, { connectedOnly: true, isCurrent: accountCurrent,
+                    onRecordReplaced: (previous, replacement) => {
+                        // Only this recovery's own adopt-only replacement may
+                        // transfer ownership; an independent start cancels it.
+                        if (previous === record && accountIdentityCurrent() && workers[id] === replacement) {
+                            replacement.process.businessFaultEpoch = knownFaultEpoch;
+                            record = replacement; proc = replacement.process;
+                        }
+                    } });
+                if (!accountIdentityCurrent()) { finish(); return; }
+                const next = result.facts;
+                if (result.state !== 'adopted' || next?.business?.ready !== true || next.game.connected !== true
+                    || next.host.hostId !== facts.host.hostId || next.host.starttime !== facts.host.starttime
+                    || next.game.connectionEpoch !== facts.game.connectionEpoch
+                    || next.game.loginEpoch !== facts.game.loginEpoch || next.game.firstLoginReadyAt !== facts.game.firstLoginReadyAt
+                    || (!controlReconnect && next.business.epoch === facts.business.epoch)) throw new Error('SESSION_BUSINESS_RECOVERY_UNCONFIRMED');
+                log('系统', '业务会话已恢复，原游戏连接保持在线', {
+                    accountId: id, accountName: record.name, event: 'session_business_recovered', reason,
+                });
+                finish();
+            } catch {
+                job.failures++;
+                if (owns() && job.failures < 3 && job.tries < 3) schedule(job.failures > 1 ? 5000 : 1000);
+                else finish();
+            }
+        });
+        schedule(0);
+    }
 
     function cleanText(value) {
         return String(value || '').trim();
@@ -282,10 +392,25 @@ function createWorkerManager(deps) {
             if (current?.process !== proc) return;
             current.sessionFacts = null;
             current.status = { ...(current.status || {}), connection: { connected: undefined, state: 'unknown' } };
+            queueBusinessRecovery(latest.id, proc, 'SESSION_CONTROL_UNAVAILABLE');
         });
 
         // 监听 Worker 错误
         proc.on('error', (err) => {
+            if (proc.persistentSession) {
+                const current = workers[latest.id];
+                if (!current || current.process !== proc || current.stopping) return;
+                const reason = typeof err?.code === 'string' && /^SESSION_[A-Z_]{1,64}$/.test(err.code) ? err.code : 'SESSION_CONTROL_FAILED';
+                const phase = err?.phase === 'attach' ? 'attach' : err?.phase === 'event_delivery' ? 'event_delivery' : 'control';
+                log('系统', `${phase === 'attach' ? '常驻业务接管失败' : '常驻业务运行异常'}: ${reason}`, {
+                    accountId: String(latest.id), accountName: latest.name, event: 'session_business_error', reason, phase,
+                });
+                // An initial management attach can also fail on an existing
+                // live host. Recovery still verifies it with connectSession;
+                // it never retries ensureSession or consumes a fresh Code.
+                if (phase !== 'attach' || proc.recoverableAttach === true) queueBusinessRecovery(latest.id, proc, reason);
+                return;
+            }
             log('系统', `账号 ${  latest.name  } 子进程启动失败: ${
                 err && err.message ? err.message : err}`, {
                 accountId: String(latest.id),
@@ -337,6 +462,8 @@ function createWorkerManager(deps) {
      * 停止账号 Worker
      */
     function stopWorker(accountId) {
+        cancelBusinessRecovery(accountId);
+        businessRecoveryHistory.delete(String(accountId));
         if (persistentMode) return stopPersistentSession(accountId);
         const wrk = workers[accountId];
         if (!wrk) return;
@@ -544,6 +671,15 @@ function createWorkerManager(deps) {
             if (typeof onWorkerLog === 'function') {
                 onWorkerLog(entry, accountId, wrk.name);
             }
+        } else if (msg.type === 'session_business_diagnostic') {
+            const detail = msg.data || {};
+            if (!wrk.process.persistentSession || detail.businessEpoch !== wrk.process.sessionFacts?.business?.epoch) return;
+            const reason = /^SESSION_[A-Z_]{1,64}$/.test(detail.reason || '') ? detail.reason : 'SESSION_EVENT_DELIVERY_FAILED';
+            log('系统', `常驻业务控制链异常: ${reason}`, { accountId: String(accountId), accountName: wrk.name,
+                event: 'session_business_diagnostic', reason, phase: ['sync_channel', 'game_reply'].includes(detail.phase) ? detail.phase : 'event_delivery',
+                operation: ['facts', 'query', 'command', 'request'].includes(detail.operation) ? detail.operation : '',
+                method: /^[a-z.]{0,96}$/i.test(detail.method || '') ? detail.method || '' : '' });
+            queueBusinessRecovery(accountId, wrk.process, reason);
         } else if (msg.type === 'error') {
             log('错误', `账号[${  accountId  }]进程报错: ${  msg.error}`, {
                 accountId: String(accountId),
@@ -772,6 +908,8 @@ function createWorkerManager(deps) {
     }
 
     async function stopPersistentSession(accountId) {
+        cancelBusinessRecovery(accountId);
+        businessRecoveryHistory.delete(String(accountId));
         const account = findAccount(accountId); const wrk = workers[accountId];
         if (wrk) wrk.stopping = true;
         stopAccountRefresh?.(accountId);
@@ -793,27 +931,32 @@ function createWorkerManager(deps) {
         return true;
     }
 
-    async function tryAdoptAccountSession(accountOrId) {
+    async function tryAdoptAccountSession(accountOrId, options = {}) {
         if (!persistentMode) return { state: 'absent' };
         const id = String(typeof accountOrId === 'object' ? accountOrId.id : accountOrId);
         if (sessionStarts.has(id)) return sessionStarts.get(id);
         const task = (async () => {
             let account = findAccount(id);
             if (!account || account.autoLogin === false) return { state: 'disabled' };
+            if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
             account = deps.store.ensureAccountSessionMetadata(id) || account;
             const existing = workers[id];
             if (existing?.process?.persistentSession) {
-                try { await existing.process.ready; let actual = await existing.process.refreshSession();
+                let verified;
+                try { await existing.process.ready; let actual = await existing.process.refreshSession(); verified = actual;
+                    if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+                    if (options.connectedOnly && (actual.facts.game.connected !== true || actual.facts.game.terminal === true)) return { state: 'offline', facts: actual.facts };
                     if (actual.facts.game.terminal === true) { await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true }; }
                     if (actual.facts.business?.ready !== true) actual = await existing.process.reloadBusiness();
                     existing.sessionFacts = actual.facts;
                     return { state: 'adopted', facts: actual.facts };
                 } catch {
-                    // Reauthenticate a lost management socket; never turn a
-                    // control failure into a transport stop or Code request.
-                    settleWorkerRequests(existing);
-                    await existing.process.detach().catch(() => {});
-                    if (workers[id] === existing) delete workers[id];
+                    // A failed business replacement is not a broken manager
+                    // socket. Retain the verified record for a bounded retry.
+                    if (verified?.facts.game.connected === true && verified.facts.game.terminal !== true)
+                        return { state: 'unhealthy', facts: verified.facts };
+                    // Retain ownership until a live host can be verified. A
+                    // temporary control failure must remain eligible for retry.
                 }
             }
             await require('./session-worker-proxy').replayLifecycle({ dataDir, account, onLifecycle: event => handleSessionLifecycle(id, event) });
@@ -821,11 +964,25 @@ function createWorkerManager(deps) {
             if (found.state === 'absent' || (found.state === 'stale'
                 && !require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime))) return { state: 'absent' };
             if (found.state !== 'present') return { state: 'unknown' };
-            const actual = await found.client.call('status'); found.client.close();
+            let actual;
+            try { actual = await found.client.call('status'); } finally { found.client.close(); }
+            if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+            if (options.connectedOnly && (actual.facts.game.connected !== true || actual.facts.game.terminal === true)) return { state: 'offline', facts: actual.facts };
             if (actual.facts.game.terminal === true) {
                 await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true };
             }
-            const started = await startWorker(account, { adoptOnly: true });
+            if (existing) {
+                if (workers[id] !== existing) return { state: 'cancelled' };
+                settleWorkerRequests(existing);
+                await existing.process.detach().catch(() => {});
+                if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+                if (workers[id] !== existing) return { state: 'cancelled' };
+                delete workers[id];
+            }
+            const starting = startWorker(account, { adoptOnly: true });
+            const replacement = workers[id];
+            if (replacement && replacement !== existing) options.onRecordReplaced?.(existing, replacement);
+            const started = await starting;
             return started ? { state: 'adopted', facts: workers[id]?.process?.sessionFacts } : { state: 'unknown' };
         })();
         sessionStarts.set(id, task);
@@ -834,6 +991,8 @@ function createWorkerManager(deps) {
     }
 
     async function detachAll() {
+        managerClosing = true;
+        for (const id of businessRecoveries.keys()) cancelBusinessRecovery(id);
         scheduler.clearAll();
         for (const [id, wrk] of Object.entries(workers)) {
             if (!wrk.process?.persistentSession) continue;
@@ -848,6 +1007,11 @@ function createWorkerManager(deps) {
         for (const [accountId, wrk] of Object.entries(workers)) {
             if (!wrk || wrk.stopping) continue;
             if (now - Number(wrk.lastPongAt || 0) > WATCHDOG_TIMEOUT_MS) {
+                if (persistentMode) {
+                    wrk.lastPongAt = now;
+                    queueBusinessRecovery(accountId, wrk.process, 'SESSION_BUSINESS_WATCHDOG');
+                    continue;
+                }
                 const history = (restartHistory.get(accountId) || [])
                     .filter(at => now - at < 60 * 60 * 1000);
                 if (history.length >= WATCHDOG_MAX_RESTARTS) {

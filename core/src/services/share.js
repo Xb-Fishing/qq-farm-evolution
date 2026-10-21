@@ -22,6 +22,9 @@ const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { log, toNum } = require('../utils/utils');
 const { getItemById } = require('../config/gameConfig');
+const fs = require('node:fs');
+const path = require('node:path');
+const { getDataFile } = require('../config/runtime-paths');
 
 const DAILY_KEY = 'daily_share';
 
@@ -32,6 +35,45 @@ const CHECK_COOLDOWN_MS = 10 * 60 * 1000;
 let doneDateKey = '';
 let lastCheckAt = 0;
 let lastClaimAt = 0;
+let running = false;
+
+// Keep write claims on disk, outside the unchanged warm-state schema. Entry
+// availability alone cannot reconcile a previously submitted reward request.
+function attemptFile() {
+  const account = String(process.env.FARM_ACCOUNT_ID || 'default').replace(/[^\w.-]/g, '_').slice(0, 80);
+  return getDataFile(`daily-share-attempt-${account}.json`);
+}
+
+function readAttempt() {
+  try {
+    const value = JSON.parse(fs.readFileSync(attemptFile(), 'utf8'));
+    if (value?.version !== 1 || !/^\d{4}-\d{2}-\d{2}$/.test(value.date || '')
+      || !['ReportShare', 'ClaimShareReward'].includes(value.stage)
+      || !['pending', 'ok', 'already_claimed'].includes(value.outcome)) throw new Error('Invalid share journal');
+    return value;
+  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+
+function writeAttempt(date, stage, outcome = 'pending') {
+  const file = attemptFile(); const temporary = `${file}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  let fd;
+  try {
+    fd = fs.openSync(temporary, 'w', 0o600);
+    fs.writeFileSync(fd, JSON.stringify({ version: 1, date, stage, outcome })); fs.fsyncSync(fd);
+    fs.closeSync(fd); fd = undefined; fs.renameSync(temporary, file);
+    const directory = fs.openSync(path.dirname(file), 'r');
+    try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    try { fs.unlinkSync(temporary); } catch {}
+  }
+}
+
+function decodeReply(type, body) {
+  try { return type.decode(body); }
+  catch { throw Object.assign(new Error('分享响应解析失败'), { code: 'SHARE_REPLY_DECODE_FAILED', replyBytes: body?.length || 0 }); }
+}
 
 // ---- 日期工具 ----
 
@@ -43,8 +85,8 @@ function getDateKey() {
   return `${year}-${month}-${day}`;
 }
 
-function markDoneToday() {
-  doneDateKey = getDateKey();
+function markDoneToday(date = getDateKey()) {
+  doneDateKey = date;
 }
 
 function isDoneToday() {
@@ -69,7 +111,7 @@ function getRewardSummary(items) {
       parts.push(`点券${count}`);
     } else {
       const info = getItemById(id);
-      const name = info && info.name ? String(info.name) : `物品#${id}`;
+      const name = info && info.name ? String(info.name) : '未知物品';
       parts.push(`${name}x${count}`);
     }
   }
@@ -81,7 +123,7 @@ function getRewardSummary(items) {
  */
 function isAlreadyClaimedError(err) {
   const msg = String(err && err.message || '');
-  return msg.includes('code=1009001') || msg.includes('已经领取');
+  return Number(err?.code) === 1009001 || /\bcode=1009001\b/.test(msg) || msg.includes('已经领取');
 }
 
 // ---- RPC 调用 ----
@@ -91,7 +133,7 @@ async function checkCanShare() {
     types.CheckCanShareRequest.create({})
   ).finish();
   const { body } = await sendMsgAsync('gamepb.sharepb.ShareService', 'CheckCanShare', request);
-  return types.CheckCanShareReply.decode(body);
+  return decodeReply(types.CheckCanShareReply, body);
 }
 
 async function reportShare() {
@@ -99,7 +141,9 @@ async function reportShare() {
     types.ReportShareRequest.create({ shared: true })
   ).finish();
   const { body } = await sendMsgAsync('gamepb.sharepb.ShareService', 'ReportShare', request);
-  return types.ReportShareReply.decode(body);
+  // RPC transport success has already been checked. The reply has no bool
+  // success field; never publish the opaque share result (it may contain Ark).
+  decodeReply(types.ReportShareReply, body);
 }
 
 async function claimShareReward() {
@@ -107,7 +151,7 @@ async function claimShareReward() {
     types.ClaimShareRewardRequest.create({ claimed: true })
   ).finish();
   const { body } = await sendMsgAsync('gamepb.sharepb.ShareService', 'ClaimShareReward', request);
-  return types.ClaimShareRewardReply.decode(body);
+  return decodeReply(types.ClaimShareRewardReply, body);
 }
 
 // ---- 主逻辑 ----
@@ -119,46 +163,46 @@ async function claimShareReward() {
 async function performDailyShare(force = false) {
   const now = Date.now();
 
-  if (!force && isDoneToday()) return false;
+  if (running || isDoneToday()) return false;
   if (!force && now - lastCheckAt < CHECK_COOLDOWN_MS) return false;
 
   lastCheckAt = now;
-
+  running = true;
+  const date = getDateKey();
+  let stage = 'journal'; let submitted = false;
   try {
+    const previous = readAttempt();
+    if (previous?.date === date) {
+      if (previous.outcome !== 'pending') markDoneToday(date);
+      else log('分享', '本次分享请求已提交、结果待核对，今日不重复提交', {
+        module: 'task', event: DAILY_KEY, result: 'unknown', stage: previous.stage,
+      });
+      return false;
+    }
     // 检查是否可以分享
+    stage = 'CheckCanShare';
     const canShareResult = await checkCanShare();
     if (!canShareResult || !canShareResult.can_share) {
-      markDoneToday();
+      markDoneToday(date);
       log('分享', '今日暂无可领取分享礼包', { module: 'task', event: DAILY_KEY, result: 'none' });
       return false;
     }
 
-    // 上报分享
-    const reportResult = await reportShare();
-    if (!reportResult || !reportResult.success) {
-      log('分享', '上报分享状态失败', { module: 'task', event: DAILY_KEY, result: 'error' });
-      return false;
-    }
-
-    // 领取奖励
-    let claimResult = null;
-    try {
-      claimResult = await claimShareReward();
-    } catch (err) {
-      if (isAlreadyClaimedError(err)) {
-        markDoneToday();
-        log('分享', '今日分享奖励已领取', { module: 'task', event: DAILY_KEY, result: 'none' });
-        return false;
-      }
-      throw err;
-    }
-
-    if (!claimResult || !claimResult.success) {
-      log('分享', '领取分享礼包失败', { module: 'task', event: DAILY_KEY, result: 'error' });
-      return false;
-    }
-
+    // A failed durable claim prevents sending. Forced checks cannot bypass an
+    // unknown write, including after a restart or a business-only replacement.
+    if (getDateKey() !== date) return false;
+    stage = 'ReportShare'; writeAttempt(date, stage); submitted = true;
+    await reportShare();
+    if (getDateKey() !== date) return false;
+    stage = 'ClaimShareReward'; writeAttempt(date, stage);
+    const claimResult = await claimShareReward();
     const items = Array.isArray(claimResult.items) ? claimResult.items : [];
+    if (!items.some(item => toNum(item.id) > 0 && toNum(item.count) > 0)) {
+      log('分享', '领取响应未确认奖励，本次结果待核对，今日不重复提交', {
+        module: 'task', event: DAILY_KEY, result: 'unknown', stage,
+      });
+      return false;
+    }
     const summary = getRewardSummary(items);
 
     log('分享',
@@ -167,12 +211,23 @@ async function performDailyShare(force = false) {
     );
 
     lastClaimAt = Date.now();
-    markDoneToday();
+    markDoneToday(date);
+    try { writeAttempt(date, stage, 'ok'); } catch { /* Pending claim still prevents replay. */ }
     return true;
   } catch (err) {
-    log('分享', `领取失败: ${err.message}`, { module: 'task', event: DAILY_KEY, result: 'error' });
+    if (submitted && isAlreadyClaimedError(err)) {
+      markDoneToday(date);
+      try { writeAttempt(date, stage, 'already_claimed'); } catch { /* Keep the pending claim. */ }
+      log('分享', '今日分享奖励已领取', { module: 'task', event: DAILY_KEY, result: 'none', stage });
+      return false;
+    }
+    const reason = err?.code === 'SHARE_REPLY_DECODE_FAILED' ? err.code : 'SHARE_REQUEST_FAILED';
+    log('分享', submitted ? `${stage} 响应异常，结果待核对，今日不重复提交` : `分享检查失败（${stage}）`, {
+      module: 'task', event: DAILY_KEY, result: submitted ? 'unknown' : 'error', stage, reason,
+      ...(err?.replyBytes ? { replyBytes: err.replyBytes } : {}),
+    });
     return false;
-  }
+  } finally { running = false; }
 }
 
 module.exports = {
@@ -192,5 +247,5 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
       doneDateKey = value.doneDateKey;
       lastCheckAt = value.lastCheckAt;
       lastClaimAt = value.lastClaimAt;
-  }, { });
+  }, { idle: () => !running });
 }

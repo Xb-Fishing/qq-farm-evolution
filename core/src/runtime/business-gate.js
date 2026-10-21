@@ -52,6 +52,7 @@ function createBusinessGate(epoch) {
     runProducer: (name, callback) => context.exit(() => enter(name, callback)),
     runEvent: (name, callback, connectionEpoch) => context.exit(() => enter(name, callback, false, connectionEpoch)),
     prepare: (name, callback) => context.exit(() => enter(name, callback, true)),
+    suspend: () => { open = false; },
     activate: () => { if (closed) throw new Error('Business epoch retired'); open = true; },
     retire: () => { closed = true; open = false; },
     operation: () => { const value = context.getStore(); return !closed && value?.live && value.epoch === epoch ? value : undefined; },
