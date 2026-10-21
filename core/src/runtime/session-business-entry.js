@@ -20,11 +20,15 @@ function suspendFailedBusiness(detail = {}) {
   timers.pauseSessionSchedulers(); gate.suspend(); bridge.blockControl(reason);
   faultLogger.error('常驻业务控制链异常', { event: 'session_business_fault', reason,
     phase: detail.phase || 'event_delivery', operation: detail.operation || '', method: detail.method || '',
+    ...(Number.isFinite(detail.waitMs) ? { waitMs: detail.waitMs, waitCount: detail.waitCount,
+      waitOutcome: detail.waitOutcome, controlState: detail.controlState } : {}),
     detail: redactString(String(detail.error?.stack || detail.error?.message || '')).slice(0, 3000) });
   parentPort.postMessage({ type: 'session_business_diagnostic', data: {
     reason, phase: detail.phase || 'event_delivery', operation: String(detail.operation || '').slice(0, 48),
     method: /^[a-z.]{0,96}$/i.test(detail.method || '') ? detail.method || '' : '',
     businessEpoch: workerData.epoch,
+    ...(Number.isFinite(detail.waitMs) ? { waitMs: detail.waitMs, waitCount: detail.waitCount,
+      waitOutcome: detail.waitOutcome, controlState: detail.controlState } : {}),
   } });
 }
 const bridge = createSessionBusinessBridge({ port: parentPort, gate, initialFacts: decode(workerData.facts), onControlFailure: suspendFailedBusiness });

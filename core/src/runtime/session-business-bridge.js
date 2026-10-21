@@ -1,4 +1,5 @@
 const { EventEmitter } = require('node:events');
+const { performance } = require('node:perf_hooks');
 const { encode, decode } = require('./session-codec');
 const { STATS_METHODS, STATS_READ_METHODS, GOVERNOR_METHODS, GOVERNOR_READ_METHODS,
   STATUS_METHODS, NETWORK_READ_METHODS } = require('./session-game-adapter');
@@ -13,11 +14,12 @@ function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailur
     controlFailure ||= Object.assign(new Error(reason), { code: reason });
     return controlFailure;
   }
-  function failControl(reason, kind, method, originalError) {
+  function failControl(reason, kind, method, originalError, details = {}) {
     const first = syncHealthy;
     const error = blockControl(reason);
     if (first) {
-      try { onControlFailure?.({ reason, phase: kind === 'request' ? 'game_reply' : 'sync_channel', operation: kind, method: method || '', error: originalError }); } catch {}
+      Object.assign(error, details);
+      try { onControlFailure?.({ reason, phase: kind === 'request' ? 'game_reply' : 'sync_channel', operation: kind, method: method || '', error: originalError, ...details }); } catch {}
     }
     return error;
   }
@@ -52,8 +54,22 @@ function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailur
     try { port.postMessage({ kind: 'business_sync', buffer, body: encode({ kind, method, args,
       connectionEpoch: kind === 'command' ? gate.operation()?.connectionEpoch : undefined }) }); }
     catch (error) { throw failControl('SESSION_CONTROL_UNAVAILABLE', kind, method, error); }
-    if (Atomics.wait(header, 0, 0, 15000) === 'timed-out' || Atomics.load(header, 0) !== 1) {
-      throw failControl('SESSION_CONTROL_UNAVAILABLE', kind, method);
+    const startedAt = performance.now(); const deadline = startedAt + 15000;
+    let waitCount = 0; let waitOutcome = 'not-needed';
+    // The host publishes state=1 before notifying. Its notification may arrive
+    // after the Worker consumed that reply and reused this buffer. Such a wake
+    // belongs to the earlier call; only the predicate proves this reply ready.
+    while (Atomics.load(header, 0) === 0) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      waitCount++;
+      waitOutcome = Atomics.wait(header, 0, 0, remaining);
+    }
+    const controlState = Atomics.load(header, 0);
+    if (controlState !== 1) {
+      throw failControl('SESSION_CONTROL_UNAVAILABLE', kind, method, undefined, {
+        waitMs: Math.round(performance.now() - startedAt), waitCount, waitOutcome, controlState,
+      });
     }
     const length = Atomics.load(header, 1);
     if (length < 1 || length > buffer.byteLength - 8) throw failControl('SESSION_BAD_SYNC_REPLY', kind, method);

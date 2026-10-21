@@ -503,13 +503,16 @@ async function tick() {
   if (!armed || gen !== generation) return;
   try {
     await runTickBody(gen);
-  } catch {
+  } catch (error) {
     // 调度异常只记固定原因码（不透传 raw err，防日志泄露），状态保持下轮重试
     log('好友', '在线自动捣乱调度异常', {
       module: 'friend',
       event: 'auto_bad_tick_error',
       result: 'error',
       reason: 'tick_error',
+      ...(/^SESSION_[A-Z_]{1,64}$/.test(error?.code || '') ? { controlReason: error.code } : {}),
+      ...(Number.isFinite(error?.waitMs) ? { waitMs: error.waitMs, waitCount: error.waitCount,
+        waitOutcome: error.waitOutcome, controlState: error.controlState } : {}),
     });
   } finally {
     if (armed && gen === generation) {
