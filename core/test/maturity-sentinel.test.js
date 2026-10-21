@@ -592,22 +592,22 @@ test('own-farm nudge detection ignores replant boundaries and trusts same-crop d
   const base = 1_800_000_000;
   // 基线：两块地，慢作物 6h 后熟
   let lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
-    { id: 2, plant: { id: 200, left_inorc_fert_times: 5, phases: [{ begin_time: base }, { begin_time: base + 3600 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 200, left_inorc_fert_times: 5, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 3600 }] } },
   ];
   let schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3600 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3600, schedule), false);
   // 补种边界：地 2 收获后改种 6 分钟短作物（新茬 plantId 不同）——不许报
   lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
-    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ phase: 1, begin_time: base + 3600 }, { phase: 6, begin_time: base + 3960 }] } },
   ];
   schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3960 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3960 - 60, schedule), false, '换茬补种不是催熟');
   // 同一茬墙钟前移 >25s（真施肥/催熟）——必须报
   lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: base }, { begin_time: base + 21000 }] } },
-    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21000 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ phase: 1, begin_time: base + 3600 }, { phase: 6, begin_time: base + 3960 }] } },
   ];
   schedule = [{ landId: 1, matureAtSec: base + 21000 }, { landId: 2, matureAtSec: base + 3960 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 21000 - 60, schedule), true, '同茬墙钟前移+施肥次数下降必须报');

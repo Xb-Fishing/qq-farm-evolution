@@ -10,7 +10,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   runFarmOperation = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:runFarmOperation', runFarmOperation);
 }
-const { CONFIG } = require('../config/config');
+const { CONFIG, PlantPhase } = require('../config/config');
 const { getUserState, isConnected, networkEvents } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, getServerTimeSec, getServerTimeMs } = require('../utils/utils');
 const { isAutomationOn, getAutomation, getPrioritize2x2Crops } = require('../models/store');
@@ -18,7 +18,7 @@ const { recordOperation } = require('./stats');
 const { recordEvent } = require('./daily-events');
 const { createScheduler } = require('./scheduler');
 const { getAllLands, harvest, farming, unlockLand, upgradeLand } = require('./farm-api');
-const { analyzeLands, resolveRemovableHarvestedLands } = require('./farm-land-analyzer');
+const { analyzeLands, getCurrentPhase, resolveRemovableHarvestedLands } = require('./farm-land-analyzer');
 const { runFertilizerByConfig } = require('./farm-fertilizer');
 const { autoPlantEmptyLands } = require('./planting-service');
 const { startFertilizerBuyCheckTimer, stopFertilizerBuyCheckTimer } = require('./farm-scheduler');
@@ -44,7 +44,7 @@ let lastNextMatureDueAtMs = 0;
 let lastNextMatureLandIds = [];
 let ownMatureSchedule = new Map();
 let ownHarvestInFlight = null;
-// 自己农场催熟/化肥检测的上一轮地块基线：landId -> {plantId, matureAtSec, fertLeft, nudged}
+// 只存可比较的作物快照；旧版热交接基线缺少生命周期字段，首次观察只重建。
 const ownNudgeLandSnapshots = new Map();
 
 const farmScheduler = createScheduler('farm');
@@ -60,10 +60,9 @@ function formatRemain(sec) {
 }
 
 /**
- * 自己农场催熟/化肥检测：只信「同一地块、同一茬」的墙钟前移/施肥次数下降。
- * 全场聚合比较（上一版：全场最早成熟时刻、全场最小剩余施肥次数）会被
- * 收获+补种骗——新补种的短周期作物天然更早熟、新茬 fertLeft 天然不同，
- * 每轮收种都会误报一次"检测到催熟/化肥"。
+ * plant.id 是品种，不是植株身份。成熟/收获会把施肥余次重置为默认 0，
+ * 换季/重种也会重置状态；只有连续生长快照的变化才可作为施肥证据。
+ * phases 是当前及后续阶段的后缀，正常裁剪不会改变成熟墙钟。
  */
 function noteOwnFarmNudge(lands, nextMatureSec, matureSchedule = []) {
   const next = toNum(nextMatureSec);
@@ -74,42 +73,69 @@ function noteOwnFarmNudge(lands, nextMatureSec, matureSchedule = []) {
     if (landId && matureAtSec) matureByLand.set(landId, matureAtSec);
   }
 
-  let jumped = false;
-  let fertUsed = false;
-  let newNudge = false;
+  const serverSec = getServerTimeSec();
+  const reasons = new Set();
+  const changedLandIds = [];
   const seenLandIds = new Set();
   for (const land of Array.isArray(lands) ? lands : []) {
     const plant = land && land.plant;
     const landId = toNum(land && land.id);
     if (landId) seenLandIds.add(landId);
-    if (!plant || !landId) continue;
+    if (!landId) continue;
+    if (!plant || !Array.isArray(plant.phases) || plant.phases.length === 0) {
+      ownNudgeLandSnapshots.delete(landId);
+      continue;
+    }
     const plantId = toNum(plant.id);
+    const currentPhase = getCurrentPhase(plant.phases, false, '', plantId);
+    if (!plantId || !currentPhase || currentPhase.phase === PlantPhase.DEAD
+      || currentPhase.phase === PlantPhase.UNKNOWN) {
+      ownNudgeLandSnapshots.delete(landId);
+      continue;
+    }
     const fertRaw = plant.left_inorc_fert_times != null
       ? plant.left_inorc_fert_times
       : plant.leftInorcFertTimes;
     const fertLeft = fertRaw == null ? null : toNum(fertRaw);
     const nudged = !!(plant.is_nudged || plant.isNudged);
     const matureAtSec = matureByLand.get(landId) || 0;
+    const season = plant.season == null ? null : toNum(plant.season);
+    const growing = currentPhase.phase !== PlantPhase.MATURE && matureAtSec > serverSec;
+    const phaseCount = plant.phases.length;
     const prev = ownNudgeLandSnapshots.get(landId);
-    // 换茬（plantId 变）直接重建基线，不比较
-    if (prev && prev.plantId === plantId) {
-      if (prev.matureAtSec > 0 && matureAtSec > 0 && matureAtSec < prev.matureAtSec - 25) jumped = true;
-      if (prev.fertLeft != null && fertLeft != null && fertLeft < prev.fertLeft) fertUsed = true;
-      if (nudged && !prev.nudged) newNudge = true;
+    const sameCycle = prev && prev.version === 2 && prev.plantId === plantId
+      && prev.season === season && prev.matureAtSec > 0 && matureAtSec > 0
+      && matureAtSec <= prev.matureAtSec + 25 && phaseCount <= prev.phaseCount;
+    if (sameCycle && prev.growing && prev.matureAtSec > serverSec) {
+      const evidence = [];
+      // 真正把未来成熟点提前（含直接催熟）仍可识别；自然到点不满足此前提。
+      if (matureAtSec < prev.matureAtSec - 25) evidence.push('mature_time_advanced');
+      // 成熟、枯死或收获后的默认计数/标志绝不能单独证明施肥。
+      if (growing) {
+        if (prev.fertLeft != null && fertLeft != null && fertLeft < prev.fertLeft) evidence.push('fertilizer_count_decreased');
+        if (nudged && !prev.nudged) evidence.push('nudged_rising');
+      }
+      if (evidence.length) {
+        changedLandIds.push(landId);
+        for (const reason of evidence) reasons.add(reason);
+      }
     }
-    ownNudgeLandSnapshots.set(landId, { plantId, matureAtSec, fertLeft, nudged });
+    ownNudgeLandSnapshots.set(landId, { version: 2, plantId, season, matureAtSec, fertLeft, nudged, growing, phaseCount });
   }
   for (const landId of [...ownNudgeLandSnapshots.keys()]) {
     if (!seenLandIds.has(landId)) ownNudgeLandSnapshots.delete(landId);
   }
 
-  if (isFirstFarmCheck || (!jumped && !fertUsed && !newNudge)) return false;
-  const remain = next > 0 ? Math.max(0, next - getServerTimeSec()) : 0;
-  log('农场', `自己农场检测到催熟/化肥，下次收获约 ${formatRemain(remain)}后`, {
+  if (isFirstFarmCheck || reasons.size === 0) return false;
+  const remain = next > 0 ? Math.max(0, next - serverSec) : 0;
+  const timing = remain > 0 ? `下次收获约 ${formatRemain(remain)}后` : '作物已成熟，请及时收获';
+  log('农场', `自己农场检测到催熟/化肥，${timing}`, {
     module: 'farm',
     event: '催熟',
     result: 'ok',
     remainSec: remain,
+    landIds: changedLandIds,
+    reasons: [...reasons].sort(),
   });
   return true;
 }
@@ -206,6 +232,8 @@ async function performOwnHarvest(landIds, options = {}) {
 
   const task = (async () => {
     const reply = await harvest(ids);
+    // 成功收获即结束旧茬；即使两次巡田之间已同种补种，也不得比较旧基线。
+    for (const landId of ids) ownNudgeLandSnapshots.delete(landId);
     reconcileOwnMaturityAfterHarvest(ids, reply);
     const dueAt = Number(options.dueAt) || 0;
     const latencyMs = dueAt > 0 ? Math.max(0, Date.now() - dueAt) : null;
