@@ -36,6 +36,10 @@ const BUNDLE_REWARD_SPECS = [
   [210042, "蜜熊木门", "icon_men05", 32],
   [210043, "蜜熊窗", "icon_chuang05", 32],
   [401007, "缤纷奶茶铭牌", "icon_nameplate_S4_1", 10],
+  [210044, "蜜熊墙面", "icon_qiangmian05", 32],
+  [210045, "蜜熊地板", "icon_diban05", 32],
+  [210046, "蜜熊桌椅", "icon_zhuoyi05", 32],
+  [210047, "蜜熊装饰", "icon_zhuangshi05", 32],
 ];
 const specs = [
   [1041, '奶茶券', 'icon_s4_ticket'],
@@ -193,7 +197,7 @@ test('real shared GetGroup and milk-tea overview attach names and images to cost
     assert.equal(goods.costs[0].image, config.getItemImageById(1041));
   }
   assert.equal(overview.growthFund.tiers[0].reward[0].image, config.getItemImageById(2163));
-  assert.equal(overview.growthFund.tiers[1].reward.length, 4);
+  assert.equal(overview.growthFund.tiers[1].reward.length, 8);
   for (const reward of overview.growthFund.tiers[1].reward) {
     assert.ok(config.getItemById(reward.id), 'fund preview item must be registered');
     assert.equal(reward.name, config.getItemById(reward.id).name);
