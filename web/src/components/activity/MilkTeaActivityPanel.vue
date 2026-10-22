@@ -38,6 +38,55 @@ const settle = computed(() => props.activity?.timing?.phase === 'settle')
 const shop = computed(() => props.queries.shop.data)
 const hires = computed(() => props.queries.hireList.data)
 const work = computed(() => props.queries.work.data)
+const shift = computed(() => work.value?.myShift || null)
+const interactNotice = ref('')
+const interactOptions = computed<number[]>(() => {
+  const previews = shift.value?.interactPreviews
+  if (!Array.isArray(previews))
+    return []
+  return [...new Set<number>(previews.map((preview: any) => preview?.interactionType).filter((id: unknown): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0))]
+})
+const interactCount = computed(() => {
+  const value = shift.value?.interactCount
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+})
+const interactLimit = computed(() => {
+  const value = shift.value?.interactLimit
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null
+})
+// 只读工作 DTO 的本地守卫：缺失/畸形一律显示待确认，不把 null 当 0 或伪造耗尽。
+const interactDisabledReason = computed(() => {
+  if (props.queries.work.loading)
+    return '工作状态读取中，暂不能互动。'
+  if (props.queries.work.error)
+    return `工作状态读取失败：${props.queries.work.error}`
+  if (!work.value)
+    return '工作状态待确认，请先查询我的工作。'
+  if (!shift.value)
+    return '当前没有进行中的班次，暂不能互动。'
+  if (!/^[1-9]\d*$/.test(String(shift.value.shiftId ?? '')))
+    return '班次信息待确认，请刷新工作状态。'
+  if (interactNotice.value || interactionHasEnded())
+    return '当前班次已经结束，请刷新工作状态。'
+  if (work.value.interactDone === true)
+    return '本班次互动已完成。'
+  if (interactCount.value == null)
+    return '互动次数待确认，请刷新工作状态。'
+  if (interactLimit.value == null) {
+    return shift.value?.interactLimit === 0
+      ? '本班次互动次数为零，暂不能互动。'
+      : '互动次数上限待确认，请刷新工作状态。'
+  }
+  if (interactCount.value >= interactLimit.value)
+    return `本班次互动次数已用完（${interactCount.value} / ${interactLimit.value}）。`
+  if (!interactOptions.value.length)
+    return '当前班次的互动选项待确认，请刷新工作状态。'
+  if (!interactOptions.value.includes(Number(interactionType.value)))
+    return '所选互动不在当前班次可选项中，请重新选择。'
+  if (settle.value)
+    return '已进入结算期，停止班次互动。'
+  return ''
+})
 const workshop = computed(() => props.queries.workshop.data)
 const hireCandidatesReady = computed(() => !props.queries.hireList.loading && !props.queries.hireList.error && Number(hires.value?.durationId) === Number(durationId.value))
 const candidates = computed(() => hireCandidatesReady.value ? [...(hires.value?.friends || []), ...(hires.value?.robots || [])] : [])
@@ -95,10 +144,28 @@ watch(() => (workshop.value?.recipes || []).filter((recipe: any) => recipe.unloc
   if (recipeId.value && !ids.includes(recipeId.value))
     recipeId.value = 0
 }, { immediate: true })
-watch(() => (work.value?.myShift?.interactPreviews || []).map((preview: any) => Number(preview.interactionType)).filter((id: number) => Number.isSafeInteger(id) && id > 0), (ids: number[]) => {
+watch(interactOptions, (ids: number[]) => {
   if (ids.length && !ids.includes(interactionType.value))
     interactionType.value = ids[0]!
 }, { immediate: true })
+// 确认期间班次/次数/选项/读取状态/选择/结算状态任一变化，撤销旧的互动确认。
+watch(() => [
+  shift.value?.shiftId ?? '',
+  interactCount.value,
+  interactLimit.value,
+  shift.value?.endAt,
+  work.value?.interactDone === true,
+  interactOptions.value.join(','),
+  interactionType.value,
+  props.queries.work.loading === true,
+  props.queries.work.error || '',
+  props.loading === true,
+  settle.value === true,
+], () => {
+  interactNotice.value = ''
+  if (pending.value?.action === 'interact')
+    closeConfirmation()
+})
 function selectVisibleFruits() {
   selectedFruitUids.value = [...new Set([...selectedFruitUids.value, ...visibleFruits.value.map((fruit: any) => String(fruit.uid))])]
 }
@@ -113,7 +180,17 @@ function prepareCraft(all = false) {
   craftNotice.value = ''
   prepare('craft', { fruitUids: confirmedFruits.map((fruit: any) => fruit.uid), confirmedFruits }, `确认批量制作奶茶？将消耗 ${fruits.length} 组、共 ${total} 个果实：${fruits.map((fruit: any) => `${fruit.name || '果实'} × ${fruit.count}`).join('；')}。所选果实按整组全部消耗，实际杯数以服务端结果为准。`)
 }
+function interactionHasEnded() {
+  const endAt = Number(shift.value?.endAt)
+  return endAt > 0 && endAt <= Math.floor(Date.now() / 1000)
+}
 function prepare(action: string, input: Record<string, unknown> = {}, text = '确认执行此操作？') {
+  if (action === 'interact') {
+    if (interactionHasEnded())
+      interactNotice.value = 'ended'
+    if (busy.value || interactDisabledReason.value)
+      return
+  }
   returnFocus = typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null
   pending.value = { action, input, text }
   void nextTick(() => {
@@ -128,6 +205,21 @@ function confirm() {
   if (action.action === 'hire' && !canHire.value) {
     closeConfirmation()
     return
+  }
+  if (action.action === 'interact') {
+    const currentShiftId = String(shift.value?.shiftId ?? '')
+    const selectedType = Number(action.input.interactionType)
+    if (interactionHasEnded())
+      interactNotice.value = 'ended'
+    // 确认时重新核对实时状态；endAt 已过则就地撤销，不依赖额外计时器。
+    if (interactDisabledReason.value
+      || !shift.value
+      || String(action.input.shiftId ?? '') !== currentShiftId
+      || selectedType !== Number(interactionType.value)
+      || !interactOptions.value.includes(selectedType)) {
+      closeConfirmation()
+      return
+    }
   }
   closeConfirmation()
   emit('operate', action.action, action.input)
@@ -369,10 +461,12 @@ function exchange(goods: ExchangeGoods) {
           </BaseButton>
         </div>
         <div class="milk-inline-form">
-          <label class="milk-field">班次互动<select v-model.number="interactionType" aria-label="互动类型" class="milk-input"><option v-for="preview in work?.myShift?.interactPreviews || []" :key="preview.interactionType" :value="preview.interactionType">{{ ({ 1: '宣传推广', 2: '花式摇杯', 3: '招牌试饮', 4: '划水摸鱼', 5: '申请涨薪' } as Record<number, string>)[preview.interactionType] || '互动' }}</option></select></label><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle || !work?.myShift" @click="prepare('interact', { interactionType: Number(interactionType), shiftId: work?.myShift?.shiftId })">
+          <label class="milk-field">班次互动<select v-model.number="interactionType" aria-label="互动类型" class="milk-input" :disabled="busy || !!interactDisabledReason"><option v-for="type in interactOptions" :key="type" :value="type">{{ ({ 1: '宣传推广', 2: '花式摇杯', 3: '招牌试饮', 4: '划水摸鱼', 5: '申请涨薪' } as Record<number, string>)[type] || '互动' }}</option></select></label><BaseButton class="milk-action" variant="secondary" :disabled="busy || !!interactDisabledReason" @click="prepare('interact', { interactionType: Number(interactionType), shiftId: work?.myShift?.shiftId })">
             执行班次互动
           </BaseButton>
-        </div><p v-if="queries.work.error" class="milk-error" role="alert">
+        </div><p v-if="interactDisabledReason" class="milk-muted" role="status">
+          {{ interactDisabledReason }}
+        </p><p v-if="queries.work.error" class="milk-error" role="alert">
           {{ queries.work.error }}
         </p>
       </section>

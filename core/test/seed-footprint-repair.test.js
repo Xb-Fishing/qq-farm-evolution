@@ -81,10 +81,11 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,
-  // and the three 2026-10-18 golden-fruit rows asserted independently below.
+  // and the separately verified golden-fruit rows asserted independently below.
   const rewardAdditions = new Set([2163, 202011, 203012, 205011, 206011, 207012, 208012,
-    210031, 210032, 210033, 210034, 210035, 210036, 210037]);
-  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005]);
+    210031, 210032, 210033, 210034, 210035, 210036, 210037,
+    210016, 210026, 210012, 210022, 210013, 210023, 210014, 210024, 210015, 210025, 210011, 210021, 210017, 210027, 210041, 210042, 210043, 401007]);
+  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528]);
   const originalItems = items.filter(x => !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
     && !goldenFruitAdditions.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
@@ -92,9 +93,9 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
     ) });
   assert.equal(hash(originalItems), '4baaa0138392f234b1a06ca7dd2161537b8de7cdf9ce8932e5bd950fb072ebe6');
-  // 2026-10-18 golden fruits: registered exactly once as type-17 fruits, never as seeds
+  // Reviewed golden fruits: registered exactly once as type-17 fruits, never as seeds
   // or Plants — the size-2 source plant behind 1049005 does not turn its fruit into a seed.
-  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽']]) {
+  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽'], [1040528, '黄金·森野红柚']]) {
     const rows = items.filter(x => x.id === id);
     assert.equal(rows.length, 1, `${id} must be registered exactly once`);
     assert.equal(rows[0].name, name); assert.equal(rows[0].type, 17);

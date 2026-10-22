@@ -17,6 +17,26 @@ const savedEnv = { data: process.env.FARM_DATA_DIR, account: process.env.FARM_AC
 process.env.FARM_DATA_DIR = dataDir;
 process.env.FARM_ACCOUNT_ID = 'synthetic-milk-reward-images';
 const base = path.resolve(root, 'core/src/gameConfig/seed_images_named');
+const BUNDLE_REWARD_SPECS = [
+  [210016, "海贝桌椅", "icon_zhuoyi02", 32],
+  [210026, "青柠桌椅", "icon_zhuoyi03", 32],
+  [210012, "冰雪木门", "icon_men02", 32],
+  [210022, "青藤木门", "icon_men03", 32],
+  [210013, "冰雪款窗", "icon_chuang02", 32],
+  [210023, "焦糖款窗", "icon_chuang03", 32],
+  [210014, "浅砖墙面", "icon_qiangmian02", 32],
+  [210024, "苔石墙面", "icon_qiangmian03", 32],
+  [210015, "花砖地板", "icon_diban02", 32],
+  [210025, "人字地板", "icon_diban03", 32],
+  [210011, "椰风屋顶", "icon_wuding02", 32],
+  [210021, "森野屋顶", "icon_wuding03", 32],
+  [210017, "珍奶装饰", "icon_zhuangshi02", 32],
+  [210027, "叶语装饰", "icon_zhuangshi03", 32],
+  [210041, "蜜熊屋顶", "icon_wuding05", 32],
+  [210042, "蜜熊木门", "icon_men05", 32],
+  [210043, "蜜熊窗", "icon_chuang05", 32],
+  [401007, "缤纷奶茶铭牌", "icon_nameplate_S4_1", 10],
+];
 const specs = [
   [1041, '奶茶券', 'icon_s4_ticket'],
   [1042, '宣传喇叭', 'icon_s4_boost'],
@@ -35,6 +55,7 @@ const specs = [
   [210036, '莓果桌椅', 'icon_zhuoyi04'],
   [210037, '茶语装饰', 'icon_zhuangshi04'],
   [210048, '人气招牌装饰', 'icon_zhuangshi06'],
+  ...BUNDLE_REWARD_SPECS,
 ];
 const fileName = ([id, , icon]) => `${id}_${icon}.png`;
 const tracked = [__filename, path.join(base, 'event-seed-sources.json'),
@@ -69,6 +90,7 @@ for (const spec of specs) test(`current reward ${spec[0]} resolves its own named
   const [id, name] = spec;
   assert.equal(config.getItemImageById(id), `/game-config/seed_images_named/${fileName(spec)}`);
   assert.equal(config.getItemById(id)?.name, name);
+  if (spec[3] !== undefined) assert.equal(config.getItemById(id)?.type, spec[3]);
   assert.equal(config.isSeedItem(id), false);
   assert.equal(config.getPlantBySeedId(id), undefined);
   assert.equal(config.getPlantByFruitId(id), undefined);
@@ -99,11 +121,12 @@ function fixture(t, bagError) {
   const snapshot = types.MilkTeaGetGroupReply.encode(types.MilkTeaGetGroupReply.create({ group: {
     head: { activity_id: 2026110100, begin_time: 1, end_time: 4102444800 }, children: [
       { head: { activity_id: 2026110101 }, milk_tea: { summary: { level: 1 } } },
-      { head: { activity_id: 2026110102 }, shop: { goods: specs.slice(2).map(([id], index) => ({
+      { head: { activity_id: 2026110102 }, shop: { goods: [...specs.slice(2).map(([id], index) => ({
         id: 301 + index, item: [{ id, count: 1 }], cost: [{ id: 1041, count: 1 }], purchase_limit: 5,
-      })) } },
+      })), { id: 999, item: [210036, 210016, 210026].map(id => ({ id, count: 1 })), cost: [{ id: 1041, count: 5 }], purchase_limit: 1 }] } },
       { head: { activity_id: 2026110103 }, growth_fund: { unlocked: false, tiers: [
         { tier_id: 1, reward: [{ id: 2163, count: 1 }], state: 1 },
+        { tier_id: 2, reward: BUNDLE_REWARD_SPECS.slice(14).map(([id]) => ({ id, count: 1 })), state: 1 },
       ] } },
     ],
   } })).finish();
@@ -156,16 +179,27 @@ test('real shared GetGroup and milk-tea overview attach names and images to cost
     getActivityDiscoveryList: async () => [{ id: 2026110100, parentId: 0 }],
     getActivityGroupSnapshot: f.activity.getActivityGroupSnapshot,
   });
-  assert.equal(overview.exchangeShop.items.length, 15);
+  assert.equal(overview.exchangeShop.items.length, specs.length - 1);
+  assert.deepEqual(overview.exchangeShop.items.at(-1).rewards.map(item => item.id), [210036, 210016, 210026], 'the observed three-item bundle must preserve every reward, not only the outer item');
   for (const goods of overview.exchangeShop.items) {
-    const reward = goods.rewards[0];
-    assert.equal(reward.name, config.getItemById(reward.id).name);
-    assert.equal(reward.image, config.getItemImageById(reward.id));
-    assert.equal(reward.iconStatus, 'mapped');
+    for (const reward of goods.rewards) {
+      const item = config.getItemById(reward.id);
+      assert.ok(item, 'each underlying reward must have verified item metadata');
+      assert.equal(reward.name, item.name);
+      assert.equal(reward.image, config.getItemImageById(reward.id));
+      assert.equal(reward.iconStatus, 'mapped');
+    }
     assert.equal(goods.costs[0].name, '奶茶券');
     assert.equal(goods.costs[0].image, config.getItemImageById(1041));
   }
   assert.equal(overview.growthFund.tiers[0].reward[0].image, config.getItemImageById(2163));
+  assert.equal(overview.growthFund.tiers[1].reward.length, 4);
+  for (const reward of overview.growthFund.tiers[1].reward) {
+    assert.ok(config.getItemById(reward.id), 'fund preview item must be registered');
+    assert.equal(reward.name, config.getItemById(reward.id).name);
+    assert.equal(reward.image, config.getItemImageById(reward.id));
+    assert.equal(reward.iconStatus, 'mapped');
+  }
   assert.equal(overview.inventory.ticketCount, 2);
   assert.deepEqual(f.calls, ['GetGroup', 'Bag'], 'one group and one inventory read, zero Operate or other write');
 });

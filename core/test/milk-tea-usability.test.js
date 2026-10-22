@@ -52,7 +52,7 @@ test('real available slots, recipes and interactions replace invalid default sel
   const data = value => ({ data: value, loading: false, error: '' });
   const f = panel({ shop: data({ slots: [], employeeSlotCount: 2, slotAvailabilityKnown: true, freeSlotIndexes: [1] }), hireList: data({ durationId: 1, robots: [{ gid: '9001', name: '员工' }] }),
     workshop: data({ recipes: [{ recipeId: 7, fruitItemId: 41435, name: '可用配方', unlocked: true }], fruits: [{ uid: '7001', itemId: 41435, name: '果实', count: 2 }] }),
-    work: data({ myShift: { shiftId: '8001', interactPreviews: [{ interactionType: 3 }] } }) });
+    work: data({ interactDone: false, myShift: { shiftId: '8001', interactCount: 0, interactLimit: 1, interactPreviews: [{ interactionType: 3 }] } }) });
   const set = (label, value) => { const node = h.findAll(f.root, n => n.props['aria-label'] === label)[0]; assert.ok(node); node.props['onUpdate:modelValue'](value); };
   set('雇佣候选', '9001'); set('选择果实，2个', ['7001']); await h.vue.nextTick(); assert.equal(f.writes.length, 0);
   for (const label of ['雇佣所选员工', '制作所选果实', '执行班次互动']) {

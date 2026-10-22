@@ -1,7 +1,8 @@
 'use strict';
 // 奶茶活动黄金果实 1040525（黄金·森野甜莓）登记与展示分类回归；
 // 2026-10-18 轮扩展覆盖自然 Bag 新出现的三项黄金果实
-// 1040165（黄金·茱萸）/1040526（黄金·森野白桃）/1049005（黄金·森野黄金芽）。
+// 1040165（黄金·茱萸）/1040526（黄金·森野白桃）/1049005（黄金·森野黄金芽）；
+// 2026-10-21 轮新增自然 Bag 出现的 1040528（黄金·森野红柚）。
 // 覆盖：真实 loadProto + 模拟 BagReply 走真实 getBag/getBagDetail/
 // getBagSeedsFromItems 入口（网络为注入替身，零真实游戏请求）；
 // 名称/type17/category=fruit/金豆豆 1005:3/重复堆叠/种子排除/未知合成 ID
@@ -10,7 +11,7 @@
 // 的该项零 Sell 请求，不扩大自动写资格；空与无效数量忽略；失败后替身与
 // 环境恢复；候选源码内容/权限指纹不变。旧源（未登记 + 无 type17 分支）在
 // 本文件至少两项真实入口业务断言失败（category/itemType/价格/未分类报警）；
-// 三项新 ID 各有登记与真实背包两个独立用例，旧配置反证合计至少 6 项失败，
+// 四项新 ID 各有登记与真实背包两个独立用例，旧配置反证合计至少 8 项失败，
 // 旧资源（无 PNG/manifest 行）反证每 ID 至少 1 项业务断言失败。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -61,7 +62,7 @@ function writeFixture(target, contents, io = fs) {
 }
 
 // 候选源码指纹：全部用例结束后内容与权限不得被夹具改变。
-// 新增资源（manifest/三张黄金果实 PNG）在旧源基线不存在时必须能表达 absent，
+// 新增资源（manifest/四张黄金果实 PNG）在旧源基线不存在时必须能表达 absent，
 // 不能在基线导入阶段就抛 ENOENT——旧源反证只允许产生 ERR_ASSERTION 业务失败。
 const seedImagesDir = path.join(repoRoot, 'core', 'src', 'gameConfig', 'seed_images_named');
 const NEW_GOLDEN_FRUITS = [
@@ -103,6 +104,19 @@ const NEW_GOLDEN_FRUITS = [
     sourcePath: 'core/src/gameConfig/seed_images_named/seed_images/1049005.png',
     gitBlob: '02f24e93fd2cb92cd866b9f2156c78d8a57d65db',
     sha256: 'f29ba6766aecd1244678f161fc8c5a8edc92672caef2ac41003db861a7ed8efb',
+  },
+  {
+    id: 1040528,
+    name: '黄金·森野红柚',
+    plantId: 1120528,
+    assetName: 'gold/Crop_528',
+    file: '1040528_gold_Crop_528.png',
+    sells: '1005:3',
+    price: 3,
+    sourceCommit: '4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811',
+    sourcePath: 'core/src/gameConfig/seed_images_named/seed_images/1040528.png',
+    gitBlob: '4f7efeed691d32752f90c038972ea5f42395b1b7',
+    sha256: '3903e0cb65c7017d4649287bfcba7432364eb2ccbf07174655eeddc1fe43606f',
   },
 ];
 const CANDIDATE_SOURCES = [
@@ -289,7 +303,7 @@ test('已确认普通活动种子按单格、四格保持原占地，真正未�
   assert.equal(byId.get(29004)?.mappingStatus, 'mapped');
 });
 
-// ===== 1.5 本轮（2026-10-18）新增三项黄金果实：登记/资源证明表驱动 =====
+// ===== 1.5 本轮新增黄金果实（2026-10-18 三项 + 2026-10-21 一项）：登记/资源证明表驱动 =====
 
 for (const spec of NEW_GOLDEN_FRUITS) {
   test(`${spec.id} ${spec.name} 登记字段逐项核对、无伪造 Plant、非种子且专属图与资源证明对齐`, () => {
@@ -346,7 +360,7 @@ for (const spec of NEW_GOLDEN_FRUITS) {
   });
 }
 
-// ===== 2.5 三项黄金果实的真实背包入口 =====
+// ===== 2.5 新增黄金果实的真实背包入口 =====
 
 for (const spec of NEW_GOLDEN_FRUITS) {
   test(`真实 getBagDetail：${spec.id} ${spec.name} 展示 fruit/type17/金豆豆 ${spec.sells}、2+3 合并且一次 Bag 缓存复用`, async () => {
@@ -391,7 +405,7 @@ for (const spec of NEW_GOLDEN_FRUITS) {
   });
 }
 
-test('getBagSeedsFromItems：三项黄金果实均非种子，单格/四格/合成未知保持原状', () => {
+test('getBagSeedsFromItems：四项新增黄金果实均非种子，单格/四格/合成未知保持原状', () => {
   const warehouse = require('../src/services/warehouse');
   const seeds = warehouse.getBagSeedsFromItems([
     ...NEW_GOLDEN_FRUITS.map(spec => ({ id: spec.id, count: 2 })),
@@ -554,7 +568,7 @@ test('背包仅剩黄金果实时 sellAllFruits 零请求零误报', async () =>
   }
 });
 
-test('sell=true 混合包：三项黄金果实与条件售价材料零 Sell，仅旧映射果实 41072 出售', async () => {
+test('sell=true 混合包：四项新增黄金果实与条件售价材料零 Sell，仅旧映射果实 41072 出售', async () => {
   const storePath = require.resolve('../src/models/store');
   const previousStore = require.cache[storePath];
   require.cache[storePath] = mockModule(storePath, {
@@ -588,7 +602,7 @@ test('sell=true 混合包：三项黄金果实与条件售价材料零 Sell，�
   }
 });
 
-test('背包仅剩本轮三项黄金果实时 sellAllFruits 零 Sell 零误报', async () => {
+test('背包仅剩本轮四项新增黄金果实时 sellAllFruits 零 Sell 零误报', async () => {
   const storePath = require.resolve('../src/models/store');
   const previousStore = require.cache[storePath];
   require.cache[storePath] = mockModule(storePath, {
