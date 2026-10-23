@@ -1254,6 +1254,20 @@
       "sha256": "1595e1fb0e3c67489976e25717d0d91f9945654a203607b8793e27f1527874a2",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 1042254,
+      "file": "1042254_gold_Crop_2254.png",
+      "assetName": "gold/Crop_2254",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1042254.png",
+      "gitBlob": "7cb1656714b752d38df559c1af01456b0200d5b6",
+      "sha256": "aac938f8539081dca152816a05cd683c7748943c6aca449aa5ad0322845b9999",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
