@@ -51,13 +51,14 @@ test('own harvest guard is independently armed for the full absolute due time', 
   assert.ok(Number(actDelay[2]) < 1000, 'healthy harvest stays millisecond-level');
 });
 
-test('own harvest has a bounded retry ladder, obeys pause, and is not stopped by slowdown', () => {
+test('own harvest has a bounded retry ladder, outranks quiet, and is not stopped by slowdown', () => {
   assert.match(src, /OWN_HARVEST_RETRY_WINDOWS_MS = \[/);
   assert.match(src, /const pauseRemain = pauseRemainMsNow\(\)/);
   assert.match(src, /scheduleOwnHarvestRetry\(\)/);
   const start = src.indexOf('async function runOwnHarvestStrike');
   const end = src.indexOf('// ==================== 好友成熟哨兵', start);
   const body = src.slice(start, end);
+  assert.doesNotMatch(body, /setOwnHarvestGuardTimer\(pauseRemain/);
   assert.doesNotMatch(body, /getBreakerState\(\)/);
   assert.doesNotMatch(body, /breaker\.active/);
 });

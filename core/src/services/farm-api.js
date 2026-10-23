@@ -32,7 +32,9 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   buyGoods = require('./business-state').wrapBusinessFunction('services/farm-api.js:buyGoods', buyGoods);
 }
-const { sendMsgAsync, getUserState } = require('../utils/network');
+const { sendMsgAsync: nativeSendMsgAsync, getUserState } = require('../utils/network');
+const ownQuietPriority = require('./own-quiet-priority');
+const sendMsgAsync = ownQuietPriority.wrapSend(nativeSendMsgAsync);
 const { types, waitForProtoReady } = require('../utils/proto');
 const { toLong, sleep } = require('../utils/utils');
 

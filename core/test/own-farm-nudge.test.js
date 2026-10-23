@@ -58,6 +58,7 @@ function fixture(snapshot) {
       ownHarvestIsDue: () => false, ownHarvestIsImminent: () => false, isIdleQuiet: () => false },
     './friend-activity': {},
     './business-state': state,
+    './own-quiet-priority': require('../src/services/own-quiet-priority'),
   };
   sandbox.module = { exports: {} };
   sandbox.require = name => {

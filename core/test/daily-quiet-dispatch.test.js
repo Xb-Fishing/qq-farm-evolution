@@ -112,6 +112,8 @@ test('actual land push retains passive observations and rejects both new and pre
   let observations = 0; let queued; let runs = 0;
   const c = scope({ friendActivity: { noteSocialItems() { observations++; }, noteMischiefOwners() { observations++; } },
     getUserState: () => ({ gid: 42 }), isAutomationOn: () => true, isIdleQuiet: () => false,
+    analyzeLands: () => ({ matureSchedule: [], harvestable: [] }), ownMatureSchedule: new Map(),
+    rememberOwnLands() {}, publishOwnMaturitySchedule() {}, getServerTimeMs: () => Date.now(),
     isCheckingFarm: false, lastPushTime: 0, shouldRefresh2x2Plan: false, log() {},
     farmScheduler: { setTimeoutTask(_name, _delay, fn) { queued = fn; } },
     checkFarm: async () => { runs++; },
@@ -125,7 +127,7 @@ test('actual land push retains passive observations and rejects both new and pre
 test('actual farm read finishing after daily quiet starts does not begin analysis or follow-up work', async () => {
   let analyzed = 0; let reads = 0;
   const empty = Object.fromEntries(['harvestable', 'needWeed', 'needBug', 'needGoldenBug', 'needWater', 'dead', 'empty', 'unlockable', 'upgradable', 'growing', 'matureSchedule'].map(key => [key, []]));
-  const c = scope({ getAllLands: async () => { reads++; clock('2026-10-22T02:04:00+08:00'); return { lands: [{}] }; },
+  const c = scope({ ownQuietPriority: { isActive: () => false }, getAllLands: async () => { reads++; clock('2026-10-22T02:04:00+08:00'); return { lands: [{}] }; },
     analyzeLands: () => { analyzed++; return empty; }, isFirstFarmCheck: false,
     noteOwnFarmNudge() {}, replaceOwnMaturitySchedule() {}, isAutomationOn: () => false,
     ownHarvestIsImminent: () => false, stealIsDue: () => false, getAutomation: () => ({ fertilizer: 'none' }),
@@ -137,7 +139,7 @@ test('actual farm read finishing after daily quiet starts does not begin analysi
 
 test('actual unified tick uses the real daily pause, keeps dispatch pending and resumes farm/help', async () => {
   let farm = 0; let help = 0; let pausedUntil = 0; let reportsPaused = 0;
-  const c = scope({ unifiedSchedulerRunning: true, loginReady: true, friendSyncPaused: false,
+  const c = scope({ armOwnHarvestGuard() {}, unifiedSchedulerRunning: true, loginReady: true, friendSyncPaused: false,
     markIdleQuietUntil: value => { pausedUntil = value; }, pauseAceReports: () => { reportsPaused++; },
     lastPauseAnnounceAt: 0, getIdleProtectionUntil: () => 0, formatIdleRemain: () => 'remaining', log() {},
     nextFarmRunAt: 0, nextHelpRunAt: 0, nextStealRunAt: 0, markStealDueAt() {}, resumeAceReports() {},
@@ -206,7 +208,7 @@ test('farm tick rechecks daily quiet between farm, task, email and gift producer
   const step = async name => { calls.push(name); if (crosses === name) clock('2026-10-22T02:04:00+08:00'); };
   const c = scope({ farmTaskRunning: false, friendSyncPaused: false, CONFIG: {},
     stealIsDue: () => false, stealIsImminent: () => false, ownHarvestIsDue: () => false,
-    checkFarm: () => step('farm'), checkAndClaimTasks: () => step('task'),
+    flushOwnPriorityDeferred: async () => {}, checkFarm: () => step('farm'), checkAndClaimTasks: () => step('task'),
     checkAndClaimEmails: () => step('email'), openFertilizerGiftPacksSilently: () => step('gift'),
     randomIntervalMs: () => 1000, getNextMatureInMs: () => 0, nextIdleHorizonMs: () => 100000,
     idleNapMs: () => 1000, idleMaxSleepMs: () => 100000, idleMinSleepMs: () => 0,

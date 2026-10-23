@@ -74,6 +74,8 @@ const {
     fertilize,
     removePlant,
     harvestOwnAtMaturity,
+    deferOwnHarvestSale,
+    flushOwnPriorityDeferred,
     getNextMatureInMs,
     getNextMatureDueAtMs
 } = require('../services/farm');
@@ -433,6 +435,7 @@ async function runFarmTick(autoConfig) {
 
     try {
         if (autoConfig.farm) await checkFarm();
+        if (pauseRemainMsNow() <= 0) await flushOwnPriorityDeferred();
         if (pauseRemainMsNow() > 0) return;
         if (autoConfig.task) await checkAndClaimTasks();
         if (pauseRemainMsNow() > 0) return;
@@ -705,13 +708,7 @@ async function runOwnHarvestStrike() {
         return;
     }
 
-    // 明确静默仍高于业务收益优先级；异常阈值只降低普通巡查速度，
-    // 自己到点收获继续受请求硬预算保护，不再被整号冻结。
-    const pauseRemain = pauseRemainMsNow();
-    if (pauseRemain > 0) {
-        setOwnHarvestGuardTimer(pauseRemain + randInt(100, 500), dueAt);
-        return;
-    }
+    // Own harvest and its scoped replant outrank quiet; no quiet deadline is cleared.
     const ws = getWs();
     if (friendSyncPaused || !ws || ws.readyState !== 1) {
         scheduleOwnHarvestRetry();
@@ -992,7 +989,8 @@ function nextActivityRewardsAt(now = Date.now()) {
 async function runUnifiedTick() {
     if (!unifiedSchedulerRunning || !loginReady || friendSyncPaused) return;
 
-    // 免打扰：偷菜/农场/帮助/推送全部不做，只等唤醒
+    // Own maturity keeps its independent guard; ordinary farm/friend work remains paused.
+    armOwnHarvestGuard();
     const pauseRemain = pauseRemainMsNow();
     if (pauseRemain > 0) {
         markIdleQuietUntil(Date.now() + pauseRemain);
@@ -1001,7 +999,7 @@ async function runUnifiedTick() {
         if (now - lastPauseAnnounceAt > 10 * 60_000) {
             lastPauseAnnounceAt = now;
             const idleProtected = getIdleProtectionUntil(now) > now;
-            log('系统', `${idleProtected ? '重点防护中' : '免打扰中'}，${formatIdleRemain(pauseRemain)}内暂停业务请求`, {
+            log('系统', `${idleProtected ? '重点防护中' : '免打扰中'}，${formatIdleRemain(pauseRemain)}内暂停常规业务，自己的成熟收获与补种照常`, {
                 module: 'system',
                 event: '免打扰',
                 pauseRemainMs: pauseRemain,
@@ -2087,7 +2085,8 @@ function bindWorkerReadyEvents() {
 
     // 收获后自动出售
     if (onFarmHarvested) networkEvents.off('farmHarvested', onFarmHarvested);
-    onFarmHarvested = async () => {
+    onFarmHarvested = async (event = {}) => {
+        if (event.quietPriority || pauseRemainMsNow() > 0) { deferOwnHarvestSale(); return; }
         if (harvestSellRunning) return;
         if (!getAutomation().sell) return;
         harvestSellRunning = true;
@@ -2345,7 +2344,16 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
     // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
     onSentinelPreEnterTimer = require('../services/business-state').wrapBusinessFunction('worker:sentinelPreEnter', onSentinelPreEnterTimer);
     module.exports.sessionRuntime = {
-        refreshRewardsSchedule: () => { if (unifiedSchedulerRunning) scheduleUnifiedNextTick(); },
+        refreshRewardsSchedule: () => {
+            if (unifiedSchedulerRunning) {
+                // A warm checkpoint may contain the former quiet-until harvest timer.
+                // Re-arm from the preserved crop deadline under the current priority policy.
+                workerScheduler.clear('own_harvest_guard');
+                ownHarvestArmedFor = 0;
+                armOwnHarvestGuard();
+                scheduleUnifiedNextTick();
+            }
+        },
         send: message => sessionMasterHandler(message),
         config: () => ({ ...getConfigSnapshot(), __revision: appliedConfigRevision }),
         restoreConfig(config) {

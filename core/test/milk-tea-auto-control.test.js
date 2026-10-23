@@ -37,7 +37,7 @@ test('real unified caller dispatches activity rewards with task off, and never d
   const auto = { task: false, milk_tea_auto_rewards: true, friend_steal: false };
   const sandbox = {
     Date, unifiedSchedulerRunning: true, loginReady: true, friendSyncPaused: false,
-    pauseRemainMsNow: () => 0, resumeAceReports() {}, markIdleQuietUntil() {},
+    armOwnHarvestGuard() {}, pauseRemainMsNow: () => 0, resumeAceReports() {}, markIdleQuietUntil() {},
     getAutomation: () => auto, ownHarvestDueAt: () => 0, nextScheduledStealAt: () => now + 600000,
     nextFarmRunAt: now + 600000, nextHelpRunAt: now + 600000, nextActivityRewardsAt: () => now,
     nextStealRunAt: now + 600000,

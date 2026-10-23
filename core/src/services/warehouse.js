@@ -49,7 +49,9 @@ const {
   isSeedItem,
 } = require('../config/gameConfig');
 const { isAutomationOn } = require('../models/store');
-const { sendMsgAsync, networkEvents, getUserState } = require('../utils/network');
+const { sendMsgAsync: nativeSendMsgAsync, networkEvents, getUserState } = require('../utils/network');
+const ownQuietPriority = require('./own-quiet-priority');
+const sendMsgAsync = ownQuietPriority.wrapSend(nativeSendMsgAsync);
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
 const { updateStatusGold } = require('./status');

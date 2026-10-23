@@ -1041,3 +1041,6 @@ module.exports = {
     applyServerVersionInfo,
     networkEvents,
 };
+
+require('../runtime/own-quiet-wire').install({ network: module.exports,
+    store: require('../models/store'), types: require('./proto').types, accountId: process.env.FARM_ACCOUNT_ID || '' });

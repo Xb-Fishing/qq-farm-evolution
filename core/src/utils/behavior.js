@@ -124,11 +124,11 @@ function markOwnHarvestDueAt(ts) {
 }
 
 function ownHarvestIsDue(now = Date.now()) {
-  return ownHarvestDueAt > 0 && now >= ownHarvestDueAt;
+  return require('../services/own-quiet-priority').isActive() || (ownHarvestDueAt > 0 && now >= ownHarvestDueAt);
 }
 
 function ownHarvestIsImminent(withinMs = 3000, now = Date.now()) {
-  return ownHarvestDueAt > 0 && ownHarvestDueAt - now <= withinMs;
+  return require('../services/own-quiet-priority').isActive() || (ownHarvestDueAt > 0 && ownHarvestDueAt - now <= withinMs);
 }
 
 function getOwnHarvestDueAt() {

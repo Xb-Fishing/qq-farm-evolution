@@ -20,7 +20,9 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   plantFromShop = require('./business-state').wrapBusinessFunction('services/planting-service.js:plantFromShop', plantFromShop);
 }
-const { sendMsgAsync, getUserState, getWsErrorState } = require('../utils/network');
+const { sendMsgAsync: nativeSendMsgAsync, getUserState, getWsErrorState } = require('../utils/network');
+const ownQuietPriority = require('./own-quiet-priority');
+const sendMsgAsync = ownQuietPriority.wrapSend(nativeSendMsgAsync);
 const { types } = require('../utils/proto');
 const { toNum, toLong, toTimeSec, getServerTimeSec, log, logWarn } = require('../utils/utils');
 const { getPlantNameBySeedId, getPlantGrowTime, formatGrowTime, getAllSeeds, getPlantBySeedId, getPlantById } = require('../config/gameConfig');
@@ -1001,7 +1003,7 @@ async function getAvailableSeeds() {
  * @param {number[]} deadLandIds - 枯死地块（需先铲除）
  * @param {number[]} emptyLandIds - 空地
  */
-async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
+async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = [], options = {}) {
   let allEmptyLands = [...emptyLandIds];
   const userState = getUserState();
   const accountId = getCurrentAccountId();
@@ -1026,12 +1028,13 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
       logWarn('铲除', `批量铲除失败: ${err.message}`, {
         module: 'farm', event: '铲除植物', result: 'error'
       });
+      if (options.ownQuietPriority) throw err;
       allEmptyLands.push(...deadLandIds);
     }
   }
 
   allEmptyLands = expandRemoved2x2Lands(allEmptyLands, deadLandIds, lands);
-  const strategy = String(getPlantingStrategy(accountId) || '').trim();
+  const strategy = options.bagOnly ? 'bag_priority' : String(getPlantingStrategy(accountId) || '').trim();
   const size2Result = await plantPrioritized2x2Crops(allEmptyLands, lands, accountId);
   const reservedLandSet = new Set(size2Result.reservedLandIds || []);
   const normalEmptyLands = allEmptyLands.filter(id => !reservedLandSet.has(Number(id)));
@@ -1040,7 +1043,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
   result.plantedCount += Number(size2Result.plantedCount || 0);
   result.occupiedCount += Number(size2Result.occupiedCount || 0);
 
-  if (size2Result.plantedMasterIds.length > 0) {
+  if (!options.ownQuietPriority && size2Result.plantedMasterIds.length > 0) {
     await runFertilizerByConfig(size2Result.plantedMasterIds);
   }
 
@@ -1065,7 +1068,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
     result.occupiedCount += Number(bagResult.occupiedCount || 0);
 
     // 背包种完后还有空地 → 使用第二优先策略
-    if (bagResult.fallbackAllowed && bagResult.remainingLandIds.length > 0) {
+    if (!options.bagOnly && bagResult.fallbackAllowed && bagResult.remainingLandIds.length > 0) {
       const fallbackStrategy = getBagSeedFallbackStrategy(accountId) || 'level';
       log('种植', `开始按第二优先策略"${getPlantingStrategyLabel(fallbackStrategy)}"补种剩余空地`, {
         module: 'farm', event: '种植种子', result: 'fallback_start',
@@ -1080,7 +1083,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
     }
 
     // 种植后补肥
-    if (plantedLands.length > 0) {
+    if (!options.ownQuietPriority && plantedLands.length > 0) {
       await runFertilizerByConfig(plantedLands);
     }
     return result;
@@ -1091,7 +1094,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = []) {
   result.plantedLands.push(...(shopResult.plantedLands || []));
   result.plantedCount += Number(shopResult.plantedCount || 0);
   result.occupiedCount += Number(shopResult.occupiedCount || 0);
-  if (shopResult.plantedLands && shopResult.plantedLands.length > 0) {
+  if (!options.ownQuietPriority && shopResult.plantedLands && shopResult.plantedLands.length > 0) {
     await runFertilizerByConfig(shopResult.plantedLands);
   }
   return result;
@@ -1178,6 +1181,7 @@ async function plantFromShop(landIds, userState, overrideStrategy, accountId = g
   let finalSeedId = bestSeed.seedId;
   if (hasShopData) {
     try {
+      ownQuietPriority.setPurchase({ ...bestSeed, count: plantCount });
       const buyResult = await buyGoods(bestSeed.goodsId, plantCount, bestSeed.price);
       // 从购买结果中提取实际种子 ID（可能是获取物品后得到的真实 ID）
       if (buyResult.get_items && buyResult.get_items.length > 0) {

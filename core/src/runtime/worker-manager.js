@@ -321,7 +321,10 @@ function createWorkerManager(deps) {
         if (workers[latest.id]) return false;
         if (persistentMode) latest = deps.store.ensureAccountSessionMetadata(latest.id) || latest;
 
-        log('系统', `正在启动账号: ${  latest.name}`, {
+        const startNotice = persistentMode
+            ? (startOptions.adoptOnly === true ? '正在接管已有农场连接' : '正在初始化常驻账号管理')
+            : '正在启动账号';
+        log('系统', `${startNotice}: ${latest.name}`, {
             accountId: String(latest.id),
             accountName: latest.name
         });
@@ -582,7 +585,7 @@ function createWorkerManager(deps) {
                         wrk.nick = nick;
                         addOrUpdateAccount({ id: accountId, nick });
                         if (oldNick !== nick) {
-                            log('系统', `已同步账号昵称: ${  oldNick || 'None'  } -> ${  nick}`, {
+                            log('系统', oldNick ? `账号昵称已更新: ${oldNick} -> ${nick}` : `已读取账号昵称: ${nick}`, {
                                 accountId, accountName: wrk.name
                             });
                         }

@@ -200,12 +200,12 @@ async function restartAccount() {
         class="min-h-11"
       />
       <p class="w-full text-xs text-gray-500 dark:text-gray-400">
-        开启后，空闲歇息期间暂停农场、偷菜、帮助和重点好友动作，保留连接心跳，到点恢复；关闭后使用原有空闲策略。
+        开启后，空闲歇息期间暂停常规农场、偷菜、帮助和重点好友动作；自己的成熟收获与收后补种优先执行，完成后继续静默。连接心跳保留，到点恢复；关闭后使用原有空闲策略。
         设置手动保存；关掉开关解除自动防护，不清除手动静默时间。
       </p>
       <div class="flex flex-wrap items-end gap-4">
         <div class="flex flex-col gap-1">
-          <label class="text-xs text-gray-500 dark:text-gray-400">静默到（到点前不检测任何东西，防封用）</label>
+          <label class="text-xs text-gray-500 dark:text-gray-400">静默到（自己的成熟收获与补种照常）</label>
           <input
             v-model="pauseUntilLocal"
             type="datetime-local"
@@ -241,7 +241,7 @@ async function restartAccount() {
         </p>
       </div>
       <p class="w-full text-xs text-gray-400 dark:text-gray-500">
-        静默期间偷菜/农场/帮助/重点监控全部暂停，WebSocket 心跳保留不掉线，到点自动恢复。
+        静默期间暂停偷菜、常规农场、帮助和重点监控，保留连接心跳；自己的成熟收获与收后补种优先，完成后继续静默，到点自动恢复。
         「立即重启」会清掉静默并重启账号，把全部功能立刻拉起来（保存按钮只存配置不重启）。
       </p>
       <BaseSwitch
@@ -267,7 +267,7 @@ async function restartAccount() {
         每日静默时段按北京时间（UTC+8）执行，不受服务器时区影响。
       </p>
       <p class="w-full text-xs text-gray-400 dark:text-gray-500">
-        时段内暂停自动农场、偷菜、帮助、捣乱和重点好友动作，保留连接心跳与手动查询，到点自动恢复。
+        时段内暂停常规农场、偷菜、帮助、捣乱和重点好友动作；自己的成熟收获与收后补种优先，完成后继续静默。保留连接心跳与手动查询，到点自动恢复。
       </p>
     </div>
 

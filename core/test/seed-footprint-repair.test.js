@@ -75,7 +75,7 @@ test('Cornus bag now has a verified single plot and its ordinary fruit retains a
 test('unrelated entries and rare/golden meanings are preserved; reviewed defaults are explicit', () => {
   const plants = JSON.parse(fs.readFileSync(path.join(base, 'EventPlants.json'))); const items = JSON.parse(fs.readFileSync(path.join(base, 'EventItems.json')));
   const hash = x => crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
-  const selectedPlants = new Set([...cases.map(x => x[1]), 1020165]); const selectedFruits = new Set(cases.map(x => x[2]));
+  const selectedPlants = new Set([...cases.map(x => x[1]), 1020165, 1022254]); const selectedFruits = new Set(cases.map(x => x[2]));
   assert.equal(plants.filter(row => row.id === 1020165).length, 1);
   assert.deepEqual([config.getPlantBySeedId(20165)?.id, config.getPlantBySeedId(20165)?.size, config.getPlantBySeedId(20165)?.fruit.id], [1020165, 1, 40165]);
   assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
@@ -86,7 +86,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
     210031, 210032, 210033, 210034, 210035, 210036, 210037,
     210016, 210026, 210012, 210022, 210013, 210023, 210014, 210024, 210015, 210025, 210011, 210021, 210017, 210027, 210041, 210042, 210043, 401007, 210044, 210045, 210046, 210047]);
   const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254]);
-  const originalItems = items.filter(x => !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
+  const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
     && !goldenFruitAdditions.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
@@ -110,7 +110,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   assert.ok(provenance, 'selected default-size registrations must retain reviewed provenance');
   assert.equal(provenance.sourceGrade, 'reviewed_public_client_snapshot');
   assert.equal(provenance.sizeEvidence, 'reviewed_client_default_single_plot');
-  assert.deepEqual(provenance.mappings.map(x => [x.seedId, x.plantId, x.fruitId, x.size, x.sourceSize]), cases.map(x => [x[0], x[1], x[2], 1, null]));
+  assert.deepEqual(provenance.mappings.map(x => [x.seedId, x.plantId, x.fruitId, x.size, x.sourceSize]), [...cases.map(x => [x[0], x[1], x[2], 1, null]), [22254, 1022254, 42254, 1, null]]);
 });
 
 test('real planting selects one plot for the confirmed seed and leaves truly unknown seeds unplanted', async t => {
@@ -132,4 +132,38 @@ test('real planting selects one plot for the confirmed seed and leaves truly unk
     assert.equal(result.plantedCount, 1); assert.equal(result.occupiedCount, 1);
     assert.deepEqual(calls, [{ seed: 20525, ids: [1] }]);
   } finally { restore(); }
+});
+
+
+test('reviewed maple seed is recognized through real BagReply with its dedicated image and one plot', async t => {
+  assert.equal(config.getItemById(22254).name, '天山红枫种子');
+  assert.equal(config.isSeedItem(22254), true);
+  const plant = config.getPlantBySeedId(22254);
+  assert.equal(plant.id, 1022254); assert.equal(plant.size, 1);
+  assert.deepEqual(plant.fruit, { id: 42254, count: 48 });
+  const f = warehouseFixture(t, [{ id: 22254, uid: 8201, count: 3 }]);
+  const bag = await f.warehouse.getBagDetail(); const seed = bag.items.find(x => x.id === 22254);
+  assert.equal(seed.name, '天山红枫种子'); assert.equal(seed.plantSize, 1);
+  assert.ok(seed.image); assert.equal(bag.seedRecognition.issues.some(x => Number(x.seedId) === 22254), false);
+  assert.deepEqual(f.calls, ['Bag']);
+});
+
+test('actual automatic sale selects ordinary maple fruit and excludes its seed and conditional ingredients', async t => {
+  const items = [{ id: 22254, uid: 8201, count: 3 }, { id: 42254, uid: 8202, count: 10 }, { id: 40526, uid: 8203, count: 10 }];
+  const calls = []; const sold = []; const store = require('../src/models/store');
+  const utils = require('../src/utils/utils');
+  t.after(replaceModules([
+    ['../src/utils/network', { getUserState: () => ({ accountId: 'synthetic-maple', level: 100, gold: 0 }), getWsErrorState: () => null,
+      sendMsgAsync: async (_service, method, body) => {
+        calls.push(method);
+        if (method === 'Bag') return { body: types.BagReply.encode({ item_bag: { items } }).finish() };
+        assert.equal(method, 'Sell', 'fixture allows only simulated Bag and Sell');
+        const request = types.SellRequest.decode(body); sold.push(...request.items.map(x => Number(x.id)));
+        return { body: types.SellReply.encode({ sell_items: request.items, get_items: [{ id: 1001, count: 2800 }] }).finish() };
+      } }],
+    ['../src/utils/utils', { ...utils, log() {}, logWarn() {} }],
+    ['../src/models/store', { ...store, isAutomationOn: () => true }], ['../src/services/warehouse', null],
+  ]));
+  await require('../src/services/warehouse').sellAllFruits();
+  assert.deepEqual(sold, [42254]); assert.deepEqual(calls, ['Bag', 'Sell']);
 });

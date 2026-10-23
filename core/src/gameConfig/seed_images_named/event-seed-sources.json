@@ -1268,6 +1268,34 @@
       "sha256": "aac938f8539081dca152816a05cd683c7748943c6aca449aa5ad0322845b9999",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 22254,
+      "file": "22254_Crop_2254_Seed.png",
+      "assetName": "Crop_2254",
+      "kind": "seed",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/22254.png",
+      "gitBlob": "9ae1763949f42d8aa094d146c0a11e5b6eec8570",
+      "sha256": "f85fa3047110549fe5e8eac7850e84e78e340d0c7ae69bb2a6e2e5ae7d6c3a1d",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 42254,
+      "file": "42254_Crop_2254.png",
+      "assetName": "Crop_2254",
+      "kind": "fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/42254.png",
+      "gitBlob": "9ae1763949f42d8aa094d146c0a11e5b6eec8570",
+      "sha256": "f85fa3047110549fe5e8eac7850e84e78e340d0c7ae69bb2a6e2e5ae7d6c3a1d",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
@@ -1288,7 +1316,7 @@
       }
     ],
     "sizeEvidence": "reviewed_client_default_single_plot",
-    "sizeRule": "该固定 Plant 快照中此七行 size=null；按已核验客户端缺省规则（missing/null 占一格）登记显式 size 1。同表 23 行非缺省作物全部显式 size 2，且既有六个单格家族锚点（20516/25995/21625/26030/20435/21072）源表同样 size null、已核验为单格。仅适用本七行经审阅登记，不构成未知种子的全局 size 缺省规则",
+    "sizeRule": "该固定 Plant 快照中已登记行（含天山红枫）size=null；按已核验客户端缺省规则（missing/null 占一格）登记显式 size 1。同表 23 行非缺省作物全部显式 size 2，且既有六个单格家族锚点（20516/25995/21625/26030/20435/21072）源表同样 size null、已核验为单格。仅适用 mappings 所列逐行交叉的经审阅登记，不构成未知种子的全局 size 缺省规则",
     "anchors": [
       20516,
       25995,
@@ -1304,7 +1332,8 @@
       { "seedId": 20528, "plantId": 1020528, "fruitId": 40528, "size": 1, "sourceSize": null },
       { "seedId": 20529, "plantId": 1020529, "fruitId": 40529, "size": 1, "sourceSize": null },
       { "seedId": 21435, "plantId": 1021435, "fruitId": 41435, "size": 1, "sourceSize": null },
-      { "seedId": 20021, "plantId": 1020021, "fruitId": 40021, "size": 1, "sourceSize": null }
+      { "seedId": 20021, "plantId": 1020021, "fruitId": 40021, "size": 1, "sourceSize": null },
+      { "seedId": 22254, "plantId": 1022254, "fruitId": 42254, "size": 1, "sourceSize": null }
     ],
     "note": "EventPlants 七行逐字段取自该固定提交 Plant 快照（land_level_need 1、seasons 1、grow_phases 五段 8640 加成熟 0、exp 1440/1680、special_fruit null、mutant_effect_plant 5:1xxxxxx:1、fruit ×10），asset_name 取自同源 ItemInfo 种子行；EventItems 果实行（40525 纠错 official_type 18→6 并补条件售价、40526/40527/40528/40529/41435/40021 新登记）逐字取自同源 ItemInfo（type 6、sells null、sell_cond 活动区间外:2026110101、cond_sells 按行）；不登记黄金变体植物；sells null 不构成自动出售资格；来源为经审阅提取快照交叉，不宣称直接 CDN 观测或新的官方本地提取"
   },

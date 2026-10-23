@@ -54,7 +54,8 @@ function registerDataState(name, capture, restore, options = {}) {
   const keys = Object.keys(capture()).sort();
   registerBusinessState(name, { ...options, capture, restore, validate(value) {
     if (!value || Object.getPrototypeOf(value) !== Object.prototype
-      || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(keys)) throw new Error(`Business state fields changed: ${name}`);
+      || Object.keys(value).some(key => !keys.includes(key))
+      || keys.some(key => !Object.hasOwn(value, key) && !(options.optionalKeys || []).includes(key))) throw new Error(`Business state fields changed: ${name}`);
     options.validate?.(value);
   } });
 }

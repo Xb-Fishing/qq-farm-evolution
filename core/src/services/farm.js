@@ -13,6 +13,8 @@ const {
   refreshFarmCheckLoop,
   runFarmOperation,
   harvestOwnAtMaturity,
+  deferOwnHarvestSale,
+  flushOwnPriorityDeferred,
   getNextMatureInMs,
   getNextMatureDueAtMs,
 } = require('./farming-orchestrator');
@@ -25,6 +27,8 @@ module.exports = {
   refreshFarmCheckLoop,
   runFarmOperation,
   harvestOwnAtMaturity,
+  deferOwnHarvestSale,
+  flushOwnPriorityDeferred,
   getNextMatureInMs,
   getNextMatureDueAtMs,
 

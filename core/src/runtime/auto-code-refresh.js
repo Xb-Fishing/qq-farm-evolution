@@ -74,6 +74,18 @@ function createAutoCodeRefreshService(deps) {
     : nextCredentialKeepaliveDelayMs;
 
   const scheduler = createScheduler('auto_code_refresh');
+  // Announcements describe management setup, never a new game login.
+  const enableNotices = new Map();
+  function logEnableNotice(kind, accountId, message, metadata) {
+    const key = `${String(accountId)}:${kind}`;
+    if (enableNotices.get(key) === message) return;
+    enableNotices.set(key, message);
+    log('系统', message, metadata);
+  }
+  function clearEnableNotices(accountId) {
+    enableNotices.delete(`${String(accountId)}:keepalive`);
+    enableNotices.delete(`${String(accountId)}:recovery`);
+  }
   const recoveryState = new Map();
   const keepaliveGeneration = new Map();
   const credentialGeneration = new Map();
@@ -426,7 +438,7 @@ function createAutoCodeRefreshService(deps) {
 
     scheduleNextKeepalive();
     const modeLabel = mode === 'offline' ? '断线等待保活' : '在线保活';
-    log('系统', `微信登录凭据${modeLabel}已启用: ${account.name}，按有效期提前 35-45 分钟续期（不换游戏 Code）`, {
+    logEnableNotice('keepalive', accountKey, `微信登录凭据${modeLabel}已启用: ${account.name}，按有效期提前 35-45 分钟续期（不换游戏 Code）`, {
       accountId: accountKey, accountName: account.name, mode,
     });
     return true;
@@ -452,6 +464,7 @@ function createAutoCodeRefreshService(deps) {
 
     const account = findAccount(accountId);
     if (account && store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) {
+      clearEnableNotices(accountId);
       return;
     }
     if (account && isCredentialBlocked(accountId)) {
@@ -472,8 +485,9 @@ function createAutoCodeRefreshService(deps) {
 
     // 旧版在这里每隔 intervalMinutes 主动换 Code 并重启 Worker，会人为制造周期掉线。
     // 现在该配置只控制真实断线后的自动恢复间隔；在线会话只走上面的凭据保活。
+    if (!cfg.enabled) enableNotices.delete(`${String(accountId)}:recovery`);
     if (cfg.enabled) {
-      log('系统', `断线自动恢复已启用: ${account.name}，失败后约 ${cfg.intervalMinutes} 分钟重试`, {
+      logEnableNotice('recovery', accountId, `断线自动恢复已启用: ${account.name}，失败后约 ${cfg.intervalMinutes} 分钟重试`, {
         accountId: String(accountId),
         accountName: account.name,
       });
@@ -490,6 +504,7 @@ function createAutoCodeRefreshService(deps) {
   }
 
   function stopAccount(accountId) {
+    clearEnableNotices(accountId);
     const accountKey = String(accountId || '');
     keepaliveGeneration.set(accountKey, (keepaliveGeneration.get(accountKey) || 0) + 1);
     scheduler.clear(getTaskName(accountId));
