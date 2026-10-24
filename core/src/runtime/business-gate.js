@@ -32,6 +32,9 @@ function createBusinessGate(epoch) {
     catch (error) { reject(error); }
     return promise;
   }
+  // Own-harvest eligibility has a separate ALS lifetime from game authority.
+  // Only independent roots leave both; nested run() retains its originating chain.
+  const outsideContext = callback => context.exit(() => require('../services/own-quiet-priority').withoutScope(callback));
   const run = (name, callback) => enter(name, callback);
   async function quiesce(timeoutMs = BUSINESS_DRAIN_TIMEOUT_MS) {
     open = false;
@@ -49,9 +52,9 @@ function createBusinessGate(epoch) {
   }
   return { run, quiesce,
     setAuthorityProvider: callback => { authorityProvider = callback; },
-    runProducer: (name, callback) => context.exit(() => enter(name, callback)),
-    runEvent: (name, callback, connectionEpoch) => context.exit(() => enter(name, callback, false, connectionEpoch)),
-    prepare: (name, callback) => context.exit(() => enter(name, callback, true)),
+    runProducer: (name, callback) => outsideContext(() => enter(name, callback)),
+    runEvent: (name, callback, connectionEpoch) => outsideContext(() => enter(name, callback, false, connectionEpoch)),
+    prepare: (name, callback) => outsideContext(() => enter(name, callback, true)),
     suspend: () => { open = false; },
     activate: () => { if (closed) throw new Error('Business epoch retired'); open = true; },
     retire: () => { closed = true; open = false; },

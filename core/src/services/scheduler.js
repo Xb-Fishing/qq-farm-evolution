@@ -141,7 +141,7 @@ function createScheduler(namespace = 'default') {
       current.lastRunAt = Date.now();
       current.runCount += 1;
       try {
-        await callback();
+        await require('./own-quiet-priority').withoutScope(callback);
       } catch (err) {
         schedulerLogger.warn(`[${ns}] timeout 任务执行失败: ${key}`, {
           module: 'scheduler',
@@ -198,7 +198,7 @@ function createScheduler(namespace = 'default') {
       current.lastRunAt = Date.now();
       current.runCount += 1;
       try {
-        await callback();
+        await require('./own-quiet-priority').withoutScope(callback);
       } catch (err) {
         schedulerLogger.warn(`[${ns}] interval 任务执行失败: ${key}`, {
           module: 'scheduler',

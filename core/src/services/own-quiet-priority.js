@@ -10,6 +10,10 @@ async function run(scope, callback) {
   try { return await context.run(value, () => callback(value)); }
   finally { value.active = false; activeCount--; }
 }
+// A named new producer must not inherit a previous harvest transaction.
+// This does not revoke the owner or make its late continuations eligible.
+function withoutScope(callback) { return context.exit(() => callback()); }
+
 function setPurchase(plan) {
   const scope = context.getStore();
   if (scope?.active) scope.purchase = { goodsId: Number(plan.goodsId), seedId: Number(plan.seedId), count: Number(plan.count), price: Number(plan.price) };
@@ -31,4 +35,4 @@ function wrapSend(original) {
     return Reflect.apply(original, this, [service, method, body, timeout, { ...options, ownFarmQuietPriority: marker }]);
   };
 }
-module.exports = { run, wrapSend, setPurchase, isActive: () => activeCount > 0, inScope: () => !!context.getStore()?.active };
+module.exports = { run, withoutScope, wrapSend, setPurchase, isActive: () => activeCount > 0, inScope: () => !!context.getStore()?.active };
