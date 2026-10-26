@@ -294,6 +294,7 @@ async function harvestOwnAtMaturity() {
   if (dueAt > Date.now() + 100) return { harvestedCount: 0 };
   isCheckingFarm = true;
   let outcome = { harvestedCount: 0, landIds: [], reply: null, dueAt };
+  let deferReplantUntil = 0;
   try {
     await ownQuietPriority.run({ landIds: Array.from({ length: 24 }, (_, i) => i + 1),
       onPurchaseAttempt: () => { ownQuietState.bagOnly = true; } }, async scope => {
@@ -321,6 +322,15 @@ async function harvestOwnAtMaturity() {
         ownQuietState.uncertainHarvest = [];
       }
       if (!ownQuietState.pending.length) return;
+      // 连续成熟合并：plant 开且下一块自己作物 10 秒内到期时，跳过本轮收后读地/补种，
+      // 待下一趟到点事务一并批量处理（每块的 AllLands×2/Plant 请求坍缩为最后一批）。
+      if (isAutomationOn('plant')) {
+        const nowMs = Date.now();
+        if (lastNextMatureDueAtMs > nowMs && lastNextMatureDueAtMs <= nowMs + 10_000) {
+          deferReplantUntil = lastNextMatureDueAtMs;
+          return;
+        }
+      }
       // Harvest can start another season: query before removing or planting anything.
       scope.phase = 'snapshot'; scope.landIds = [...ownQuietState.pending];
       const snapshot = await getAllLands();
@@ -361,7 +371,10 @@ async function harvestOwnAtMaturity() {
         ownQuietState.pending = [...targets].filter(id => !confirmed.has(id) || remaining.has(id));
       }
     });
-    if (ownQuietState.pending.length) ownPriorityRetry();
+    if (ownQuietState.pending.length && deferReplantUntil) {
+      // 收尾跨过成熟点也立即唤醒；正常合并不能变成失败退避。
+      ownQuietState.retryAt = deferReplantUntil;
+    } else if (ownQuietState.pending.length) ownPriorityRetry();
     else { ownQuietState.retryAt = 0; ownQuietState.attempts = 0; ownQuietState.bagOnly = false; }
     publishOwnMaturitySchedule('priority_settled');
   } catch (error) {
