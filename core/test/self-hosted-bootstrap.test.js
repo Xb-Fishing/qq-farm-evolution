@@ -88,16 +88,66 @@ test('无环境变量：不创建任何管理员，登录被拒绝（无默认�
     assert.equal(login.error, 'invalid_credentials');
 });
 
-test('非法环境（弱密码/非法用户名）：拒绝创建管理员', () => {
-    for (const [name, patch] of [
-        ['weak-password', { FARM_ADMIN_USERNAME: 'bootadmin', FARM_ADMIN_PASSWORD: '123456' }],
-        ['bad-username', { FARM_ADMIN_USERNAME: 'boot admin!', FARM_ADMIN_PASSWORD: 'Str0ngPass!02' }],
+test('合法用户名及两类以上密码组合均可初始化并登录（包括长度边界）', () => {
+    for (const [username, password] of [
+        ['adm', 'ab1234'],
+        ['farm_admin', 'Abcdef'],
+        ['123456', 'ABC124'],
+        ['bootadmin', 'abc!@#'],
+        ['bootadmin', '123!@#'],
+        ['bootadmin', 'Abc123!'],
+        ['a'.repeat(32), 'Ab'.repeat(64)],
     ]) {
-        const dir = freshDir(`admin-${name}`);
-        const store = loadStore(dir, patch);
-        assert.equal(store.getUserCount(), 0, `${name} 不得创建管理员`);
-        assert.equal(store.validateUser(patch.FARM_ADMIN_USERNAME, patch.FARM_ADMIN_PASSWORD, '127.0.0.13').error, 'invalid_credentials');
+        const dir = freshDir('admin-valid');
+        const store = loadStore(dir, { FARM_ADMIN_USERNAME: username, FARM_ADMIN_PASSWORD: password });
+        assert.equal(store.getUserCount(), 1);
+        assert.equal(store.validateUser(username, password, '127.0.0.13').role, 'admin');
     }
+});
+
+test('非法初始化配置：日志区分用户名和密码原因，拒绝创建且不泄露口令', (t) => {
+    const warn = t.mock.method(console, 'warn', () => {});
+    for (const [username, password, expected] of [
+        ['ab', 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '3-32位']],
+        ['a'.repeat(33), 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '3-32位']],
+        ['管理员123', 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '不能包含中文']],
+        ['farm-admin', 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '连字符']],
+        ['farm admin', 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '空格']],
+        ['admin!', 'Str0ngPass!02', ['FARM_ADMIN_USERNAME', '特殊符号']],
+        ['bootadmin', 'Ab1!x', ['FARM_ADMIN_PASSWORD', '密码长度至少6位']],
+        ['bootadmin', 'Ab1!'.repeat(33), ['FARM_ADMIN_PASSWORD', '密码长度不能超过128位']],
+        ['bootadmin', '24681357', ['FARM_ADMIN_PASSWORD', '至少两种']],
+        ['bootadmin', 'AbC123', ['FARM_ADMIN_PASSWORD', '密码过于简单']],
+        ['bad-admin', '123456', ['FARM_ADMIN_USERNAME', 'FARM_ADMIN_PASSWORD', '至少两种', '密码过于简单']],
+    ]) {
+        warn.mock.resetCalls();
+        const dir = freshDir('admin-invalid');
+        const store = loadStore(dir, { FARM_ADMIN_USERNAME: username, FARM_ADMIN_PASSWORD: password });
+        assert.equal(store.getUserCount(), 0, '不合格配置不得创建管理员');
+        assert.equal(readJson(dir, 'users.json').users.length, 0);
+        assert.equal(store.validateUser(username, password, '127.0.0.13').error, 'invalid_credentials');
+        assert.equal(warn.mock.callCount(), 1);
+        const message = warn.mock.calls[0].arguments.join(' ');
+        assert.match(message, /已拒绝创建/);
+        for (const reason of expected) assert.ok(message.includes(reason), `日志应包含 ${reason}`);
+        if (!expected.includes('FARM_ADMIN_PASSWORD')) assert.ok(!message.includes('FARM_ADMIN_PASSWORD'), '仅用户名不合格时不应归因于密码');
+        if (!expected.includes('FARM_ADMIN_USERNAME')) assert.ok(!message.includes('FARM_ADMIN_USERNAME'), '仅密码不合格时不应归因于用户名');
+        assert.ok(!message.includes(password), '日志不得包含原始密码');
+    }
+});
+
+test('兼容 ADMIN_PASSWORD：弱密码日志标明实际配置项，合法密码仍能初始化', (t) => {
+    const warn = t.mock.method(console, 'warn', () => {});
+    const invalidDir = freshDir('admin-legacy-invalid');
+    assert.equal(loadStore(invalidDir, { FARM_ADMIN_USERNAME: 'bootadmin', ADMIN_PASSWORD: '123456' }).getUserCount(), 0);
+    const message = warn.mock.calls[0].arguments.join(' ');
+    assert.match(message, /ADMIN_PASSWORD：.*密码过于简单/);
+    assert.ok(!message.includes('FARM_ADMIN_PASSWORD'));
+    assert.ok(!message.includes('123456'));
+
+    const validDir = freshDir('admin-legacy-valid');
+    const store = loadStore(validDir, { FARM_ADMIN_USERNAME: 'bootadmin', ADMIN_PASSWORD: 'Str0ngPass!02' });
+    assert.equal(store.validateUser('bootadmin', 'Str0ngPass!02', '127.0.0.13').role, 'admin');
 });
 
 test('已有管理员不被不同环境覆盖：重载后原管理员仍可登录，新环境用户不存在', () => {

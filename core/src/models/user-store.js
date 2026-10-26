@@ -395,8 +395,16 @@ function initConfiguredAdmin() {
         return;
     }
     const passwordResult = validatePasswordStrength(password);
-    if (!/^\w{3,32}$/.test(username) || !passwordResult.valid) {
-        console.warn('[用户系统] 管理员初始化配置不符合用户名或密码强度要求，已拒绝创建');
+    const errors = [];
+    if (!/^\w{3,32}$/.test(username)) {
+        errors.push('FARM_ADMIN_USERNAME：用户名需为3-32位英文字母、数字或下划线，不能包含中文、空格、连字符或其他特殊符号');
+    }
+    if (!passwordResult.valid) {
+        const passwordEnv = process.env.FARM_ADMIN_PASSWORD ? 'FARM_ADMIN_PASSWORD' : 'ADMIN_PASSWORD';
+        errors.push(`${passwordEnv}：${passwordResult.errors.join('；')}`);
+    }
+    if (errors.length > 0) {
+        console.warn(`[用户系统] 管理员初始化配置不符合要求，已拒绝创建：${errors.join('；')}`);
         return;
     }
     users.push({
