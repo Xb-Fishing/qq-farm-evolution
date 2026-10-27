@@ -89,7 +89,8 @@ test('each real product card displays remaining quota and owns its independent q
   const f = panel([row(), row({ id: 9002, name: '白桃种子', purchaseLimit: 0, costs: [{ id: 1041, count: '200', name: '奶茶券' }] })]);
   assert.match(h.textOf(f.root), /剩余 4 份/); assert.match(h.textOf(f.root), /服务端未设置限购/);
   set(f.root, '甜莓种子兑换数量', 3); await h.vue.nextTick();
-  const max = h.buttonsOf(f.root).filter(n => h.textOf(n).trim() === '最大'); assert.equal(max.length, 2);
+  const exchange = h.findAll(f.root, n => String(n.props.class || '').split(/\s+/).includes('milk-exchange-controls'));
+  const max = exchange.flatMap(card => h.buttonsOf(card).filter(n => h.textOf(n).trim() === '最大')); assert.equal(max.length, 2);
   h.click(max[1]); await h.vue.nextTick();
   const first = control(f.root, '甜莓种子兑换数量');
   const second = control(f.root, '白桃种子兑换数量');

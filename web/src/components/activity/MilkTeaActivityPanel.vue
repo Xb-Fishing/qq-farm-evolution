@@ -20,6 +20,8 @@ const durationId = ref(1)
 const targetGid = ref('')
 const slotIndex = ref(0)
 const boostCount = ref(1)
+const boostNotice = ref('')
+const boostRequestMax = 100
 const recipeId = ref(0)
 const selectedFruitUids = ref<string[]>([])
 const craftNotice = ref('')
@@ -31,7 +33,7 @@ const exchangeCounts = ref<Record<number, number | string>>({})
 const exchangeNotice = ref('')
 const dialogRef = ref<HTMLElement | null>(null)
 let returnFocus: HTMLElement | null = null
-const pending = ref<{ action: string, input: Record<string, unknown>, text: string } | null>(null)
+const pending = ref<{ action: string, input: Record<string, unknown>, text: string, boostStock?: number } | null>(null)
 const busy = computed(() => props.loading || !!props.operating || !props.activity)
 const notOpened = computed(() => props.activity?.summary?.shopOpenAt === 0)
 const settle = computed(() => props.activity?.timing?.phase === 'settle')
@@ -100,6 +102,31 @@ const shopStarted = computed(() => Number(props.activity?.summary?.shopOpenAt) >
 const validShopName = computed(() => Array.from(shopName.value.trim()).length >= 2 && Array.from(shopName.value.trim()).length <= 8)
 const noCashierReward = computed(() => Array.isArray(shop.value?.pendingRewards) && shop.value.pendingRewards.length === 0)
 const noClaimableWages = computed(() => Array.isArray(work.value?.slips) && !work.value.slips.some((slip: any) => slip.wageStatus === 1))
+const boostStock = computed(() => {
+  const value = props.activity?.inventory?.boostItemCount
+  return props.activity?.inventory?.available === true && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+})
+const maxBoostCount = computed(() => boostStock.value == null ? null : Math.min(boostStock.value, boostRequestMax))
+const validBoostCount = computed(() => typeof boostCount.value === 'number' && Number.isSafeInteger(boostCount.value)
+  && boostCount.value >= 1 && maxBoostCount.value != null && boostCount.value <= maxBoostCount.value)
+const boostSelectionEnabled = computed(() => !busy.value && !notOpened.value && props.activity?.timing?.phase === 'open' && !!maxBoostCount.value)
+const boostHint = computed(() => {
+  if (settle.value)
+    return '已进入结算期，暂不能使用宣传喇叭。'
+  if (props.loading)
+    return '正在更新宣传喇叭库存。'
+  if (props.activity?.timing?.phase !== 'open')
+    return '当前活动阶段暂不能使用宣传喇叭。'
+  if (boostStock.value == null)
+    return '宣传喇叭库存待确认，请刷新活动。'
+  if (boostStock.value === 0)
+    return '暂无宣传喇叭。'
+  if (!validBoostCount.value)
+    return `请输入 1～${maxBoostCount.value} 之间的整数。`
+  return boostStock.value > boostRequestMax
+    ? `现有 ${number(boostStock.value)} 个，单次最多使用 ${boostRequestMax} 个。`
+    : `现有 ${number(boostStock.value)} 个。`
+})
 const craftableFruits = computed(() => (workshop.value?.fruits || []).filter((fruit: any) =>
   !fruit.locked && /^[1-9]\d*$/.test(String(fruit.uid)) && /^[1-9]\d*$/.test(String(fruit.count))
   && (workshop.value?.recipes || []).some((recipe: any) => recipe.unlocked === true && Number(recipe.fruitItemId) > 0 && Number(recipe.fruitItemId) === Number(fruit.itemId))))
@@ -115,6 +142,12 @@ watch(() => [durationId.value, props.queries.hireList.data, props.queries.hireLi
 watch(() => [targetGid.value, slotIndex.value], () => {
   if (pending.value?.action === 'hire')
     closeConfirmation()
+})
+watch(() => [boostCount.value, boostStock.value, props.activity, props.loading, props.operating, props.activity?.timing?.phase], () => {
+  if (pending.value?.action === 'boost') {
+    closeConfirmation()
+    boostNotice.value = '喇叭状态或数量已更新，请重新确认。'
+  }
 })
 watch(() => JSON.stringify(workshop.value), (_current, previous) => {
   selectedFruitUids.value = []
@@ -184,6 +217,21 @@ function interactionHasEnded() {
   const endAt = Number(shift.value?.endAt)
   return endAt > 0 && endAt <= Math.floor(Date.now() / 1000)
 }
+function setBoostMaximum() {
+  if (!boostSelectionEnabled.value || !maxBoostCount.value)
+    return
+  boostNotice.value = ''
+  boostCount.value = maxBoostCount.value
+}
+function prepareBoost() {
+  if (!boostSelectionEnabled.value || !validBoostCount.value || boostStock.value == null)
+    return
+  boostNotice.value = ''
+  const count = boostCount.value
+  prepare('boost', { count, confirmedCosts: [{ itemId: 1042, count: String(count) }] }, `消耗宣传喇叭 × ${number(count)}，确认使用？`)
+  if (pending.value)
+    pending.value.boostStock = boostStock.value
+}
 function prepare(action: string, input: Record<string, unknown> = {}, text = '确认执行此操作？') {
   if (action === 'interact') {
     if (interactionHasEnded())
@@ -202,6 +250,12 @@ function confirm() {
   if (!pending.value || busy.value)
     return
   const action = pending.value
+  if (action.action === 'boost' && (!boostSelectionEnabled.value || !validBoostCount.value
+    || Number(action.input.count) !== boostCount.value || action.boostStock !== boostStock.value)) {
+    closeConfirmation()
+    boostNotice.value = '喇叭状态或数量已更新，请重新确认。'
+    return
+  }
   if (action.action === 'hire' && !canHire.value) {
     closeConfirmation()
     return
@@ -332,7 +386,7 @@ function exchange(goods: ExchangeGoods) {
       <div><span>店铺等级</span><strong>{{ number(activity?.summary?.level) }}<small> 级</small></strong></div>
       <div><span>累计营业额</span><strong>{{ number(activity?.summary?.totalRevenue) }}</strong></div>
       <div><span>奶茶券：<b>{{ activity?.inventory?.available ? number(activity.inventory.ticketCount) : '待确认' }}</b></span><small>用于雇佣与活动兑换</small></div>
-      <div><span>宣传喇叭：<b>{{ activity?.inventory?.available ? number(activity.inventory.boostItemCount) : '待确认' }}</b></span><small>为小店加速营业</small></div>
+      <div><span>宣传喇叭：<b>{{ number(boostStock) }}</b></span><small>为小店加速营业</small></div>
     </div>
     <p v-if="!activity?.inventory?.available && !loading" class="milk-notice milk-warning">
       活动库存读取失败，请刷新后重试；不会把未知库存显示为零。
@@ -387,11 +441,21 @@ function exchange(goods: ExchangeGoods) {
         </p><p class="milk-muted">
           已累计营业 {{ shop?.cashierStateKnown ? number(Number(shop.cashierElapsedSec) / 3600) : '待确认' }} / {{ shop?.cashierStateKnown ? number(Number(shop.cashierCapacitySec) / 3600) : '待确认' }} 小时。满额按累计营业时间确认；库存和加成变化会影响预计时间。
         </p>
-        <div class="milk-divider" /><div class="milk-inline-form">
-          <label class="milk-field">喇叭数量<input v-model.number="boostCount" type="number" min="1" max="100" aria-label="喇叭数量" class="milk-input"></label><BaseButton class="milk-action" variant="secondary" :disabled="busy || settle" @click="prepare('boost', { count: Number(boostCount), confirmedCosts: [{ itemId: 1042, count: String(boostCount) }] }, `消耗宣传喇叭 × ${number(boostCount)}，确认使用？`)">
+        <div class="milk-divider" /><div class="milk-inline-form milk-boost-controls">
+          <label class="milk-field">喇叭数量<input v-model.number="boostCount" type="number" min="1" step="1" :max="maxBoostCount ?? undefined" :disabled="!boostSelectionEnabled" aria-label="喇叭数量" class="milk-input"></label>
+          <BaseButton class="milk-action milk-max" variant="secondary" aria-label="宣传喇叭最大数量" :disabled="!boostSelectionEnabled" @click="setBoostMaximum">
+            最大
+          </BaseButton>
+          <BaseButton class="milk-action" variant="secondary" :disabled="!boostSelectionEnabled || !validBoostCount" @click="prepareBoost">
             使用宣传喇叭
           </BaseButton>
         </div>
+        <p class="milk-muted">
+          {{ boostHint }}
+        </p>
+        <p v-if="boostNotice" class="milk-notice">
+          {{ boostNotice }}
+        </p>
       </section>
       <section v-if="!notOpened" id="milk-workshop" data-gameplay="workshop" class="milk-card">
         <div class="milk-card-heading">
@@ -921,6 +985,12 @@ function exchange(goods: ExchangeGoods) {
 }
 .milk-inline-form > .milk-action {
   flex-shrink: 0;
+}
+.milk-boost-controls {
+  flex-wrap: wrap;
+}
+.milk-boost-controls > .milk-field {
+  flex-basis: 110px;
 }
 .milk-notice,
 .milk-error {
