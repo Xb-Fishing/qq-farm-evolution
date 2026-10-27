@@ -9,6 +9,31 @@ export interface BlacklistItem {
   avatarUrl: string
 }
 
+// 重点名单条目：名称/头像由后端返回空值，前端与已加载好友列表拼接展示；
+// paused/pausedAt/trailingFailures 来自暂停状态镜像（Worker 停止时读最后快照）
+export interface WatchlistItem {
+  gid: number
+  name: string
+  avatarUrl: string
+  paused: boolean
+  pausedAt: number
+  trailingFailures: number
+}
+
+// 用户意图版本（opSeq）与 Worker 已消费版本（consumedOpSeq）：
+// consumedOpSeq >= opSeq 表示恢复/移除已被 Worker 消费
+export interface WatchlistMeta {
+  opSeq: number
+  consumedOpSeq: number
+}
+
+// 最近一次名单写操作的通知状态：saved=已成功保存；
+// notifyAttempted=已尝试向 Worker 广播（只表示"尝试过"，不代表已送达/已消费）
+export interface WatchlistNotifyState {
+  saved: boolean
+  notifyAttempted: boolean
+}
+
 export interface KnownFriendSettings {
   knownFriendGids: number[]
   knownFriendGidSyncCooldownSec: number
@@ -35,7 +60,18 @@ export const useFriendStore = defineStore('friend', () => {
   const friendLands = ref<Record<string, any[]>>({})
   const friendLandsLoading = ref<Record<string, boolean>>({})
   const blacklist = ref<BlacklistItem[]>([])
-  const watchlist = ref<BlacklistItem[]>([])
+  const watchlist = ref<WatchlistItem[]>([])
+  const watchlistMeta = ref<WatchlistMeta>({ opSeq: 0, consumedOpSeq: 0 })
+  const watchlistNotify = ref<WatchlistNotifyState>({ saved: false, notifyAttempted: false })
+  // 重点名单读取代次：clearFriendData 前移后，在途旧 GET 响应（含 resume/
+  // remove 之前发起的快照）不再写回，避免旧暂停状态污染新展示
+  let watchlistReqSeq = 0
+  // 名单生命周期代次：只在 clearFriendData（账号切换/手动清空）时单调前移，
+  // 永不复位、写发起不复用。写入口在发起时捕获当前代次，响应到达时代次已
+  // 前移（含 A→B→A 切回）即整体丢弃——旧写响应不得写回名单、版本、通知
+  // 状态或触发过期错误提示。同一代次内的多个在途写只按服务端意图版本
+  // （opSeq）裁决：较早发起但携带较新服务端版本的响应仍正常应用。
+  let watchlistAccountEpoch = 0
   const autoBadList = ref<BlacklistItem[]>([])
   const interactRecords = ref<any[]>([])
   const interactLoading = ref(false)
@@ -57,6 +93,10 @@ export const useFriendStore = defineStore('friend', () => {
     friendLandsLoading.value = {}
     blacklist.value = []
     watchlist.value = []
+    watchlistMeta.value = { opSeq: 0, consumedOpSeq: 0 }
+    watchlistNotify.value = { saved: false, notifyAttempted: false }
+    watchlistReqSeq++
+    watchlistAccountEpoch++
     autoBadList.value = []
     interactRecords.value = []
     interactError.value = ''
@@ -313,31 +353,133 @@ export const useFriendStore = defineStore('friend', () => {
     }
   }
 
+  // 统一应用重点名单响应：列表 + 意图/消费版本元数据。
+  // 版本守卫：服务端意图版本（opSeq）较旧的响应一律拒绝（返回 false），
+  // 不得回退名单/元数据/通知状态——覆盖乱序到达的旧写响应与旧 GET 快照。
+  // 版本相等时仍应用（保存失败回滚快照的 opSeq 不前进，无更新写时如实
+  // 展示回滚名单）；同版本消费进度只前进不回退。
+  function applyWatchlistResponse(payload: any) {
+    const meta = payload?.meta || {}
+    const opSeq = Number(meta.opSeq) || 0
+    if (opSeq < watchlistMeta.value.opSeq)
+      return false
+    watchlist.value = Array.isArray(payload?.data) ? payload.data : []
+    watchlistMeta.value = {
+      opSeq,
+      consumedOpSeq: Math.max(watchlistMeta.value.consumedOpSeq, Number(meta.consumedOpSeq) || 0),
+    }
+    return true
+  }
+
+  // 读取代次 + 账号一致性守卫；版本守卫在 applyWatchlistResponse 内统一执行
   async function fetchWatchlist(accountId: string) {
     if (!accountId)
       return
     const requestedId = String(accountId)
+    const seq = ++watchlistReqSeq
     try {
       const res = await api.get('/api/friend-watchlist', {
         headers: { 'x-account-id': accountId },
       })
-      if (!isCurrentAccount(requestedId))
+      if (seq !== watchlistReqSeq || !isCurrentAccount(requestedId))
         return
-      if (res.data.ok) {
-        watchlist.value = res.data.data || []
-      }
+      if (res.data.ok)
+        applyWatchlistResponse(res.data)
     }
     catch { /* ignore */ }
   }
 
+  // 写操作统一走 applyWatchlistResponse（含保存失败时的回滚后名单快照）；
+  // 生命周期代次或账号已变化（清空/切换/切回）→ 整体丢弃（stale=true 不写
+  // 名单与通知、页面不弹错），成功响应与请求拒绝（catch）同等守卫——旧生命
+  // 周期的请求失败不是当前页面的失败；代次未变但版本较旧 → 同样按 stale
+  // 丢弃；较早发起而携带较新服务端版本的响应由版本守卫正常放行。
   async function toggleWatchlist(accountId: string, gid: number) {
     if (!accountId || !gid)
-      return
-    const res = await api.post('/api/friend-watchlist/toggle', { gid }, {
-      headers: { 'x-account-id': accountId },
-    })
-    if (res.data.ok) {
-      watchlist.value = res.data.data || []
+      return { ok: false, stale: false }
+    const requestedId = String(accountId)
+    const epoch = watchlistAccountEpoch
+    try {
+      const res = await api.post('/api/friend-watchlist/toggle', { gid }, {
+        headers: { 'x-account-id': accountId },
+      })
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      if (!applyWatchlistResponse(res.data))
+        return { ok: false, stale: true }
+      if (res.data.ok) {
+        watchlistNotify.value = {
+          saved: res.data.saved !== false,
+          notifyAttempted: !!res.data.notifyAttempted,
+        }
+      }
+      return { ok: !!res.data.ok, stale: false }
+    }
+    catch {
+      // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      return { ok: false, stale: false }
+    }
+  }
+
+  // 恢复某目标的普通基线巡田（用户意图；Worker 消费前只影响本地展示）
+  async function resumeWatchlist(accountId: string, gid: number) {
+    if (!accountId || !gid)
+      return { ok: false, stale: false }
+    const requestedId = String(accountId)
+    const epoch = watchlistAccountEpoch
+    try {
+      const res = await api.post('/api/friend-watchlist/resume', { gid }, {
+        headers: { 'x-account-id': accountId },
+      })
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      if (!applyWatchlistResponse(res.data))
+        return { ok: false, stale: true }
+      if (res.data.ok) {
+        watchlistNotify.value = {
+          saved: res.data.saved !== false,
+          notifyAttempted: !!res.data.notifyAttempted,
+        }
+      }
+      return { ok: !!res.data.ok, stale: false }
+    }
+    catch {
+      // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      return { ok: false, stale: false }
+    }
+  }
+
+  // 移出重点名单（显式移除意图：旧暂停状态不被 remove-re-add 继承）
+  async function removeWatchlist(accountId: string, gid: number) {
+    if (!accountId || !gid)
+      return { ok: false, stale: false }
+    const requestedId = String(accountId)
+    const epoch = watchlistAccountEpoch
+    try {
+      const res = await api.post('/api/friend-watchlist/remove', { gid }, {
+        headers: { 'x-account-id': accountId },
+      })
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      if (!applyWatchlistResponse(res.data))
+        return { ok: false, stale: true }
+      if (res.data.ok) {
+        watchlistNotify.value = {
+          saved: res.data.saved !== false,
+          notifyAttempted: !!res.data.notifyAttempted,
+        }
+      }
+      return { ok: !!res.data.ok, stale: false }
+    }
+    catch {
+      // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
+      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+        return { ok: false, stale: true }
+      return { ok: false, stale: false }
     }
   }
 
@@ -539,6 +681,8 @@ export const useFriendStore = defineStore('friend', () => {
     friendLandsLoading,
     blacklist,
     watchlist,
+    watchlistMeta,
+    watchlistNotify,
     autoBadList,
     interactRecords,
     interactLoading,
@@ -556,6 +700,8 @@ export const useFriendStore = defineStore('friend', () => {
     toggleBlacklist,
     fetchWatchlist,
     toggleWatchlist,
+    resumeWatchlist,
+    removeWatchlist,
     fetchAutoBad,
     toggleAutoBad,
     fetchInteractRecords,

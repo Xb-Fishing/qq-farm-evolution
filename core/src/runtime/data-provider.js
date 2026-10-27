@@ -26,7 +26,9 @@ function createDataProvider(deps) {
         restartWorker,
         scheduleAutoCodeRefresh,
         stopAutoCodeRefresh,
-        refreshAccountCode
+        refreshAccountCode,
+        scheduleRescanRecovery,
+        needsWxRescan
     } = deps;
 
     /** 获取账号列表 */
@@ -53,14 +55,26 @@ function createDataProvider(deps) {
     const SYNC_TIMEOUT = { _timeoutMs: 180000 };          // 3分钟
     const DOG_INFO_TIMEOUT = { _timeoutMs: 600000 };     // 10分钟
 
+    function persistClearedLogs(previousRuntime, previousAccounts) {
+        if (!deps.persistLogHistory) return;
+        try { if (deps.persistLogHistory()) return; } catch {}
+        globalLogs.splice(0, globalLogs.length, ...previousRuntime);
+        accountLogs.splice(0, accountLogs.length, ...previousAccounts);
+        throw new Error('日志清除未能保存，请稍后重试');
+    }
+
     return {
+        prepareWxRestart: deps.prepareWxRestart,
+        validateWxRestart: deps.validateWxRestart,
+        cancelWxRestart: deps.cancelWxRestart,
         /** 获取账号运行状态 */
         getStatus: (ref) => {
             const id = resolveAccountId(ref);
             if (!id) return buildDefaultStatus('');
 
             const worker = workers[id];
-            if (!worker || !worker.status) return buildDefaultStatus(id);
+            if (!worker || !worker.status) return worker?.process?.persistentSession
+                ? { ...buildDefaultStatus(id), connection: { connected: undefined, state: 'unknown' } } : buildDefaultStatus(id);
 
             return {
                 ...buildDefaultStatus(id),
@@ -97,12 +111,15 @@ function createDataProvider(deps) {
         clearLogs: (ref) => {
             const normalized = normalizeAccountRef(ref);
             const id = resolveAccountId(ref);
+            const previousRuntime = globalLogs.slice();
+            const previousAccounts = accountLogs.slice();
 
             if (!normalized || normalized === 'all') {
                 const clearedRuntimeLogs = globalLogs.length;
                 const clearedAccountLogs = accountLogs.length;
                 globalLogs.length = 0;
                 accountLogs.length = 0;
+                persistClearedLogs(previousRuntime, previousAccounts);
                 return {
                     cleared: 'all',
                     clearedRuntimeLogs,
@@ -134,6 +151,7 @@ function createDataProvider(deps) {
             result.clearedRuntimeLogs = runtimeLogsBefore - globalLogs.length;
             result.clearedAccountLogs = accountLogsBefore - accountLogs.length;
             result.cleared = result.clearedRuntimeLogs + result.clearedAccountLogs;
+            persistClearedLogs(previousRuntime, previousAccounts);
             return { ...result, accountId: id };
         },
 
@@ -189,12 +207,17 @@ function createDataProvider(deps) {
 
         // ========== Activity ==========
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
+        getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
-        getBearActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getBearActivity'),
-        getWishActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getWishActivity'),
-        getHappyShareActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getHappyShareActivity'),
-        operatePetDiary: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operatePetDiary', action, input),
-        operateSeasonWish: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateSeasonWish', action, input),
+        // 奶茶热销中（S4）：默认只读快照 + 显式查询 + 面板手动操作
+        getMilkTeaActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getMilkTeaActivity'),
+        getSolarCalendar: (ref) => callWorkerApi(resolveAccountId(ref), 'getSolarCalendar'),
+        operateSolarCalendar: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateSolarCalendar', action, input),
+        queryMilkTeaActivity: (ref, kind, params) => callWorkerApi(resolveAccountId(ref), 'queryMilkTeaActivity', kind, params),
+        operateMilkTea: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMilkTea', action, input),
+        // S3 萌宠 / 秋祈良愿 / 快乐不独享已随 S4 轮换下架（2026-10-15 退役）：
+        // getBearActivity/getWishActivity/getHappyShareActivity/operatePetDiary/
+        // operateSeasonWish 转发与对应 Worker case 一并移除，旧链路不可达。
 
         // ========== Illustrated ==========
         getIllustratedList: (ref, type, level) => callWorkerApi(resolveAccountId(ref), 'getIllustratedList', type, level),
@@ -273,7 +296,8 @@ function createDataProvider(deps) {
 
         invalidateAccountCredentialTasks: (ref) => {
             const id = resolveAccountId(ref);
-            if (id && typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(id);
+            if (id && typeof deps.invalidateWxCredentialTasks === 'function') deps.invalidateWxCredentialTasks(id);
+            else if (id && typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(id);
         },
 
         saveAutoCodeRefresh: async (ref, config) => {
@@ -290,6 +314,22 @@ function createDataProvider(deps) {
             if (typeof refreshAccountCode !== 'function') throw new Error('自动刷新服务不可用');
             const ok = await refreshAccountCode(id, reason || 'manual');
             return { ok };
+        },
+
+        // 自助扫码「授权已保存但换码/启动未收口」时的自动恢复排程：沿既有
+        // scheduleRelogin（原 intervalMinutes 节奏 + 每日 5 次/连续失败 3 次的
+        // 既有预算与退避），只做接线，不改分类/预算/节奏。reason 原样上抛，
+        // 由 runtime-engine 接线统一包装为分类器已识别的
+        // refresh_failed:rescan:<stage>（裸阶段码不计预算会永远循环）。
+        // 预算耗尽或运行时未接线时如实返回 false，保留手动「重试登录农场」。
+        scheduleRescanRecovery: (ref, reason) => {
+            const id = resolveAccountId(ref);
+            if (!id || typeof scheduleRescanRecovery !== 'function') return false;
+            try {
+                return scheduleRescanRecovery(id, reason || 'rescan_recovery') === true;
+            } catch {
+                return false;
+            }
         },
 
         setUITheme: async (theme) => {
@@ -318,6 +358,10 @@ function createDataProvider(deps) {
                 acc.running = !!worker;
                 acc.autoLogin = store.isAccountAutoLogin(acc);
                 acc.hasWxCredential = !!acc.loginBuffer;
+                // 微信账号凭据已被判定明确失效、等待用户重新扫码。
+                acc.needsWxRescan = acc.platform === 'wx'
+                    && typeof needsWxRescan === 'function'
+                    && needsWxRescan(acc.id) === true;
                 delete acc.loginBuffer;
                 delete acc.refreshtoken;
                 delete acc.accesstoken;
@@ -332,6 +376,19 @@ function createDataProvider(deps) {
             return data;
         },
 
+        // 自助扫码已换发并落盘新 Code，直接沿现有 Worker 路径恢复，避免再次换码。
+        // startWorker 是纯取值器（true=已拉起 / false=拒绝），必须如实透传：
+        // 不能把「新授权已保存」冒充成「账号已启动」（2026-10-04 授权后未登录事故）。
+        startAccountFromSavedWxCode: (ref, expectedCode) => {
+            const id = resolveAccountId(ref);
+            const account = findAccount(id || ref);
+            if (!account || account.platform !== 'wx' || !account.loginBuffer
+                || !expectedCode || account.code !== expectedCode) return false;
+            store.addOrUpdateAccount({ id: account.id, autoLogin: true });
+            if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
+            return startWorker(findAccount(id || ref) || account);
+        },
+
         startAccount: async (ref) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
@@ -339,20 +396,25 @@ function createDataProvider(deps) {
             store.addOrUpdateAccount({ id: account.id, autoLogin: true });
             if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
             const latest = findAccount(id || ref) || account;
+            if (typeof deps.tryAdoptAccountSession === 'function') {
+                const adoption = await deps.tryAdoptAccountSession(latest);
+                if (adoption.state === 'adopted'
+                    && (!latest.credentialGeneration || adoption.facts?.game?.loginCredentialGeneration === latest.credentialGeneration)) return true;
+                if (!['adopted', 'absent'].includes(adoption.state)) return false;
+            }
             if (latest.platform === 'wx' && latest.loginBuffer && typeof refreshAccountCode === 'function') {
                 const refreshed = await refreshAccountCode(latest.id, 'manual_start');
                 if (refreshed) return true;
             }
-            startWorker(latest);
-            return true;
+            return await startWorker(latest);
         },
 
         stopAccount: (ref) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account) return false;
-            if (id) stopWorker(id);
-            return true;
+            const result = id ? stopWorker(id) : null;
+            return result && typeof result.then === 'function' ? result.then(() => true) : true;
         },
 
         holdAccountOffline: (ref) => {
@@ -361,16 +423,18 @@ function createDataProvider(deps) {
             if (!account) return false;
             store.addOrUpdateAccount({ id: account.id, autoLogin: false });
             if (typeof stopAutoCodeRefresh === 'function') stopAutoCodeRefresh(account.id);
-            if (id) stopWorker(id);
-            return true;
+            const result = id ? stopWorker(id) : null;
+            return result && typeof result.then === 'function' ? result.then(() => true) : true;
         },
 
         restartAccount: (ref) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account) return false;
-            restartWorker(account);
-            return true;
+            // restartWorker：true/false = 同步 startWorker 的结果；undefined = 重启
+            // 已排队（等旧进程退出后拉起）。原样透传，调用方据此区分「已提交
+            // 重连」与「真正启动」，绝不把排队冒充已连接。
+            return restartWorker(account);
         },
 
         isAccountRunning: (ref) => {

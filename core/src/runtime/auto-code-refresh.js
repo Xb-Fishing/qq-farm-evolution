@@ -60,6 +60,12 @@ function createAutoCodeRefreshService(deps) {
     log,
     addAccountLog,
   } = deps;
+  // 凭据被判「明确失效」时的通知回调（微信重扫提醒）。仅在两条终态路径
+  // （保活 definitive / 换 Code definitive）到达时触发；自身异常绝不影响
+  // 保活节奏、错误预算或 Worker 生命周期。
+  const onWxCredentialDefinitivelyInvalid = typeof deps.onWxCredentialDefinitivelyInvalid === 'function'
+    ? deps.onWxCredentialDefinitivelyInvalid
+    : null;
   const keepCredentialAlive = typeof deps.keepWxCredentialAlive === 'function'
     ? deps.keepWxCredentialAlive
     : wxLoginAdapter.keepWxCredentialAlive;
@@ -68,8 +74,21 @@ function createAutoCodeRefreshService(deps) {
     : nextCredentialKeepaliveDelayMs;
 
   const scheduler = createScheduler('auto_code_refresh');
+  // Announcements describe management setup, never a new game login.
+  const enableNotices = new Map();
+  function logEnableNotice(kind, accountId, message, metadata) {
+    const key = `${String(accountId)}:${kind}`;
+    if (enableNotices.get(key) === message) return;
+    enableNotices.set(key, message);
+    log('系统', message, metadata);
+  }
+  function clearEnableNotices(accountId) {
+    enableNotices.delete(`${String(accountId)}:keepalive`);
+    enableNotices.delete(`${String(accountId)}:recovery`);
+  }
   const recoveryState = new Map();
   const keepaliveGeneration = new Map();
+  const credentialGeneration = new Map();
   const definitiveCredentialFailures = new Map();
   const codeRefreshes = new Map();
   const MAX_DAILY_RECOVERIES = 5;
@@ -121,13 +140,28 @@ function createAutoCodeRefreshService(deps) {
 
   function blockCredential(accountId) {
     // 失败前 token 可能已滚动，必须记录持久化后的身份。
-    definitiveCredentialFailures.set(String(accountId), credentialIdentity(findAccount(accountId)));
+    const account = findAccount(accountId);
+    definitiveCredentialFailures.set(String(accountId), credentialIdentity(account));
     scheduler.clear(getKeepaliveTaskName(accountId));
     scheduler.clear(`relogin_${String(accountId)}`);
+    if (onWxCredentialDefinitivelyInvalid && account && String(account.platform || '') === 'wx') {
+      // 带绑定快照（属主/wxid）异步传递，回调侧不再回头取「当前值」；
+      // QQ 账号即使错误文案命中也不走微信重扫提醒。
+      try {
+        Promise.resolve(onWxCredentialDefinitivelyInvalid({
+          accountId: String(accountId),
+          owner: String(account.username || ''),
+          wxid: String(account.wxid || ''),
+        })).catch(() => { /* 提醒失败不影响凭据阻断本身 */ });
+      } catch { /* 回调同步异常同样吞掉 */ }
+    }
   }
 
   function isCredentialBlocked(accountId) {
     const key = String(accountId || '');
+    // The reminder registry survives process updates; a rejected authorization
+    // must not become usable merely because this process's Map is empty.
+    if (typeof deps.needsWxRescan === 'function' && deps.needsWxRescan(key) === true) return true;
     if (!definitiveCredentialFailures.has(key)) return false;
     const account = findAccount(accountId);
     if (!account || credentialIdentity(account) === definitiveCredentialFailures.get(key)) return true;
@@ -148,7 +182,7 @@ function createAutoCodeRefreshService(deps) {
     return store.getGlobalWxConfig ? store.getGlobalWxConfig() : {};
   }
 
-  async function requestFarmCode(account, wxConfig) {
+  async function requestFarmCode(account, wxConfig, guard, options = {}) {
     const wxid = String(account && account.wxid || '').trim();
     if (!wxid) throw new Error('账号缺少 wxid，无法自动刷新 Code');
 
@@ -159,7 +193,8 @@ function createAutoCodeRefreshService(deps) {
     // ManualAuth rejected 时才尝试 refreshtoken 续期；不要每次启动/恢复前强制
     // 刷 loginBuffer，否则刷新端偶发 40188 会挡住仍然有效的现有凭证。
     if (account.loginBuffer) {
-      const local = await wxLoginAdapter.getFarmCode(wxid, { accountId: account.id });
+      const local = await wxLoginAdapter.getFarmCode(wxid, { accountId: account.id,
+        ...(guard ? { guard, credentialGuard: options.credentialGuard, intentKey: options.intentKey } : {}) });
       if (local.Success && local.Data && local.Data.code) return String(local.Data.code);
       throw new Error(local.Message || '进程内获取 Code 失败');
     }
@@ -191,6 +226,42 @@ function createAutoCodeRefreshService(deps) {
     throw new Error(msg);
   }
 
+  // Update preparation never writes a game Code or restarts the live Worker.
+  // Skip proactive refresh: a usable current buffer should be tried directly.
+  async function prepareRestartCode(accountId, options = {}) {
+    const key = String(accountId);
+    const generation = keepaliveGeneration.get(key) || 0;
+    const authorizationGeneration = credentialGeneration.get(key) || 0;
+    const original = findAccount(key);
+    if (!original || isCredentialBlocked(key)
+      || (store.isAccountAutoLogin && !store.isAccountAutoLogin(original))) return null;
+    const binding = JSON.stringify([original.id, original.username || '', original.wxid || '']);
+    const credentialGuard = () => {
+      const current = findAccount(key);
+      return (credentialGeneration.get(key) || 0) === authorizationGeneration && current
+        && JSON.stringify([current.id, current.username || '', current.wxid || '']) === binding;
+    };
+    const guard = () => credentialGuard() && (keepaliveGeneration.get(key) || 0) === generation
+      && (!store.isAccountAutoLogin || store.isAccountAutoLogin(findAccount(key)))
+      && !isCredentialBlocked(key) && (!options.guard || options.guard());
+    try {
+      if (!guard()) return null;
+      const code = await requestFarmCode(original, getWxConfig(), guard, {
+        credentialGuard, intentKey: `update:${String(options.intentKey || '')}`,
+      });
+      if (!guard()) return null;
+      return { code, generation };
+    } catch (error) {
+      if (guard() && isDefinitiveCredentialFailure(error)) blockCredential(key);
+      return null;
+    }
+  }
+
+  function isRestartGenerationCurrent(accountId, generation) {
+    return (keepaliveGeneration.get(String(accountId)) || 0) === generation
+      && !isCredentialBlocked(accountId);
+  }
+
   async function refreshAccountCode(accountId, reason = 'timer') {
     const key = String(accountId);
     const generation = keepaliveGeneration.get(key) || 0;
@@ -211,7 +282,16 @@ function createAutoCodeRefreshService(deps) {
     const generation = keepaliveGeneration.get(key) || 0;
     const stillCurrent = () => (keepaliveGeneration.get(key) || 0) === generation;
     let account = findAccount(accountId);
-    if (!account || isCredentialBlocked(accountId)) return false;
+    if (!account) return false;
+    const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
+    if (typeof controls.tryAdoptAccountSession === 'function') {
+      const adoption = await controls.tryAdoptAccountSession(account);
+      if (!stillCurrent()) return false;
+      if (adoption.state === 'adopted'
+        && (!account.credentialGeneration || adoption.facts?.game?.loginCredentialGeneration === account.credentialGeneration)) return true;
+      if (!['adopted', 'absent'].includes(adoption.state)) return false;
+    }
+    if (isCredentialBlocked(accountId)) return false;
     const manualReason = reason === 'manual_start' || reason === 'manual_relogin';
     if (store.isAccountAutoLogin && !store.isAccountAutoLogin(account) && !manualReason) {
       return false;
@@ -259,7 +339,10 @@ function createAutoCodeRefreshService(deps) {
       const nextAccount = findAccount(accountId) || { ...account, code };
 
       const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
-      if (typeof controls.restartWorker === 'function') controls.restartWorker(nextAccount);
+      if (typeof controls.restartWorker === 'function') {
+        const started = await controls.restartWorker(nextAccount);
+        if (started === false) throw new Error('账号启动被拒绝');
+      }
 
       addAccountLog('auto_code_refresh', `自动刷新 Code 成功，已重启账号: ${  account.name}`,
         account.id, account.name, { reason });
@@ -355,7 +438,7 @@ function createAutoCodeRefreshService(deps) {
 
     scheduleNextKeepalive();
     const modeLabel = mode === 'offline' ? '断线等待保活' : '在线保活';
-    log('系统', `微信登录凭据${modeLabel}已启用: ${account.name}，按有效期提前 35-45 分钟续期（不换游戏 Code）`, {
+    logEnableNotice('keepalive', accountKey, `微信登录凭据${modeLabel}已启用: ${account.name}，按有效期提前 35-45 分钟续期（不换游戏 Code）`, {
       accountId: accountKey, accountName: account.name, mode,
     });
     return true;
@@ -381,6 +464,7 @@ function createAutoCodeRefreshService(deps) {
 
     const account = findAccount(accountId);
     if (account && store.isAccountAutoLogin && !store.isAccountAutoLogin(account)) {
+      clearEnableNotices(accountId);
       return;
     }
     if (account && isCredentialBlocked(accountId)) {
@@ -401,8 +485,9 @@ function createAutoCodeRefreshService(deps) {
 
     // 旧版在这里每隔 intervalMinutes 主动换 Code 并重启 Worker，会人为制造周期掉线。
     // 现在该配置只控制真实断线后的自动恢复间隔；在线会话只走上面的凭据保活。
+    if (!cfg.enabled) enableNotices.delete(`${String(accountId)}:recovery`);
     if (cfg.enabled) {
-      log('系统', `断线自动恢复已启用: ${account.name}，失败后约 ${cfg.intervalMinutes} 分钟重试`, {
+      logEnableNotice('recovery', accountId, `断线自动恢复已启用: ${account.name}，失败后约 ${cfg.intervalMinutes} 分钟重试`, {
         accountId: String(accountId),
         accountName: account.name,
       });
@@ -419,11 +504,18 @@ function createAutoCodeRefreshService(deps) {
   }
 
   function stopAccount(accountId) {
+    clearEnableNotices(accountId);
     const accountKey = String(accountId || '');
     keepaliveGeneration.set(accountKey, (keepaliveGeneration.get(accountKey) || 0) + 1);
     scheduler.clear(getTaskName(accountId));
     scheduler.clear(getKeepaliveTaskName(accountId));
     scheduler.clear(`relogin_${String(accountId || '')}`);
+  }
+
+  function invalidateCredentialTasks(accountId) {
+    const key = String(accountId);
+    credentialGeneration.set(key, (credentialGeneration.get(key) || 0) + 1);
+    stopAccount(key);
   }
 
   // ── 被踢下线后的接管监控 ──
@@ -556,6 +648,9 @@ function createAutoCodeRefreshService(deps) {
   }
 
   return {
+    invalidateCredentialTasks,
+    prepareRestartCode,
+    isRestartGenerationCurrent,
     refreshAccountCode,
     isCredentialBlocked,
     scheduleAccount,

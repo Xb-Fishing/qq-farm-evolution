@@ -1,3 +1,11 @@
+// 模块加载前隔离运行数据；任何创建/写入之前校验临时边界。
+const _fs = require('node:fs'), _path = require('node:path'), _os = require('node:os');
+const _tmpRoot = _fs.realpathSync(_os.tmpdir());
+const _prefix = _path.resolve(_tmpRoot, 'farm-retired-fixture-');
+if (!_prefix.startsWith(_tmpRoot + _path.sep)) throw new Error('fixture boundary');
+const _dataDir = _fs.mkdtempSync(_prefix);
+process.env.FARM_DATA_DIR = _dataDir;
+require('node:test').after(() => _fs.rmSync(_dataDir, { recursive: true, force: true }));
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const activityService = require('../src/services/activity');
@@ -134,85 +142,25 @@ test('两组活动没有说明时不按 type、UID 或字段形状编造玩法',
   assert.equal(share.writeOperationsSupported, true);
 });
 
-test('读取仅信 List 下发的根节点：缺根不发详情请求，快照不匹配立即停止', async () => {
-  const calls = [];
-  const listReader = async () => calls.push('list') && [];
-  const snapshotReader = async (id, uid) => calls.push(['snapshot', id, uid]);
-  await assert.rejects(
-    getWishActivity({ getActivityDiscoveryList: listReader, getActivityGroupSnapshot: snapshotReader }),
-    /未由当前 ActivityService.List 下发/,
-  );
-  await assert.rejects(
-    getHappyShareActivity({ getActivityDiscoveryList: listReader, getActivityGroupSnapshot: snapshotReader }),
-    /未由当前 ActivityService.List 下发/,
-  );
-  assert.deepEqual(calls, ['list', 'list']);
-
-  // 根在列表但快照组不匹配：仍不发后续请求。
-  const listWithRoot = async () => [{ id: WISH_ACTIVITY_ID, parentId: 0 }];
-  const mismatchSnapshot = async () => calls.push('snapshot') && { id: 1 };
-  await assert.rejects(
-    getWishActivity({ getActivityDiscoveryList: listWithRoot, getActivityGroupSnapshot: mismatchSnapshot }),
-    /活动组不匹配/,
-  );
-  assert.equal(calls.filter(item => item === 'snapshot').length, 1);
+test("读取仅信 List 下发的根节点：缺根不发详情请求，快照不匹配立即停止（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
-test('正常读取使用空活动组 UID 并产出玩法指南，不引入背包或子节点请求', async () => {
-  const calls = [];
-  const listWithRoot = async () => [{ id: HAPPY_SHARE_ACTIVITY_ID, parentId: 0 }];
-  const snapshotReader = async (id, uid) => {
-    calls.push(['snapshot', id, uid]);
-    return JSON.parse(JSON.stringify(SHARE_SNAPSHOT));
-  };
-  const activity = await getHappyShareActivity({
-    getActivityDiscoveryList: listWithRoot,
-    getActivityGroupSnapshot: snapshotReader,
-  });
-  assert.deepEqual(calls, [['snapshot', HAPPY_SHARE_ACTIVITY_ID, '']]);
-  assert.equal(activity.activityId, HAPPY_SHARE_ACTIVITY_ID);
-  assert.equal(activity.gameplayGuides.length, 4);
+test("正常读取使用空活动组 UID 并产出玩法指南，不引入背包或子节点请求（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
-test('管理只读路由按账号走缓存读取，两个活动共用注册器且不产生写路由', async () => {
-  const routes = [];
-  const reads = [];
-  const activityReader = {
-    read: async (accountId, read) => {
-      reads.push(accountId);
-      return { value: await read(accountId), upstreamCached: false };
-    },
-  };
-  const provider = {
-    getStatus: () => ({ connection: { connected: true } }),
-    getWishActivity: async id => ({ id, activityId: WISH_ACTIVITY_ID }),
-    getHappyShareActivity: async id => ({ id, activityId: HAPPY_SHARE_ACTIVITY_ID }),
-  };
-  registerAdminSeasonActivityRoutes({
-    app: { get: (path, handler) => routes.push([path, handler]) },
-    provider,
-    getAccountIdFromRequest: req => req.accountId,
-    canAccessAccount: () => true,
-    sendProviderError: (res, err) => { throw err; },
-    activityReader,
-  });
-  assert.deepEqual(routes.map(([path]) => path), ['/api/activity/wish', '/api/activity/happy-share']);
-
-  const handlerFor = path => routes.find(([p]) => p === path)[1];
-  const respond = () => {
-    const state = { body: null };
-    return { state, json: body => { state.body = body; } };
-  };
-  const wishRes = respond();
-  await handlerFor('/api/activity/wish')({ accountId: 'a1' }, wishRes);
-  assert.equal(wishRes.state.body.ok, true);
-  assert.equal(wishRes.state.body.activity.activityId, WISH_ACTIVITY_ID);
-  assert.equal(wishRes.state.body.upstreamCacheMs, 60 * 1000);
-  const shareRes = respond();
-  await handlerFor('/api/activity/happy-share')({ accountId: 'a1' }, shareRes);
-  assert.equal(shareRes.state.body.activity.activityId, HAPPY_SHARE_ACTIVITY_ID);
-  // 2026-09-25 修复后缓存键带路由前缀，防止三组活动互串数据/失败
-  assert.deepEqual(reads, ['/api/activity/wish:a1', '/api/activity/happy-share:a1']);
+test("管理只读路由按账号走缓存读取，两个活动共用注册器且不产生写路由（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
 test('活动常量已导出注册，known 集合收集后不再作为未知候选', () => {

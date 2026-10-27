@@ -12,6 +12,7 @@ import { useAccountSettings } from '@/composables/settings/useAccountSettings'
 import { useAutomationSettings } from '@/composables/settings/useAutomationSettings'
 import { useStrategySettings } from '@/composables/settings/useStrategySettings'
 import { useUserSettings } from '@/composables/settings/useUserSettings'
+import { useWxLoginReminder } from '@/composables/settings/useWxLoginReminder'
 import { useSettingStore } from '@/stores/setting'
 
 const settingStore = useSettingStore()
@@ -130,6 +131,17 @@ const {
   confirmClearStopped,
 } = useAccountSettings(showAlert)
 
+const {
+  configSaving: wxReminderSaving,
+  testing: wxReminderTesting,
+  reminderConfig: wxReminderConfig,
+  needsRescanAccounts,
+  fetchReminderConfig,
+  handleSaveReminder,
+  handleTestReminder,
+  syncNeedsRescanAccounts,
+} = useWxLoginReminder(showAlert, () => accounts.value)
+
 // 从既有账号列表派生当前账号严格运行态：账号缺失、未运行或未选择都暂停背包种子读取。
 // 复用 accounts 已有的轮询刷新，不新增状态请求；列表对象整体替换不影响该布尔值。
 const currentAccountRunning = computed(() => {
@@ -228,6 +240,8 @@ watch(
 onMounted(async () => {
   await fetchAccounts()
   await fetchDeviceProtocol()
+  await fetchReminderConfig()
+  syncNeedsRescanAccounts()
   selectFirstAccountIfNeeded()
   if (currentAccountId.value) {
     await loadStrategyData()
@@ -369,6 +383,7 @@ onMounted(async () => {
           v-model:selected-device-preset="selectedDevicePreset"
           v-model:password-form="passwordForm"
           v-model:offline-config="localOffline"
+          v-model:wx-reminder-config="wxReminderConfig"
           :device-protocol-loading="deviceProtocolLoading"
           :device-protocol-saving="deviceProtocolSaving"
           :device-protocol-preset-options="deviceProtocolPresetOptions"
@@ -377,6 +392,9 @@ onMounted(async () => {
           :current-channel-doc-url="currentChannelDocUrl"
           :offline-saving="offlineSaving"
           :offline-testing="offlineTesting"
+          :wx-reminder-saving="wxReminderSaving"
+          :wx-reminder-testing="wxReminderTesting"
+          :needs-rescan-accounts="needsRescanAccounts"
           @apply-device-preset="applyDevicePreset"
           @random-mac="fillRandomDeviceMac"
           @random-device-id="fillRandomDeviceId"
@@ -386,6 +404,8 @@ onMounted(async () => {
           @open-docs="openChannelDocs"
           @test-offline="handleTestOffline"
           @save-offline="handleSaveOffline"
+          @save-wx-reminder="handleSaveReminder"
+          @test-wx-reminder="handleTestReminder"
         />
       </div>
     </div>

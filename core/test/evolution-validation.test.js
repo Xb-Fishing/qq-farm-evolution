@@ -7,11 +7,15 @@ const { execFileSync } = require('node:child_process');
 const { runEvolutionValidation, getValidationSummary } = require('../src/services/evolution-validation');
 
 function fixture(t, frontend = true) {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-validation-test-'));
+    const prefix = path.resolve(os.tmpdir(), 'farm-validation-test-');
+    assert.equal(path.dirname(prefix), path.resolve(os.tmpdir()));
+    const repoRoot = fs.mkdtempSync(prefix);
     const dataDir = path.join(repoRoot, 'core/data');
     const write = (file, content) => {
-        fs.mkdirSync(path.dirname(path.join(repoRoot, file)), { recursive: true });
-        fs.writeFileSync(path.join(repoRoot, file), content);
+        const target = path.resolve(repoRoot, file);
+        assert.equal(target.startsWith(repoRoot + path.sep), true);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, content);
     };
     execFileSync('git', ['init', '--quiet'], { cwd: repoRoot });
     write('.gitignore', 'core/data/\nweb/dist/\nnode_modules/\n');
@@ -66,13 +70,13 @@ test('runs complete backend, typecheck and isolated build once; reuses the same 
     assert.equal(Date.now, now);
 });
 
-test('source, test, lock, config, new and deleted logic files invalidate; documentation does not', async (t) => {
+test('build inputs including CHANGELOG invalidate; ordinary documentation does not', async (t) => {
     const f = fixture(t);
     let previous = await runEvolutionValidation(f.options);
     f.write('docs/notes.md', 'new explanation');
     f.write('README.md', 'new explanation');
     assert.equal((await runEvolutionValidation(f.options)).cached, true);
-    for (const file of ['core/src/service.js', 'core/test/service.test.js', 'core/package-lock.json',
+    for (const file of ['docs/CHANGELOG.md', 'core/src/service.js', 'core/test/service.test.js', 'core/package-lock.json',
         'web/src/app.ts', 'web/tsconfig.json', 'scripts/check.sh', 'pnpm-lock.yaml', 'core/src/new.js',
         'core/src/data/rules.json', 'core/test/fixtures/input.txt']) {
         f.write(file, `changed ${file}`);

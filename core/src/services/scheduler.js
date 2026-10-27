@@ -84,6 +84,9 @@ function createScheduler(namespace = 'default') {
   const ns = String(namespace || 'default');
   const store = ensureNamespaceStore(ns);
   const timers = store.timers;
+    if (require('./business-state').getBusinessGate()) {
+      return require('./session-scheduler').createSessionScheduler(ns, store, schedulerLogger);
+    }
 
   /** 清除单个任务 */
   function clearTask(taskName) {
@@ -138,7 +141,7 @@ function createScheduler(namespace = 'default') {
       current.lastRunAt = Date.now();
       current.runCount += 1;
       try {
-        await callback();
+        await require('./own-quiet-priority').withoutScope(callback);
       } catch (err) {
         schedulerLogger.warn(`[${ns}] timeout 任务执行失败: ${key}`, {
           module: 'scheduler',
@@ -195,7 +198,7 @@ function createScheduler(namespace = 'default') {
       current.lastRunAt = Date.now();
       current.runCount += 1;
       try {
-        await callback();
+        await require('./own-quiet-priority').withoutScope(callback);
       } catch (err) {
         schedulerLogger.warn(`[${ns}] interval 任务执行失败: ${key}`, {
           module: 'scheduler',

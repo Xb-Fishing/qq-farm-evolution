@@ -51,13 +51,14 @@ test('own harvest guard is independently armed for the full absolute due time', 
   assert.ok(Number(actDelay[2]) < 1000, 'healthy harvest stays millisecond-level');
 });
 
-test('own harvest has a bounded retry ladder, obeys pause, and is not stopped by slowdown', () => {
+test('own harvest has a bounded retry ladder, outranks quiet, and is not stopped by slowdown', () => {
   assert.match(src, /OWN_HARVEST_RETRY_WINDOWS_MS = \[/);
   assert.match(src, /const pauseRemain = pauseRemainMsNow\(\)/);
   assert.match(src, /scheduleOwnHarvestRetry\(\)/);
   const start = src.indexOf('async function runOwnHarvestStrike');
   const end = src.indexOf('// ==================== 好友成熟哨兵', start);
   const body = src.slice(start, end);
+  assert.doesNotMatch(body, /setOwnHarvestGuardTimer\(pauseRemain/);
   assert.doesNotMatch(body, /getBreakerState\(\)/);
   assert.doesNotMatch(body, /breaker\.active/);
 });
@@ -73,7 +74,7 @@ test('steal tick protects own crops before entering any friend farm', () => {
 });
 
 test('friend sentinel keeps its own short timer without sharing own-harvest state', () => {
-  assert.match(src, /sentinelTimer = setTimeout\(runSentinelStrike/);
+  assert.match(src, /sentinelTimer = scheduleSentinelTimer\('sentinel_strike', (?:delay|pauseRemain \+ 100), runSentinelStrike/);
   assert.match(src, /SENTINEL_ARM_WATCHLIST_MS = 5_000/);
   assert.match(src, /SENTINEL_ARM_NORMAL_MS = 2_000/);
   const clearAt = src.indexOf('clearSentinel();');
@@ -85,7 +86,7 @@ test('哨兵到点链路有预进门驻留与请求治理紧急通道（2026-09-
   assert.match(src, /SENTINEL_PRE_ENTER_AHEAD_MS = 3_000/);
   assert.match(src, /function armSentinelPreEnter/);
   assert.match(src, /armSentinelPreEnter\(sentinelArmedFor\)/);
-  assert.match(src, /sentinelPreEnter = \{ gid, dueAt, enteredAt: Date\.now\(\), enterReply \}/);
+  assert.match(src, /sentinelPreEnter = \{ gid, dueAt, enteredAt: Date\.now\(\), enterReply, entryId \}/);
   // Strike 打开 15s 紧急窗口并把会话传给 checkFriends 快路径。
   const strike = src.slice(
     src.indexOf('async function runSentinelStrike'),
@@ -169,7 +170,7 @@ test('unified scheduler has no global breaker branch that postpones all work', (
 test('a successful friend visit clears only that friend cached due clock', () => {
   assert.match(friendSrc, /const friendSummaryDueByGid = new Map\(\)/);
   assert.match(friendSrc, /friendSummaryDueByGid\.delete\(id\)/);
-  assert.match(friendSrc, /applyStealVisitResult\(target\.gid, result\)/);
+  assert.match(friendSrc, /applyStealVisitResult\(target\.gid, result(?:, Date\.now\(\), \{ lifecycleSeq: (?:seq|roundSeq|visitSeq) \})?\)/);
   assert.match(friendSrc, /cachedDueWithinGrace\(dueAt, now, STEAL_OVERDUE_GRACE_MS\)/);
 });
 
@@ -178,7 +179,7 @@ test('already-read ordinary friend lands join the steal clock and arm direct PRE
   assert.match(friendSrc, /knownEntry\.ripeAt <= now \+ prearmMs/);
   assert.match(friendSrc, /ripeAt: knownEntry\.ripeAt,[\s\S]*mode: 'prearm'/);
   assert.match(friendVisitSrc, /return \{ acted: actionLogs\.length > 0, entered: true, ripeAtMs \}/);
-  assert.match(friendSrc, /const result = await visitFriendForHelp\([\s\S]*applyStealVisitResult\(target\.gid, result\)/);
+  assert.match(friendSrc, /const result = await visitFriendForHelp\([\s\S]*applyStealVisitResult\(target\.gid, result(?:, Date\.now\(\), \{ lifecycleSeq: roundSeq \})?\)/);
 });
 
 test('enter success with Harvest failure keeps the bounded mature retry', () => {
@@ -422,6 +423,8 @@ function extractRevenueEntrySource() {
   take('async function handleApiCall', '// ==================== 每日礼包总览', 'handleApiCall');
   take('async function runOwnHarvestStrike', '// ==================== 好友成熟哨兵', 'runOwnHarvestStrike');
   take('function clearSentinel()', '// 偷菜 due 连续', 'sentinel block');
+  take('function scheduleSentinelTimer(', 'async function onSentinelPreEnterTimer', 'sentinel timer bridge');
+  take('async function onSentinelPreEnterTimer', '// Persistent-session data capsule.', 'sentinel pre-entry callback');
   take('async function runStealTick', '// ==================== 统一调度器', 'runStealTick');
   take('async function runUnifiedTick', 'function scheduleUnifiedNextTick', 'runUnifiedTick');
   return `${slices.join('\n')}\n;({ handleApiCall, runOwnHarvestStrike, runStealTick, runUnifiedTick, runSentinelStrike, armMaturitySentinel, clearSentinel })`;
@@ -504,7 +507,7 @@ test('普通面板 getFriends 在途：自己成熟收获、好友到点偷菜�
       sentinelTimer: null,
       sentinelArmedFor: null,
       sentinelPreEnter: null,
-      sentinelPreEnterTimer: null,
+      sentinelPreEnterTimer: null, sentinelPendingPreEnter: null, sentinelEntrySeq: 0,
       getDueWatchFriends: () => [],
       __setUrgentStrikeMode: () => {},
       getNextStealDueAtMs: () => 0,
@@ -590,22 +593,22 @@ test('own-farm nudge detection ignores replant boundaries and trusts same-crop d
   const base = 1_800_000_000;
   // 基线：两块地，慢作物 6h 后熟
   let lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
-    { id: 2, plant: { id: 200, left_inorc_fert_times: 5, phases: [{ begin_time: base }, { begin_time: base + 3600 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 200, left_inorc_fert_times: 5, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 3600 }] } },
   ];
   let schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3600 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3600, schedule), false);
   // 补种边界：地 2 收获后改种 6 分钟短作物（新茬 plantId 不同）——不许报
   lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: base }, { begin_time: base + 21600 }] } },
-    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21600 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ phase: 1, begin_time: base + 3600 }, { phase: 6, begin_time: base + 3960 }] } },
   ];
   schedule = [{ landId: 1, matureAtSec: base + 21600 }, { landId: 2, matureAtSec: base + 3960 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 3960 - 60, schedule), false, '换茬补种不是催熟');
   // 同一茬墙钟前移 >25s（真施肥/催熟）——必须报
   lands = [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: base }, { begin_time: base + 21000 }] } },
-    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ begin_time: base + 3600 }, { begin_time: base + 3960 }] } },
+    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ phase: 1, begin_time: base }, { phase: 6, begin_time: base + 21000 }] } },
+    { id: 2, plant: { id: 999, left_inorc_fert_times: 1, phases: [{ phase: 1, begin_time: base + 3600 }, { phase: 6, begin_time: base + 3960 }] } },
   ];
   schedule = [{ landId: 1, matureAtSec: base + 21000 }, { landId: 2, matureAtSec: base + 3960 }];
   assert.equal(farm.noteOwnFarmNudgeForTests(lands, base + 21000 - 60, schedule), true, '同茬墙钟前移+施肥次数下降必须报');

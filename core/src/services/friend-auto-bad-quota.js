@@ -168,3 +168,11 @@ module.exports = {
   __depsForTests: deps,
   __stateFileForTests: accountId => stateFilePath(accountId),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-auto-bad-quota.js', () => ({ loadedAccounts }), value => {
+      restoreContainer(loadedAccounts, value.loadedAccounts);
+  }, { });
+}

@@ -393,7 +393,9 @@ test('stop/start 当日不忘；进程重启（重建模块）读回当日闸门
   assert.ok(file.startsWith(process.env.FARM_DATA_DIR), '状态文件归属运行数据目录（非相对 cwd）');
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual(Object.keys(raw).sort(), ['dayKey', 'reason', 'resumeAt', 'version']);
-  assert.ok(!JSON.stringify(raw).includes('303'), '状态文件不含好友数据');
+  // 恢复时间戳可能自然包含好友ID的数字片段；按完整状态字段验证隔离。
+  assert.deepEqual(raw, { version: 1, dayKey: pause.dayKey, reason: pause.reason, resumeAt: pause.resumeAt },
+    '状态文件只包含已确认日闸门，不含好友数据');
 });
 
 // ===== 动作把额度用完与旧代栅栏 =====

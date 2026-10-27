@@ -1,4 +1,10 @@
 const process = require('node:process');
+
+// 最早入口路由（2026-10-08）：批准运行时重定向必须先于运行数据加固与任何业务
+// 模块加载；worker/抓包/打包可执行与无管理目标时保持原有自举语义，证明失败
+// 则明确退出（不静默运行旧源）。详见 src/runtime/approved-runtime-entry.js。
+require('./src/runtime/approved-runtime-entry').routeApprovedRuntime(process);
+
 const { secureRuntimeDataTree } = require('./src/config/runtime-paths');
 
 // 所有后续运行文件默认只允许当前系统用户读取；并修正既有数据文件权限。
@@ -54,6 +60,10 @@ async function bootstrap() {
 
     const runtimeEngine = createRuntimeEngine({
         processRef: process,
+        runtimeMode: process.env.FARM_RUNTIME_MODE || require('./src/runtime/session-contract').defaultSessionMode({
+            runtimeRoot: require('node:path').resolve(__dirname, '..'),
+            dataDir: require('./src/config/runtime-paths').getDataDir(), packaged: Boolean(process.pkg),
+        }),
         mainEntryPath: __filename,
         startAdminServer,
         onStatusSync: (accountId, status) => {
@@ -69,6 +79,16 @@ async function bootstrap() {
             emitRealtimeAccountLog(entry);
         },
     });
+
+    let shuttingDown = false;
+    const detach = async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        const timeout = setTimeout(() => process.exit(1), 10000);
+        try { await runtimeEngine.detachAll(); clearTimeout(timeout); process.exit(0); }
+        catch { process.exit(1); }
+    };
+    process.on('SIGTERM', detach); process.on('SIGINT', detach);
 
     runtimeEngine.start({
         startAdminServer: true,

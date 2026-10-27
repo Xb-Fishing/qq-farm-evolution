@@ -1,12 +1,24 @@
-const { CONFIG } = require('../config/config');
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  performOwnHarvest = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:performOwnHarvest', performOwnHarvest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  harvestOwnAtMaturity = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:harvestOwnAtMaturity', harvestOwnAtMaturity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkFarm = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:checkFarm', checkFarm);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runFarmOperation = require('./business-state').wrapBusinessFunction('services/farming-orchestrator.js:runFarmOperation', runFarmOperation);
+}
+const { CONFIG, PlantPhase } = require('../config/config');
 const { getUserState, isConnected, networkEvents } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, getServerTimeSec, getServerTimeMs } = require('../utils/utils');
-const { isAutomationOn, getAutomation, getPrioritize2x2Crops } = require('../models/store');
+const { isAutomationOn, getAutomation, getPrioritize2x2Crops, getPauseRemainMs } = require('../models/store');
 const { recordOperation } = require('./stats');
 const { recordEvent } = require('./daily-events');
 const { createScheduler } = require('./scheduler');
 const { getAllLands, harvest, farming, unlockLand, upgradeLand } = require('./farm-api');
-const { analyzeLands, resolveRemovableHarvestedLands } = require('./farm-land-analyzer');
+const { analyzeLands, getCurrentPhase, resolveRemovableHarvestedLands, buildLandMap, getDisplayLandContext } = require('./farm-land-analyzer');
 const { runFertilizerByConfig } = require('./farm-fertilizer');
 const { autoPlantEmptyLands } = require('./planting-service');
 const { startFertilizerBuyCheckTimer, stopFertilizerBuyCheckTimer } = require('./farm-scheduler');
@@ -19,6 +31,7 @@ const {
   isIdleQuiet,
 } = require('../utils/behavior');
 const friendActivity = require('./friend-activity');
+const ownQuietPriority = require('./own-quiet-priority');
 
 // ─── 状态标记 ───
 
@@ -32,7 +45,26 @@ let lastNextMatureDueAtMs = 0;
 let lastNextMatureLandIds = [];
 let ownMatureSchedule = new Map();
 let ownHarvestInFlight = null;
-// 自己农场催熟/化肥检测的上一轮地块基线：landId -> {plantId, matureAtSec, fertLeft, nudged}
+let ownQuietState = { initialized: false, pending: [], retryAt: 0, attempts: 0,
+  bagOnly: false, refreshNeeded: false, uncertainHarvest: [], footprints: {}, salePending: false, fertilizerPending: [] };
+
+function rememberOwnLands(lands) {
+  for (const land of lands || []) {
+    const id = toNum(land?.id);
+    if (id) ownQuietState.footprints[id] = [id, ...(land.slave_land_ids || []).map(toNum)].filter(Boolean);
+  }
+}
+function addPendingReplant(ids) {
+  const pending = new Set(ownQuietState.pending);
+  for (const id of ids) for (const cell of ownQuietState.footprints[id] || [id]) pending.add(cell);
+  ownQuietState.pending = [...pending];
+}
+function ownPriorityRetry() {
+  ownQuietState.attempts++;
+  ownQuietState.retryAt = Date.now() + Math.min(600_000, 30_000 * 2 ** Math.min(ownQuietState.attempts - 1, 5));
+  publishOwnMaturitySchedule('priority_retry');
+}
+// 只存可比较的作物快照；旧版热交接基线缺少生命周期字段，首次观察只重建。
 const ownNudgeLandSnapshots = new Map();
 
 const farmScheduler = createScheduler('farm');
@@ -48,10 +80,9 @@ function formatRemain(sec) {
 }
 
 /**
- * 自己农场催熟/化肥检测：只信「同一地块、同一茬」的墙钟前移/施肥次数下降。
- * 全场聚合比较（上一版：全场最早成熟时刻、全场最小剩余施肥次数）会被
- * 收获+补种骗——新补种的短周期作物天然更早熟、新茬 fertLeft 天然不同，
- * 每轮收种都会误报一次"检测到催熟/化肥"。
+ * plant.id 是品种，不是植株身份。成熟/收获会把施肥余次重置为默认 0，
+ * 换季/重种也会重置状态；只有连续生长快照的变化才可作为施肥证据。
+ * phases 是当前及后续阶段的后缀，正常裁剪不会改变成熟墙钟。
  */
 function noteOwnFarmNudge(lands, nextMatureSec, matureSchedule = []) {
   const next = toNum(nextMatureSec);
@@ -62,42 +93,69 @@ function noteOwnFarmNudge(lands, nextMatureSec, matureSchedule = []) {
     if (landId && matureAtSec) matureByLand.set(landId, matureAtSec);
   }
 
-  let jumped = false;
-  let fertUsed = false;
-  let newNudge = false;
+  const serverSec = getServerTimeSec();
+  const reasons = new Set();
+  const changedLandIds = [];
   const seenLandIds = new Set();
   for (const land of Array.isArray(lands) ? lands : []) {
     const plant = land && land.plant;
     const landId = toNum(land && land.id);
     if (landId) seenLandIds.add(landId);
-    if (!plant || !landId) continue;
+    if (!landId) continue;
+    if (!plant || !Array.isArray(plant.phases) || plant.phases.length === 0) {
+      ownNudgeLandSnapshots.delete(landId);
+      continue;
+    }
     const plantId = toNum(plant.id);
+    const currentPhase = getCurrentPhase(plant.phases, false, '', plantId);
+    if (!plantId || !currentPhase || currentPhase.phase === PlantPhase.DEAD
+      || currentPhase.phase === PlantPhase.UNKNOWN) {
+      ownNudgeLandSnapshots.delete(landId);
+      continue;
+    }
     const fertRaw = plant.left_inorc_fert_times != null
       ? plant.left_inorc_fert_times
       : plant.leftInorcFertTimes;
     const fertLeft = fertRaw == null ? null : toNum(fertRaw);
     const nudged = !!(plant.is_nudged || plant.isNudged);
     const matureAtSec = matureByLand.get(landId) || 0;
+    const season = plant.season == null ? null : toNum(plant.season);
+    const growing = currentPhase.phase !== PlantPhase.MATURE && matureAtSec > serverSec;
+    const phaseCount = plant.phases.length;
     const prev = ownNudgeLandSnapshots.get(landId);
-    // 换茬（plantId 变）直接重建基线，不比较
-    if (prev && prev.plantId === plantId) {
-      if (prev.matureAtSec > 0 && matureAtSec > 0 && matureAtSec < prev.matureAtSec - 25) jumped = true;
-      if (prev.fertLeft != null && fertLeft != null && fertLeft < prev.fertLeft) fertUsed = true;
-      if (nudged && !prev.nudged) newNudge = true;
+    const sameCycle = prev && prev.version === 2 && prev.plantId === plantId
+      && prev.season === season && prev.matureAtSec > 0 && matureAtSec > 0
+      && matureAtSec <= prev.matureAtSec + 25 && phaseCount <= prev.phaseCount;
+    if (sameCycle && prev.growing && prev.matureAtSec > serverSec) {
+      const evidence = [];
+      // 真正把未来成熟点提前（含直接催熟）仍可识别；自然到点不满足此前提。
+      if (matureAtSec < prev.matureAtSec - 25) evidence.push('mature_time_advanced');
+      // 成熟、枯死或收获后的默认计数/标志绝不能单独证明施肥。
+      if (growing) {
+        if (prev.fertLeft != null && fertLeft != null && fertLeft < prev.fertLeft) evidence.push('fertilizer_count_decreased');
+        if (nudged && !prev.nudged) evidence.push('nudged_rising');
+      }
+      if (evidence.length) {
+        changedLandIds.push(landId);
+        for (const reason of evidence) reasons.add(reason);
+      }
     }
-    ownNudgeLandSnapshots.set(landId, { plantId, matureAtSec, fertLeft, nudged });
+    ownNudgeLandSnapshots.set(landId, { version: 2, plantId, season, matureAtSec, fertLeft, nudged, growing, phaseCount });
   }
   for (const landId of [...ownNudgeLandSnapshots.keys()]) {
     if (!seenLandIds.has(landId)) ownNudgeLandSnapshots.delete(landId);
   }
 
-  if (isFirstFarmCheck || (!jumped && !fertUsed && !newNudge)) return false;
-  const remain = next > 0 ? Math.max(0, next - getServerTimeSec()) : 0;
-  log('农场', `自己农场检测到催熟/化肥，下次收获约 ${formatRemain(remain)}后`, {
+  if (isFirstFarmCheck || reasons.size === 0) return false;
+  const remain = next > 0 ? Math.max(0, next - serverSec) : 0;
+  const timing = remain > 0 ? `下次收获约 ${formatRemain(remain)}后` : '作物已成熟，请及时收获';
+  log('农场', `自己农场检测到催熟/化肥，${timing}`, {
     module: 'farm',
     event: '催熟',
     result: 'ok',
     remainSec: remain,
+    landIds: changedLandIds,
+    reasons: [...reasons].sort(),
   });
   return true;
 }
@@ -130,7 +188,7 @@ function publishOwnMaturitySchedule(source = 'snapshot') {
   lastNextMatureDueAtMs = dueAt;
   lastNextMatureLandIds = nextIds;
   markOwnHarvestDueAt(
-    isAutomationOn('farm') && isAutomationOn('harvest') ? dueAt : 0
+    isAutomationOn('farm') && isAutomationOn('harvest') ? getNextMatureDueAtMs() : 0
   );
 
   if (changed) {
@@ -144,6 +202,7 @@ function publishOwnMaturitySchedule(source = 'snapshot') {
 
 /** 用完整 AllLands 快照替换自己的成熟日程。 */
 function replaceOwnMaturitySchedule(analysis) {
+  ownQuietState.initialized = true;
   const schedule = new Map();
   for (const item of Array.isArray(analysis && analysis.matureSchedule)
     ? analysis.matureSchedule : []) {
@@ -194,6 +253,9 @@ async function performOwnHarvest(landIds, options = {}) {
 
   const task = (async () => {
     const reply = await harvest(ids);
+    // 成功收获即结束旧茬；即使两次巡田之间已同种补种，也不得比较旧基线。
+    for (const landId of ids) ownNudgeLandSnapshots.delete(landId);
+    if (options.priority || getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) addPendingReplant(ids);
     reconcileOwnMaturityAfterHarvest(ids, reply);
     const dueAt = Number(options.dueAt) || 0;
     const latencyMs = dueAt > 0 ? Math.max(0, Date.now() - dueAt) : null;
@@ -210,6 +272,7 @@ async function performOwnHarvest(landIds, options = {}) {
       landIds: [...ids],
       opType: options.opType || 'harvest',
       priority: !!options.priority,
+      quietPriority: ownQuietPriority.inScope(),
       latencyMs,
     });
     return { harvestedCount: ids.length, landIds: ids, reply };
@@ -223,18 +286,118 @@ async function performOwnHarvest(landIds, options = {}) {
   }
 }
 
-/** 到计算成熟点时直接收缓存地块，不增加一次 AllLands 往返。 */
+/** A single own-only transaction. Quiet deadlines and friend dispatch remain unchanged. */
 async function harvestOwnAtMaturity() {
-  const dueAt = lastNextMatureDueAtMs;
-  if (!dueAt || dueAt > Date.now() + 100 || lastNextMatureLandIds.length === 0) {
-    return { harvestedCount: 0, landIds: [], reply: null, dueAt };
-  }
-  return performOwnHarvest(lastNextMatureLandIds, {
-    opType: 'maturity_guard',
-    priority: true,
-    dueAt,
-  });
+  const dueAt = getNextMatureDueAtMs();
+  if (!isAutomationOn('farm') || !isAutomationOn('harvest') || !isConnected()) return { harvestedCount: 0 };
+  if (isCheckingFarm) throw new Error('自己农场事务仍在执行');
+  if (dueAt > Date.now() + 100) return { harvestedCount: 0 };
+  isCheckingFarm = true;
+  let outcome = { harvestedCount: 0, landIds: [], reply: null, dueAt };
+  let deferReplantUntil = 0;
+  try {
+    await ownQuietPriority.run({ landIds: Array.from({ length: 24 }, (_, i) => i + 1),
+      onPurchaseAttempt: () => { ownQuietState.bagOnly = true; } }, async scope => {
+      // Only a bounded own snapshot initializes an unknown schedule or reconciles an uncertain reply.
+      const needsFootprint = lastNextMatureLandIds.some(id => !ownQuietState.footprints[id]);
+      if (!ownQuietState.initialized || ownQuietState.refreshNeeded || needsFootprint) {
+        scope.phase = 'snapshot';
+        const snapshot = await getAllLands();
+        if (!Array.isArray(snapshot.lands) || !snapshot.lands.length) throw new Error('自己土地快照暂不可用');
+        const analysis = analyzeLands(snapshot.lands, false);
+        const resolved = new Set([...analysis.empty, ...analysis.dead]);
+        addPendingReplant(ownQuietState.uncertainHarvest.filter(id => resolved.has(id)));
+        ownQuietState.uncertainHarvest = [];
+        rememberOwnLands(snapshot.lands);
+        replaceOwnMaturitySchedule(analysis);
+        ownQuietState.refreshNeeded = false;
+      }
+      const nowSec = Math.floor(getServerTimeMs() / 1000);
+      const ids = [...ownMatureSchedule].filter(([, sec]) => sec <= nowSec).map(([id]) => id);
+      if (ids.length) {
+        scope.phase = 'harvest'; scope.landIds = ids;
+        ownQuietState.uncertainHarvest = [...ids];
+        try { outcome = await performOwnHarvest(ids, { opType: 'maturity_guard', priority: true, dueAt }); }
+        catch (error) { ownQuietState.refreshNeeded = true; throw error; }
+        ownQuietState.uncertainHarvest = [];
+      }
+      if (!ownQuietState.pending.length) return;
+      // 连续成熟合并：plant 开且下一块自己作物 10 秒内到期时，跳过本轮收后读地/补种，
+      // 待下一趟到点事务一并批量处理（每块的 AllLands×2/Plant 请求坍缩为最后一批）。
+      if (isAutomationOn('plant')) {
+        const nowMs = Date.now();
+        if (lastNextMatureDueAtMs > nowMs && lastNextMatureDueAtMs <= nowMs + 10_000) {
+          deferReplantUntil = lastNextMatureDueAtMs;
+          return;
+        }
+      }
+      // Harvest can start another season: query before removing or planting anything.
+      scope.phase = 'snapshot'; scope.landIds = [...ownQuietState.pending];
+      const snapshot = await getAllLands();
+      if (!Array.isArray(snapshot.lands) || !snapshot.lands.length) throw new Error('收后土地快照暂不可用');
+      const analysis = analyzeLands(snapshot.lands, false);
+      rememberOwnLands(snapshot.lands); replaceOwnMaturitySchedule(analysis);
+      const targets = new Set(ownQuietState.pending);
+      const dead = analysis.dead.filter(id => targets.has(id));
+      const empty = analysis.empty.filter(id => targets.has(id));
+      const occupied = new Set([...analysis.growing, ...analysis.harvestable]);
+      const landMap = buildLandMap(snapshot.lands);
+      for (const id of [...occupied]) {
+        const footprint = getDisplayLandContext(landMap.get(id), landMap).occupiedLandIds;
+        for (const cell of footprint) occupied.add(cell);
+      }
+      ownQuietState.pending = ownQuietState.pending.filter(id => !occupied.has(id));
+      if (!isAutomationOn('plant')) { ownQuietState.pending = []; return; }
+      if (dead.length || empty.length) {
+        scope.phase = 'replant'; scope.landIds = [...ownQuietState.pending];
+        const retryBagOnly = ownQuietState.bagOnly;
+        // The scoped BuyGoods sender persists bagOnly immediately before a real purchase attempt.
+        // Earlier read/removal failures must not disable future seed purchases.
+        const result = await autoPlantEmptyLands(dead, empty, snapshot.lands,
+          { ownQuietPriority: true, bagOnly: retryBagOnly });
+        const planted = result?.plantedLands || [];
+        if (planted.length) {
+          ownQuietState.fertilizerPending = [...new Set([...ownQuietState.fertilizerPending, ...planted])];
+          recordOperation('plant', Number(result.occupiedCount || result.plantedCount) || 0);
+        }
+        scope.phase = 'snapshot'; scope.landIds = [...targets];
+        // Fresh post-plant maturity is required for a second crop inside the same quiet window.
+        const after = await getAllLands();
+        if (!Array.isArray(after.lands) || !after.lands.length) throw new Error('补种后土地快照暂不可用');
+        const fresh = analyzeLands(after.lands, false);
+        rememberOwnLands(after.lands); replaceOwnMaturitySchedule(fresh);
+        const remaining = new Set([...fresh.empty, ...fresh.dead]);
+        const confirmed = new Set(after.lands.map(land => toNum(land.id)));
+        ownQuietState.pending = [...targets].filter(id => !confirmed.has(id) || remaining.has(id));
+      }
+    });
+    if (ownQuietState.pending.length && deferReplantUntil) {
+      // 收尾跨过成熟点也立即唤醒；正常合并不能变成失败退避。
+      ownQuietState.retryAt = deferReplantUntil;
+    } else if (ownQuietState.pending.length) ownPriorityRetry();
+    else { ownQuietState.retryAt = 0; ownQuietState.attempts = 0; ownQuietState.bagOnly = false; }
+    publishOwnMaturitySchedule('priority_settled');
+  } catch (error) {
+    ownPriorityRetry();
+    throw error;
+  } finally { isCheckingFarm = false; }
+  return outcome;
 }
+
+/** Deferred optional work runs only after quiet, outside the own-only request scope. */
+async function flushOwnPriorityDeferred() {
+  if (ownQuietPriority.isActive() || getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
+  if (ownQuietState.salePending) {
+    ownQuietState.salePending = false;
+    networkEvents.emit('farmHarvested', { deferred: true });
+  }
+  if (ownQuietState.fertilizerPending.length && isAutomationOn('farm') && isAutomationOn('plant')) {
+    const ids = ownQuietState.fertilizerPending;
+    ownQuietState.fertilizerPending = [];
+    await runFertilizerByConfig(ids);
+  }
+}
+function deferOwnHarvestSale() { ownQuietState.salePending = true; }
 
 // ─── 辅助函数 ───
 
@@ -255,6 +418,7 @@ function isTransientNetworkError(err) {
  * @returns {boolean} 是否有需要执行的操作
  */
 async function checkFarm(options = {}) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return false;
   const userState = getUserState();
   if (isCheckingFarm || !userState.gid || !isAutomationOn('farm') || !isConnected()) {
     return false;
@@ -265,7 +429,7 @@ async function checkFarm(options = {}) {
 
   isCheckingFarm = true;
   try {
-    const result = await runFarmOperation('all');
+    const result = await runFarmOperation('all', { automatic: true });
     isFirstFarmCheck = false;
     return !!(result && result.hadWork);
   } catch (err) {
@@ -282,14 +446,19 @@ async function checkFarm(options = {}) {
  * 执行农场操作
  * @param {string} opType - 操作类型：'all' | 'harvest' | 'plant' | 'clear' | 'upgrade'
  */
-async function runFarmOperation(opType) {
+async function runFarmOperation(opType, options = {}) {
+  if (ownQuietPriority.isActive()) return { hadWork: false, actions: [], harvestedCount: 0 };
+  const automaticPaused = () => options.automatic === true && (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0 || ownQuietPriority.isActive());
+  if (automaticPaused()) return { hadWork: false, actions: [], harvestedCount: 0 };
   const landsReply = await getAllLands();
+  if (automaticPaused()) return { hadWork: false, actions: [], harvestedCount: 0 };
   if (!landsReply.lands || landsReply.lands.length === 0) {
     if (opType !== 'all') log('农场', '没有土地数据');
     return { hadWork: false, actions: [], harvestedCount: 0 };
   }
 
   const lands = landsReply.lands;
+  rememberOwnLands(lands);
   const analysis = analyzeLands(lands, isFirstFarmCheck);
   noteOwnFarmNudge(lands, analysis.nextMatureSec, analysis.matureSchedule);
   replaceOwnMaturitySchedule(analysis);
@@ -313,6 +482,7 @@ async function runFarmOperation(opType) {
   let harvestedLands = [];
   let harvestResult = null;
   let removeResult = null;
+  const pausedResult = () => ({ hadWork: actions.length > 0, actions, harvestedCount: harvestedLands.length });
 
   if (opType === 'harvest' || (opType === 'all' && isAutomationOn('harvest'))) {
     if (analysis.harvestable.length > 0) {
@@ -327,6 +497,8 @@ async function runFarmOperation(opType) {
       }
     }
   }
+
+  if (automaticPaused()) return pausedResult();
 
   // 保护自己的下一批成熟作物：最后十秒不再启动非必要业务；若好友已到点，
   // 也只在自己的当批收获完成后才让出执行权。
@@ -379,6 +551,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 种植 ──
   if (opType === 'plant' || (opType === 'all' && isAutomationOn('plant'))) {
     const emptyLands = [...new Set(analysis.empty)];
@@ -387,10 +561,12 @@ async function runFarmOperation(opType) {
     // 收获后检查可铲除的地块
     if (opType === 'all' && harvestedLands.length > 0) {
       await randomDelay(200, 800);
+      if (automaticPaused()) return pausedResult();
       removeResult = await resolveRemovableHarvestedLands(harvestedLands, harvestResult);
       deadLands = [...new Set([...deadLands, ...removeResult.removable])];
     }
 
+    if (automaticPaused()) return pausedResult();
     const shouldRefresh2x2 = shouldRefresh2x2Plan && getPrioritize2x2Crops();
     if (deadLands.length > 0 || emptyLands.length > 0 || shouldRefresh2x2) {
       try {
@@ -416,6 +592,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 多季作物补肥 ──
   if (opType === 'all' && removeResult && Array.isArray(removeResult.growing) &&
       removeResult.growing.length > 0 && isAutomationOn('fertilizer_multi_season') &&
@@ -438,6 +616,8 @@ async function runFarmOperation(opType) {
     }
   }
 
+  if (automaticPaused()) return pausedResult();
+
   // ── 土地升级/解锁 ──
   const shouldUpgrade = opType === 'all' && isAutomationOn('land_upgrade');
   if (shouldUpgrade || opType === 'upgrade') {
@@ -445,6 +625,7 @@ async function runFarmOperation(opType) {
     if (analysis.unlockable.length > 0) {
       let unlockedCount = 0;
       for (const landId of analysis.unlockable) {
+        if (automaticPaused()) break;
         try {
           await unlockLand(landId, false);
           log('解锁', `土地#${landId} 解锁成功`, {
@@ -465,6 +646,7 @@ async function runFarmOperation(opType) {
     if (analysis.upgradable.length > 0) {
       let upgradedCount = 0;
       for (const landId of analysis.upgradable) {
+        if (automaticPaused()) break;
         try {
           const result = await upgradeLand(landId);
           const newLevel = result.land ? toNum(result.land.level) : '?';
@@ -485,6 +667,8 @@ async function runFarmOperation(opType) {
       }
     }
   }
+
+  if (automaticPaused()) return pausedResult();
 
   // ── 智能施肥（巡田时触发）──
   if (opType === 'all') {
@@ -517,13 +701,18 @@ async function runFarmOperation(opType) {
  * ponytail: 基于上一轮巡田的快照，两轮之间新种的作物要等下一轮才纳入，误差由常规轮询兜底。
  */
 function getNextMatureInMs() {
-  if (!lastNextMatureDueAtMs) return 0;
-  return Math.max(0, lastNextMatureDueAtMs - Date.now());
+  const due = getNextMatureDueAtMs();
+  return due ? Math.max(0, due - Date.now()) : 0;
 }
 
 /** 最近一块自己作物的绝对成熟墙钟；到期后仍保留，直到确认发出收获。 */
 function getNextMatureDueAtMs() {
-  return lastNextMatureDueAtMs;
+  if (!ownQuietState.initialized && farmLoopRunning && getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return ownQuietState.retryAt || Date.now();
+  const retry = ownQuietState.pending.length || ownQuietState.refreshNeeded ? (ownQuietState.retryAt || Date.now()) : 0;
+  const mature = lastNextMatureDueAtMs;
+  // A failed request must reconcile before another direct harvest, sharing the same bounded retry deadline.
+  if (ownQuietState.refreshNeeded && ownQuietState.retryAt > Date.now()) return ownQuietState.retryAt;
+  return retry && mature ? Math.min(retry, mature) : retry || mature;
 }
 
 // ── 定时巡田循环 ──
@@ -531,12 +720,7 @@ function getNextMatureDueAtMs() {
 function scheduleNextFarmCheck(intervalMs = CONFIG.farmCheckInterval) {
   if (externalSchedulerMode) return;
   if (!farmLoopRunning) return;
-  farmScheduler.setTimeoutTask('farm_check_loop', Math.max(0, intervalMs), async () => {
-    if (!farmLoopRunning) return;
-    await checkFarm();
-    if (!farmLoopRunning) return;
-    scheduleNextFarmCheck(CONFIG.farmCheckInterval);
-  });
+  farmScheduler.setTimeoutTask('farm_check_loop', Math.max(0, intervalMs), onFarmLoopTimer);
 }
 
 function startFarmCheckLoop(options = {}) {
@@ -559,6 +743,19 @@ function onLandsChangedPush(lands) {
     friendActivity.noteSocialItems(lands, getUserState().gid, Date.now());
     friendActivity.noteMischiefOwners(lands, getUserState().gid, Date.now());
   } catch { /* 证据失败不影响主流程 */ }
+  // LandsNotify is partial: merge affected own deadlines without dropping other crops.
+  if (isAutomationOn('farm') && isAutomationOn('harvest') && Array.isArray(lands)) {
+    for (const land of lands) {
+      const id = toNum(land?.id);
+      if (id) ownMatureSchedule.delete(id);
+    }
+    const partial = analyzeLands(lands, false);
+    for (const item of partial.matureSchedule) ownMatureSchedule.set(toNum(item.landId), toNum(item.matureAtSec));
+    const nowSec = Math.floor(getServerTimeMs() / 1000);
+    for (const id of partial.harvestable) if (!ownMatureSchedule.has(id)) ownMatureSchedule.set(id, nowSec);
+    rememberOwnLands(lands); publishOwnMaturitySchedule('own_push');
+  }
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   if (!isAutomationOn('farm_push')) return;
   if (isIdleQuiet()) return;
   shouldRefresh2x2Plan = true;
@@ -569,9 +766,7 @@ function onLandsChangedPush(lands) {
   log('农场', `收到推送: ${lands.length}块土地变化，检查中...`, {
     module: 'farm', event: '土地推送通知', result: 'trigger_check', count: lands.length
   });
-  farmScheduler.setTimeoutTask('farm_push_check', 1000, async () => {
-    if (!isCheckingFarm) await checkFarm({ fromPush: true });
-  });
+  farmScheduler.setTimeoutTask('farm_push_check', 1000, onFarmPushTimer);
 }
 
 function stopFarmCheckLoop() {
@@ -592,6 +787,8 @@ module.exports = {
   checkFarm,
   runFarmOperation,
   harvestOwnAtMaturity,
+  deferOwnHarvestSale,
+  flushOwnPriorityDeferred,
   getNextMatureInMs,
   getNextMatureDueAtMs,
   serverMatureSecToLocalMs,
@@ -604,3 +801,35 @@ module.exports = {
     isFirstFarmCheck = false;
   },
 };
+
+async function onFarmLoopTimer() {
+  if (!farmLoopRunning) return;
+  await checkFarm();
+  if (farmLoopRunning) scheduleNextFarmCheck(CONFIG.farmCheckInterval);
+}
+async function onFarmPushTimer() {
+  if (!isCheckingFarm && getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') <= 0) await checkFarm({ fromPush: true });
+}
+function bindFarmSessionState() {
+  if (farmLoopRunning) networkEvents.on('landsChanged', onLandsChangedPush);
+  farmScheduler.bindTimeoutTask('farm_check_loop', onFarmLoopTimer);
+  farmScheduler.bindTimeoutTask('farm_push_check', onFarmPushTimer);
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/farming-orchestrator.js', () => ({ isCheckingFarm, isFirstFarmCheck, farmLoopRunning, externalSchedulerMode, lastPushTime, shouldRefresh2x2Plan, lastNextMatureDueAtMs, lastNextMatureLandIds, ownMatureSchedule, ownNudgeLandSnapshots, ownQuietState }), value => {
+      isCheckingFarm = value.isCheckingFarm;
+      isFirstFarmCheck = value.isFirstFarmCheck;
+      farmLoopRunning = value.farmLoopRunning;
+      externalSchedulerMode = value.externalSchedulerMode;
+      lastPushTime = value.lastPushTime;
+      shouldRefresh2x2Plan = value.shouldRefresh2x2Plan;
+      lastNextMatureDueAtMs = value.lastNextMatureDueAtMs;
+      lastNextMatureLandIds = value.lastNextMatureLandIds;
+      ownMatureSchedule = value.ownMatureSchedule;
+      ownQuietState = value.ownQuietState || { ...ownQuietState, initialized: ownMatureSchedule.size > 0 };
+      restoreContainer(ownNudgeLandSnapshots, value.ownNudgeLandSnapshots);
+  }, { optionalKeys: ['ownQuietState'], idle: () => !isCheckingFarm && !ownHarvestInFlight, bind: bindFarmSessionState, });
+}

@@ -24,8 +24,8 @@
  * 安全边界：
  *  - 只下载官方 URL 池中出现过的路径模式（import/native/config），
  *    不猜 CDN 地址、不探测未下发资源；
- *  - 输出的 PNG 是新增二进制：**禁止 git add**（自动进化的隐私扫描会对
- *    新增二进制硬阻断）。脚本只落盘到工作区，由人工审查提交；
+ *  - 输出 PNG 由主 Agent 校验来源、内容哈希和图片内容后，与映射同轮交付。
+ *    本脚本仅落盘；发布仍须主验收及父进程精准资源审计，不把提交交给用户；
  *  - 没有证据时打印缺口报告并以 0 退出（不视为错误）。
  */
 
@@ -321,7 +321,7 @@ function main() {
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-farm-icons.'));
   const astcenc = resolveAstcenc(args);
   const results = { ok: [], missing: [], failed: [] };
-  let configCache = new Map();
+  const configCache = new Map();
 
   for (const item of wanted) {
     const target = path.join(args.output, outputFileName(item.itemId, item.name));

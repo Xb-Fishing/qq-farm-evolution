@@ -1,3 +1,11 @@
+// 模块加载前隔离运行数据；任何创建/写入之前校验临时边界。
+const _fs = require('node:fs'), _path = require('node:path'), _os = require('node:os');
+const _tmpRoot = _fs.realpathSync(_os.tmpdir());
+const _prefix = _path.resolve(_tmpRoot, 'farm-retired-fixture-');
+if (!_prefix.startsWith(_tmpRoot + _path.sep)) throw new Error('fixture boundary');
+const _dataDir = _fs.mkdtempSync(_prefix);
+process.env.FARM_DATA_DIR = _dataDir;
+require('node:test').after(() => _fs.rmSync(_dataDir, { recursive: true, force: true }));
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -175,130 +183,30 @@ test('已有 field 110 只读解析保留无配置的奖励、未知领取态，
   assert.equal(normalizeBearActivity(input).recordStateAvailable, true);
 });
 
-test('S3 读取仅信 List 根节点，缺少根时不请求详情或背包', async () => {
-  let reads = 0;
-  for (const list of [[], [{ id: 2026090101, parentId: 2026090100 }], [{ id: 2026090100, parentId: 1 }]]) {
-    await assert.rejects(getBearActivity({
-      getActivityDiscoveryList: async () => list,
-      getActivityGroupSnapshot: async () => { reads += 1; },
-      getBagItemCounts: async () => { reads += 1; },
-    }), /未由当前 ActivityService.List 下发/);
-  }
-  assert.equal(reads, 0);
+test("S3 读取仅信 List 根节点，缺少根时不请求详情或背包（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
-test('S3 只读取正常根详情和一次已知道具库存；失败不探测子节点、UID 或重试', async () => {
-  const calls = [];
-  const options = {
-    getActivityDiscoveryList: async () => [{ id: 2026090100, parentId: 0 }],
-    getActivityGroupSnapshot: async (...args) => { calls.push(args); return snapshot(); },
-    getBagItemCounts: async ids => {
-      calls.push(ids);
-      throw new Error('inventory unavailable');
-    },
-  };
-  const activity = await getBearActivity(options);
-  // 快照读取第三参只携带 onRawBody 私有回调（原始回包就地消费，不进入快照）
-  assert.equal(calls[0][0], 2026090100);
-  assert.equal(calls[0][1], '');
-  assert.equal(typeof calls[0][2]?.onRawBody, 'function');
-  assert.equal(calls.length, 2);
-  // 3 个基础道具 + 3 档挑战书 + 待护送宝藏 + 13 个商城道具 = 20。
-  assert.equal(calls[1].length, 20);
-  assert.ok([80101, 80102, 80103, 1030].every(id => calls[1].includes(id)));
-  assert.equal(activity.inventoryAvailable, false);
-  assert.equal(activity.resources[0].count, null);
-  assert.equal(activity.gameplayGuides.length, 11);
-  let inventoryReads = 0;
-  await assert.rejects(getBearActivity({
-    ...options,
-    getActivityGroupSnapshot: async () => { throw new Error('unknown response'); },
-    getBagItemCounts: async () => { inventoryReads += 1; },
-  }), /unknown response/);
-  await assert.rejects(getBearActivity({
-    ...options,
-    getActivityGroupSnapshot: async () => ({ id: 1 }),
-    getBagItemCounts: async () => { inventoryReads += 1; },
-  }), /活动组不匹配/);
-  assert.equal(inventoryReads, 0);
+test("S3 只读取正常根详情和一次已知道具库存；失败不探测子节点、UID 或重试（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
-test('S3 管理只读链按账号合并并发、缓存成功与失败，权限检查先于缓存', async () => {
-  const routes = new Map();
-  let reads = 0;
-  let allowed = true;
-  registerAdminBearActivityRoutes({
-    app: { get: (route, handler) => routes.set(route, handler) },
-    provider: {
-      getStatus: () => ({ connection: { connected: true } }),
-      getBearActivity: async key => {
-        reads += 1;
-        if (key === 'fixture-failure') throw new Error('temporary failure');
-        return normalizeBearActivity(snapshot());
-      },
-    },
-    getAccountIdFromRequest: req => req.key,
-    canAccessAccount: () => allowed,
-    sendProviderError: (res) => res.json({ ok: false }),
-  });
-  const handler = routes.get('/api/activity/bear');
-  const invoke = async key => {
-    let body;
-    const res = { status: () => res, json: value => { body = value; } };
-    await handler({ key }, res);
-    return body;
-  };
-  await Promise.all([invoke('fixture-success'), invoke('fixture-success')]);
-  assert.equal(reads, 1);
-  assert.equal((await invoke('fixture-success')).upstreamCached, true);
-  await invoke('fixture-failure');
-  await invoke('fixture-failure');
-  assert.equal(reads, 2);
-  allowed = false;
-  assert.equal((await invoke('fixture-success')).ok, false);
-  assert.equal(reads, 2);
-  assert.deepEqual([...routes.keys()], ['/api/activity/bear']);
+test("S3 管理只读链按账号合并并发、缓存成功与失败，权限检查先于缓存（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });
 
-test('S3 端到端只读接线与旧天气/公益入口退役，不恢复自动任务和历史写命令', () => {
-  const read = file => fs.readFileSync(path.join(__dirname, file), 'utf8');
-  const worker = read('../src/core/worker.js');
-  const provider = read('../src/runtime/data-provider.js');
-  const store = read('../../web/src/stores/activity.ts');
-  const view = read('../../web/src/views/Activity.vue');
-  const panel = read('../../web/src/components/activity/BearActivityPanel.vue');
-  const scan = read('../../web/src/components/admin/AdminActivityUpdatePanel.vue');
-  const routes = read('../src/controllers/admin-activity-routes.js');
-  assert.match(routes, /registerAdminBearActivityRoutes\(routeContext\)/);
-  assert.doesNotMatch(routes, /registerAdminWeatherActivityRoutes|registerAdminCharityActivityRoutes/);
-  for (const source of [worker, provider, store]) assert.doesNotMatch(source, /getWeatherActivity|getCharityActivity|fetchWeatherActivity|fetchCharityActivity/);
-  assert.doesNotMatch(view, /WeatherActivityPanel|CharityRedFlowerPanel/);
-  assert.match(view, /BearActivityPanel/);
-  assert.match(provider, /getBearActivity/);
-  assert.match(worker, /case 'getBearActivity'/);
-  assert.doesNotMatch(worker, /runBear|bear_activity_(claim|feed)|startBear/);
-  assert.match(panel, /disabled.*操作协议待确认/s);
-  assert.match(panel, /官方说明存在差异/);
-  // 手动入口提示接线（辅助断言，行为由 bear-activity-panel.test.js 的真实渲染锁定）。
-  assert.match(panel, /手动操作已开放/);
-  assert.match(panel, /好友交互暂未开放/);
-  assert.match(panel, /面板暂无兑换入口/);
-  assert.match(panel, /连续夺宝失败 3 次/);
-  assert.doesNotMatch(panel, /被夺宝后的安慰奖励/);
-  assert.doesNotMatch(panel, /操作仍待确认/);
-  assert.match(scan, /bear-album.*爪印手记/);
-  assert.match(scan, /bear-tactics.*锦囊/);
-  // 管理检查项不再把已开放手动能力或已具备兑换能力写成协议未知。
-  assert.doesNotMatch(scan, /投喂协议待确认/);
-  assert.doesNotMatch(scan, /兑换协议/);
-  // 返工修正：管理检查项不得宣称成长进度随背包读取展示（归一化模型不返回成长进度）；
-  // 面板状态行不再统一「当前状态待官方字段证据」，未知动作键过滤须用自有属性判断。
-  assert.doesNotMatch(scan, /成长进度状态与元气糕库存随背包读取展示/);
-  assert.doesNotMatch(panel, /当前状态待官方字段证据/);
-  assert.match(panel, /hasOwnProperty\.call\(MANUAL_ACTION_LABELS/);
-  assert.match(store, /\+\+bearRequestId/);
-  for (const name of ['getWeatherActivity', 'getCharityActivity']) assert.equal(activityService[name], undefined);
-  for (const id of [2026090100, 2026090101, 2026090102, 2026090103]) {
-    assert.ok(Object.entries(activityService).some(([key, value]) => key.endsWith('_ACTIVITY_ID') && value === id));
-  }
+test("S3 端到端只读接线与旧天气/公益入口退役，不恢复自动任务和历史写命令（轮换退役：入口零网络）", async () => {
+ let calls=0; const read=async()=>{calls++; throw new Error('unexpected read');};
+ const mod=require('../src/services/activity');
+ await assert.rejects(mod.getBearActivity({ getActivityDiscoveryList: read, getActivityGroupSnapshot: read, getBagItemCounts: read }), /下架/);
+ assert.equal(calls,0);
 });

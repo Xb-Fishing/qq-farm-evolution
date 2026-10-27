@@ -21,6 +21,7 @@ function fixture(t, keepAlive = async () => ({ Success: true })) {
     loginBuffer: 'fixture-buffer', refreshtoken: 'fixture-refresh',
     wxCredentialExpiresAt: Date.now() + 2 * 3600000 };
   const counters = { writes: 0, restarts: 0, codeCalls: 0, keepCalls: 0 };
+  const notices = [];
   const original = adapter.getFarmCode;
   adapter.getFarmCode = async () => {
     counters.codeCalls += 1;
@@ -34,10 +35,10 @@ function fixture(t, keepAlive = async () => ({ Success: true })) {
     resolveWorkerControls: () => ({ restartWorker: () => { counters.restarts += 1; } }),
     keepWxCredentialAlive: async () => { counters.keepCalls += 1; return keepAlive(account); },
     getCredentialKeepaliveDelayMs: () => counters.keepCalls === 0 ? 1 : 100000,
-    log: () => {}, addAccountLog: () => {},
+    log: (_tag, message) => notices.push(message), addAccountLog: () => {},
   });
   t.after(() => { svc.stopAccount(account.id); adapter.getFarmCode = original; });
-  return { account, counters, svc };
+  return { account, counters, svc, notices };
 }
 const tasksFor = id => getSchedulerRegistrySnapshot('auto_code_refresh').schedulers
   .flatMap(s => s.tasks.map(task => task.name)).filter(name => name.endsWith(`_${id}`));
@@ -162,4 +163,17 @@ test('接管请求期间手动停止，迟到失败不能重新挂接管定时�
   old.resolve({ Success: false, Message: 'temporary timeout' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(tasksFor(account.id), []);
+});
+
+
+test('management reschedule replaces one task while announcing unchanged setup once', t => {
+  const f = fixture(t);
+  f.svc.scheduleAccount(f.account.id); f.svc.rescheduleAll();
+  assert.equal(tasksFor(f.account.id).filter(name => name === `wx_keepalive_${f.account.id}`).length, 1);
+  assert.equal(f.notices.filter(message => message.includes('在线保活已启用')).length, 1);
+  assert.equal(f.notices.filter(message => message.includes('断线自动恢复已启用')).length, 1);
+  assert.deepEqual(f.counters, { writes: 0, restarts: 0, codeCalls: 0, keepCalls: 0 });
+  f.svc.stopAccount(f.account.id); f.svc.scheduleAccount(f.account.id);
+  assert.equal(f.notices.filter(message => message.includes('在线保活已启用')).length, 2);
+  assert.equal(tasksFor(f.account.id).filter(name => name === `wx_keepalive_${f.account.id}`).length, 1);
 });

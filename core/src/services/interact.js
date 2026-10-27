@@ -1,3 +1,11 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fetchInteractReply = require('./business-state').wrapBusinessFunction('services/interact.js:fetchInteractReply', fetchInteractReply);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getInteractRecords = require('./business-state').wrapBusinessFunction('services/interact.js:getInteractRecords', getInteractRecords);
+}
 /**
  * 访客互动记录服务 - 获取和解析好友互动记录
  *
@@ -223,3 +231,14 @@ module.exports = {
   INTERACT_RECORDS_CACHE_MS,
   getInteractRecords,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/interact.js', () => ({ lastFetchInteractTime, interactRecordsCache, interactRecordsCacheAt, interactRecordsRetryAfter }), value => {
+      lastFetchInteractTime = value.lastFetchInteractTime;
+      interactRecordsCache = value.interactRecordsCache;
+      interactRecordsCacheAt = value.interactRecordsCacheAt;
+      interactRecordsRetryAfter = value.interactRecordsRetryAfter;
+  }, { idle: () => !interactRecordsInFlight, });
+}

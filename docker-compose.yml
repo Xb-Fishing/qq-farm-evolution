@@ -29,7 +29,7 @@ services:
       # CAPTURE_ADVERTISE_IPS=203.0.113.10,198.51.100.20
 
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3007/api/status"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3007/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

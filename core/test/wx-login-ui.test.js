@@ -262,6 +262,7 @@ function dashboardHarness() {
         } },
         '@/components/ui/BaseButton.vue': stub, '@/components/ui/BaseInput.vue': stub,
         '@/components/ui/BaseSelect.vue': stub, '@/components/AccountModal.vue': stub,
+        '@/components/SessionRuntimeStatus.vue': stub,
         '@/stores/account': { useAccountStore },
         '@/stores/bag': { useBagStore },
         '@/stores/status': { useStatusStore },

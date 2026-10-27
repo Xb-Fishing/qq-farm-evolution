@@ -6,7 +6,7 @@ const { createScheduler } = require('../services/scheduler');
 // WISH_SIGN_/HAPPY_SHARE_/SEASON_WISH_ 前缀的季节活动手动操作）；
 // 缺失、畸形、超长或非标量（含 JSON/structuredClone 往返后的旧式响应）
 // 一律按普通错误处理，堆栈、cause 与额外属性不透传。
-const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH)_[A-Z0-9_]{1,48}$/;
+const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH|FESTIVAL)_[A-Z0-9_]{1,48}$/;
 
 function normalizePetDiaryErrorMeta(meta) {
     if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
@@ -30,6 +30,7 @@ function createWorkerManager(deps) {
         workerScriptPath,
         workers,
         globalLogs,
+        appendRuntimeLog,
         log,
         addAccountLog,
         normalizeStatusForPanel,
@@ -71,6 +72,120 @@ function createWorkerManager(deps) {
 
     /** 是否支持 Thread 模式（非 pkg 打包 + Worker 可用） */
     const threadMode = runtimeMode === 'thread' && !processRef.pkg && typeof WorkerThread === 'function';
+    const persistentMode = runtimeMode === 'persistent' && !processRef.pkg;
+    const dataDir = persistentMode ? require('../config/runtime-paths').getDataDir() : '';
+    const sourceRoot = persistentMode ? require('node:path').resolve(require('node:path').dirname(mainEntryPath), '..') : '';
+    const sessionStarts = new Map();
+    const businessRecoveries = new Map();
+    const businessRecoveryHistory = new Map();
+    let managerClosing = false;
+
+    function cancelBusinessRecovery(id) {
+        const job = businessRecoveries.get(String(id));
+        if (job) { job.cancelled = true; scheduler.clear(job.timerKey); businessRecoveries.delete(String(id)); }
+    }
+    function queueBusinessRecovery(accountId, proc, reason = 'SESSION_EVENT_DELIVERY_FAILED') {
+        const id = String(accountId);
+        if (!persistentMode || managerClosing || (proc.businessInitialized === false && proc.recoverableAttach !== true)
+            || businessRecoveries.has(id)) return;
+        let record = workers[id]; const account = findAccount(id);
+        if (!record || record.process !== proc || record.stopping || !account || account.autoLogin === false
+            || record.credentialGeneration !== (account.credentialGeneration || '')
+            || record.sessionGeneration !== (account.sessionGeneration || '')) return;
+        const stamp = require('./session-registry').bindingIdentity(account);
+        const credentialGeneration = account.credentialGeneration || '';
+        let knownFaultEpoch = proc.businessFaultEpoch || '';
+        const job = { cancelled: false, tries: 0, probes: 0, failures: 0, timerKey: `session_business_recovery_${id}` };
+        businessRecoveries.set(id, job);
+        const accountIdentityCurrent = () => {
+            const current = findAccount(id);
+            return !managerClosing && !job.cancelled && current?.autoLogin !== false && current
+                && !record.stopping
+                && (current.credentialGeneration || '') === credentialGeneration
+                && require('./session-registry').bindingIdentity(current) === stamp;
+        };
+        const accountCurrent = () => accountIdentityCurrent() && (!workers[id] || workers[id] === record);
+        const owns = () => accountCurrent() && workers[id] === record && !record.stopping;
+        const finish = () => { if (businessRecoveries.get(id) === job) businessRecoveries.delete(id); };
+        const schedule = delay => scheduler.setTimeoutTask(job.timerKey, delay, async () => {
+            if (!owns()) { finish(); return; }
+            try {
+                let before; let controlReconnect = false;
+                try { before = await proc.refreshSession(); }
+                catch {
+                    if (!owns()) { finish(); return; }
+                    const found = await require('./session-registry').connectSession(dataDir, findAccount(id));
+                    if (found.state !== 'present') throw new Error('SESSION_CONTROL_UNAVAILABLE');
+                    try { before = await found.client.call('status'); } finally { found.client.close(); }
+                    controlReconnect = true;
+                }
+                if (!owns()) { finish(); return; }
+                const facts = before.facts;
+                if (facts.game.connected !== true || facts.game.terminal === true) { finish(); return; }
+                const hostKey = `${facts.host.hostId}:${facts.host.starttime}`;
+                let history = businessRecoveryHistory.get(id);
+                if (!history || history.hostKey !== hostKey) history = { hostKey, times: [], warnedEpoch: '' };
+                const now = Date.now(); history.times = history.times.filter(at => now - at < 600000);
+                businessRecoveryHistory.set(id, history);
+                knownFaultEpoch ||= proc.businessFaultEpoch || '';
+                const locallyFailed = knownFaultEpoch === facts.business?.epoch;
+                if (facts.business?.ready === true && (!controlReconnect || locallyFailed)) {
+                    if (locallyFailed) {
+                        // The already resident legacy host learns a local fault
+                        // only on its next real event rejection. Do not invent a
+                        // game event or misreport its stale ready flag as health.
+                        if (++job.probes < 7) { schedule(5000); return; }
+                        if (history.pendingWarnedEpoch !== facts.business.epoch) {
+                            history.pendingWarnedEpoch = facts.business.epoch;
+                            log('系统', '业务已暂停，等待宿主事件确认后恢复；游戏连接保持在线', {
+                                accountId: id, accountName: record.name, event: 'session_business_recovery_pending', reason,
+                            });
+                        }
+                    }
+                    finish(); return;
+                }
+                if (history.times.length >= 3) {
+                    if (history.warnedEpoch !== facts.business.epoch) {
+                        history.warnedEpoch = facts.business.epoch;
+                        log('系统', '业务会话连续恢复失败，保留连接等待后续恢复', {
+                            accountId: id, accountName: record.name, event: 'session_business_recovery_limited', reason,
+                        });
+                    }
+                    finish(); return;
+                }
+                history.times.push(now);
+                job.tries++;
+                log('系统', '正在恢复异常业务会话，保留原游戏连接', {
+                    accountId: id, accountName: record.name, event: 'session_business_recovering', reason, attempt: job.tries,
+                });
+                const result = await tryAdoptAccountSession(id, { connectedOnly: true, isCurrent: accountCurrent,
+                    onRecordReplaced: (previous, replacement) => {
+                        // Only this recovery's own adopt-only replacement may
+                        // transfer ownership; an independent start cancels it.
+                        if (previous === record && accountIdentityCurrent() && workers[id] === replacement) {
+                            replacement.process.businessFaultEpoch = knownFaultEpoch;
+                            record = replacement; proc = replacement.process;
+                        }
+                    } });
+                if (!accountIdentityCurrent()) { finish(); return; }
+                const next = result.facts;
+                if (result.state !== 'adopted' || next?.business?.ready !== true || next.game.connected !== true
+                    || next.host.hostId !== facts.host.hostId || next.host.starttime !== facts.host.starttime
+                    || next.game.connectionEpoch !== facts.game.connectionEpoch
+                    || next.game.loginEpoch !== facts.game.loginEpoch || next.game.firstLoginReadyAt !== facts.game.firstLoginReadyAt
+                    || (!controlReconnect && next.business.epoch === facts.business.epoch)) throw new Error('SESSION_BUSINESS_RECOVERY_UNCONFIRMED');
+                log('系统', '业务会话已恢复，原游戏连接保持在线', {
+                    accountId: id, accountName: record.name, event: 'session_business_recovered', reason,
+                });
+                finish();
+            } catch {
+                job.failures++;
+                if (owns() && job.failures < 3 && job.tries < 3) schedule(job.failures > 1 ? 5000 : 1000);
+                else finish();
+            }
+        });
+        schedule(0);
+    }
 
     function cleanText(value) {
         return String(value || '').trim();
@@ -175,7 +290,12 @@ function createWorkerManager(deps) {
     /**
      * 根据运行模式创建 Worker
      */
-    function createWorker(account) {
+    function createWorker(account, startOptions = {}) {
+        if (persistentMode) return require('./session-worker-proxy').createSessionWorkerProxy({
+            dataDir, account, sourceRoot, adoptOnly: startOptions.adoptOnly === true,
+            logDir: processRef.env.FARM_SESSION_LOG_DIR,
+            onLifecycle: event => handleSessionLifecycle(account.id, event),
+        });
         if (threadMode) return createThreadWorker(account);
         return createForkWorker(account);
     }
@@ -183,13 +303,13 @@ function createWorkerManager(deps) {
     /**
      * 启动账号 Worker
      */
-    function startWorker(account) {
+    function startWorker(account, startOptions = {}) {
         if (!account || !account.id) return false;
         // 全程使用 canonical latest：restartWorker 闭包捕获的是排队重启时的
         // 快照，两轮扫码并发时旧快照会把上一轮 Code/身份元数据发给新 Worker。
         // 持久层没有该账号时保留传入快照兜底（等价于旧行为）。
         const data = typeof getAccounts === 'function' ? getAccounts() : {};
-        const latest = (Array.isArray(data.accounts) ? data.accounts : [])
+        let latest = (Array.isArray(data.accounts) ? data.accounts : [])
             .find(item => String(item.id) === String(account.id)) || account;
         if (latest.autoLogin === false) {
             log('系统', `账号 ${latest.name || account.id} 已设为不登录，跳过启动`, {
@@ -199,15 +319,19 @@ function createWorkerManager(deps) {
             return false;
         }
         if (workers[latest.id]) return false;
+        if (persistentMode) latest = deps.store.ensureAccountSessionMetadata(latest.id) || latest;
 
-        log('系统', `正在启动账号: ${  latest.name}`, {
+        const startNotice = persistentMode
+            ? (startOptions.adoptOnly === true ? '正在接管已有农场连接' : '正在初始化常驻账号管理')
+            : '正在启动账号';
+        log('系统', `${startNotice}: ${latest.name}`, {
             accountId: String(latest.id),
             accountName: latest.name
         });
 
         let proc = null;
         try {
-            proc = createWorker(latest);
+            proc = createWorker(latest, startOptions);
         } catch (err) {
             const errorMsg = err && err.message ? err.message : String(err || 'unknown error');
             log('错误', `账号 ${  latest.name  } 启动失败: ${  errorMsg}`, {
@@ -229,6 +353,8 @@ function createWorkerManager(deps) {
             name: latest.name,
             username: latest.username || '',
             platform: latest.platform || 'qq',
+            credentialGeneration: latest.credentialGeneration || '',
+            sessionGeneration: latest.sessionGeneration || '',
             gid: latest.gid || '',
             openId: latest.openId || latest.open_id || '',
             qq: latest.qq || latest.uin || '',
@@ -240,6 +366,7 @@ function createWorkerManager(deps) {
             offlineReminderTriggered: false,
             autoDeleteTriggered: false,
             wsError: null,
+            sessionFacts: null,
             lastPongAt: Date.now()
         };
 
@@ -259,11 +386,34 @@ function createWorkerManager(deps) {
         proc.on('message', (msg) => {
             const current = workers[latest.id];
             if (!current || current.process !== proc) return;
+            current.sessionFacts = proc.sessionFacts || null;
             handleWorkerMessage(latest.id, msg);
+        });
+
+        if (proc.persistentSession) proc.on('session_unknown', () => {
+            const current = workers[latest.id];
+            if (current?.process !== proc) return;
+            current.sessionFacts = null;
+            current.status = { ...(current.status || {}), connection: { connected: undefined, state: 'unknown' } };
+            queueBusinessRecovery(latest.id, proc, 'SESSION_CONTROL_UNAVAILABLE');
         });
 
         // 监听 Worker 错误
         proc.on('error', (err) => {
+            if (proc.persistentSession) {
+                const current = workers[latest.id];
+                if (!current || current.process !== proc || current.stopping) return;
+                const reason = typeof err?.code === 'string' && /^SESSION_[A-Z_]{1,64}$/.test(err.code) ? err.code : 'SESSION_CONTROL_FAILED';
+                const phase = err?.phase === 'attach' ? 'attach' : err?.phase === 'event_delivery' ? 'event_delivery' : 'control';
+                log('系统', `${phase === 'attach' ? '常驻业务接管失败' : '常驻业务运行异常'}: ${reason}`, {
+                    accountId: String(latest.id), accountName: latest.name, event: 'session_business_error', reason, phase,
+                });
+                // An initial management attach can also fail on an existing
+                // live host. Recovery still verifies it with connectSession;
+                // it never retries ensureSession or consumes a fresh Code.
+                if (phase !== 'attach' || proc.recoverableAttach === true) queueBusinessRecovery(latest.id, proc, reason);
+                return;
+            }
             log('系统', `账号 ${  latest.name  } 子进程启动失败: ${
                 err && err.message ? err.message : err}`, {
                 accountId: String(latest.id),
@@ -282,7 +432,7 @@ function createWorkerManager(deps) {
                 }, signal=${  signal || 'none'  })`, {
                 accountId: String(latest.id),
                 accountName: displayName,
-                runtimeMode: threadMode ? 'thread' : 'fork'
+                runtimeMode: persistentMode ? 'persistent' : threadMode ? 'thread' : 'fork'
             });
 
             // force_kill/restart_fallback 按账号命名：只有本代次还持有
@@ -307,6 +457,7 @@ function createWorkerManager(deps) {
         // 因此必须由新 Worker 生命周期重新建立，避免重启一次后保活永久消失。
         if (typeof scheduleAccountRefresh === 'function') scheduleAccountRefresh(latest.id);
 
+        if (persistentMode) return proc.ready.then(() => true, () => false);
         return true;
     }
 
@@ -314,6 +465,9 @@ function createWorkerManager(deps) {
      * 停止账号 Worker
      */
     function stopWorker(accountId) {
+        cancelBusinessRecovery(accountId);
+        businessRecoveryHistory.delete(String(accountId));
+        if (persistentMode) return stopPersistentSession(accountId);
         const wrk = workers[accountId];
         if (!wrk) return;
 
@@ -349,6 +503,11 @@ function createWorkerManager(deps) {
     function restartWorker(account) {
         if (!account) return;
         const accountId = account.id;
+        if (persistentMode) return (async () => {
+            await stopPersistentSession(accountId);
+            const latest = findAccount(accountId);
+            return latest ? await startWorker(latest) : false;
+        })();
         const wrk = workers[accountId];
 
         // 如果未运行，直接启动
@@ -426,7 +585,7 @@ function createWorkerManager(deps) {
                         wrk.nick = nick;
                         addOrUpdateAccount({ id: accountId, nick });
                         if (oldNick !== nick) {
-                            log('系统', `已同步账号昵称: ${  oldNick || 'None'  } -> ${  nick}`, {
+                            log('系统', oldNick ? `账号昵称已更新: ${oldNick} -> ${nick}` : `已读取账号昵称: ${nick}`, {
                                 accountId, accountName: wrk.name
                             });
                         }
@@ -441,7 +600,7 @@ function createWorkerManager(deps) {
                 wrk.offlineReminderTriggered = false;
                 wrk.autoDeleteTriggered = false;
                 wrk.wsError = null;
-            } else if (!wrk.stopping) {
+            } else if (!wrk.stopping && (!wrk.process.persistentSession || msg.data?.connection?.connected === false)) {
                 const now = Date.now();
                 if (!wrk.disconnectedSince) wrk.disconnectedSince = now;
 
@@ -483,7 +642,7 @@ function createWorkerManager(deps) {
                     addAccountLog('offline_delete',
                         `账号 ${  wrk.name  } 持续离线 ${  offlineMinutes  } 分钟，已自动删除`,
                         accountId, wrk.name, { reason: 'offline_timeout', offlineMs: offlineDuration });
-                    stopWorker(accountId);
+                    stopWorkerForRecovery(accountId);
                     try {
                         if (typeof deleteAccount === 'function') deleteAccount(accountId);
                     } catch (err) {
@@ -506,12 +665,24 @@ function createWorkerManager(deps) {
             wrk.logs.push(entry);
             if (wrk.logs.length > 1000) wrk.logs.shift();
 
-            globalLogs.push(entry);
-            if (globalLogs.length > 2000) globalLogs.shift();
+            if (typeof appendRuntimeLog === 'function') appendRuntimeLog(entry);
+            else {
+                globalLogs.push(entry);
+                if (globalLogs.length > 2000) globalLogs.shift();
+            }
 
             if (typeof onWorkerLog === 'function') {
                 onWorkerLog(entry, accountId, wrk.name);
             }
+        } else if (msg.type === 'session_business_diagnostic') {
+            const detail = msg.data || {};
+            if (!wrk.process.persistentSession || detail.businessEpoch !== wrk.process.sessionFacts?.business?.epoch) return;
+            const reason = /^SESSION_[A-Z_]{1,64}$/.test(detail.reason || '') ? detail.reason : 'SESSION_EVENT_DELIVERY_FAILED';
+            log('系统', `常驻业务控制链异常: ${reason}`, { accountId: String(accountId), accountName: wrk.name,
+                event: 'session_business_diagnostic', reason, phase: ['sync_channel', 'game_reply'].includes(detail.phase) ? detail.phase : 'event_delivery',
+                operation: ['facts', 'query', 'command', 'request'].includes(detail.operation) ? detail.operation : '',
+                method: /^[a-z.]{0,96}$/i.test(detail.method || '') ? detail.method || '' : '' });
+            queueBusinessRecovery(accountId, wrk.process, reason);
         } else if (msg.type === 'error') {
             log('错误', `账号[${  accountId  }]进程报错: ${  msg.error}`, {
                 accountId: String(accountId),
@@ -543,7 +714,8 @@ function createWorkerManager(deps) {
         } else if (msg.type === 'account_kicked') {
             // 被踢下线
             const reason = msg.reason || '未知';
-            const sessionMs = wrk.startedAt ? Date.now() - wrk.startedAt : 0;
+            const actualStart = wrk.sessionFacts?.game?.firstLoginReadyAt || wrk.startedAt;
+            const sessionMs = actualStart ? Date.now() - actualStart : 0;
             log('系统', `账号 ${  wrk.name  } 被踢下线，已自动停止账号`, {
                 accountId: String(accountId),
                 accountName: wrk.name
@@ -557,9 +729,9 @@ function createWorkerManager(deps) {
             });
             addAccountLog('kickout_stop',
                 `账号 ${  wrk.name  } 被踢下线，已自动停止`,
-                accountId, wrk.name, { reason });
+                accountId, wrk.name, { reason, sessionEvidence: msg.sessionEvidence });
 
-            stopWorker(accountId);
+            stopWorkerForRecovery(accountId);
             const scheduledTakeover = typeof scheduleKickoutRelogin === 'function'
                 && scheduleKickoutRelogin(accountId, `kickout:${reason}`, sessionMs);
             if (!scheduledTakeover && typeof scheduleAutoRelogin === 'function') {
@@ -582,7 +754,7 @@ function createWorkerManager(deps) {
                 `账号 ${  wrk.name  } 连接多次重试失败，已自动停止`,
                 accountId, wrk.name, { reason });
 
-            stopWorker(accountId);
+            stopWorkerForRecovery(accountId);
             if (typeof scheduleAutoRelogin === 'function') {
                 scheduleAutoRelogin(accountId, `ws_reconnect_failed:${reason}`);
             }
@@ -610,6 +782,34 @@ function createWorkerManager(deps) {
                     currentWrk.process.send({
                         type: 'config_sync',
                         config: buildConfigSnapshotForAccount(accountId)
+                    });
+                }
+            }
+        } else if (msg.type === 'watchlist_state_sync') {
+            // 重点名单暂停状态镜像（2026-10-07）：Worker 推送 → 主进程落盘。
+            // 结构校验（版本/行表/有限整数版本号）失败按畸形丢弃，绝不把
+            // 畸形状态写进镜像；写失败只记日志——Worker 业务路径不等落盘，
+            // 镜像保留最后一份好快照，下一次状态变更重推。
+            const state = msg.state && typeof msg.state === 'object' ? msg.state : null;
+            if (state && state.version === 1
+                && state.rows && typeof state.rows === 'object' && !Array.isArray(state.rows)
+                && Number.isFinite(Number(state.consumedOpSeq))) {
+                try {
+                    const { writeWatchlistStateMirror } = require('../models/store');
+                    // 真实保存函数吞掉磁盘异常并返回 false：false 同样按写失败
+                    // 记诊断（最后好快照保留在盘上，下次状态变更重推），不抛
+                    // 错、不阻断后续消息处理。
+                    const saved = writeWatchlistStateMirror(accountId, state);
+                    if (saved !== true) {
+                        log('错误', `账号 ${  wrk.name  } 重点名单状态镜像写入失败: 保存函数返回失败`, {
+                            accountId: String(accountId),
+                            accountName: wrk.name
+                        });
+                    }
+                } catch (err) {
+                    log('错误', `账号 ${  wrk.name  } 重点名单状态镜像写入失败: ${  err.message}`, {
+                        accountId: String(accountId),
+                        accountName: wrk.name
                     });
                 }
             }
@@ -668,16 +868,158 @@ function createWorkerManager(deps) {
         return (data.accounts || []).find(account => String(account.id) === String(accountId));
     }
 
+    async function handleSessionLifecycle(accountId, event) {
+        const account = findAccount(accountId);
+        if (event.kind === 'gap') {
+            addAccountLog('session_event_gap', '连接事件记录存在缺口，已读取当前实际状态', accountId, account?.name || '');
+            return;
+        }
+        if (!account || event.accountId !== String(accountId)
+            || event.binding !== require('./session-registry').bindingIdentity(account)
+            || event.credentialGeneration !== account.credentialGeneration) return;
+        const wrk = workers[accountId];
+        if (typeof deps.onSessionLifecycle === 'function') await deps.onSessionLifecycle(accountId, event, wrk);
+        const latest = findAccount(accountId);
+        if (!latest || event.binding !== require('./session-registry').bindingIdentity(latest)
+            || event.credentialGeneration !== latest.credentialGeneration) return;
+        const current = workers[accountId];
+        if (current && (current.sessionFacts?.host?.hostId !== event.hostId
+            || current.sessionFacts?.game?.connectionEpoch !== event.connectionEpoch)) return;
+        if (event.kind === 'kickout' || event.kind === 'reconnect_failed' || (event.kind === 'ws_error' && event.code === 400)) {
+            const message = event.kind === 'kickout' ? { type: 'account_kicked', reason: event.reason || '未知' }
+                : event.kind === 'ws_error' ? { type: 'ws_error', code: 400, message: '' }
+                    : { type: 'ws_reconnect_failed', reason: '网络连接多次重试失败' };
+            message.sessionEvidence = event;
+            if (current) handleWorkerMessage(accountId, message);
+            else if (event.kind === 'kickout' || event.kind === 'reconnect_failed') {
+                const reason = event.kind === 'kickout' ? `kickout:${  event.reason || '未知'}` : 'ws_reconnect_failed:replayed';
+                addAccountLog(event.kind === 'kickout' ? 'kickout_stop' : 'ws_reconnect_failed',
+                    '已恢复管理停机期间的真实连接事件', accountId, account.name, { reason: event.reason, sessionEvidence: event });
+                const sessionMs = Math.max(0, event.observedAt - (event.firstLoginReadyAt || event.loginReadyAt || event.observedAt));
+                const scheduled = event.kind === 'kickout' && typeof scheduleKickoutRelogin === 'function'
+                    && scheduleKickoutRelogin(accountId, reason, sessionMs);
+                if (!scheduled) scheduleAutoRelogin?.(accountId, reason);
+            }
+        }
+    }
+
+    function stopWorkerForRecovery(accountId) {
+        const result = stopWorker(accountId);
+        if (result && typeof result.catch === 'function') result.catch(() => {
+            log('错误', '连接停止确认未完成，账号发送权限已撤销', { accountId: String(accountId) });
+        });
+    }
+
+    async function stopPersistentSession(accountId) {
+        cancelBusinessRecovery(accountId);
+        businessRecoveryHistory.delete(String(accountId));
+        const account = findAccount(accountId); const wrk = workers[accountId];
+        if (wrk) wrk.stopping = true;
+        stopAccountRefresh?.(accountId);
+        // Revoke the canonical fence synchronously, even without a proxy record.
+        if (account) deps.store.addOrUpdateAccount({ id: accountId }, { revokeSession: true });
+        try {
+            if (wrk?.process?.persistentSession) await wrk.process.kill();
+            else if (account) {
+                const found = await require('./session-registry').connectSession(dataDir, account);
+                if (found.state === 'present') {
+                    try { await found.client.call('revoke'); } finally { found.client.close(); }
+                } else if (found.state === 'unknown' || (found.state === 'stale'
+                    && require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime)))
+                    throw new Error('Existing account session could not be verified for stop');
+            }
+        } finally {
+            if (wrk) { settleWorkerRequests(wrk); if (workers[accountId] === wrk) delete workers[accountId]; }
+        }
+        return true;
+    }
+
+    async function tryAdoptAccountSession(accountOrId, options = {}) {
+        if (!persistentMode) return { state: 'absent' };
+        const id = String(typeof accountOrId === 'object' ? accountOrId.id : accountOrId);
+        if (sessionStarts.has(id)) return sessionStarts.get(id);
+        const task = (async () => {
+            let account = findAccount(id);
+            if (!account || account.autoLogin === false) return { state: 'disabled' };
+            if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+            account = deps.store.ensureAccountSessionMetadata(id) || account;
+            const existing = workers[id];
+            if (existing?.process?.persistentSession) {
+                let verified;
+                try { await existing.process.ready; let actual = await existing.process.refreshSession(); verified = actual;
+                    if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+                    if (options.connectedOnly && (actual.facts.game.connected !== true || actual.facts.game.terminal === true)) return { state: 'offline', facts: actual.facts };
+                    if (actual.facts.game.terminal === true) { await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true }; }
+                    if (actual.facts.business?.ready !== true) actual = await existing.process.reloadBusiness();
+                    existing.sessionFacts = actual.facts;
+                    return { state: 'adopted', facts: actual.facts };
+                } catch {
+                    // A failed business replacement is not a broken manager
+                    // socket. Retain the verified record for a bounded retry.
+                    if (verified?.facts.game.connected === true && verified.facts.game.terminal !== true)
+                        return { state: 'unhealthy', facts: verified.facts };
+                    // Retain ownership until a live host can be verified. A
+                    // temporary control failure must remain eligible for retry.
+                }
+            }
+            await require('./session-worker-proxy').replayLifecycle({ dataDir, account, onLifecycle: event => handleSessionLifecycle(id, event) });
+            const found = await require('./session-registry').connectSession(dataDir, account);
+            if (found.state === 'absent' || (found.state === 'stale'
+                && !require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime))) return { state: 'absent' };
+            if (found.state !== 'present') return { state: 'unknown' };
+            let actual;
+            try { actual = await found.client.call('status'); } finally { found.client.close(); }
+            if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+            if (options.connectedOnly && (actual.facts.game.connected !== true || actual.facts.game.terminal === true)) return { state: 'offline', facts: actual.facts };
+            if (actual.facts.game.terminal === true) {
+                await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true };
+            }
+            if (existing) {
+                if (workers[id] !== existing) return { state: 'cancelled' };
+                settleWorkerRequests(existing);
+                await existing.process.detach().catch(() => {});
+                if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+                if (workers[id] !== existing) return { state: 'cancelled' };
+                delete workers[id];
+            }
+            const starting = startWorker(account, { adoptOnly: true });
+            const replacement = workers[id];
+            if (replacement && replacement !== existing) options.onRecordReplaced?.(existing, replacement);
+            const started = await starting;
+            return started ? { state: 'adopted', facts: workers[id]?.process?.sessionFacts } : { state: 'unknown' };
+        })();
+        sessionStarts.set(id, task);
+        try { return await task; } catch { return { state: 'unknown' }; }
+        finally { if (sessionStarts.get(id) === task) sessionStarts.delete(id); }
+    }
+
+    async function detachAll() {
+        managerClosing = true;
+        for (const id of businessRecoveries.keys()) cancelBusinessRecovery(id);
+        scheduler.clearAll();
+        for (const [id, wrk] of Object.entries(workers)) {
+            if (!wrk.process?.persistentSession) continue;
+            settleWorkerRequests(wrk);
+            await wrk.process.detach();
+            if (workers[id] === wrk) delete workers[id];
+        }
+    }
+
     scheduler.setIntervalTask('watchdog_tick', WATCHDOG_PING_MS, () => {
         const now = Date.now();
         for (const [accountId, wrk] of Object.entries(workers)) {
             if (!wrk || wrk.stopping) continue;
             if (now - Number(wrk.lastPongAt || 0) > WATCHDOG_TIMEOUT_MS) {
+                if (persistentMode) {
+                    wrk.lastPongAt = now;
+                    queueBusinessRecovery(accountId, wrk.process, 'SESSION_BUSINESS_WATCHDOG');
+                    continue;
+                }
                 const history = (restartHistory.get(accountId) || [])
                     .filter(at => now - at < 60 * 60 * 1000);
                 if (history.length >= WATCHDOG_MAX_RESTARTS) {
                     wrk.stopping = true;
-                    stopWorker(accountId);
+                    if (!persistentMode) stopWorkerForRecovery(accountId);
                     log('错误', `账号 ${wrk.name} Worker 连续无响应，已停止自动重启`, {
                         accountId, accountName: wrk.name
                     });
@@ -692,7 +1034,11 @@ function createWorkerManager(deps) {
                 log('错误', `账号 ${wrk.name} Worker 超过 90 秒无响应，正在自动重启`, {
                     accountId, accountName: wrk.name
                 });
-                if (account) restartWorker(account);
+                if (account && !persistentMode) restartWorker(account);
+                else if (account) {
+                    wrk.lastPongAt = now;
+                    tryAdoptAccountSession(account).catch(() => {});
+                }
                 continue;
             }
             try { wrk.process.send({ type: 'watchdog_ping', at: now }); } catch { }
@@ -743,7 +1089,7 @@ function createWorkerManager(deps) {
         startWorker,
         stopWorker,
         restartWorker,
-        callWorkerApi
+        callWorkerApi, tryAdoptAccountSession, detachAll
     };
 }
 

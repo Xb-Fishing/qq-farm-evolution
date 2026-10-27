@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getDogInfo = require('./business-state').wrapBusinessFunction('services/dog-skill-gifts.js:getDogInfo', getDogInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getDogInfoForPanel = require('./business-state').wrapBusinessFunction('services/dog-skill-gifts.js:getDogInfoForPanel', getDogInfoForPanel);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimSkillGifts = require('./business-state').wrapBusinessFunction('services/dog-skill-gifts.js:claimSkillGifts', claimSkillGifts);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndClaimDogSkillGifts = require('./business-state').wrapBusinessFunction('services/dog-skill-gifts.js:checkAndClaimDogSkillGifts', checkAndClaimDogSkillGifts);
+}
 const { getItemById } = require('../config/gameConfig');
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
@@ -76,13 +88,16 @@ function getPendingGiftCount(reply) {
   return Math.max(0, toNum(reply && (reply.pending_gift_count ?? reply.pendingGiftCount)));
 }
 
-async function checkAndClaimDogSkillGifts(pendingCountHint) {
+async function checkAndClaimDogSkillGifts(pendingCountHint, options = {}) {
+  const paused = () => options.automatic === true && require('../models/store').getPauseRemainMs() > 0;
+  if (paused()) return { claimed: 0, pending: Math.max(0, toNum(pendingCountHint)), item: null };
   if (pendingClaim) return pendingClaim;
 
   const request = (async () => {
     try {
       const hintedCount = Math.max(0, toNum(pendingCountHint));
       const pendingCount = hintedCount > 0 ? hintedCount : getPendingGiftCount(await getDogInfo());
+      if (paused()) return { claimed: 0, pending: pendingCount, item: null };
       if (pendingCount <= 0) return { claimed: 0, pending: 0, item: null };
 
       const reply = await claimSkillGifts();
@@ -120,3 +135,13 @@ module.exports = {
   getPendingGiftCount,
   checkAndClaimDogSkillGifts
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/dog-skill-gifts.js', () => ({ panelDogInfoCache, panelDogInfoCacheAt, panelDogInfoRetryAfter }), value => {
+      panelDogInfoCache = value.panelDogInfoCache;
+      panelDogInfoCacheAt = value.panelDogInfoCacheAt;
+      panelDogInfoRetryAfter = value.panelDogInfoRetryAfter;
+  }, { idle: () => !pendingClaim && !panelDogInfoInFlight, });
+}

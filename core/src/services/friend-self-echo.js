@@ -552,3 +552,15 @@ module.exports = {
   matureDeadlineSec,
   longToBigStr,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-self-echo.js', () => ({ baselines, tickets, ticketSeq, generation, echoAbsorbedTotal }), value => {
+      restoreContainer(baselines, value.baselines);
+      restoreContainer(tickets, value.tickets);
+      ticketSeq = value.ticketSeq;
+      generation = value.generation;
+      echoAbsorbedTotal = value.echoAbsorbedTotal;
+  }, { });
+}

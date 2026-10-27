@@ -48,7 +48,11 @@ function fail(code, message) { throw businessError(code, message); }
 const rewards = value => (Array.isArray(value) ? value : []).filter(Boolean).map(normalizeCoreItem);
 
 /** List 确认目标根活动下发后，用空 UID 读取根 GetGroup，返回其玩法节点（不在窗口返回 null）。 */
+// S4 轮换后已下架退役（2026-10-15）：官方 List 不再下发秋祈良愿/快乐不独享，
+// 路由与 Worker 转发均已断开。公开请求入口在任何 List/GetGroup/Operate 前固定拒绝，
+// 保留纯解析、proto 与脱敏编码向量作历史证据。
 async function readSeasonWishPlay(rootId, playId) {
+  fail('SEASON_WISH_RETIRED', '秋祈良愿/快乐不独享已随 S4 轮换下架退役，停止读取');
   const listed = await listActivityGroups();
   const flatten = nodes => (nodes || []).flatMap(node => [node, ...flatten(node.children)]);
   const nodes = flatten(listed?.groups);
@@ -68,6 +72,7 @@ async function readSeasonWishPlay(rootId, playId) {
  * 未知操作在编码与请求前拒绝；不做自动重试。
  */
 async function runManualSeasonWishAction(action, input = {}) {
+  fail('SEASON_WISH_RETIRED', '秋祈良愿/快乐不独享已随 S4 轮换下架退役，停止操作');
   if (!Object.prototype.hasOwnProperty.call(OPERATIONS, action)) {
     fail('SEASON_WISH_UNKNOWN_ACTION', '该操作未开放（分享类操作不开放面板触发）');
   }

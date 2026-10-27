@@ -94,14 +94,16 @@ router.beforeEach(async (to) => {
 
   if (!adminToken.value) {
     validatedToken = ''
-    return { name: 'login' }
+    // 未登录访问受保护页（如提醒通知里的自助重扫链接）时带上返回地址，
+    // 登录后回到原页面（Login.vue 侧只接受站内相对路径）。
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
 
   const valid = await ensureTokenValid()
   if (!valid) {
     adminToken.value = ''
     validatedToken = ''
-    return { name: 'login' }
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
 
   return true

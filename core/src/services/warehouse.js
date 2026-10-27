@@ -1,3 +1,31 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBag = require('./business-state').wrapBusinessFunction('services/warehouse.js:getBag', getBag);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagForPanel = require('./business-state').wrapBusinessFunction('services/warehouse.js:getBagForPanel', getBagForPanel);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  sellItems = require('./business-state').wrapBusinessFunction('services/warehouse.js:sellItems', sellItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  useItem = require('./business-state').wrapBusinessFunction('services/warehouse.js:useItem', useItem);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  batchUseItems = require('./business-state').wrapBusinessFunction('services/warehouse.js:batchUseItems', batchUseItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  autoOpenFertilizerGiftPacks = require('./business-state').wrapBusinessFunction('services/warehouse.js:autoOpenFertilizerGiftPacks', autoOpenFertilizerGiftPacks);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  openFertilizerGiftPacksSilently = require('./business-state').wrapBusinessFunction('services/warehouse.js:openFertilizerGiftPacksSilently', openFertilizerGiftPacksSilently);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getCurrentTotalsFromBag = require('./business-state').wrapBusinessFunction('services/warehouse.js:getCurrentTotalsFromBag', getCurrentTotalsFromBag);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagDetail = require('./business-state').wrapBusinessFunction('services/warehouse.js:getBagDetail', getBagDetail);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  sellAllFruits = require('./business-state').wrapBusinessFunction('services/warehouse.js:sellAllFruits', sellAllFruits);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagSeeds = require('./business-state').wrapBusinessFunction('services/warehouse.js:getBagSeeds', getBagSeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getBagSeedsForPanel = require('./business-state').wrapBusinessFunction('services/warehouse.js:getBagSeedsForPanel', getBagSeedsForPanel);
+}
 /**
  * 仓库服务 - 背包管理、果实出售、化肥使用
  *
@@ -21,7 +49,9 @@ const {
   isSeedItem,
 } = require('../config/gameConfig');
 const { isAutomationOn } = require('../models/store');
-const { sendMsgAsync, networkEvents, getUserState } = require('../utils/network');
+const { sendMsgAsync: nativeSendMsgAsync, networkEvents, getUserState } = require('../utils/network');
+const ownQuietPriority = require('./own-quiet-priority');
+const sendMsgAsync = ownQuietPriority.wrapSend(nativeSendMsgAsync);
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
 const { updateStatusGold } = require('./status');
@@ -497,8 +527,10 @@ async function getBagDetail() {
     else if (getPlantByFruitId(id)) {
       if (!name) name = `${getFruitName(id)  }果实`;
       category = 'fruit';
-    } else if (Number(info && info.type) === 4) {
+    } else if (Number(info && info.type) === 4 || Number(info && info.type) === 17) {
       // 活动产出物可能尚未进入 Plant.json，但活动回包已确认它是果实/产出物。
+      // type 17 = 已登记黄金果实（官方提取 type 语义，如无本地 Plant 映射的
+      // 1040525）；仅影响展示分类，不构成 isFruitItemId 的自动出售资格。
       category = 'fruit';
     } else if (seedPlant || isSeedItem(id) || isActivitySeedInfo(info) || serverShowName.endsWith('种子')) {
       if (!name) name = `${seedPlant?.name || serverShowName.replace(/种子$/, '') || '未知'}种子`;
@@ -587,7 +619,11 @@ async function sellAllFruits() {
     for (const item of items) {
       const id = toNum(item.id);
       const count = toNum(item.count);
-      if (isFruitItemId(id) && count > 0) {
+      const info = getItemById(id);
+      // 新核验活动植物的映射只证明作物身份；仅有活动条件售价时，
+      // 尚未具备自动出售资格，不能因补齐 Plant 就开始尝试出售。
+      const conditionalSaleOnly = info?.evidence && info.sell_cond && !info.sells;
+      if (isFruitItemId(id) && count > 0 && !conditionalSaleOnly) {
         fruits.push(item);
       }
     }
@@ -679,8 +715,12 @@ async function sellAllFruits() {
     if (goldByState <= 0 && totalGoldGain > 0) {
       const state = getUserState();
       if (state) {
-        state.gold = Number(state.gold || 0) + totalGoldGain;
-        updateStatusGold(state.gold);
+        if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+          require('../utils/network').correctSessionWallet('saleFallback', { previousGold: prevGold, gain: totalGoldGain });
+        } else {
+          state.gold = Number(state.gold || 0) + totalGoldGain;
+          updateStatusGold(state.gold);
+        }
       }
     }
 
@@ -728,6 +768,8 @@ async function sellAllFruits() {
  */
 let lastUnclassifiedSignature = '';
 const lastUnclassifiedReportedIds = new Set();
+let lastFallbackSeedSignature = '';
+const lastFallbackSeedReportedIds = new Set();
 
 function getBagSeedsFromItems(items) {
   const seedMap = new Map();
@@ -810,15 +852,31 @@ function getBagSeedsFromItems(items) {
     lastUnclassifiedReportedIds.clear();
   }
 
-  if (fallbackSeedIds.length > 0) {
-    const activityOnly = fallbackSeedIds.filter(id => Boolean(getItemById(id)?.evidence));
-    log('warehouse', `bag seed fallback detection: ${fallbackSeedIds.join(',')}`, {
+  const uniqueFallbackIds = [...new Set(fallbackSeedIds)].sort((a, b) => a - b);
+  const fallbackSignature = uniqueFallbackIds.join(',');
+  if (uniqueFallbackIds.length > 0 && fallbackSignature !== lastFallbackSeedSignature) {
+    lastFallbackSeedSignature = fallbackSignature;
+    const added = uniqueFallbackIds.filter(id => !lastFallbackSeedReportedIds.has(id));
+    for (const id of uniqueFallbackIds) lastFallbackSeedReportedIds.add(id);
+    const activityOnly = uniqueFallbackIds.filter(id => Boolean(getItemById(id)?.evidence));
+    const names = uniqueFallbackIds.map(id => getItemById(id)?.name || '未知种子');
+    log('warehouse', `活动种子植物映射待补齐：${names.join('、')}`, {
       module: 'warehouse',
       event: 'bag_seed_detect',
-      result: activityOnly.length === fallbackSeedIds.length ? 'activity_seed_without_plant_mapping' : 'fallback',
-      count: fallbackSeedIds.length,
+      result: activityOnly.length === uniqueFallbackIds.length ? 'activity_seed_without_plant_mapping' : 'fallback',
+      count: uniqueFallbackIds.length,
       pendingPlantMappingIds: activityOnly,
+      fallbackSeedIds: uniqueFallbackIds,
+      addedSeedIds: added,
     });
+    if (added.length > 0) {
+      try { require('./evolution-issue-inbox').recordRuntimeIssue('bag_seed_mapping', 'warn'); }
+      catch { /* 待办写失败不阻断已有背包与种植链 */ }
+    }
+  }
+  if (uniqueFallbackIds.length === 0 && lastFallbackSeedSignature) {
+    lastFallbackSeedSignature = '';
+    lastFallbackSeedReportedIds.clear();
   }
 
   return Array.from(seedMap.values());
@@ -861,3 +919,20 @@ module.exports = {
   getBagSeedsFromItems,
   inspectBagItemShows,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/warehouse.js', () => ({ fertilizerGiftDoneDateKey, fertilizerGiftLastOpenAt, bagShowStates, panelBagCache, panelBagCacheAt, panelBagRetryAfter, lastUnclassifiedSignature, lastUnclassifiedReportedIds, lastFallbackSeedSignature, lastFallbackSeedReportedIds }), value => {
+      fertilizerGiftDoneDateKey = value.fertilizerGiftDoneDateKey;
+      fertilizerGiftLastOpenAt = value.fertilizerGiftLastOpenAt;
+      restoreContainer(bagShowStates, value.bagShowStates);
+      panelBagCache = value.panelBagCache;
+      panelBagCacheAt = value.panelBagCacheAt;
+      panelBagRetryAfter = value.panelBagRetryAfter;
+      lastUnclassifiedSignature = value.lastUnclassifiedSignature;
+      restoreContainer(lastUnclassifiedReportedIds, value.lastUnclassifiedReportedIds);
+      lastFallbackSeedSignature = value.lastFallbackSeedSignature;
+      restoreContainer(lastFallbackSeedReportedIds, value.lastFallbackSeedReportedIds);
+  }, { idle: () => !panelBagInFlight, });
+}
