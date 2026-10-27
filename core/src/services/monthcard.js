@@ -1,3 +1,13 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getMonthCardInfos = require('./business-state').wrapBusinessFunction('services/monthcard.js:getMonthCardInfos', getMonthCardInfos);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimMonthCardReward = require('./business-state').wrapBusinessFunction('services/monthcard.js:claimMonthCardReward', claimMonthCardReward);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  performDailyMonthCardGift = require('./business-state').wrapBusinessFunction('services/monthcard.js:performDailyMonthCardGift', performDailyMonthCardGift);
+}
 /**
  * 月卡服务 - 每日自动领取月卡礼包
  *
@@ -175,3 +185,16 @@ module.exports = {
     hasClaimable: lastHasClaimable,
   }),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/monthcard.js', () => ({ doneDateKey, lastCheckAt, lastClaimAt, lastResult, lastHasCard, lastHasClaimable }), value => {
+      doneDateKey = value.doneDateKey;
+      lastCheckAt = value.lastCheckAt;
+      lastClaimAt = value.lastClaimAt;
+      lastResult = value.lastResult;
+      lastHasCard = value.lastHasCard;
+      lastHasClaimable = value.lastHasClaimable;
+  }, { });
+}

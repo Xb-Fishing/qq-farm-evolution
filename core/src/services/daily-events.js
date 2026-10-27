@@ -229,3 +229,11 @@ module.exports = {
   resetForTest,
   MAX_EVENTS,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/daily-events.js', () => ({ accounts }), value => {
+      restoreContainer(accounts, value.accounts);
+  }, { });
+}

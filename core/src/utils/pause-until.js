@@ -20,7 +20,32 @@ function normalizePauseUntil(raw) {
     return Number.isFinite(ts) ? new Date(ts).toISOString() : '';
 }
 
+/** Remaining daily quiet time in Beijing; zero outside the saved HH:MM window. */
+function getDailyQuietRemainMs(quiet, now = Date.now()) {
+    if (!quiet?.enabled || !Number.isFinite(now)) return 0;
+    const clock = value => {
+        const match = /^(\d{1,2}):(\d{1,2})$/.exec(String(value || ''));
+        if (!match) return null;
+        const hour = Number(match[1]);
+        const minute = Number(match[2]);
+        return hour < 24 && minute < 60 ? hour * 60 + minute : null;
+    };
+    const start = clock(quiet.start);
+    const end = clock(quiet.end);
+    if (start === null || end === null) return 0;
+    const dayMs = 86400000;
+    const offset = 8 * 3600000;
+    const day = Math.floor((now + offset) / dayMs) * dayMs - offset;
+    const startAt = day + start * 60000;
+    const endAt = day + end * 60000;
+    if (start === end) return (endAt > now ? endAt : endAt + dayMs) - now;
+    if (start < end) return now >= startAt && now < endAt ? endAt - now : 0;
+    if (now >= startAt) return endAt + dayMs - now;
+    return now < endAt ? endAt - now : 0;
+}
+
 module.exports = {
+    getDailyQuietRemainMs,
     parsePauseUntilMs,
     normalizePauseUntil
 };

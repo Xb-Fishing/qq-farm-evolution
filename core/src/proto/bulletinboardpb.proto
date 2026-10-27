@@ -1,0 +1,23 @@
+syntax = "proto3";
+package gamepb.bulletinboardpb;
+
+// 公告按钮的列表和详情读取；不包含分享、领奖或写操作。
+message BulletinItem {
+    int64 id = 1;
+    string title = 2;
+    int64 status = 3;
+    int64 type = 5;
+}
+message GetBulletinListRequest {
+    int64 count = 1;
+    int64 page_size = 2;
+}
+message GetBulletinListReply { repeated BulletinItem bulletins = 1; }
+message GetBulletinDetailRequest { int64 id = 1; }
+message GetBulletinDetailReply {
+    string title = 1;
+    string content = 2;
+    string begin_time = 3;
+    string end_time = 4;
+    string image_url = 5;
+}

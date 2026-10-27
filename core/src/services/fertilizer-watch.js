@@ -704,3 +704,18 @@ module.exports = {
   getFriendRipeSnapshots,
   resetFertilizerWatchForTests,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/fertilizer-watch.js', () => ({ watches, ripeSnapshots, landObservedAt, landSnapshots, landSnapshotNames, completeLandSnapshotGids, visitHistory, priorityGids }), value => {
+      restoreContainer(watches, value.watches);
+      restoreContainer(ripeSnapshots, value.ripeSnapshots);
+      restoreContainer(landObservedAt, value.landObservedAt);
+      restoreContainer(landSnapshots, value.landSnapshots);
+      restoreContainer(landSnapshotNames, value.landSnapshotNames);
+      restoreContainer(completeLandSnapshotGids, value.completeLandSnapshotGids);
+      restoreContainer(visitHistory, value.visitHistory);
+      restoreContainer(priorityGids, value.priorityGids);
+  }, { });
+}

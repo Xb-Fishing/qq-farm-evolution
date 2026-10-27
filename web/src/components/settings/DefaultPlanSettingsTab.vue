@@ -58,7 +58,7 @@ function createStrategySettings() {
     plantOrderRandom: true,
     plantDelaySeconds: 2,
     intervals: { farmMin: 8, farmMax: 12, helpMin: 30, helpMax: 35, stealMin: 25, stealMax: 30 },
-    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '' },
+    friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
   }
 }
 
@@ -69,6 +69,7 @@ function createAutomationSettings() {
       harvest: false,
       plant: false,
       task: false,
+      milk_tea_auto_rewards: false,
       sell: false,
       friend: false,
       farm_push: false,
@@ -165,9 +166,11 @@ const updatedAtLabel = computed(() => {
 })
 
 function buildConfig() {
+  const automationKeys = Object.keys(createAutomationSettings()) as (keyof ReturnType<typeof createAutomationSettings>)[]
   return {
     ...strategySettings.value,
-    ...automationSettings.value,
+    // Both drafts contain the loaded config; only automation fields may override current strategy edits.
+    ...Object.fromEntries(automationKeys.map(key => [key, automationSettings.value[key]])),
     autoCodeRefresh: autoCodeRefresh.value,
   }
 }

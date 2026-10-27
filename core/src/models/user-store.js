@@ -15,8 +15,8 @@ const DEFAULT_ACCOUNT_LIMIT = 2;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-// 卡密领取状态
-let cardClaimEnabled = true;
+// 卡密领取状态（全新/不可读的配置一律默认关闭，只有文件里显式 enabled 才开启）
+let cardClaimEnabled = false;
 let cardClaimRecords = [];
 
 // PBKDF2 参数
@@ -395,8 +395,16 @@ function initConfiguredAdmin() {
         return;
     }
     const passwordResult = validatePasswordStrength(password);
-    if (!/^\w{3,32}$/.test(username) || !passwordResult.valid) {
-        console.warn('[用户系统] 管理员初始化配置不符合用户名或密码强度要求，已拒绝创建');
+    const errors = [];
+    if (!/^\w{3,32}$/.test(username)) {
+        errors.push('FARM_ADMIN_USERNAME：用户名需为3-32位英文字母、数字或下划线，不能包含中文、空格、连字符或其他特殊符号');
+    }
+    if (!passwordResult.valid) {
+        const passwordEnv = process.env.FARM_ADMIN_PASSWORD ? 'FARM_ADMIN_PASSWORD' : 'ADMIN_PASSWORD';
+        errors.push(`${passwordEnv}：${passwordResult.errors.join('；')}`);
+    }
+    if (errors.length > 0) {
+        console.warn(`[用户系统] 管理员初始化配置不符合要求，已拒绝创建：${errors.join('；')}`);
         return;
     }
     users.push({
@@ -868,12 +876,14 @@ function loadCardClaimRecords() {
             cardClaimEnabled = data.enabled === true;
             cardClaimRecords = data.records || [];
         } else {
-            cardClaimEnabled = true;
+            // 全新部署默认关闭免费领取，需管理员在面板显式开启
+            cardClaimEnabled = false;
             cardClaimRecords = [];
             saveCardClaimRecords();
         }
     } catch {
-        cardClaimEnabled = true;
+        // 配置不可读时按关闭处理，避免无库存却对外显示可领取
+        cardClaimEnabled = false;
         cardClaimRecords = [];
     }
 }

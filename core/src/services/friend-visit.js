@@ -1,7 +1,35 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runBatchWithFallback = require('./business-state').wrapBusinessFunction('services/friend-visit.js:runBatchWithFallback', runBatchWithFallback);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  doFriendOperation = require('./business-state').wrapBusinessFunction('services/friend-visit.js:doFriendOperation', doFriendOperation);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriend = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriend', visitFriend);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  fastLaneSteal = require('./business-state').wrapBusinessFunction('services/friend-visit.js:fastLaneSteal', fastLaneSteal);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  maybeLurkLeave = require('./business-state').wrapBusinessFunction('services/friend-visit.js:maybeLurkLeave', maybeLurkLeave);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForSteal = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForSteal', visitFriendForSteal);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForHelp = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForHelp', visitFriendForHelp);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  placeAutoBadItems = require('./business-state').wrapBusinessFunction('services/friend-visit.js:placeAutoBadItems', placeAutoBadItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  visitFriendForAutoBad = require('./business-state').wrapBusinessFunction('services/friend-visit.js:visitFriendForAutoBad', visitFriendForAutoBad);
+}
 const { PlantPhase } = require('../config/config');
-const { getPlantBlacklist, isAutomationOn } = require('../models/store');
+const { getPlantById } = require('../config/gameConfig');
+const { getPlantBlacklist, isAutomationOn, getPauseRemainMs } = require('../models/store');
 const { getUserState } = require('../utils/network');
 const { toNum, log, logWarn, randomDelay, sleep } = require('../utils/utils');
+const {
+    getGovernedRejectionInfo,
+    getGovernedWarnLifecycleSeq,
+    noteGovernedWarn,
+} = require('./governed-warn-aggregation');
 const { stealIsDue } = require('../utils/behavior');
 const { recordOperation } = require('./stats');
 const { recordEvent } = require('./daily-events');
@@ -63,6 +91,44 @@ async function runBatchWithFallback(landIds, batchFn, singleFn) {
   }
 }
 
+// ===== 重点名单 Enter 记账（2026-10-07 陈旧名单治理）=====
+// 真实 Enter 的发起与结局统一在进门边界登记（暂停状态机见
+// friend-orchestrator）。惰性 require 规避初始化循环；非重点目标返回
+// null，结局回填为 no-op，业务语义不变。预进门复用分支（options.preEnter）
+// 不再发 Enter、不在此记账——那次真实 Enter 已在 Worker 预进门处登记，
+// 保证每次真实 Enter 恰好登记一次结局。
+function noteWatchlistEnter(gid) {
+  try {
+    return require('./friend-orchestrator').noteWatchlistEnterAttempt(gid);
+  } catch { return null; }
+}
+
+function settleWatchlistEnter(attempt, err) {
+  if (!attempt) return;
+  try {
+    const orchestrator = require('./friend-orchestrator');
+    if (err) orchestrator.applyWatchlistEnterError(attempt, err);
+    else orchestrator.applyWatchlistEnterSuccess(attempt);
+  } catch { /* 记账失败不影响进门主流程 */ }
+}
+
+// ===== 治理拦截警告聚合接线（2026-10-13 预算自旋收口）=====
+// 四个既有进门 catch 是固定聚合入口（enter_visit/enter_steal/enter_help/
+// enter_autobad）：结构化预算拒绝走有界聚合（首条立即、突发内每签名
+// 60 秒至多一条计数行），非治理错误与非白名单情形保留原 logWarn 原样。
+// 代次在访问函数入口捕获：生命周期复位后的迟到旧代次不占新窗口。
+function captureGovernedWarnSeq() {
+  return getGovernedWarnLifecycleSeq();
+}
+
+/** 返回 true = 聚合已处理（含旧代次静默），调用方跳过原 logWarn。 */
+function wireGovernedEnterWarn(entry, err, originSeq) {
+  const info = getGovernedRejectionInfo(err);
+  if (!info) return false;
+  const outcome = noteGovernedWarn(entry, info.reason, { seq: originSeq });
+  return outcome.handled;
+}
+
 // ===== Single friend operation =====
 
 /**
@@ -77,9 +143,12 @@ async function doFriendOperation(gid, opType) {
 
   // Enter friend's farm
   let enterReply;
+  const wlAttempt = noteWatchlistEnter(numericGid);
   try {
     enterReply = await enterFriendFarm(numericGid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(numericGid, `GID:${numericGid}`, err);
     if (handled.handled && handled.kind === 'blacklist') {
       return { ok: true, opType, count: 0, message: '好友已自动加入黑名单' };
@@ -306,24 +375,30 @@ async function doFriendOperation(gid, opType) {
  */
 async function visitFriend(friend, tally, myGid, accountId) {
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   let enterReply;
 
   // Enter friend's farm
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enterFriendFarm(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { acted: false, entered: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_visit', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { acted: false, entered: false };
   }
 
@@ -587,7 +662,36 @@ function fastLaneRipeLandIds(lands) {
   return ids;
 }
 
+/**
+ * 快车道 daily 记录文案（2026-10-04）：回包带 items 时用权威 getPlantByFruitId
+ * 映射的确认果实名+数量，写"偷取"。回包缺 items（或只剩杂物）时不能宣称偷到
+ * 任何果实：只如实写"已处理 N 块地"，推送地块上的作物名至多作为"观察作物"
+ * 引用，并明确标注"到手果实未确认"；作物也未知时不提作物名。
+ */
+function fastLaneDailyText(got, targets, lands) {
+  if (got && got.fruitSummary) {
+    return `快车道偷取 ${got.fruitSummary}（${targets.length} 块地，推送直达）`;
+  }
+  const names = [];
+  const seen = new Set();
+  for (const land of Array.isArray(lands) ? lands : []) {
+    const landId = toNum(land && land.id);
+    if (!targets.includes(landId)) continue;
+    const name = String(getPlantById(toNum(land && land.plant && land.plant.id))?.name || '').trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  if (names.length > 0) {
+    const label = names.length === 1 ? names[0] : `${names.slice(0, 2).join('、')}等`;
+    return `快车道已处理 ${targets.length} 块地（推送直达，观察作物：${label}，到手果实未确认）`;
+  }
+  return `快车道已处理 ${targets.length} 块地（推送直达，到手果实未确认）`;
+}
+
 async function fastLaneSteal(gid, lands) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   const id = toNum(gid);
   if (!id || !isPriorityGid(id)) return;
   // 在线闸门（用户定标）：离线时失败率高、也无施肥竞速意义
@@ -605,7 +709,8 @@ async function fastLaneSteal(gid, lands) {
 
   // 串行化：同好友同一时刻只 1 个在途 Harvest，后到的地块并进下一次
   const prev = fastLaneInFlight.get(id) || Promise.resolve();
-  const run = prev.catch(() => undefined).then(async () => {
+  const chain = () => prev.catch(() => undefined).then(async () => {
+    if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
     try {
       const reply = await stealHarvest(id, targets);
       const got = sumHarvestItemCount(reply);
@@ -616,13 +721,12 @@ async function fastLaneSteal(gid, lands) {
         actions: [`偷${targets.length}`], mode: 'fast_lane', result: 'ok',
         ...(got.detail ? { stealItems: got.detail } : {}),
       });
-      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal',
-        got.total > 0
-          ? `快车道偷取 ${got.total} 个（${targets.length} 块地，推送直达）`
-          : `快车道偷取 ${targets.length} 块（推送直达）`);
+      recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'steal', fastLaneDailyText(got, targets, lands));
       void sellAllFruits().catch(() => {});
     } catch { /* 已被主人收走等预期失败，静默 */ }
   });
+  const run = globalThis.process?.env?.FARM_SESSION_BUSINESS === '1'
+    ? require('./business-state').businessTask('friend:fast-lane-chain', chain) : chain();
   fastLaneInFlight.set(id, run);
   void run.catch(() => {}).then(() => { if (fastLaneInFlight.get(id) === run) fastLaneInFlight.delete(id); });
 }
@@ -637,32 +741,50 @@ async function maybeLurkLeave(gid) {
 
 async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}) {
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   const preEnter = options && options.preEnter && Number(options.preEnter.gid) === Number(gid)
     ? options.preEnter
     : null;
   let enterReply;
 
+  // 本次结果携带实际 Enter 结局与发起代次（'real'=本次真实 Enter，'reused'=
+  // 复用哨兵预进门，epoch 为该次 Enter 的代次）：暂停状态机据此区分
+  // "真实 Enter 成功"与"复用旧回复"，成功只能由真实 Enter 证明。
+  let enterOutcome = 'none';
+  let enterEpoch = 0;
+
   if (preEnter && preEnter.enterReply) {
     // 哨兵预进门驻留：直接复用 Enter 回复。地块状态到点可能变化，成熟判定
     // 由后续 CheckCanOperate/Harvest 的服务端应答兜底，本地分析仅做选择。
+    // 复用不重发 Enter 也不记账（发起处已登记），只透传其代次。
     enterReply = preEnter.enterReply;
+    enterOutcome = 'reused';
+    enterEpoch = toNum(preEnter.epochAtSend) || 0;
   } else {
+    const wlAttempt = noteWatchlistEnter(gid);
+    enterOutcome = 'real';
+    enterEpoch = wlAttempt ? wlAttempt.epoch : 0;
     try {
       enterReply = await enterFriendFarm(gid);
+      settleWatchlistEnter(wlAttempt);
     } catch (err) {
+      enterOutcome = 'failed';
+      settleWatchlistEnter(wlAttempt, err);
       const handled = handleFriendEnterError(gid, name, err);
       if (handled.handled) {
         if (handled.kind === 'blacklist') unwatchFriend(gid);
-        return { acted: false, entered: false };
+        return { acted: false, entered: false, enterOutcome, enterEpoch };
       }
-      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-        module: 'friend',
-        event: '进入农场',
-        result: 'error',
-        friendName: name,
-        friendGid: gid,
-      });
-      return { acted: false, entered: false };
+      if (!wireGovernedEnterWarn('enter_steal', err, govWarnSeq)) {
+        logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+          module: 'friend',
+          event: '进入农场',
+          result: 'error',
+          friendName: name,
+          friendGid: gid,
+        });
+      }
+      return { acted: false, entered: false, enterOutcome, enterEpoch };
     }
   }
 
@@ -681,7 +803,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     inspectFriendLands(gid, name, []);
     unwatchFriend(gid);
     await maybeLurkLeave(gid);
-    return { acted: false, entered: true, ripeAtMs: 0 };
+    return { acted: false, entered: true, ripeAtMs: 0, enterOutcome, enterEpoch };
   }
 
   const inspectResult = inspectFriendLands(gid, name, lands) || {};
@@ -711,7 +833,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 
   if (!hasStealSlot && analysis.stealable.length === 0) {
     await maybeLurkLeave(gid);
-    return { acted: false, entered: true, ripeAtMs };
+    return { acted: false, entered: true, ripeAtMs, enterOutcome, enterEpoch };
   }
 
   // Steal
@@ -794,6 +916,8 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     entered: true,
     ripeAtMs,
     retryNeeded: stealAttemptFailed,
+    enterOutcome,
+    enterEpoch,
   };
 }
 
@@ -806,6 +930,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimit = false, expLimitMode = false) {
   if (stealIsDue()) return { acted: false, entered: false };
   const { gid, name } = friend;
+  const govWarnSeq = captureGovernedWarnSeq();
   const expLimitEnabled = !!isAutomationOn('friend_help_exp_limit');
   const checkExpLimit = expLimitEnabled && !ignoreExpLimit;
   const hasGuardDog = !!friend.hasGuardDog;
@@ -818,21 +943,26 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
   }
 
   let enterReply;
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enterFriendFarm(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { acted: false, entered: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_help', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { acted: false, entered: false };
   }
 
@@ -1058,26 +1188,33 @@ async function visitFriendForAutoBad(friend, tally, myGid, options = {}) {
   const allowPlace = options.allowPlace !== false;
   const guard = options.guard || null;
   const impl = options.impl || {};
+  const govWarnSeq = captureGovernedWarnSeq();
 
   const enter = impl.enter || enterFriendFarm;
   const leave = impl.leave || leaveFriendFarm;
 
   let enterReply;
+  // 真实 Enter 边界记账：impl.enter 仅测试注入，非重点目标记账为 no-op
+  const wlAttempt = noteWatchlistEnter(gid);
   try {
     enterReply = await enter(gid);
+    settleWatchlistEnter(wlAttempt);
   } catch (err) {
+    settleWatchlistEnter(wlAttempt, err);
     const handled = handleFriendEnterError(gid, name, err);
     if (handled.handled) {
       if (handled.kind === 'blacklist') unwatchFriend(gid);
       return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
     }
-    logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
-      module: 'friend',
-      event: '进入农场',
-      result: 'error',
-      friendName: name,
-      friendGid: gid,
-    });
+    if (!wireGovernedEnterWarn('enter_autobad', err, govWarnSeq)) {
+      logWarn('好友', `进入 ${name} 农场失败: ${err.message}`, {
+        module: 'friend',
+        event: '进入农场',
+        result: 'error',
+        friendName: name,
+        friendGid: gid,
+      });
+    }
     return { entered: false, online: false, bug: 0, weed: 0, reason: 'enter_failed', atHome: null, atHomeDecoded: false };
   }
 
@@ -1159,3 +1296,11 @@ module.exports = {
   visitFriendForAutoBad,
   placeAutoBadItems,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-visit.js', () => ({ fastLaneRecent }), value => {
+      restoreContainer(fastLaneRecent, value.fastLaneRecent);
+  }, { idle: () => fastLaneInFlight.size === 0, });
+}

@@ -87,16 +87,16 @@ test('续期阶段诊断只记录白名单阶段、整数错误码和是否已�
   await f.run();
   const diagnostic = f.calls.logs[0][1];
   assert.equal(diagnostic.stage, 'login_buffer');
-  assert.equal(diagnostic.code, 40188);
-  assert.equal(diagnostic.tokenRefreshSucceeded, true);
+  assert.equal(diagnostic.upstreamStatus, 40188);
+  assert.equal(diagnostic.refreshStageCompleted, true);
   assert.doesNotMatch(JSON.stringify(f.calls.logs), /fixture-private/);
   const unsafe = fixture({ refreshError: Object.assign(new Error('fixture transport timeout'), {
     wxStage: 'fixture-private-stage', wxCode: 'fixture-private-code', tokenRefreshSucceeded: 'fixture-private-value',
   }) });
   await unsafe.run();
   assert.equal(unsafe.calls.logs[0][1].stage, 'unknown');
-  assert.equal(unsafe.calls.logs[0][1].code, null);
-  assert.equal(unsafe.calls.logs[0][1].tokenRefreshSucceeded, false);
+  assert.equal(unsafe.calls.logs[0][1].upstreamStatus, null);
+  assert.equal(unsafe.calls.logs[0][1].refreshStageCompleted, false);
   assert.doesNotMatch(JSON.stringify(unsafe.calls.logs), /fixture-private/);
 });
 

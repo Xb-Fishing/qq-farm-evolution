@@ -54,6 +54,12 @@ function syncServerTime(ms) {
     localTimeAtSync = Date.now();
 }
 
+function getServerClockSnapshot() { return { serverTimeMs, localTimeAtSync }; }
+function restoreServerClockSnapshot(value) {
+    serverTimeMs = Number(value?.serverTimeMs) || 0;
+    localTimeAtSync = Number(value?.localTimeAtSync) || 0;
+}
+
 /**
  * 将时间戳归一化为秒级
  * 大于 1e12 认为是毫秒级，转换为秒级
@@ -164,6 +170,6 @@ function randomDelay(minMs, maxMs) {
 module.exports = {
     toLong, toNum, now,
     setLogHook,
-    getServerTimeSec, getServerTimeMs, syncServerTime, toTimeSec,
+    getServerTimeSec, getServerTimeMs, syncServerTime, toTimeSec, getServerClockSnapshot, restoreServerClockSnapshot,
     log, logWarn, sleep, randomDelay,
 };

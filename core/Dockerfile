@@ -15,6 +15,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY core ./core
 COPY web ./web
+COPY docs/CHANGELOG.md ./docs/CHANGELOG.md
 
 RUN pnpm build:web
 
@@ -62,6 +63,6 @@ VOLUME ["/app/core/data"]
 EXPOSE 3007
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://localhost:3007/api/status || exit 1
+    CMD wget -q --spider http://localhost:3007/api/health || exit 1
 
 CMD ["node", "client.js"]

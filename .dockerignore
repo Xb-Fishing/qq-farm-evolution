@@ -2,7 +2,11 @@ node_modules
 dist
 .git
 .gitignore
+.env
+.env.*
 *.md
+# The frontend imports this public file during the build.
+!docs/CHANGELOG.md
 .idea
 .vscode
 *.log

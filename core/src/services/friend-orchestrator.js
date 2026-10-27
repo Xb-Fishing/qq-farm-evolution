@@ -1,8 +1,37 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  dispatchDueCacheStealTargets = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:dispatchDueCacheStealTargets', dispatchDueCacheStealTargets);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  bootstrapFriendDogInfoCacheIfNeeded = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:bootstrapFriendDogInfoCacheIfNeeded', bootstrapFriendDogInfoCacheIfNeeded);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkFriends = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:checkFriends', checkFriends);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  friendCheckLoop = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:friendCheckLoop', friendCheckLoop);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndAcceptApplications = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:checkAndAcceptApplications', checkAndAcceptApplications);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  acceptFriendsWithRetry = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:acceptFriendsWithRetry', acceptFriendsWithRetry);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runBadOnceOnStartup = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:runBadOnceOnStartup', runBadOnceOnStartup);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  syncFriendsFromGids = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:syncFriendsFromGids', syncFriendsFromGids);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  pullInteractActivity = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:pullInteractActivity', pullInteractActivity);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  refreshFriendRipeSchedule = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:refreshFriendRipeSchedule', refreshFriendRipeSchedule);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  presencePollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:presencePollTick', presencePollTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  watchlistPollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:watchlistPollTick', watchlistPollTick);
+}
 const { CONFIG } = require('../config/config');
 const {
   isAutomationOn,
   getFriendBlacklist,
   getWatchlistFriendGids,
+  getWatchlistResetMeta,
   getAutoAcceptFriendMinLevel,
   getKnownFriendGids,
   applyConfigSnapshot,
@@ -12,7 +41,7 @@ const {
   getFriendQuietHours,
 } = require('../models/store');
 const { getUserState, isConnected, networkEvents } = require('../utils/network');
-const { toNum, log, logWarn, randomDelay } = require('../utils/utils');
+const { toNum, log, logWarn, randomDelay, getServerTimeSec } = require('../utils/utils');
 const {
   computeNextStealDueAt,
   mergeDueAt,
@@ -28,9 +57,16 @@ const {
   setPriorityGids,
   isPriorityGid,
   isFertilizerHot,
+  getFriendRipeSnapshot,
+  getFriendRipeSnapshots,
   getNextKnownFriendRipeEntry,
 } = require('./fertilizer-watch');
 const { getBreakerState } = require('./request-governor');
+const {
+  getGovernedRejectionInfo,
+  resetGovernedWarnAggregation,
+  noteGovernedWarn,
+} = require('./governed-warn-aggregation');
 const friendActivity = require('./friend-activity');
 const { isFriendActiveRecently: isFriendActiveEvidence } = friendActivity;
 const { isFriendOnlineRecently: isFriendOnlineEvidence } = friendActivity;
@@ -56,6 +92,7 @@ const {
   normalizeFriendGids,
   acceptFriends,
   getApplications,
+  classifyPrecheckFailure,
   clearAllInvalidKnownFriendGidCooldown,
 } = require('./friend-api');
 const {
@@ -96,6 +133,197 @@ let nextFriendStealDueAtMs = 0;
 // 单个好友维度保存摘要成熟点；成功进门后只清该好友，避免一个旧的全局最小值
 // 在目标已经处理后继续把面板和统一调度器卡在“到期”。
 const friendSummaryDueByGid = new Map();
+
+// ===== 摘要读取门 / 目标动作缓存 / 读取生命周期（2026-10-13 预算自旋收口）=====
+// 背景：统一 tick 对已过期的合并 due 恒真（stealIsDue/stealIsImminent），过去
+// 每次进入 checkFriends 都重读全量摘要，一次局部自旋可在 ~53 秒里产生 422 条
+// 本地预算拦截（摘要 351 + 进门 70 + 养护 1）。修复原则：摘要供给与到期动作
+// 分离——读取门只约束两个摘要入口的 getAllFriends；已有可靠到点目标不经此门，
+// 直接经既有 visitFriendForSteal 派发，零新增前置等待。
+//  - 门结算按"本次复合调用"归属：遇到任一结构化预算拒绝（即使部分返回或
+//    兜底成功）只推进一档；无拒绝的部分结果/普通失败中性；干净完整成功复位。
+//  - 阶梯：2-4s / 4-8s / 8-16s / 20-30s 抖动（上限 30 秒）。跳过不延期、
+//    不刷新成功时间。
+//  - 权威代次 friendReadLifecycleSeq：start/stopFriendCheckLoop 各推进一次，
+//    同时复位门/阶梯/动作缓存/警告聚合；迟到旧代结果不得更新新代新增状态。
+let friendReadLifecycleSeq = 0;
+const summaryReadGate = { level: 0, blockedUntil: 0, lastCleanSuccessAt: 0 };
+const SUMMARY_GATE_LADDER_MS = [
+  [2_000, 4_000],
+  [4_000, 8_000],
+  [8_000, 16_000],
+  [20_000, 30_000],
+];
+// 目标级动作缓存（独立新结构，不改 friendSummaryDueByGid 既有调度语义）：
+// 仅由成功摘要写入——完整快照全量更新（权威空快照清空），部分快照只更新
+// 已返回目标、遗漏目标保留有效证据。dueAt=摘要成熟时刻；stealableSince=
+// 摘要只给"当前可偷"数量的取证时刻；两者都在 90s 宽限内可不经摘要直接派发。
+// 合并时钟（getNextStealDueAtMs）与盯梢重查时间不得写入本缓存。
+const summaryDueActionCache = new Map();
+// isCheckingFriends 占位所有权：{ seq, phase: 'summary'|'visit' }。停止只释放
+// 尚处摘要读取阶段的旧占位；已进入访问阶段的不释放（在途访问互斥保持）。
+let checkingPlaceholder = null;
+
+function isSummaryReadBlocked(now = Date.now()) {
+  return now < summaryReadGate.blockedUntil;
+}
+
+function advanceSummaryReadGate(now = Date.now()) {
+  summaryReadGate.level = Math.min(summaryReadGate.level + 1, SUMMARY_GATE_LADDER_MS.length);
+  const [minMs, maxMs] = SUMMARY_GATE_LADDER_MS[summaryReadGate.level - 1];
+  const jitter = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+  summaryReadGate.blockedUntil = now + jitter;
+  return summaryReadGate.blockedUntil;
+}
+
+function resetSummaryReadGate(now = Date.now()) {
+  summaryReadGate.level = 0;
+  summaryReadGate.blockedUntil = 0;
+  summaryReadGate.lastCleanSuccessAt = now;
+}
+
+/** 按本次复合读取的实际观测结算读取门（仅当前代次有效；迟到旧代不结算）。 */
+function settleSummaryReadGate(seq, observation) {
+  if (seq !== friendReadLifecycleSeq || !observation) return;
+  if (observation.governedRejection === true) {
+    advanceSummaryReadGate();
+    return;
+  }
+  if (observation.ok === true && observation.partial !== true && observation.ordinaryFailure !== true) resetSummaryReadGate();
+  // 普通失败 / 无治理拒绝的部分结果：中性（不推进也不复位）
+}
+
+/** 权威生命周期推进：复位读取门、阶梯、动作缓存与警告聚合（不自增聚合内部代次）。 */
+function advanceFriendReadLifecycle() {
+  friendReadLifecycleSeq += 1;
+  summaryReadGate.level = 0;
+  summaryReadGate.blockedUntil = 0;
+  summaryReadGate.lastCleanSuccessAt = 0;
+  summaryDueActionCache.clear();
+  resetGovernedWarnAggregation(friendReadLifecycleSeq);
+  return friendReadLifecycleSeq;
+}
+
+/** 摘要证据写入目标动作缓存（完整快照全量、部分快照按返回目标逐个权威）。 */
+function updateSummaryDueActionCache(rawFriends, { myGid, blacklist, now, partial }) {
+  const previousEntries = new Map(summaryDueActionCache);
+  if (!partial) summaryDueActionCache.clear();
+  for (const friend of Array.isArray(rawFriends) ? rawFriends : []) {
+    const gid = toNum(friend && friend.gid);
+    if (!gid || gid === myGid || blacklist.has(gid)) continue;
+    const name = friend.remark || friend.name || `GID:${gid}`;
+    const level = toNum(friend.level);
+    const plant = friend.plant;
+    const stealNum = plant ? toNum(plant.steal_plant_num != null ? plant.steal_plant_num : plant.stealPlantNum) : 0;
+    const previous = previousEntries.get(gid);
+    if (stealNum > 0) {
+      // 重复“当前可偷”不能延长同一证据的总宽限；真实访问确认后才清理。
+      const stealableSince = Number(previous && previous.stealableSince)
+        || (previous && previous.dueAt > 0 && previous.dueAt <= now ? previous.dueAt : now);
+      summaryDueActionCache.set(gid, { dueAt: 0, stealableSince, name, level, watch: false });
+      continue;
+    }
+    const rawDue = plant ? toNum(plant.ripe_time_sec != null ? plant.ripe_time_sec : plant.ripeTimeSec) : 0;
+    // 保留绝对成熟证据，过去的服务器秒时间戳不夹成“现在”而续期。
+    const dueAt = rawDue > 1e12 ? rawDue
+      : rawDue > 1e9 ? now + (rawDue - getServerTimeSec()) * 1000
+        : ripeDueAtMs(rawDue, now);
+    if (dueAt > 0) {
+      summaryDueActionCache.set(gid, { dueAt, stealableSince: 0, name, level, watch: false });
+    } else if (partial) {
+      // 部分快照里该好友已返回且无成熟证据：对本目标权威，清掉其旧条目
+      summaryDueActionCache.delete(gid);
+    }
+  }
+}
+
+/**
+ * 当前真正到点、可立即经既有 visitFriendForSteal 派发的目标：
+ * 精确墙钟快照 + 摘要动作缓存，都在 90s 宽限内。排序对齐摘要目标
+ * （重点优先、非盯梢在前、同级等级降序、并列稳定）。
+ */
+function collectDueCacheStealTargets({ myGid, blacklist, now = Date.now() }) {
+  const watchlistSet = new Set(getWatchlistFriendGids(process.env.FARM_ACCOUNT_ID || ''));
+  const targets = [];
+  const seen = new Set();
+  for (const snap of getFriendRipeSnapshots(now)) {
+    if (snap.source !== 'lands') continue; // 摘要证据由独立缓存保存绝对宽限
+    const gid = toNum(snap && snap.gid);
+    const ripeAt = Number(snap && snap.dueAt) || 0;
+    if (!gid || gid === myGid || blacklist.has(gid) || seen.has(gid)) continue;
+    if (ripeAt > 0 && ripeAt <= now && now - ripeAt <= STEAL_OVERDUE_GRACE_MS) {
+      const entry = summaryDueActionCache.get(gid);
+      targets.push({ gid, name: entry?.name || snap.name || `GID:${gid}`, level: toNum(entry?.level), watch: false });
+      seen.add(gid);
+    }
+  }
+  for (const [gid, entry] of summaryDueActionCache.entries()) {
+    if (seen.has(gid) || gid === myGid || blacklist.has(gid)) continue;
+    const dueAt = Number(entry.dueAt) || 0;
+    const stealableSince = Number(entry.stealableSince) || 0;
+    const dueNow = dueAt > 0 && dueAt <= now && now - dueAt <= STEAL_OVERDUE_GRACE_MS;
+    const stealableNow = stealableSince > 0 && now - stealableSince <= STEAL_OVERDUE_GRACE_MS;
+    if (dueNow || stealableNow) {
+      targets.push({ gid, name: entry.name || `GID:${gid}`, level: toNum(entry.level), watch: false });
+      seen.add(gid);
+    }
+  }
+  targets.sort((a, b) => {
+    const aPriority = watchlistSet.has(a.gid);
+    const bPriority = watchlistSet.has(b.gid);
+    if (aPriority !== bPriority) return aPriority ? -1 : 1;
+    if (!!a.watch !== !!b.watch) return a.watch ? 1 : -1;
+    return b.level - a.level;
+  });
+  return targets;
+}
+
+/**
+ * 缓存到点目标派发（先于摘要读取、不受读取门约束）：
+ * 沿用既有竞速宽限/自家收获预留/canOperate/预进门复用/目标间节奏/访问结算。
+ * 访问结算按发起代次；同轮返回已派发 gid 供摘要目标去重。
+ */
+async function dispatchDueCacheStealTargets(targets, { myGid, preEnter = null, seq, owner }) {
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  const dispatched = new Set();
+  const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
+  if (targets.length > 0 && canOperate(0x2714)) {
+    require('./request-governor').setContentionMode(true, Date.now() + 60_000);
+    for (const target of targets) {
+      if (seq !== friendReadLifecycleSeq || !canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
+      const targetPreEnter = preEnter && Number(preEnter.gid) === Number(target.gid)
+        ? preEnter
+        : null;
+      if (checkingPlaceholder === owner) owner.phase = 'visit';
+      const result = await visitFriendForSteal(target, tally, myGid, accountId, { preEnter: targetPreEnter });
+      applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: seq });
+      dispatched.add(toNum(target.gid));
+      if (seq !== friendReadLifecycleSeq || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
+      await randomDelay(40, 120);
+    }
+  }
+  if (seq === friendReadLifecycleSeq && tally.steal > 0) {
+    try { await sellAllFruits(); } catch { }
+  }
+  return { tally, dispatched };
+}
+
+/** 摘要入口 catch 的治理警告接线：结构化观测优先于丢失标记的重组 Error。 */
+function wireGovernedSummaryWarn(entry, err, seq, observation, fallbackMessage) {
+  const direct = getGovernedRejectionInfo(err);
+  const reasons = direct ? [direct.reason]
+    : observation && observation.governedRejection === true && Array.isArray(observation.governedReasons)
+      ? observation.governedReasons : [];
+  let suppressed = false;
+  for (const reason of new Set(reasons)) {
+    const outcome = noteGovernedWarn(entry, reason, { seq });
+    suppressed = outcome.handled || suppressed;
+  }
+  // 重组错误含普通失败时仍输出原警告；纯治理拒绝才能完全由聚合替代。
+  if ((!suppressed || observation?.ordinaryFailure === true) && !isTransientNetworkError(err)) {
+    logWarn('好友', fallbackMessage);
+  }
+}
 // worker.js 注入的唤醒重排回调（重点巡田读到新成熟时刻时调用）
 let armStealWakeForWorker = () => { };
 // 重点监控好友的最近成熟时刻（不含自己收获），用于 worker 把窗口提前到 122 分钟
@@ -198,6 +426,234 @@ function isWatchlistObservationWindow(remainMs) {
   return remain > 0 && remain <= getWatchlistWakeBeforeMs();
 }
 
+// ===== 重点名单失效暂停（2026-10-07 陈旧名单治理）=====
+// 根因：名单里的好友已被对方删除后，普通基线巡田每次 Enter 都收到服务端
+// 业务错误 1002002（不是好友），结果 {entered:false} 被当作普通失败无限
+// 重排 10-15 分钟基线（实测一天约百次浪费请求，并连带治理降速）。
+// 治理：真实 Enter 的严格业务拒绝（isServerBusinessError + 严格十进制码）
+// 连续 3 次后，只暂停该目标的普通基线巡田；在线/活跃/观察窗/HOT/PREARM/
+// 成熟到点/手动操作等豁免通道照常进门。真实 Enter 成功即自然恢复；恢复/
+// 移除由用户意图（opSeq 单调代次）驱动。暂停/恢复的边界全部用代次判断，
+// 旧代次结果与旧意图不得改写新状态。
+const WATCHLIST_STALE_ENTER_LIMIT = 3;
+const WATCHLIST_STALE_ENTER_CODE = 1002002;
+// gid -> { trailingFailures, paused, pausedAt, appliedIntentOpSeq }
+const watchlistPauseRows = new Map();
+// gid -> 单调代次：结果/意图交错时判定谁更新（行删除后代次保留，
+// remove-re-add 的在途旧 Enter 结果因此不得污染新名单状态）
+const watchlistEntryEpochs = new Map();
+let watchlistConsumedOpSeq = 0;
+let watchlistStateSeeded = false;
+// 上次成功推送的主进程镜像内容（内容不变不重推；发送失败置空待重试）
+let lastWatchlistStatePush = '';
+
+function nextWatchlistEntryEpoch(gid) {
+  const id = toNum(gid);
+  if (!id) return 0;
+  const next = (watchlistEntryEpochs.get(id) || 0) + 1;
+  watchlistEntryEpochs.set(id, next);
+  return next;
+}
+
+function ensureWatchlistPauseRow(gid) {
+  const id = toNum(gid);
+  let row = watchlistPauseRows.get(id);
+  if (!row) {
+    row = { trailingFailures: 0, paused: false, pausedAt: 0, appliedIntentOpSeq: 0 };
+    watchlistPauseRows.set(id, row);
+  }
+  return row;
+}
+
+/**
+ * 真实 Enter 发起登记（friend-visit 进门边界调用）：仅重点名单目标返回
+ * { gid, epoch }，其余返回 null（结果回填为 no-op）。每次真实 Enter 都取
+ * 新代次；迟到旧结果因代次不匹配被丢弃。
+ */
+function noteWatchlistEnterAttempt(gid) {
+  const id = toNum(gid);
+  if (!id || !isPriorityGid(id)) return null;
+  return { gid: id, epoch: nextWatchlistEntryEpoch(id) };
+}
+
+/** 真实 Enter 成功：好友关系仍存活，尾随计数与暂停一并清除（自然恢复）。 */
+function applyWatchlistEnterSuccess(attempt) {
+  if (!attempt) return;
+  const id = toNum(attempt.gid);
+  if (!id || toNum(attempt.epoch) !== watchlistEntryEpochs.get(id)) return;
+  const row = watchlistPauseRows.get(id);
+  if (!row || (row.trailingFailures === 0 && !row.paused)) return;
+  row.trailingFailures = 0;
+  row.paused = false;
+  row.pausedAt = 0;
+  pushWatchlistStateToMaster();
+}
+
+/** 真实 Enter 失败：只有严格双条件（业务错误 + 1002002）累计尾随次数。 */
+function applyWatchlistEnterError(attempt, err) {
+  if (!attempt) return;
+  const id = toNum(attempt.gid);
+  if (!id || toNum(attempt.epoch) !== watchlistEntryEpochs.get(id)) return;
+  const info = classifyPrecheckFailure(err);
+  if (!(info.category === 'business' && info.code === WATCHLIST_STALE_ENTER_CODE)) {
+    // 其它真实结局（超时/传输/其他业务码）：计数清零；已暂停的保持暂停
+    //（恢复只能来自真实成功或用户意图），只重排不重复告警。
+    const row = watchlistPauseRows.get(id);
+    if (row && row.trailingFailures > 0) {
+      row.trailingFailures = 0;
+      pushWatchlistStateToMaster();
+    }
+    return;
+  }
+  const row = ensureWatchlistPauseRow(id);
+  row.trailingFailures += 1;
+  if (!row.paused && row.trailingFailures >= WATCHLIST_STALE_ENTER_LIMIT) {
+    row.paused = true;
+    row.pausedAt = Date.now();
+    log('好友',
+      `重点好友连续 ${WATCHLIST_STALE_ENTER_LIMIT} 次进门被拒（不是好友），暂停其普通基线巡田`,
+      {
+        module: 'friend',
+        event: 'watchlist_stale_paused',
+        friendGid: id,
+        result: 'paused',
+        trailingFailures: row.trailingFailures,
+      });
+  }
+  pushWatchlistStateToMaster();
+}
+
+/**
+ * 暂停门：只拦"普通基线巡田"这一档。在线（1s 档）、活跃证据（45-75s 档）、
+ * 施肥 HOT、观察窗（配置观察窗 + PREARM + 成熟到点）任一命中即放行。
+ * evidence 由调用方计算传入，便于测试注入。
+ */
+function isWatchlistBaselinePaused(gid, now, remainMs, evidence = {}) {
+  const id = toNum(gid);
+  const row = id ? watchlistPauseRows.get(id) : null;
+  if (!row || !row.paused) return false;
+  const at = toNum(now) || Date.now();
+  if (evidence.onlineNow || evidence.activityEvidence) return false;
+  if (isFertilizerHot(id, at)) return false;
+  if (isWatchlistObservationWindow(remainMs)) return false;
+  return true;
+}
+
+/** 当前暂停状态快照（Worker 内权威视图；镜像与面板读取共用此形状）。 */
+function getWatchlistStateSnapshot() {
+  const rows = {};
+  for (const [gid, row] of watchlistPauseRows.entries()) {
+    rows[gid] = {
+      trailingFailures: row.trailingFailures,
+      paused: row.paused,
+      pausedAt: row.pausedAt,
+      appliedIntentOpSeq: row.appliedIntentOpSeq,
+    };
+  }
+  return { version: 1, consumedOpSeq: watchlistConsumedOpSeq, rows };
+}
+
+/**
+ * 状态镜像推送：内容不变不重推（全表推送仅在真实变更时发生）；发送失败
+ * 置空已推标记，下一次状态变更自动重试。磁盘写失败由主进程分支兜底，
+ * Worker 业务路径绝不等待落盘。
+ */
+function pushWatchlistStateToMaster() {
+  try {
+    const state = getWatchlistStateSnapshot();
+    const serialized = JSON.stringify(state);
+    if (serialized === lastWatchlistStatePush) return;
+    const sent = postToMaster({
+      type: 'watchlist_state_sync',
+      accountId: process.env.FARM_ACCOUNT_ID || '',
+      state,
+    });
+    lastWatchlistStatePush = sent ? serialized : '';
+  } catch { /* 推送失败不影响业务路径；下次变更重试 */ }
+}
+
+/**
+ * 启动镜像播种（Worker 账号上下文确定后调用一次）：恢复暂停语义与已消费
+ * 意图版本。镜像缺失/损坏按空状态启动——不阻塞登录，配置侧意图照常由
+ * reconcileWatchlistIntents 消费。诚实边界：镜像只保证"最后一次已推送
+ * 状态"，版本号相等的自然恢复若推送丢失，重启后旧暂停如实重现（豁免
+ * 通道照常可用，用户可在管理块手动恢复）。
+ */
+function seedWatchlistStateFromMirror(state) {
+  if (watchlistStateSeeded) return getWatchlistStateSnapshot();
+  watchlistStateSeeded = true;
+  const data = state && typeof state === 'object' ? state : null;
+  if (!data) return getWatchlistStateSnapshot();
+  for (const [rawGid, rawRow] of Object.entries(data.rows && typeof data.rows === 'object' ? data.rows : {})) {
+    const gid = toNum(rawGid);
+    const row = rawRow && typeof rawRow === 'object' ? rawRow : null;
+    if (!gid || !row) continue;
+    const restored = ensureWatchlistPauseRow(gid);
+    restored.trailingFailures = Math.max(0,
+      Math.min(WATCHLIST_STALE_ENTER_LIMIT - 1, toNum(row.trailingFailures) || 0));
+    restored.paused = row.paused === true;
+    restored.pausedAt = toNum(row.pausedAt) || 0;
+    restored.appliedIntentOpSeq = Math.max(0, toNum(row.appliedIntentOpSeq) || 0);
+  }
+  watchlistConsumedOpSeq = Math.max(0, toNum(data.consumedOpSeq) || 0);
+  lastWatchlistStatePush = '';
+  return getWatchlistStateSnapshot();
+}
+
+/** 应用单条用户意图：只有更新的 opSeq 生效；重复消费幂等；旧意图不可回退。 */
+function applyWatchlistIntent(gid, opSeq) {
+  const id = toNum(gid);
+  const seq = toNum(opSeq) || 0;
+  if (!id || seq <= 0) return false;
+  const row = ensureWatchlistPauseRow(id);
+  if (seq <= row.appliedIntentOpSeq) return false;
+  // 代次前移：意图生效前在途的旧 Enter 结果不得改写恢复后的新状态
+  nextWatchlistEntryEpoch(id);
+  row.trailingFailures = 0;
+  row.paused = false;
+  row.pausedAt = 0;
+  row.appliedIntentOpSeq = seq;
+  return true;
+}
+
+/**
+ * 配置侧意图 reconcile（Worker applyRuntimeConfig 完成配置应用后调用）：
+ * 逐条应用 watchlistResetMeta.intents，全部应用完成后才推进整体已消费
+ * 版本；名单里已不存在的目标行清掉（remove-re-add 不继承旧暂停状态）。
+ */
+function reconcileWatchlistIntents() {
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  const meta = getWatchlistResetMeta(accountId);
+  if (!meta) return;
+  let changed = false;
+  for (const [rawGid, seq] of Object.entries((meta && meta.intents) || {})) {
+    if (applyWatchlistIntent(rawGid, seq)) changed = true;
+  }
+  const configured = new Set(getWatchlistFriendGids(accountId).map(toNum));
+  for (const gid of [...watchlistPauseRows.keys()]) {
+    if (!configured.has(gid)) {
+      watchlistPauseRows.delete(gid);
+      nextWatchlistEntryEpoch(gid);
+      changed = true;
+    }
+  }
+  const opSeq = toNum(meta.opSeq) || 0;
+  if (opSeq > watchlistConsumedOpSeq) {
+    watchlistConsumedOpSeq = opSeq;
+    changed = true;
+  }
+  if (changed) pushWatchlistStateToMaster();
+}
+
+/** 仅测试用：重置暂停状态机（生产路径不调用）。 */
+function resetWatchlistPauseStateForTests() {
+  watchlistPauseRows.clear();
+  watchlistEntryEpochs.clear();
+  watchlistConsumedOpSeq = 0;
+  watchlistStateSeeded = false;
+  lastWatchlistStatePush = '';
+}
+
 /**
  * 实际尝试完成后安排下一次重点巡田时刻（三种结果共用）。
  * 异常期只放慢未知/窗口外的普通基线巡检：基线间隔之上追加额外等待；
@@ -237,7 +693,7 @@ function recomputeFriendSummaryClocks(now = Date.now()) {
   nextWatchlistStealDueAtMs = watchlistMin;
 }
 
-function applyStealVisitResult(gid, result, visitedAt = Date.now()) {
+function applyStealVisitResult(gid, result, visitedAt = Date.now(), meta = null) {
   const id = toNum(gid);
   if (!id || !result || !result.entered) return;
 
@@ -247,11 +703,13 @@ function applyStealVisitResult(gid, result, visitedAt = Date.now()) {
     // 不删除 PREARM/重点好友缓存；90s 总宽限仍负责最终收敛。
     friendSummaryDueByGid.set(id, visitedAt);
     recomputeFriendSummaryClocks(visitedAt);
+    settleSummaryDueActionCacheAfterVisit(id, result, visitedAt, meta);
     return;
   }
   if (ripeAt > visitedAt) friendSummaryDueByGid.set(id, ripeAt);
   else friendSummaryDueByGid.delete(id);
   recomputeFriendSummaryClocks(visitedAt);
+  settleSummaryDueActionCacheAfterVisit(id, result, visitedAt, meta);
 
   const configured = getWatchlistFriendGids(process.env.FARM_ACCOUNT_ID || '')
     .some((configuredGid) => toNum(configuredGid) === id);
@@ -264,6 +722,28 @@ function applyStealVisitResult(gid, result, visitedAt = Date.now()) {
     watchlistPollRipeAt.delete(id);
     watchlistWindowAnnounced.delete(id);
     watchlistPollNextAt.set(id, visitedAt + nextWatchlistPollDelayMs(0));
+  }
+}
+
+/**
+ * 新增动作缓存的访问结算（守卫仅覆盖本轮新增状态，不改既有结构语义）：
+ * 未携带发起代次视为当前代；旧代次的迟到访问结果不更新新代缓存。
+ * retryNeeded 保留原证据的绝对截止，不续期；确认未来成熟 →
+ * 更新墙钟；已熟清账（偷到/被抢都清）。
+ */
+function settleSummaryDueActionCacheAfterVisit(id, result, visitedAt, meta) {
+  const seq = meta && Number.isSafeInteger(meta.lifecycleSeq)
+    ? meta.lifecycleSeq
+    : friendReadLifecycleSeq;
+  if (seq !== friendReadLifecycleSeq) return;
+  const entry = summaryDueActionCache.get(id);
+  if (!entry) return;
+  if (result && result.retryNeeded === true) return;
+  const ripeAt = Number(result && result.ripeAtMs) || 0;
+  if (ripeAt > visitedAt) {
+    summaryDueActionCache.set(id, { ...entry, dueAt: ripeAt, stealableSince: 0 });
+  } else {
+    summaryDueActionCache.delete(id);
   }
 }
 
@@ -429,6 +909,8 @@ function trackBadVisitResult(result, target, context = {}) {
  * Called by the loop or triggered externally.
  */
 async function checkFriends(options = {}) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return false;
+  const roundSeq = friendReadLifecycleSeq;
   const userState = getUserState();
   if (!isAutomationOn('friend') || !isConnected()) return false;
 
@@ -436,18 +918,21 @@ async function checkFriends(options = {}) {
   const onlySteal = options.onlySteal || false;
   const onlyBad = options.onlyBad || false;
   const ignoreExpLimit = options.ignoreExpLimit || false;
-  // 哨兵预进门会话（{ gid, enteredAt, enterReply }）：目标已提前 Enter 驻留，
-  // 偷取时复用 Enter 回复跳过重复 Enter，直接分析+偷。
+  // 哨兵预进门会话（{ gid, enteredAt, enterReply, epochAtSend }）：目标已提前
+  // Enter 驻留，偷取时复用 Enter 回复跳过重复 Enter，直接分析+偷；
+  // epochAtSend 透传发起代次（该次 Enter 的记账已在预进门处完成）。
   const preEnter = options.preEnter && Number(options.preEnter.gid) > 0
     ? {
         gid: Number(options.preEnter.gid),
         enteredAt: Number(options.preEnter.enteredAt) || 0,
         enterReply: options.preEnter.enterReply || null,
+        epochAtSend: Number(options.preEnter.epochAtSend) || 0,
       }
     : null;
 
   if (ownHarvestIsDue() || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) return false;
   await bootstrapFriendDogInfoCacheIfNeeded();
+  if (roundSeq !== friendReadLifecycleSeq || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) return false;
 
   const accountId = process.env.FARM_ACCOUNT_ID || '';
   const helpEnabled = !!isAutomationOn('friend_help');
@@ -464,9 +949,14 @@ async function checkFriends(options = {}) {
   // 惰性 require 规避循环依赖，但不吞异常——函数缺失必须当场暴露。
   if (isCheckingFriends || !userState.gid || !shouldRun) return false;
   if (require('./friend-auto-bad').isAutoBadRunning()) return false;
-  // 静默时段不再挡偷菜；帮助/捣乱在时段内直接歇着
+  // 每日静默已由入口的统一暂停门覆盖；此处保持帮助/捣乱的独立复查。
   if (inFriendQuietHours() && !doSteal) return false;
 
+  // 权威读取代次：本轮摘要读取/访问结算/警告聚合都以它为所有者令牌
+  const placeholderOwner = { seq: roundSeq, phase: 'summary' };
+  let summaryObservation = null;
+  let summaryReadPending = false;
+  checkingPlaceholder = placeholderOwner;
   isCheckingFriends = true;
   checkDailyReset();
 
@@ -479,9 +969,10 @@ async function checkFriends(options = {}) {
         w.gid && w.gid !== userState.gid && !fastBlacklist.has(w.gid)
       );
       if (dueWatches.length > 0 && canOperate(0x2714)) {
+        placeholderOwner.phase = 'visit';
         const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
         for (const target of dueWatches) {
-          if (!canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
+          if (roundSeq !== friendReadLifecycleSeq || !canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
           const targetPreEnter = preEnter && Number(preEnter.gid) === Number(target.gid)
             ? preEnter
             : null;
@@ -489,11 +980,12 @@ async function checkFriends(options = {}) {
           try {
             result = await visitFriendForSteal(target, tally, userState.gid, accountId, { preEnter: targetPreEnter });
           } catch { }
-          applyStealVisitResult(target.gid, result);
+          applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: roundSeq });
+          if (roundSeq !== friendReadLifecycleSeq) return false;
           if (ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
           await randomDelay(40, 120);
         }
-        if (tally.steal > 0) {
+        if (roundSeq === friendReadLifecycleSeq && tally.steal > 0) {
           try { await sellAllFruits(); } catch { }
           log('好友', `抢收快路径 → 偷${tally.steal}`, {
             module: 'friend',
@@ -507,10 +999,59 @@ async function checkFriends(options = {}) {
       }
     }
 
-    const allFriendsReply = await getAllFriends();
+    // ---- 目标动作缓存派发（先于摘要读取，不受读取门约束）----
+    // 统一 tick 因过期旧 due 反复进入时，摘要读取被门拦住，但缓存里
+    // 真正到点的目标（摘要墙钟/可偷取证/精确墙钟快照）仍立即经既有
+    // visitFriendForSteal 派发，零新增前置等待；同轮与摘要目标去重。
+    let dispatchedGids = new Set();
+    if (doSteal) {
+      const dueCacheTargets = collectDueCacheStealTargets({
+        myGid: userState.gid,
+        blacklist: new Set(getFriendBlacklist(accountId)),
+      });
+      if (dueCacheTargets.length > 0) {
+        const { tally: cacheTally, dispatched } = await dispatchDueCacheStealTargets(
+          dueCacheTargets,
+          { myGid: userState.gid, preEnter, seq: roundSeq, owner: placeholderOwner }
+        );
+        dispatchedGids = dispatched;
+        if (cacheTally.steal > 0) {
+          log('好友', `缓存到点派发 → 偷${cacheTally.steal}`, {
+            module: 'friend',
+            event: '好友巡查循环',
+            result: 'ok',
+            visited: dispatchedGids.size,
+            summary: [`偷${cacheTally.steal}`],
+          });
+        }
+      }
+    }
+    if (roundSeq !== friendReadLifecycleSeq) return false;
+    if (checkingPlaceholder === placeholderOwner) placeholderOwner.phase = 'summary';
+
+    // ---- 摘要读取（两个入口共享读取门；跳过不延期、不刷新成功时间）----
+    if (isSummaryReadBlocked()) {
+      return dispatchedGids.size > 0;
+    }
+    summaryReadPending = true;
+    const allFriendsReply = await getAllFriends(false, (observation) => {
+      summaryObservation = observation;
+      settleSummaryReadGate(roundSeq, observation);
+    });
+    summaryReadPending = false;
+    if (roundSeq !== friendReadLifecycleSeq) {
+      // 迟到旧代响应：不派发动作、不写新代状态（既有结构保持原语义）
+      return dispatchedGids.size > 0;
+    }
+    const summaryPartial = !!(summaryObservation && summaryObservation.partial);
     const rawFriends = extractReplyFriends(allFriendsReply);
 
     if (rawFriends.length === 0) {
+      if (!summaryPartial) applyStealScheduleFromFriends(rawFriends, {
+        myGid: userState.gid,
+        blacklist: new Set(getFriendBlacklist(accountId)),
+        lifecycleSeq: roundSeq,
+      });
       log('好友', '没有好友', {
         module: 'friend',
         event: '好友扫描',
@@ -536,6 +1077,8 @@ async function checkFriends(options = {}) {
     applyStealScheduleFromFriends(rawFriends, {
       myGid: userState.gid,
       blacklist,
+      partial: summaryPartial,
+      lifecycleSeq: roundSeq,
     });
     const currentStealDueAt = getNextStealDueAtMs();
     if (doHelp && !doSteal && currentStealDueAt > 0 && currentStealDueAt <= Date.now()) {
@@ -549,6 +1092,8 @@ async function checkFriends(options = {}) {
         if (gid === userState.gid) continue;
         if (visitedGids.has(gid)) continue;
         if (blacklist.has(gid)) continue;
+        // 同轮缓存派发已访问过的目标不再重复进门偷取
+        if (dispatchedGids.has(gid)) continue;
 
         const name = friend.remark || friend.name || `GID:${gid}`;
         const plant = friend.plant;
@@ -568,6 +1113,7 @@ async function checkFriends(options = {}) {
           continue;
         }
         if (stealGids.has(watch.gid)) continue;
+        if (dispatchedGids.has(watch.gid)) continue;
         stealTargets.push(watch);
         stealGids.add(watch.gid);
       }
@@ -619,6 +1165,9 @@ async function checkFriends(options = {}) {
     });
 
     // ---- Execute ----
+    // 摘要读取已完成、即将进入访问阶段：此后停止不再释放本轮占位
+    // （在途访问互斥保持，由本占位的 finally 按所有者令牌释放）。
+    if (checkingPlaceholder === placeholderOwner) placeholderOwner.phase = 'visit';
     const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
 
     // Steal — 好友之间只留极短间隔，不走种植那种长延迟
@@ -628,20 +1177,23 @@ async function checkFriends(options = {}) {
       // 避免这些预期失败累计进异常降速阈值；请求预算和进门预算保持不变。
       require('./request-governor').setContentionMode(true, Date.now() + 60_000);
       for (const target of stealTargets) {
-        if (!canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break; // 10004 = steal
+        if (roundSeq !== friendReadLifecycleSeq || !canOperate(0x2714) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break; // 10004 = steal
+        const targetPreEnter = preEnter && Number(preEnter.gid) === Number(target.gid) ? preEnter : null;
         let result = null;
         try {
-          result = await visitFriendForSteal(target, tally, userState.gid, userState.accountId);
+          result = await visitFriendForSteal(target, tally, userState.gid, userState.accountId, { preEnter: targetPreEnter });
         } catch {
           // Skip individual failures
         }
-        applyStealVisitResult(target.gid, result);
+        applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: roundSeq });
+        if (roundSeq !== friendReadLifecycleSeq) return false;
         if (ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
         await randomDelay(target.watch ? 400 : 40, target.watch ? 900 : 120);
       }
     }
 
     // Auto-sell after stealing
+    if (roundSeq !== friendReadLifecycleSeq) return false;
     if (tally.steal > 0) {
       try {
         await sellAllFruits();
@@ -653,16 +1205,17 @@ async function checkFriends(options = {}) {
     // Help
     if (helpTargets.length > 0 && doHelp) {
       for (const target of helpTargets) {
-        if (stealIsDue() || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
+        if (roundSeq !== friendReadLifecycleSeq || stealIsDue() || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
         try {
           const result = await visitFriendForHelp(
             target, tally, userState.gid, userState.accountId,
             ignoreExpLimit, helpExpReached
           );
-          applyStealVisitResult(target.gid, result);
+          applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: roundSeq });
         } catch {
           // Skip individual failures
         }
+        if (roundSeq !== friendReadLifecycleSeq) return false;
         if (stealIsDue() || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS)) break;
         await randomDelay(
           helpExpReached ? 300 : 500,
@@ -672,6 +1225,7 @@ async function checkFriends(options = {}) {
     }
 
     // Bad (put weeds/insects)
+    if (roundSeq !== friendReadLifecycleSeq) return false;
     if (doBad && !isFriendBadPaused()) {
       log('好友', '开始自动放虫放草', {
         module: 'friend',
@@ -719,6 +1273,7 @@ async function checkFriends(options = {}) {
         );
 
         for (let i = 0; i < topTargets.length; i++) {
+          if (roundSeq !== friendReadLifecycleSeq) return false;
           const target = topTargets[i];
           if (!canOperateBad()) {
             log('好友', '放虫放草次数已用完，停止执行', {
@@ -730,11 +1285,13 @@ async function checkFriends(options = {}) {
 
           try {
             const result = await visitFriend(target, tally, userState.gid, userState.accountId);
-            applyStealVisitResult(target.gid, result);
+            applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: roundSeq });
+            if (roundSeq !== friendReadLifecycleSeq) return false;
             if (trackBadVisitResult(result, target, { source: 'friend_check' })) {
               break;
             }
           } catch (err) {
+            if (roundSeq !== friendReadLifecycleSeq) return false;
             if (recordBadFailure(err && err.message, {
               friendName: target.name,
               friendGid: target.gid,
@@ -771,12 +1328,15 @@ async function checkFriends(options = {}) {
 
     return summary.length > 0;
   } catch (err) {
-    if (!isTransientNetworkError(err)) {
-      logWarn('好友', `巡查异常: ${err.message}`);
-    }
+    // 治理拦截走固定入口聚合；重组 Error 丢失标记时按本次复合读取的结构化观测归属
+    wireGovernedSummaryWarn('summary_check', err, roundSeq, summaryReadPending ? summaryObservation : null, `巡查异常: ${err.message}`);
     return false;
   } finally {
-    isCheckingFriends = false;
+    // 只释放自己所有的占位：停止期间被释放（摘要阶段）或已有新读取时不重复清理
+    if (checkingPlaceholder === placeholderOwner) {
+      checkingPlaceholder = null;
+      isCheckingFriends = false;
+    }
   }
 }
 
@@ -806,6 +1366,8 @@ function startFriendCheckLoop(opts = {}) {
 
   externalSchedulerMode = !!opts.externalScheduler;
   friendLoopRunning = true;
+  // 新生命周期：复位读取门/阶梯/动作缓存/警告聚合并推进权威代次
+  advanceFriendReadLifecycle();
   dogInfoBootstrapAttempted = false;
   dogInfoBootstrapReadyAt = Date.now() + (2 * 60 * 1000);
 
@@ -849,6 +1411,14 @@ function stopFriendCheckLoop() {
   clearAllInvalidKnownFriendGidCooldown();
   networkEvents.off('friendApplicationReceived', onFriendApplicationReceived);
   friendScheduler.clearAll();
+  // 摘要占位所有权：停止只释放尚处摘要读取阶段的旧占位——旧响应返回后
+  // 不再派发动作；已进入访问阶段的占位不释放（在途访问互斥保持，由其
+  // finally 按所有者令牌释放）。随后推进权威代次并复位新增状态。
+  if (checkingPlaceholder && checkingPlaceholder.phase === 'summary') {
+    checkingPlaceholder = null;
+    isCheckingFriends = false;
+  }
+  advanceFriendReadLifecycle();
 }
 
 function refreshFriendCheckLoop(delayMs = 0) {
@@ -862,6 +1432,15 @@ function refreshFriendCheckLoop(delayMs = 0) {
 
 // ===== Friend application handling =====
 
+function deferFriendApplicationsDuringQuiet() {
+  const remaining = getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
+  if (remaining <= 0) return false;
+  if (friendLoopRunning) {
+    friendScheduler.setTimeoutTask('friend_check_bootstrap_applications', remaining, () => checkAndAcceptApplications());
+  }
+  return true;
+}
+
 function onFriendApplicationReceived(applications) {
   const names = applications
     .map(app => app.name || `GID:${toNum(app.gid)}`)
@@ -874,6 +1453,7 @@ function onFriendApplicationReceived(applications) {
     );
   }
 
+  if (deferFriendApplicationsDuringQuiet()) return;
   const minLevel = getAutoAcceptFriendMinLevel();
   let toAccept = applications;
 
@@ -891,12 +1471,14 @@ function onFriendApplicationReceived(applications) {
   if (toAccept.length === 0) return;
 
   const gids = toAccept.map(app => toNum(app.gid));
-  acceptFriendsWithRetry(gids);
+  return acceptFriendsWithRetry(gids, { automatic: true });
 }
 
 async function checkAndAcceptApplications() {
+  if (deferFriendApplicationsDuringQuiet()) return;
   try {
     const reply = await getApplications();
+    if (deferFriendApplicationsDuringQuiet()) return;
     const apps = reply.applications || [];
     if (apps.length === 0) return;
 
@@ -922,13 +1504,14 @@ async function checkAndAcceptApplications() {
     if (toAccept.length === 0) return;
 
     const gids = toAccept.map(app => toNum(app.gid));
-    await acceptFriendsWithRetry(gids);
+    await acceptFriendsWithRetry(gids, { automatic: true });
   } catch {
     // Ignore application check errors
   }
 }
 
-async function acceptFriendsWithRetry(gids) {
+async function acceptFriendsWithRetry(gids, options = {}) {
+  if (options.automatic === true && deferFriendApplicationsDuringQuiet()) return;
   if (gids.length === 0) return;
 
   try {
@@ -978,6 +1561,7 @@ async function acceptFriendsWithRetry(gids) {
 
         // Refresh friends list cache
         clearFriendsListCache();
+        if (options.automatic === true && deferFriendApplicationsDuringQuiet()) return;
         try {
           await getFriendsList(true);
           log('申请', '已刷新好友列表', {
@@ -1001,6 +1585,7 @@ async function acceptFriendsWithRetry(gids) {
  * Run a one-time "bad" operation on startup to put weeds/insects on friends' farms.
  */
 async function runBadOnceOnStartup(force = false) {
+  if (getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0) return;
   if (!force && badExecutedOnStartup) return;
 
   const badEnabled = isAutomationOn('friend_bad');
@@ -1026,6 +1611,7 @@ async function runBadOnceOnStartup(force = false) {
 
   try {
     const allFriendsReply = await getAllFriends();
+    if (getPauseRemainMs(accountId) > 0) return;
     const rawFriends = extractReplyFriends(allFriendsReply);
 
     if (rawFriends.length === 0) {
@@ -1079,6 +1665,7 @@ async function runBadOnceOnStartup(force = false) {
     let processedCount = 0;
 
     for (let i = 0; i < topTargets.length; i++) {
+      if (getPauseRemainMs(accountId) > 0) break;
       const target = topTargets[i];
       if (!canOperateBad()) {
         log('好友', `放虫放草次数已用完，停止执行。已处理 ${processedCount} 个好友`, {
@@ -1102,8 +1689,9 @@ async function runBadOnceOnStartup(force = false) {
       );
 
       try {
+        const visitSeq = friendReadLifecycleSeq;
         const result = await visitFriend(target, tally, userState.gid, accountId);
-        applyStealVisitResult(target.gid, result);
+        applyStealVisitResult(target.gid, result, Date.now(), { lifecycleSeq: visitSeq });
         processedCount++;
         if (trackBadVisitResult(result, target, { source: 'startup_bad' })) {
           break;
@@ -1126,7 +1714,7 @@ async function runBadOnceOnStartup(force = false) {
       await randomDelay(500, 1500);
     }
 
-    badExecutedOnStartup = true;
+    if (getPauseRemainMs(accountId) <= 0) badExecutedOnStartup = true;
 
     const summary = [];
     if (tally.putBug > 0) summary.push(`放虫${tally.putBug}`);
@@ -1241,18 +1829,38 @@ async function refreshFriendRipeSchedule(options = {}) {
   if (ownHarvestIsDue(now) || ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS, now)) return false;
   const userState = getUserState();
   if (!userState.gid) return false;
+  // 非强制刷新与 checkFriends 共享同一读取门；force 保持显式单次尝试
+  // 语义（不被 blockedUntil 挡），真实结果仍按同一合同结算。
+  if (!force && isSummaryReadBlocked(now)) return false;
 
+  const roundSeq = friendReadLifecycleSeq;
+  const placeholderOwner = { seq: roundSeq, phase: 'summary' };
+  let summaryObservation = null;
+  let summaryReadPending = false;
+  checkingPlaceholder = placeholderOwner;
   isCheckingFriends = true;
   try {
-    const allFriendsReply = await getAllFriends();
+    summaryReadPending = true;
+    const allFriendsReply = await getAllFriends(force, (observation) => {
+      summaryObservation = observation;
+      settleSummaryReadGate(roundSeq, observation);
+    });
+    summaryReadPending = false;
+    if (roundSeq !== friendReadLifecycleSeq) {
+      // 迟到旧代响应：不写新代状态（既有结构保持原语义，由调用方另行刷新）
+      return false;
+    }
+    const summaryPartial = !!(summaryObservation && summaryObservation.partial);
     const rawFriends = extractReplyFriends(allFriendsReply);
     lastRipeRefreshAt = Date.now();
-    if (!rawFriends.length) return false;
     const accountId = process.env.FARM_ACCOUNT_ID || '';
     applyStealScheduleFromFriends(rawFriends, {
       myGid: userState.gid,
       blacklist: new Set(getFriendBlacklist(accountId)),
+      partial: summaryPartial,
+      lifecycleSeq: roundSeq,
     });
+    if (!rawFriends.length) return false;
     // gold/level/tags 只有本人操作能变：低频摘要 diff 即可感知好友刚上线，
     // 命中后 isFriendActiveEvidence 自动把重点巡田收紧到 45-75s。
     friendActivity.noteSummaryDrift(rawFriends, userState.gid);
@@ -1260,12 +1868,13 @@ async function refreshFriendRipeSchedule(options = {}) {
     void pullInteractActivity();
     return true;
   } catch (err) {
-    if (!isTransientNetworkError(err)) {
-      logWarn('好友', `刷新成熟时刻失败: ${err.message}`);
-    }
+    wireGovernedSummaryWarn('summary_refresh', err, roundSeq, summaryReadPending ? summaryObservation : null, `刷新成熟时刻失败: ${err.message}`);
     return false;
   } finally {
-    isCheckingFriends = false;
+    if (checkingPlaceholder === placeholderOwner) {
+      checkingPlaceholder = null;
+      isCheckingFriends = false;
+    }
   }
 }
 
@@ -1481,7 +2090,27 @@ async function watchlistPollTick() {
       // 异常期不再在到期前反复延期（持续 slow 时每次到期都重设更晚时刻会
       // 永远不访问）：首次到期先尝试正常基线读取，实际访问仍受通信硬预算、
       // 免打扰与自己的到点收获保护；额外等待在实际尝试完成后追加。
-      const knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      let knownRipeAt = Number(watchlistPollRipeAt.get(gid)) || 0;
+      // 暂停门证据补齐：巡田时间表没有该目标时，回退读其自身成熟快照
+      // （摘要/土地详情都会更新 fertilizer-watch 的逐目标缓存，且缓存过期
+      // 判断由 getFriendRipeSnapshot 保留）。逐目标键控——其他目标的快照
+      // 不能释放本目标；快照缺失/过期仍按未知处理，只影响暂停门与重排
+      // 档位，不改肥料状态机与任何收益链节奏。
+      if (!(knownRipeAt > 0)) {
+        const ripeSnapshot = getFriendRipeSnapshot(gid, now);
+        const snapshotDueAt = Number(ripeSnapshot?.dueAt) || 0;
+        if (snapshotDueAt > 0) knownRipeAt = snapshotDueAt;
+      }
+      // 失效暂停门：该目标被暂停时只跳过普通基线巡田；在线/活跃/HOT/
+      // 观察窗等豁免证据仍在时照常进门。跳过不发请求、不写健康日志
+      //（未执行不得伪造 ok/failed），按基线节奏重排下一轮。
+      if (isWatchlistBaselinePaused(gid, now, Math.max(0, knownRipeAt - now), {
+        onlineNow: isFriendOnlineEvidence(gid, now),
+        activityEvidence: isFriendActiveEvidence(gid, now),
+      })) {
+        watchlistPollNextAt.set(gid, scheduleWatchlistPollNext(gid, now, Math.max(0, knownRipeAt - now), getBreakerState(now)));
+        continue;
+      }
       const name = watchlistNames.get(gid) || `GID:${gid}`;
       const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
       let result = null;
@@ -1562,7 +2191,7 @@ async function watchlistPollTick() {
   }
 }
 
-function applyStealScheduleFromFriends(rawFriends, { myGid, blacklist }) {
+function applyStealScheduleFromFriends(rawFriends, { myGid, blacklist, partial = false, lifecycleSeq = null }) {
   const now = Date.now();
   lastRipeRefreshAt = now;
   const watchlistSet = new Set(getWatchlistFriendGids(process.env.FARM_ACCOUNT_ID || ''));
@@ -1596,7 +2225,9 @@ function applyStealScheduleFromFriends(rawFriends, { myGid, blacklist }) {
       { now, myGid, blacklist, ownRipeAtMs: 0 }
     )
     : 0;
-  friendSummaryDueByGid.clear();
+  // 完整快照全量重建；部分快照只对已返回目标逐个权威（遗漏目标保留既有
+  // due 证据，不再被 clear() 一刀切丢——90s 宽限负责最终收敛）。
+  if (!partial) friendSummaryDueByGid.clear();
   for (const friend of Array.isArray(rawFriends) ? rawFriends : []) {
     const gid = toNum(friend && friend.gid);
     if (!gid || gid === myGid || blacklist.has(gid)) continue;
@@ -1607,6 +2238,13 @@ function applyStealScheduleFromFriends(rawFriends, { myGid, blacklist }) {
       ownRipeAtMs: 0,
     });
     if (dueAt > 0) friendSummaryDueByGid.set(gid, dueAt);
+    else if (partial) friendSummaryDueByGid.delete(gid);
+  }
+  // 目标动作缓存与 due map 同规则写入（守卫仅覆盖本轮新增状态；
+  // 外部直调（无 lifecycleSeq）按当前代处理）
+  const cacheSeq = Number.isSafeInteger(lifecycleSeq) ? lifecycleSeq : friendReadLifecycleSeq;
+  if (cacheSeq === friendReadLifecycleSeq) {
+    updateSummaryDueActionCache(rawFriends, { myGid, blacklist, now, partial });
   }
   recomputeFriendSummaryClocks(now);
   const combinedDueAt = getNextStealDueAtMs(now);
@@ -1732,6 +2370,21 @@ function getWatchlistRipeSnapshots(now = Date.now()) {
   return list.sort((a, b) => a.ripeAt - b.ripeAt);
 }
 
+/** 仅测试用：读取门/阶梯/动作缓存/占位快照（生产路径不调用）。 */
+function getFriendReadStateForTests() {
+  return {
+    lifecycleSeq: friendReadLifecycleSeq,
+    gate: { ...summaryReadGate },
+    actionCache: [...summaryDueActionCache.entries()].map(([gid, entry]) => ({ gid, ...entry })),
+    checkingPlaceholder: checkingPlaceholder ? { ...checkingPlaceholder } : null,
+  };
+}
+
+/** 仅测试用：复位新增读取状态并推进代次（等价一次真实生命周期转换）。 */
+function resetFriendReadStateForTests() {
+  return advanceFriendReadLifecycle();
+}
+
 module.exports = {
   checkFriends,
   startFriendCheckLoop,
@@ -1749,6 +2402,15 @@ module.exports = {
   getNextWatchlistStealDueAtMs,
   getWatchlistRipeSnapshots,
   pullWatchlistPollToNow,
+  noteWatchlistEnterAttempt,
+  applyWatchlistEnterSuccess,
+  applyWatchlistEnterError,
+  isWatchlistBaselinePaused,
+  getWatchlistStateSnapshot,
+  seedWatchlistStateFromMirror,
+  applyWatchlistIntent,
+  reconcileWatchlistIntents,
+  resetWatchlistPauseStateForTests,
   getActivityEvidenceSummary: require('./friend-activity').getActivityEvidenceSummary,
   getWatchlistWakeBeforeMs,
   nextWatchlistPollDelayMs,
@@ -1756,4 +2418,53 @@ module.exports = {
   setArmStealWakeCallback,
   WATCHLIST_WAKE_BEFORE_MS,
   refreshFriendRipeSchedule,
+  getFriendReadStateForTests,
+  resetFriendReadStateForTests,
 };
+
+function bindFriendSessionState() {
+  if (friendLoopRunning) {
+    setOperationLimitsCallback(updateOperationLimits);
+    networkEvents.on('friendApplicationReceived', onFriendApplicationReceived);
+  }
+  friendScheduler.bindTimeoutTask('friend_check_loop', friendCheckLoop);
+  friendScheduler.bindTimeoutTask('friend_check_bootstrap_applications', checkAndAcceptApplications);
+  friendScheduler.bindTimeoutTask('watchlist_poll', watchlistPollTick);
+  friendScheduler.bindTimeoutTask('presence_poll', presencePollTick);
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-orchestrator.js', () => ({ isCheckingFriends, watchlistVisitInFlight, friendLoopRunning, externalSchedulerMode, badExecutedOnStartup, consecutiveBadFailureCount, dogInfoBootstrapAttempted, dogInfoBootstrapReadyAt, nextFriendStealDueAtMs, friendSummaryDueByGid, friendReadLifecycleSeq, summaryReadGate, summaryDueActionCache, nextWatchlistStealDueAtMs, lastWatchlistKey, watchlistWindowAnnounced, watchlistPollNextAt, watchlistPollRipeAt, watchlistNames, watchlistPollLoopArmed, lastRipeRefreshAt, watchlistPauseRows, watchlistEntryEpochs, watchlistConsumedOpSeq, watchlistStateSeeded, lastWatchlistStatePush, lastInteractActivityAt, presencePollArmed, presenceBaselineLogged }), value => {
+      isCheckingFriends = value.isCheckingFriends;
+      watchlistVisitInFlight = value.watchlistVisitInFlight;
+      friendLoopRunning = value.friendLoopRunning;
+      externalSchedulerMode = value.externalSchedulerMode;
+      badExecutedOnStartup = value.badExecutedOnStartup;
+      consecutiveBadFailureCount = value.consecutiveBadFailureCount;
+      dogInfoBootstrapAttempted = value.dogInfoBootstrapAttempted;
+      dogInfoBootstrapReadyAt = value.dogInfoBootstrapReadyAt;
+      nextFriendStealDueAtMs = value.nextFriendStealDueAtMs;
+      restoreContainer(friendSummaryDueByGid, value.friendSummaryDueByGid);
+      friendReadLifecycleSeq = value.friendReadLifecycleSeq;
+      restoreContainer(summaryReadGate, value.summaryReadGate);
+      restoreContainer(summaryDueActionCache, value.summaryDueActionCache);
+      nextWatchlistStealDueAtMs = value.nextWatchlistStealDueAtMs;
+      lastWatchlistKey = value.lastWatchlistKey;
+      restoreContainer(watchlistWindowAnnounced, value.watchlistWindowAnnounced);
+      restoreContainer(watchlistPollNextAt, value.watchlistPollNextAt);
+      restoreContainer(watchlistPollRipeAt, value.watchlistPollRipeAt);
+      restoreContainer(watchlistNames, value.watchlistNames);
+      watchlistPollLoopArmed = value.watchlistPollLoopArmed;
+      lastRipeRefreshAt = value.lastRipeRefreshAt;
+      restoreContainer(watchlistPauseRows, value.watchlistPauseRows);
+      restoreContainer(watchlistEntryEpochs, value.watchlistEntryEpochs);
+      watchlistConsumedOpSeq = value.watchlistConsumedOpSeq;
+      watchlistStateSeeded = value.watchlistStateSeeded;
+      lastWatchlistStatePush = value.lastWatchlistStatePush;
+      lastInteractActivityAt = value.lastInteractActivityAt;
+      presencePollArmed = value.presencePollArmed;
+      presenceBaselineLogged = value.presenceBaselineLogged;
+  }, { idle: () => !isCheckingFriends && !watchlistVisitInFlight && !checkingPlaceholder, bind: bindFriendSessionState, });
+}

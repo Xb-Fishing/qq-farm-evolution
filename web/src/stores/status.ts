@@ -39,6 +39,12 @@ export const useStatusStore = defineStore('status', () => {
 
   let socket: Socket | null = null
 
+  // 状态缓存代次：clearAccountScopedData 换代；HTTP 请求序号 + realtime
+  // 修订号保证旧回包不覆盖更新的实时状态、旧 finally 不结束新 loading
+  let statusScopeEpoch = 0
+  let fetchStatusSeq = 0
+  let realtimeStatusRevision = 0
+
   function getCurrentAccountId() {
     const accountStore = useAccountStore()
     return String((accountStore.currentAccountId as { value?: string })?.value ?? accountStore.currentAccountId ?? '')
@@ -58,12 +64,18 @@ export const useStatusStore = defineStore('status', () => {
   }
 
   function clearAccountScopedData() {
+    // 新授权/新作用域：bump 代次使旧账号在途 fetchStatus 的回包、错误与
+    // finally 都不能再回填状态或结束新的 loading（仅 isCurrentAccount 同 id
+    // 不足以挡住同账号扫码后的迟到回填）
+    statusScopeEpoch += 1
+    fetchStatusSeq = 0
     status.value = null
     statusAccountId.value = ''
     logs.value = []
     accountLogs.value = []
     dailyGifts.value = null
     error.value = ''
+    loading.value = false
   }
 
   function normalizeLogEntry(input: any) {
@@ -111,6 +123,9 @@ export const useStatusStore = defineStore('status', () => {
     if (currentRealtimeAccountId.value && accountId !== currentRealtimeAccountId.value)
       return
     if (body.status && typeof body.status === 'object') {
+      // 每次应用 realtime 状态都提升修订号：发出后已有更新实时数据的
+      // 迟到 HTTP 回包不得覆盖它
+      realtimeStatusRevision += 1
       status.value = normalizeStatusPayload(body.status)
       statusAccountId.value = accountId || currentRealtimeAccountId.value || getCurrentAccountId()
       error.value = ''
@@ -269,12 +284,24 @@ export const useStatusStore = defineStore('status', () => {
     if (!accountId)
       return
     const requestedId = String(accountId)
+    const scopeEpoch = statusScopeEpoch
+    const requestSeq = ++fetchStatusSeq
+    const realtimeRevisionAtStart = realtimeStatusRevision
+    // 两个维度分开：scopeActive = 请求仍属于当前作用域（换代/反序/切账号），
+    // canWriteStatus = 在此之上还要求其后没有更新的 realtime 状态。finally 只看
+    // scopeActive——若把 realtime 修订也算进 finally 的失效条件，请求期间收到
+    // 实时推送会让 loading 永久停在 true。
+    const scopeActive = () => scopeEpoch === statusScopeEpoch
+      && requestSeq === fetchStatusSeq
+      && isCurrentAccount(requestedId)
+    const canWriteStatus = () => scopeActive()
+      && realtimeRevisionAtStart === realtimeStatusRevision
     loading.value = true
     try {
       const { data } = await api.get('/api/status', {
         headers: { 'x-account-id': accountId },
       })
-      if (!isCurrentAccount(requestedId))
+      if (!canWriteStatus())
         return
       if (data.ok) {
         status.value = normalizeStatusPayload(data.data)
@@ -286,10 +313,12 @@ export const useStatusStore = defineStore('status', () => {
       }
     }
     catch (e: any) {
-      error.value = e.message
+      if (canWriteStatus())
+        error.value = e.message
     }
     finally {
-      loading.value = false
+      if (scopeActive())
+        loading.value = false
     }
   }
 
@@ -391,5 +420,6 @@ export const useStatusStore = defineStore('status', () => {
     disconnectRealtime,
     // 测试专用：直接喂 log:new 载荷，验证在线证据通道与日志筛选解耦
     __handleRealtimeLogForTests: handleRealtimeLog,
+    __handleRealtimeStatusForTests: handleRealtimeStatus,
   }
 })

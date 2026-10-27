@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getEmailList = require('./business-state').wrapBusinessFunction('services/email.js:getEmailList', getEmailList);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimEmail = require('./business-state').wrapBusinessFunction('services/email.js:claimEmail', claimEmail);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  batchClaimEmail = require('./business-state').wrapBusinessFunction('services/email.js:batchClaimEmail', batchClaimEmail);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  checkAndClaimEmails = require('./business-state').wrapBusinessFunction('services/email.js:checkAndClaimEmails', checkAndClaimEmails);
+}
 /**
  * 邮箱服务 - 自动领取邮件奖励
  * 
@@ -191,7 +203,7 @@ async function checkAndClaimEmails(force = false) {
           }
           claimed += 1;
         }
-      } catch (_) {
+      } catch {
         // 批量领取失败，下面逐个重试
       }
     }
@@ -205,7 +217,7 @@ async function checkAndClaimEmails(force = false) {
           allItems.push(...result.items);
         }
         claimed += 1;
-      } catch (_) {
+      } catch {
         // 单个失败跳过
       }
     }
@@ -241,3 +253,12 @@ module.exports = {
     lastCheckAt,
   }),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/email.js', () => ({ doneDateKey, lastCheckAt }), value => {
+      doneDateKey = value.doneDateKey;
+      lastCheckAt = value.lastCheckAt;
+  }, { });
+}

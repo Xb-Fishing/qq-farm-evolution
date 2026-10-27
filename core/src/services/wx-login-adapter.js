@@ -6,8 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkQR = checkQR;
 exports.consumePendingWxInfo = consumePendingWxInfo;
 exports.getAccountAvatar = getAccountAvatar;
+exports.cancelWxSession = cancelWxSession;
 exports.getFarmCode = getFarmCode;
 exports.getQRCode = getQRCode;
+exports.getWxSessionInfo = getWxSessionInfo;
 exports.isDefinitiveWxCredentialError = isDefinitiveWxCredentialError;
 exports.shouldRefreshWxCredentialForCodeError = shouldRefreshWxCredentialForCodeError;
 exports.keepWxCredentialAlive = keepWxCredentialAlive;
@@ -64,8 +66,8 @@ function credentialFailureDiagnostic(error) {
     const source = asRecord(error);
     const stage = ['oauth_callback', 'refresh_token', 'login_buffer', 'issue_code'].includes(source.wxStage)
         ? source.wxStage : 'unknown';
-    return { stage, code: Number.isInteger(source.wxCode) ? source.wxCode : null,
-        tokenRefreshSucceeded: source.tokenRefreshSucceeded === true };
+    return { stage, upstreamStatus: Number.isInteger(source.wxCode) ? source.wxCode : null,
+        refreshStageCompleted: source.tokenRefreshSucceeded === true };
 }
 function persistCredentialFields(accountId, updates) {
     try {
@@ -230,6 +232,35 @@ function consumePendingWxInfo(sessionId, openid, owner) {
     wxSessions.delete(id);
     return true;
 }
+/**
+ * 本地扫码会话元数据（属主校验）：返回会话真实起止时刻，供自助重扫页
+ * 展示「本地会话截止」倒计时——不是微信侧二维码寿命。
+ */
+function getWxSessionInfo(sessionId, owner) {
+    cleanupExpiredSessions();
+    const uuid = String(sessionId || '');
+    const targetOwner = String(owner || '');
+    const entry = wxSessions.get(uuid);
+    if (!uuid || !targetOwner || !entry || String(entry.owner || '') !== targetOwner)
+        return null;
+    return {
+        sessionId: uuid,
+        createdAt: Number(entry.createdAt) || 0,
+        expiresAt: (Number(entry.createdAt) || 0) + WX_SESSION_TTL_MS,
+        confirmed: entry.confirmed === true,
+        openid: String(entry.openid || ''),
+    };
+}
+/** 属主匹配时主动取消本地扫码会话（被更新的发送/重扫取代时清理，防悬空授权）。 */
+function cancelWxSession(sessionId, owner) {
+    const uuid = String(sessionId || '');
+    const targetOwner = String(owner || '');
+    const entry = wxSessions.get(uuid);
+    if (!uuid || !targetOwner || !entry || String(entry.owner || '') !== targetOwner)
+        return false;
+    wxSessions.delete(uuid);
+    return true;
+}
 // MMTLS 握手失败错误 → 可读指引（区分凭证失效与网络波动）
 function humanizeWxCodeError(raw) {
     const s = String(raw || '').replace(/(\btoken\s+)[^\s,;]+/gi, '$1[REDACTED]');
@@ -255,13 +286,16 @@ async function getQRCode(owner) {
     try {
         const { session, qr } = await wxLogin.createQrSession();
         const uuid = node_crypto_1.default.randomBytes(16).toString('hex');
-        wxSessions.set(uuid, { owner: String(owner || ''), session, createdAt: Date.now() });
+        const createdAt = Date.now();
+        wxSessions.set(uuid, { owner: String(owner || ''), session, createdAt });
         return {
             Success: true,
             Data: {
                 Uuid: uuid,
                 QrBase64: qr.toString('base64'),
-                // 在微信内打开面板点此链接，等同扫码后的确认页，免存图免扫码。
+                // 本地扫码会话起止（WX_SESSION_TTL_MS），不是微信侧二维码寿命。
+                CreatedAt: createdAt,
+                ExpiresAt: createdAt + WX_SESSION_TTL_MS,
             },
         };
     }
@@ -358,6 +392,11 @@ async function issueFarmCode(openid, options = {}) {
     if (!openid) {
         return { Success: false, Message: '缺少 openid' };
     }
+    // 作用域守卫（可选）：换码意图在排队/await 期间被更新扫码取代后，后续
+    // 原生请求与凭据落盘全部停止——旧意图不得用新授权换码，也不得把旧
+    // 轮换结果写回覆盖新扫码的凭据。所有返回点前都复查。
+    const guard = typeof options.guard === 'function' ? options.guard : null;
+    const supersededByGuard = () => !guard || guard();
     try {
         // 扫码链路必须显式指定当前用户拥有的会话；后台刷新只使用目标账号的持久化凭证。
         let loginBuffer = '';
@@ -407,15 +446,33 @@ async function issueFarmCode(openid, options = {}) {
             code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
         }
         catch (issueError) {
+            if (!supersededByGuard()) return { Success: false, superseded: true, Message: '请求已取消或被更新的扫码取代' };
             const msg = errorMessage(issueError);
             if (refreshtoken && shouldRefreshWxCredentialForCodeError(msg)) {
                 try {
                     // refresh 请求使用显式的 openid/access/refresh Cookie，不依赖进程内 OAuth 会话。
-                    const refreshed = await wxLogin.refreshLoginBuffer({ openid: String(openid), refreshtoken, accesstoken, cookies: new Map() });
+                    const refreshed = await wxLogin.refreshLoginBuffer({ openid: String(openid), refreshtoken, accesstoken, cookies: new Map() }, {
+                        shouldContinue: supersededByGuard,
+                        onCredentialsRefreshed: async (checkpoint) => {
+                            const credentialCurrent = typeof options.credentialGuard === 'function'
+                                ? options.credentialGuard() : supersededByGuard();
+                            if (!credentialCurrent) throw new Error('请求已被更新的扫码取代');
+                            if (account) persistCredentialFields(account.id, {
+                                refreshtoken: checkpoint.refreshtoken, accesstoken: checkpoint.accesstoken,
+                                ...buildCredentialMetadata(checkpoint, account, false),
+                            });
+                            if (sessionEntry) Object.assign(sessionEntry, checkpoint);
+                        },
+                    });
                     loginBuffer = refreshed.loginBuffer;
                     refreshtoken = refreshed.refreshtoken;
                     accesstoken = refreshed.accesstoken || accesstoken;
                     credentialMetadata = buildCredentialMetadata(refreshed, account || sessionEntry || {}, true);
+                    const credentialCurrent = typeof options.credentialGuard === 'function'
+                        ? options.credentialGuard() : supersededByGuard();
+                    if (!credentialCurrent) {
+                        return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+                    }
                     // Token rotation has already happened upstream. Persist the complete
                     // checkpoint before the independent Code exchange can fail.
                     if (account) persistCredentialFields(account.id, {
@@ -432,6 +489,7 @@ async function issueFarmCode(openid, options = {}) {
                             sessionEntry.refreshTokenObservedAt = Date.now();
                         sessionEntry.credentialLastSuccessAt = Date.now();
                     }
+                    if (!supersededByGuard()) return { Success: false, superseded: true, Message: '请求已取消或被更新的扫码取代' };
                     try {
                         code = await wxLogin.issueCode({ loginBuffer }, TARGET_APP_ID);
                     } catch (error) {
@@ -444,6 +502,9 @@ async function issueFarmCode(openid, options = {}) {
                 catch (refreshError) {
                     const rotatedError = asRotatedCredentialError(refreshError);
                     logger.warn('wx code credential stage failed', credentialFailureDiagnostic(rotatedError));
+                    if (!supersededByGuard()) {
+                        return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+                    }
                     // token 刷新成功后凭证已滚动；即使换 loginBuffer 失败，也必须保存新 token。
                     if (account && (rotatedError.refreshtoken || rotatedError.accesstoken)
                         && typeof addOrUpdateAccount === 'function') {
@@ -475,6 +536,9 @@ async function issueFarmCode(openid, options = {}) {
         }
         // 4. 成功后将 loginBuffer / refreshtoken / accesstoken / 头像持久化到账号（供自动重登/手动启动刷新 code）
         //    注意：refreshtoken/accesstoken 是滚动续期的（每次刷新返回新值），必须总是更新，否则旧 token 过期后续期断裂
+        if (!supersededByGuard()) {
+            return { Success: false, superseded: true, Message: '请求已被更新的扫码取代' };
+        }
         if (account) {
             const updates = {};
             if (loginBuffer && loginBuffer !== account.loginBuffer)
@@ -502,11 +566,21 @@ async function getFarmCode(openid, options = {}) {
     const targetOpenid = String(openid || '');
     if (!targetOpenid)
         return { Success: false, Message: '缺少 openid' };
-    const requestKey = `${targetOpenid}:${options.sessionId || `account:${options.accountId || ''}`}`;
+    // intentKey 区分同一账号的不同换码意图（自动保活 vs 手动扫码完成/重试）：
+    // 不共享在途 Promise，避免旧授权的在途请求把结果冒充给新授权的调用方。
+    const intentKey = options.intentKey ? `:${String(options.intentKey)}` : '';
+    const requestKey = `${targetOpenid}:${options.sessionId || `account:${options.accountId || ''}${intentKey}`}`;
     const inFlight = farmCodeRequests.get(requestKey);
     if (inFlight)
         return inFlight;
-    const operation = () => issueFarmCode(targetOpenid, options);
+    const operation = () => {
+        // 领到锁的第一件事就是复查守卫：排队期间请求已被更新扫码取代的，
+        // 不读账号、不发原生请求（旧意图绝不能拿新授权去换码）。
+        if (typeof options.guard === 'function' && !options.guard()) {
+            return Promise.resolve({ Success: false, superseded: true, Message: '请求已被更新的扫码取代' });
+        }
+        return issueFarmCode(targetOpenid, options);
+    };
     const request = (options.accountId
         ? withAccountCredentialLock(targetOpenid, options.accountId, operation)
         : operation()).finally(() => {
@@ -562,6 +636,16 @@ async function keepWxCredentialAlive(acc) {
                 refreshtoken: String(latestAccount.refreshtoken),
                 accesstoken: String(latestAccount.accesstoken || ''),
                 cookies: new Map(),
+            }, {
+                onCredentialsRefreshed: async (checkpoint) => {
+                    const current = findAccountByWxid(account.wxid, account.id);
+                    if (!current || String(current.username || '') !== String(latestAccount.username || ''))
+                        throw new Error('微信账号绑定已变更');
+                    persistCredentialFields(account.id, {
+                        refreshtoken: checkpoint.refreshtoken, accesstoken: checkpoint.accesstoken,
+                        ...buildCredentialMetadata(checkpoint, latestAccount, false),
+                    });
+                },
             });
             if (typeof addOrUpdateAccount === 'function') {
                 addOrUpdateAccount({

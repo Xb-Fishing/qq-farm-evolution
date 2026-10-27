@@ -60,6 +60,13 @@ function getStoreModule() {
 
 // ============ 事件发射器 (用于推送通知) ============
 const networkEvents = new EventEmitter();
+let sessionTransportHooks = null;
+function setSessionTransportHooks(hooks) { sessionTransportHooks = hooks; }
+function sessionAuthorityError(serviceName, methodName) {
+    if (!sessionTransportHooks?.assertSend) return null;
+    try { sessionTransportHooks.assertSend(serviceName, methodName); return null; }
+    catch (error) { error.isSessionAuthorityRejection = true; return error; }
+}
 
 // ============ 内部状态 ============
 let ws = null;
@@ -194,6 +201,10 @@ function logLoginSummary(loginTimeMs) {
 
 // 登录后从背包获取钻石、金豆豆数量
 async function fetchGoldBeanFromBag() {
+    if (sessionTransportHooks?.onInitialBag) {
+        try { sessionTransportHooks.onInitialBag(); } catch { /* Business failure cannot break the physical login callback. */ }
+        return;
+    }
     try {
         const warehouse = getWarehouseModule();
         const bagReply = await warehouse.getBag();
@@ -242,14 +253,41 @@ async function encodeMsg(serviceName, methodName, bodyBytes, clientSeqValue) {
     return types.GateMessage.encode(msg).finish();
 }
 
+function businessPauseError(serviceName, methodName) {
+    // Exact connection-maintenance methods only; no method-name-only exemption.
+    if (serviceName === 'gamepb.userpb.UserService'
+        && (methodName === 'Heartbeat' || methodName === 'Login')) return null;
+    const remain = getStoreModule().getWirePauseRemainMs(process.env.FARM_ACCOUNT_ID || '');
+    if (!(remain > 0)) return null;
+    const error = new Error('当前处于重点防护，业务请求已暂停，请到点后重试');
+    error.code = 'LOCAL_BUSINESS_PAUSED';
+    error.pauseRemainMs = remain;
+    return error;
+}
+
 async function sendMsg(serviceName, methodName, bodyBytes, callback) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         log('系统', '[WS] 连接未打开');
         return false;
     }
+    const authorityBeforeEncoding = sessionAuthorityError(serviceName, methodName);
+    if (authorityBeforeEncoding) { if (callback) callback(authorityBeforeEncoding); return false; }
+    const pausedBeforeEncoding = businessPauseError(serviceName, methodName);
+    if (pausedBeforeEncoding) {
+        if (callback) callback(pausedBeforeEncoding);
+        return false;
+    }
     const seq = clientSeq;
     clientSeq += 1;
     const encoded = await encodeMsg(serviceName, methodName, bodyBytes, seq);
+    const authorityBeforeSend = sessionAuthorityError(serviceName, methodName);
+    if (authorityBeforeSend) { if (callback) callback(authorityBeforeSend); return false; }
+    // Encoding awaits encryption; a pause may begin while this request is queued.
+    const pausedBeforeSend = businessPauseError(serviceName, methodName);
+    if (pausedBeforeSend) {
+        if (callback) callback(pausedBeforeSend);
+        return false;
+    }
     if (callback) pendingCallbacks.set(seq, callback);
     // ws.send(encoded);
     try {
@@ -267,11 +305,22 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
+        const authority = sessionAuthorityError(serviceName, methodName);
+        if (authority) { reject(authority); return; }
+        const paused = businessPauseError(serviceName, methodName);
+        if (paused) { reject(paused); return; }
         // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
         // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
         const gate = requestGovernor.checkRequest(serviceName, methodName);
         if (!gate.allowed) {
-            reject(new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`));
+            const governedError = new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`);
+            // 结构化标记（严格布尔 + 白名单类别）：仅供本地读取观测/警告聚合识别。
+            // 不改错误文案、治理决策或发送流程；非预算拒绝不会走到这里。
+            if (GOVERNED_BUDGET_REASONS.has(gate.reason)) {
+                governedError.isGovernedRejection = true;
+                governedError.governedReason = gate.reason;
+            }
+            reject(governedError);
             return;
         }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -303,7 +352,7 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
             if (settled) return;
             settled = true;
             if (err) {
-                if (isConnected()) {
+                if (isConnected() && err.code !== 'LOCAL_BUSINESS_PAUSED' && err.isSessionAuthorityRejection !== true) {
                     // 只允许调用方豁免明确的服务端业务错误。超时、断线、发送失败仍是
                     // 真实通信异常，不能因为探测模式而从异常统计里消失。
                     const breakerExempt = options.breakerExemptBusinessError === true
@@ -416,6 +465,7 @@ function handleNotify(msg) {
         const event = types.EventMessage.decode(msg.body);
         const type = event.message_type || '';
         const eventBody = event.body;
+        try { sessionTransportHooks?.onRawNotify?.(type, eventBody); } catch { /* Preserve canonical notify handling. */ }
 
         // 被踢下线
         if (type.includes('Kickout')) {
@@ -967,12 +1017,15 @@ function stopNetwork(reason = '停止网络') {
 
 function getWs() { return ws; }
 function isConnected() { return !!(ws && ws.readyState === WebSocket.OPEN); }
+
+const GOVERNED_BUDGET_REASONS = new Set(['budget_total', 'budget_method']);
 function getAceStatus() {
     if (aceService) return aceService.getStatus();
     return tsdkRuntime ? { running: false, runtime: tsdkRuntime.getStatus() } : null;
 }
 
 module.exports = {
+    setSessionTransportHooks,
     connect, reconnect, cleanup, stopNetwork, getWs, isConnected,
     sendMsg, sendMsgAsync,
     getUserState,
@@ -988,3 +1041,6 @@ module.exports = {
     applyServerVersionInfo,
     networkEvents,
 };
+
+require('../runtime/own-quiet-wire').install({ network: module.exports,
+    store: require('../models/store'), types: require('./proto').types, accountId: process.env.FARM_ACCOUNT_ID || '' });

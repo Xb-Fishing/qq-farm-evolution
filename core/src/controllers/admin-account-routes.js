@@ -321,7 +321,7 @@ function registerAdminAccountRoutes({
             wxRefreshTokenObservedAt: latest.wxRefreshTokenObservedAt, wxCredentialLastSuccessAt: latest.wxCredentialLastSuccessAt,
           });
         }
-        const saved = addOrUpdateAccount(nextAccount);
+        const saved = addOrUpdateAccount(nextAccount, { newAuthorization: Boolean(body.wxSessionId && body.wxid && currentUser && nextAccount.platform === 'wx') });
         if (isUpdate && body.wxSessionId && typeof provider.invalidateAccountCredentialTasks === "function") {
           // Fence old async completions before the credential lock is released.
           provider.invalidateAccountCredentialTasks(nextAccount.id);
@@ -336,6 +336,17 @@ function registerAdminAccountRoutes({
       if (body.wxSessionId && body.wxid && currentUser) {
         const wxLoginAdapter = require("../services/wx-login-adapter");
         wxLoginAdapter.consumePendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
+        // 新授权已被服务端接受：推进扫码代次（允许下一次失效重新提醒），
+        // 并作废该账号遗留的自助二维码（守望/图片能力/adapter 会话）。
+        try {
+          const reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
+          const reminderAccountId = isUpdate
+            ? String(nextAccount.id)
+            : String((data.accounts.at(-1) || {}).id || "");
+          if (reminderAccountId) {
+            await reminder.noteAcceptedScan(reminderAccountId);
+          }
+        } catch { /* 提醒状态更新失败不阻断账号保存 */ }
       }
       if (provider.addAccountLog) {
         const accountId = isUpdate
@@ -380,7 +391,10 @@ function registerAdminAccountRoutes({
           });
         }
       } else if (wasRunning && !onlyRenaming) {
-        provider.restartAccount(nextAccount.id);
+        await provider.restartAccount(nextAccount.id);
+        // 在线原生重扫：用刚保存的二维码 Code 立即重建一次连接（不追加
+        // 授权请求、不改 autoLogin），queued 表示正在用新授权重连。
+        if (body.wxSessionId && nextAccount.platform === "wx") startQueued = true;
       } else if (!wasRunning && body.wxSessionId && nextAccount.platform === "wx") {
         // A successful rescan of an offline account is a login request, not just a save.
         if (typeof provider.saveAutoCodeRefresh === "function") {
@@ -406,7 +420,7 @@ function registerAdminAccountRoutes({
     }
   });
 
-  app.delete("/api/accounts/:id", (req, res) => {
+  app.delete("/api/accounts/:id", async (req, res) => {
     try {
       const accountId =
         resolveAccountReference(req.params.id) || String(req.params.id || "");
@@ -416,7 +430,7 @@ function registerAdminAccountRoutes({
 
       const accounts = provider.getAccounts();
       const account = findAccountByRef(accounts.accounts || [], req.params.id);
-      provider.stopAccount(accountId);
+      await provider.stopAccount(accountId);
       const data = deleteAccount(accountId);
       if (provider.addAccountLog) {
         provider.addAccountLog(

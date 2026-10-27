@@ -242,7 +242,7 @@ class WxLoginService {
             throw new Error("WeChat login session has not been confirmed");
         return getNativeWxLoginCode(session.loginBuffer, appId);
     }
-    async refreshLoginBuffer(session) {
+    async refreshLoginBuffer(session, options = {}) {
         if (!session || !session.openid || !session.refreshtoken)
             throw new Error("缺少刷新凭证（refreshtoken），请重新扫码登录");
         // 字段必须 camelCase（refreshTokenRequest：userInfo/openId/refreshToken/accessToken/loginType），
@@ -282,6 +282,16 @@ class WxLoginService {
         // 调用方也必须持久化这里的新 token，避免下一次使用旧 token 永久陷入 40030。
         session.accesstoken = accessToken;
         session.refreshtoken = refreshToken;
+        // Token rotation is already effective upstream. Commit it before starting
+        // the independent buffer request, including when that request never returns.
+        if (typeof options.onCredentialsRefreshed === "function") {
+            await options.onCredentialsRefreshed({
+                refreshtoken: refreshToken, accesstoken: accessToken,
+                credentialExpiresAt, credentialExpiresIn: expiresIn, refreshTokenRotated,
+            });
+        }
+        if (typeof options.shouldContinue === "function" && !options.shouldContinue())
+            throw new Error("微信更新准备已取消");
         // 用新凭证换新 loginBuffer（凭证放 Cookie 头，服务器可能校验）
         const lbPayload = JSON.stringify({ extInfo: { listS: { unionid: { value: [session.openid] }, user_id: { value: [session.openid] }, access_token: { value: [accessToken] } }, listI: { user_type: { value: [0] } } } });
         const ts2 = String(Date.now());

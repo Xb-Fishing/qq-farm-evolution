@@ -1,7 +1,38 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runDailyRoutineStep = require('../services/business-state').wrapBusinessFunction('core/worker.js:runDailyRoutineStep', runDailyRoutineStep);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runDailyRoutines = require('../services/business-state').wrapBusinessFunction('core/worker.js:runDailyRoutines', runDailyRoutines);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runFarmTick = require('../services/business-state').wrapBusinessFunction('core/worker.js:runFarmTick', runFarmTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runHelpTick = require('../services/business-state').wrapBusinessFunction('core/worker.js:runHelpTick', runHelpTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runOwnHarvestStrike = require('../services/business-state').wrapBusinessFunction('core/worker.js:runOwnHarvestStrike', runOwnHarvestStrike);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runSentinelStrike = require('../services/business-state').wrapBusinessFunction('core/worker.js:runSentinelStrike', runSentinelStrike);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runStealTick = require('../services/business-state').wrapBusinessFunction('core/worker.js:runStealTick', runStealTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runUnifiedTick = require('../services/business-state').wrapBusinessFunction('core/worker.js:runUnifiedTick', runUnifiedTick);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  startBot = require('../services/business-state').wrapBusinessFunction('core/worker.js:startBot', startBot);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  stopBot = require('../services/business-state').wrapBusinessFunction('core/worker.js:stopBot', stopBot);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  probeFriendSummaryDrift = require('../services/business-state').wrapBusinessFunction('core/worker.js:probeFriendSummaryDrift', probeFriendSummaryDrift);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  handleApiCall = require('../services/business-state').wrapBusinessFunction('core/worker.js:handleApiCall', handleApiCall);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getDailyGiftOverview = require('../services/business-state').wrapBusinessFunction('core/worker.js:getDailyGiftOverview', getDailyGiftOverview);
+}
 const process = require('node:process');
 const { parentPort, workerData } = require('node:worker_threads');
 
 const { CONFIG } = require('../config/config');
+const { setIdleProtectionUntil, getIdleProtectionUntil, planIdleProtection } = require('../utils/idle-protection');
 const {
     gaussianInt,
     randInt,
@@ -43,6 +74,8 @@ const {
     fertilize,
     removePlant,
     harvestOwnAtMaturity,
+    deferOwnHarvestSale,
+    flushOwnPriorityDeferred,
     getNextMatureInMs,
     getNextMatureDueAtMs
 } = require('../services/farm');
@@ -153,7 +186,9 @@ function sendToMaster(message) {
 }
 
 /** 监听主进程消息 */
+let sessionMasterHandler = null;
 function onMasterMessage(handler) {
+    if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') { sessionMasterHandler = handler; return; }
     if (process.send) process.on('message', handler);
     if (parentPort) parentPort.on('message', handler);
 }
@@ -248,6 +283,7 @@ const workerScheduler = createScheduler('worker');
 function isDailyRoutineEnabled() { return true; }
 
 async function runDailyRoutineStep(key, runner, getState, force = false) {
+    if (pauseRemainMsNow() > 0) { lastDailyRunDate = ''; return; }
     const accountId = process.env.FARM_ACCOUNT_ID || '';
     if (!force && isDailyRoutineDone(accountId, key)) return;
     await runner(force);
@@ -267,7 +303,7 @@ function getLocalDateKey() {
 // ==================== 每日任务 ====================
 
 async function runDailyRoutines(force = false) {
-    if (!loginReady || friendSyncPaused) return;
+    if (!loginReady || friendSyncPaused || pauseRemainMsNow() > 0) return;
     try {
         await runDailyRoutineStep('email_rewards', checkAndClaimEmails, getEmailDailyState, force);
         await runDailyRoutineStep('daily_share', performDailyShare, getShareDailyState, force);
@@ -289,20 +325,13 @@ function stopDailyRoutineTimer() {
 
 function startDailyRoutineTimer() {
     stopDailyRoutineTimer();
-    lastDailyRunDate = getLocalDateKey();
+    // A paused start is still pending; the interval must catch it up after resume.
+    lastDailyRunDate = pauseRemainMsNow() > 0 ? '' : getLocalDateKey();
     // 完成态按账号落盘；worker/主进程重启不再把当天已完成项目强制重查一遍。
     runDailyRoutines(false).catch(() => null);
 
     // 每 60 秒检查一次日期是否变化
-    workerScheduler.setIntervalTask('daily_routine_interval', 60000, () => {
-        if (!loginReady) return;
-        const today = getLocalDateKey();
-        if (today === lastDailyRunDate) return;
-        lastDailyRunDate = today;
-        runDailyRoutines(false)
-            .then(() => runBadOnceOnStartup(true))
-            .catch(() => null);
-    });
+    workerScheduler.setIntervalTask('daily_routine_interval', 60000, onTimer_daily_routine_interval);
 }
 
 // 神秘商人可能在登录后的任意时间出现；登录后先检查，并持续短周期探测。
@@ -313,23 +342,15 @@ function stopMysteryShopAutoBuyTimer() {
 }
 
 function runMysteryShopAutoBuy() {
-    if (!loginReady || getAutomation().mystery_shop_auto_buy !== true) return Promise.resolve();
+    if (!loginReady || pauseRemainMsNow() > 0 || getAutomation().mystery_shop_auto_buy !== true) return Promise.resolve();
     const { checkAndAutoBuyMysteryShop } = require('../services/mystery-shop');
     return checkAndAutoBuyMysteryShop();
 }
 
 function startMysteryShopAutoBuyTimer() {
-    const { nextAutoBuyCheckDelayMs } = require('../services/mystery-shop');
     stopMysteryShopAutoBuyTimer();
     // 自排程 + 每次抖动，替代固定 10 分钟 interval（等间隔是机器指纹）；串行天然不重叠
-    const chainNext = (delayMs) => workerScheduler.setTimeoutTask(
-        'mystery_shop_auto_buy_interval',
-        delayMs,
-        () => runMysteryShopAutoBuy()
-            .catch(() => null)
-            .finally(() => chainNext(nextAutoBuyCheckDelayMs()))
-    );
-    chainNext(10 * 1000);
+    scheduleMysteryShopCheck(10 * 1000);
 }
 
 // ==================== 间隔计算 ====================
@@ -407,14 +428,19 @@ function resetUnifiedSchedule() {
 // ==================== 农场 Tick ====================
 
 async function runFarmTick(autoConfig) {
+    if (pauseRemainMsNow() > 0) return;
     if (farmTaskRunning || friendSyncPaused) return;
     if ((stealIsDue() || stealIsImminent(1500)) && !ownHarvestIsDue()) return;
     farmTaskRunning = true;
 
     try {
         if (autoConfig.farm) await checkFarm();
+        if (pauseRemainMsNow() <= 0) await flushOwnPriorityDeferred();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.task) await checkAndClaimTasks();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.email) await checkAndClaimEmails();
+        if (pauseRemainMsNow() > 0) return;
         if (autoConfig.fertilizer_gift) await openFertilizerGiftPacksSilently();
     } catch { } finally {
         const patrol = randomIntervalMs(
@@ -425,10 +451,11 @@ async function runFarmTick(autoConfig) {
         const horizon = nextIdleHorizonMs();
         const nap = idleNapMs(horizon, patrol, {
             maxSleepMs: idleMaxSleepMs(),
+            minSleepMs: idleMinSleepMs(),
             activeMs: effectiveWakeBeforeMs(),
         });
         const nextDelay = capDelayByMatureInMs(nap, matureMs);
-        const normalDelay = matureMs > 0 && matureMs < nextDelay
+        const normalDelay = nextDelay >= 60_000 || (matureMs > 0 && matureMs < nextDelay)
             ? nextDelay
             : maybeStretchDelay(nextDelay);
         const delay = Math.max(normalDelay, ordinarySlowdownFloorMs('farm'));
@@ -470,6 +497,7 @@ async function runHelpTick(autoConfig) {
         const horizon = nextIdleHorizonMs();
         const nap = idleNapMs(horizon, patrol, {
             maxSleepMs: idleMaxSleepMs(),
+            minSleepMs: idleMinSleepMs(),
             activeMs: effectiveWakeBeforeMs(),
         });
         const delay = Math.max(nap, ordinarySlowdownFloorMs('help'));
@@ -504,9 +532,12 @@ function stealRediscoveryDelayMs() {
 
 function idleMaxSleepMs() {
     const minutes = Number((getFriendQuietHours() || {}).maxSleepMinutes) || 120;
-    // 单次睡眠封顶 10 分钟（下限 1 分钟，idleNapMs 在区间内随机取）：
-    // 勤醒来重估时刻表，防催熟/估算偏差睡过头
-    return Math.max(1, Math.min(10, minutes)) * 60 * 1000;
+    return Math.max(1, Math.min(720, minutes)) * 60 * 1000;
+}
+
+function idleMinSleepMs() {
+    const minutes = Number((getFriendQuietHours() || {}).minSleepMinutes) || 1;
+    return Math.min(idleMaxSleepMs(), Math.max(1, Math.min(720, minutes)) * 60 * 1000);
 }
 
 function idleWakeBeforeMs() {
@@ -636,10 +667,7 @@ function clearOwnHarvestGuard(clearDue = false) {
 
 function setOwnHarvestGuardTimer(delayMs, dueAt) {
     ownHarvestArmedFor = Number(dueAt) || 0;
-    workerScheduler.setTimeoutTask('own_harvest_guard', Math.max(0, delayMs), async () => {
-        ownHarvestArmedFor = 0;
-        await runOwnHarvestStrike();
-    });
+    workerScheduler.setTimeoutTask('own_harvest_guard', Math.max(0, delayMs), onTimer_own_harvest_guard);
 }
 
 function scheduleOwnHarvestRetry() {
@@ -680,13 +708,7 @@ async function runOwnHarvestStrike() {
         return;
     }
 
-    // 明确静默仍高于业务收益优先级；异常阈值只降低普通巡查速度，
-    // 自己到点收获继续受请求硬预算保护，不再被整号冻结。
-    const pauseRemain = pauseRemainMsNow();
-    if (pauseRemain > 0) {
-        setOwnHarvestGuardTimer(pauseRemain + randInt(100, 500), dueAt);
-        return;
-    }
+    // Own harvest and its scoped replant outrank quiet; no quiet deadline is cleared.
     const ws = getWs();
     if (friendSyncPaused || !ws || ws.readyState !== 1) {
         scheduleOwnHarvestRetry();
@@ -735,8 +757,11 @@ let sentinelArmedFor = null; // { kind: 'friend', dueAt, gid? }
 // 预进门驻留状态：{ gid, dueAt, enteredAt }；Strike 消费或超时清理。
 let sentinelPreEnter = null;
 let sentinelPreEnterTimer = null;
+let sentinelPendingPreEnter = null;
+let sentinelEntrySeq = 0;
 
 function clearSentinel() {
+    if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') workerScheduler.clear('sentinel_strike');
     if (sentinelTimer) {
         clearTimeout(sentinelTimer);
         sentinelTimer = null;
@@ -746,6 +771,8 @@ function clearSentinel() {
 }
 
 function clearSentinelPreEnter() {
+    if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') workerScheduler.clear('sentinel_pre_enter');
+    sentinelPendingPreEnter = null;
     if (sentinelPreEnterTimer) {
         clearTimeout(sentinelPreEnterTimer);
         sentinelPreEnterTimer = null;
@@ -778,29 +805,20 @@ function armSentinelPreEnter(armed) {
     const aheadMs = dueAt - now;
     if (aheadMs <= 0 || aheadMs > SENTINEL_PRE_ENTER_AHEAD_MS + 1_500) return;
     clearSentinelPreEnter();
-    sentinelPreEnterTimer = setTimeout(async () => {
-        sentinelPreEnterTimer = null;
-        const stillArmed = sentinelArmedFor && Number(sentinelArmedFor.gid) === gid;
-        if (!stillArmed) return;
-        try {
-            setUrgentStrikeMode(15_000);
-            const enterReply = await require('../services/friend-api').enterFriendFarm(gid);
-            sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply };
-            // 兜底清理：dueAt 后 60s 仍未被 Strike 消费则丢弃驻留标记。
-            sentinelPreEnterTimer = setTimeout(() => {
-                if (sentinelPreEnter && Number(sentinelPreEnter.gid) === gid) {
-                    sentinelPreEnter = null;
-                }
-            }, 60_000);
-            sentinelPreEnterTimer.unref?.();
-        } catch { /* 预进门失败：Strike 走完整路径 */ }
-    }, Math.max(0, aheadMs - SENTINEL_PRE_ENTER_AHEAD_MS));
+    sentinelPendingPreEnter = { stage: 'enter', gid, dueAt, id: ++sentinelEntrySeq };
+    sentinelPreEnterTimer = scheduleSentinelTimer('sentinel_pre_enter', Math.max(0, aheadMs - SENTINEL_PRE_ENTER_AHEAD_MS), onSentinelPreEnterTimer);
     sentinelPreEnterTimer.unref?.();
 }
 
 /** 好友哨兵到点动作：走偷菜快路径（含抢收快路径逻辑）。 */
 async function runSentinelStrike() {
     const armed = sentinelArmedFor;
+    const pauseRemain = pauseRemainMsNow();
+    if (armed && pauseRemain > 0) {
+        sentinelTimer = scheduleSentinelTimer('sentinel_strike', pauseRemain + 100, runSentinelStrike);
+        sentinelTimer.unref?.();
+        return;
+    }
     sentinelTimer = null;
     sentinelArmedFor = null;
     if (!armed || friendSyncPaused) return;
@@ -820,7 +838,13 @@ async function runSentinelStrike() {
             const handled = await checkFriends({
                 onlySteal: true,
                 preEnter: preEnter
-                    ? { gid: preEnter.gid, enteredAt: preEnter.enteredAt, enterReply: preEnter.enterReply }
+                    ? {
+                        gid: preEnter.gid,
+                        enteredAt: preEnter.enteredAt,
+                        enterReply: preEnter.enterReply,
+                        // 复用驻留的那次真实 Enter 的发起代次（其结局已在预进门处登记）
+                        epochAtSend: Number(preEnter.epochAtSend) || 0,
+                    }
                     : null,
             });
             if (preEnter) clearSentinelPreEnter();
@@ -873,7 +897,7 @@ function armMaturitySentinel(now = Date.now()) {
     const dueGid = dueWatch.length > 0 ? Number(dueWatch[0].gid) || 0 : 0;
     sentinelArmedFor = { kind: candidate.kind, dueAt: candidate.dueAt, gid: dueGid };
     const delay = Math.max(0, candidate.dueAt - now) + randInt(SENTINEL_ACT_DELAY_MS[0], SENTINEL_ACT_DELAY_MS[1]);
-    sentinelTimer = setTimeout(runSentinelStrike, delay);
+    sentinelTimer = scheduleSentinelTimer('sentinel_strike', delay, runSentinelStrike);
     sentinelTimer.unref?.();
     if (dueGid) armSentinelPreEnter(sentinelArmedFor);
 }
@@ -958,18 +982,24 @@ function pauseRemainMsNow() {
     return Math.max(0, getPauseRemainMs(process.env.FARM_ACCOUNT_ID || ''));
 }
 
+function nextActivityRewardsAt(now = Date.now()) {
+    return require('../services/milk-tea-activity').automaticMilkTeaWakeAt(now);
+}
+
 async function runUnifiedTick() {
     if (!unifiedSchedulerRunning || !loginReady || friendSyncPaused) return;
 
-    // 免打扰：偷菜/农场/帮助/推送全部不做，只等唤醒
+    // Own maturity keeps its independent guard; ordinary farm/friend work remains paused.
+    armOwnHarvestGuard();
     const pauseRemain = pauseRemainMsNow();
     if (pauseRemain > 0) {
-        markIdleQuietUntil(0);
+        markIdleQuietUntil(Date.now() + pauseRemain);
         pauseAceReports();
         const now = Date.now();
         if (now - lastPauseAnnounceAt > 10 * 60_000) {
             lastPauseAnnounceAt = now;
-            log('系统', `免打扰中，${formatIdleRemain(pauseRemain)}内不做任何检测`, {
+            const idleProtected = getIdleProtectionUntil(now) > now;
+            log('系统', `${idleProtected ? '重点防护中' : '免打扰中'}，${formatIdleRemain(pauseRemain)}内暂停常规业务，自己的成熟收获与补种照常`, {
                 module: 'system',
                 event: '免打扰',
                 pauseRemainMs: pauseRemain,
@@ -1011,7 +1041,8 @@ async function runUnifiedTick() {
     const shouldHelp = now >= nextHelpRunAt;
     const shouldSteal = stealAt > 0 && now >= stealAt;
 
-    if (!shouldFarm && !shouldHelp && !shouldSteal && !stealIsImminent(1500)) return;
+    const shouldActivity = autoConfig.milk_tea_auto_rewards === true && now >= nextActivityRewardsAt(now);
+    if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
     if (!autoConfig.friend_steal) {
         nextStealRunAt = now + STEAL_IDLE_MS;
@@ -1026,7 +1057,14 @@ async function runUnifiedTick() {
         return;
     }
     if (shouldFarm) await runFarmTick(autoConfig);
+    if (pauseRemainMsNow() > 0) return;
     if (shouldHelp) await runHelpTick(autoConfig);
+    if (shouldActivity && loginReady && !friendSyncPaused && pauseRemainMsNow() <= 0) {
+        await require('../services/milk-tea-activity').runAutomaticMilkTea({
+            isReady: () => loginReady && !friendSyncPaused,
+            canRun: () => !ownHarvestIsDue() && !ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS) && !stealIsDue() && !stealIsImminent(1500),
+        });
+    }
 }
 
 function scheduleUnifiedNextTick() {
@@ -1034,19 +1072,40 @@ function scheduleUnifiedNextTick() {
     workerScheduler.clear('unified_next_tick');
 
     if (!loginReady) {
-        workerScheduler.setTimeoutTask('unified_next_tick', 500, async () => {
-            try { await runUnifiedTick(); } finally { scheduleUnifiedNextTick(); }
-        });
+        workerScheduler.setTimeoutTask('unified_next_tick', 500, onTimer_unified_next_tick);
         return;
     }
 
     const now = Date.now();
-    const pauseRemain = pauseRemainMsNow();
+    const activityAt = nextActivityRewardsAt(now);
+    let pauseRemain = pauseRemainMsNow();
+    if (pauseRemain <= 0) {
+        const until = planIdleProtection({
+            enabled: getFriendQuietHours().idleProtectionEnabled,
+            now, farmAt: Math.min(nextFarmRunAt, activityAt), helpAt: nextHelpRunAt,
+            ownDueAt: ownHarvestDueAt(), stealDueAt: resolveStealDueAt(now),
+            horizonMs: nextIdleHorizonMs(now), activeMs: effectiveWakeBeforeMs(now),
+        });
+        if (until > now) {
+            setIdleProtectionUntil(until);
+            pauseRemain = until - now;
+            log('系统', `重点防护：空闲期间暂停业务请求，${formatIdleRemain(pauseRemain)}后恢复`, {
+                module: 'system', event: '重点防护', sleepMs: pauseRemain, until,
+            });
+        }
+    }
+    if (pauseRemain > 0) {
+        markIdleQuietUntil(now + pauseRemain);
+        pauseAceReports();
+        workerScheduler.setTimeoutTask('unified_next_tick', pauseRemain, onTimer_unified_next_tick);
+        return;
+    }
     const stealAt = pauseRemain > 0 ? now + pauseRemain : nextScheduledStealAt();
     const nearest = Math.min(
         Number(nextFarmRunAt) || now + 8000,
         Number(nextHelpRunAt) || now + 30000,
-        Number(stealAt) || now + STEAL_IDLE_MS
+        Number(stealAt) || now + STEAL_IDLE_MS,
+        activityAt
     );
     const waitMs = Math.max(100, nearest - now);
     if (waitMs >= 60_000) {
@@ -1057,9 +1116,7 @@ function scheduleUnifiedNextTick() {
         resumeAceReports();
     }
 
-    workerScheduler.setTimeoutTask('unified_next_tick', waitMs, async () => {
-        try { await runUnifiedTick(); } finally { scheduleUnifiedNextTick(); }
-    });
+    workerScheduler.setTimeoutTask('unified_next_tick', waitMs, onTimer_unified_next_tick);
 }
 
 function startUnifiedScheduler() {
@@ -1071,6 +1128,8 @@ function startUnifiedScheduler() {
 }
 
 function stopUnifiedScheduler() {
+    setIdleProtectionUntil(0);
+    markIdleQuietUntil(0);
     unifiedSchedulerRunning = false;
     farmTaskRunning = false;
     helpTaskRunning = false;
@@ -1090,6 +1149,14 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
         persist: false,
         accountId
     });
+    if (getFriendQuietHours().idleProtectionEnabled !== true) setIdleProtectionUntil(0);
+
+    // 配置侧意图 reconcile（2026-10-07 陈旧名单治理）：配置应用完成后、
+    // 进入调度前消费用户恢复/移除意图（更新意图先于一切暂停判定）。
+    // 失败不阻塞配置应用，下一次 config_sync 重试。
+    try {
+        require('../services/friend-orchestrator').reconcileWatchlistIntents();
+    } catch { /* reconcile 失败不影响配置应用 */ }
 
     const revision = Number((config || {}).__revision || 0);
     if (revision > 0) appliedConfigRevision = revision;
@@ -1116,18 +1183,14 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
                 'mystery_shop_allow_gold_bean'
             ].some(key => prevAuto?.[key] !== newAuto?.[key]);
             if (newAuto?.mystery_shop_auto_buy && mysteryShopConfigChanged) {
-                workerScheduler.setTimeoutTask('mystery_shop_auto_buy_after_save', 2000, () => {
-                    runMysteryShopAutoBuy().catch(() => null);
-                });
+                workerScheduler.setTimeoutTask('mystery_shop_auto_buy_after_save', 2000, onTimer_mystery_shop_auto_buy_after_save);
             }
 
             // 每日任务从关变开 → 立即执行一次
             const prevDailyEnabled = isDailyRoutineEnabled(prevAuto);
             const newDailyEnabled = isDailyRoutineEnabled(newAuto);
             if (!prevDailyEnabled && newDailyEnabled) {
-                workerScheduler.setTimeoutTask('daily_routine_immediate', 2000, () => {
-                    runDailyRoutines(true).catch(() => null);
-                });
+                workerScheduler.setTimeoutTask('daily_routine_immediate', 2000, onTimer_daily_routine_immediate);
             }
 
             // 施肥策略变化 → 立即施肥
@@ -1135,41 +1198,20 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
             const newFert = String(newAuto && newAuto.fertilizer ? newAuto.fertilizer : '').toLowerCase();
             const fertChanged = prevFert !== newFert;
             if (fertChanged && (newFert === 'both' || newFert === 'organic' || newFert === 'smart' || newFert === 'smart_only' || newFert === 'smart_normal' || newFert === 'final_normal' || newFert === 'final_organic')) {
-                workerScheduler.setTimeoutTask('fertilizer_immediate_after_save', 1000, async () => {
-                    if (!loginReady) return;
-                    try {
-                        await runFertilizerByConfig([], { skipNormal: true });
-                    } catch (err) {
-                        log('施肥', `保存配置后立即施肥失败: ${  err.message}`, {
-                            module: 'farm', event: '施肥', result: 'error'
-                        });
-                    }
-                });
+                workerScheduler.setTimeoutTask('fertilizer_immediate_after_save', 1000, onTimer_fertilizer_immediate_after_save);
             }
 
             // 好友捣乱从关变开 → 立即执行
             const prevBad = !!(prevAuto && prevAuto.friend_bad);
             const newBad = !!(newAuto && newAuto.friend_bad);
             if (!prevBad && newBad) {
-                workerScheduler.setTimeoutTask('friend_bad_immediate', 3000, async () => {
-                    if (!loginReady) return;
-                    try {
-                        await runBadOnceOnStartup(true);
-                    } catch (err) {
-                        log('好友', `开启自动捣乱后立即执行失败: ${  err.message}`, {
-                            module: 'friend', event: '开启捣乱立即执行', result: 'error'
-                        });
-                    }
-                });
+                workerScheduler.setTimeoutTask('friend_bad_immediate', 3000, onTimer_friend_bad_immediate);
             }
 
             const prevGoldenBug = !!(prevAuto && prevAuto.friend_golden_bug);
             const newGoldenBug = !!(newAuto && newAuto.friend_golden_bug);
             if (!prevGoldenBug && newGoldenBug) {
-                workerScheduler.setTimeoutTask('friend_golden_bug_immediate', 3000, async () => {
-                    if (!loginReady) return;
-                    await runGoldenBugPlacement({ force: true });
-                });
+                workerScheduler.setTimeoutTask('friend_golden_bug_immediate', 3000, onTimer_friend_golden_bug_immediate);
             }
         }
     }
@@ -1189,6 +1231,7 @@ onMasterMessage(async (msg) => {
             handleApiCall(msg);
         } else if (msg.type === 'config_sync') {
             applyRuntimeConfig(msg.config || {}, true);
+            globalThis.__farmSessionBridge?.setAppliedRevision(appliedConfigRevision);
         } else if (msg.type === 'watchdog_ping') {
             sendToMaster({ type: 'watchdog_pong', at: msg.at || Date.now() });
         }
@@ -1209,174 +1252,23 @@ async function startBot(config) {
     await loadProto();
     log('系统', '正在连接服务器...');
 
+    // 暂停状态镜像加载一次（2026-10-07 陈旧名单治理）：账号上下文确定后、
+    // 首次配置应用前播种（镜像缺失/损坏按空状态，不阻塞登录）。
+    // 必须先播种再 reconcile：否则本轮刚消费的意图会被旧镜像回滚。
+    try {
+        const { readWatchlistStateMirror } = require('../models/store');
+        require('../services/friend-orchestrator')
+            .seedWatchlistStateFromMirror(readWatchlistStateMirror(process.env.FARM_ACCOUNT_ID || ''));
+    } catch { /* 镜像不可读按空状态启动 */ }
+
     applyRuntimeConfig(getConfigSnapshot(), false);
     initStatusBar();
     setStatusPlatform(CONFIG.platform);
 
-    // WebSocket 错误监听
-    if (onWsError) {
-        networkEvents.off('ws_error', onWsError);
-        onWsError = null;
-    }
-    onWsError = (wsErr) => {
-        if ((Number(wsErr?.code) || 0) !== 400) return;
-        const now = Date.now();
-        if (now - wsErrorHandledAt < 5000) return;
-        wsErrorHandledAt = now;
-
-        log('系统', '连接被拒绝，可能需要更新 Code');
-        sendToMaster({
-            type: 'ws_error',
-            code: 400,
-            message: wsErr?.message || ''
-        });
-        if (isRunning) {
-            workerScheduler.setTimeoutTask('ws_error_cleanup', 500, () => {
-                if (isRunning) stopBot().catch(() => exitWorker(0));
-            });
-        }
-    };
-    networkEvents.on('ws_error', onWsError);
-    networkEvents.on('reconnect_failed', onReconnectFailed);
-    networkEvents.on('kickout', onKickout);
-    networkEvents.on('friendLandsChanged', onFriendLandsChanged);
-
-    if (onClientVersionUpdate) networkEvents.off('client_version_update', onClientVersionUpdate);
-    onClientVersionUpdate = ({ clientVersion, previous }) => {
-        sendToMaster({
-            type: 'client_version_update',
-            clientVersion: String(clientVersion || ''),
-            previous: String(previous || '')
-        });
-    };
-    networkEvents.on('client_version_update', onClientVersionUpdate);
-
-    // 断线监听
-    if (onDisconnectHandler) networkEvents.off('disconnect', onDisconnectHandler);
-    onDisconnectHandler = () => {
-        if (!loginReady) return;
-        loginReady = false;
-        log('系统', '连接断开，暂停自动化任务，等待重连...');
-    };
-    networkEvents.on('disconnect', onDisconnectHandler);
-
-    // 登录成功回调
-    const onReady = async () => {
-        loginReady = true;
-
-        // 出售收益监听
-        if (onSellGain) networkEvents.off('sell', onSellGain);
-        onSellGain = (sellInfo) => {
-            const gold = Number(sellInfo && sellInfo.gold || sellInfo || 0);
-            const count = Number(sellInfo && sellInfo.count || 0);
-            if (!Number.isFinite(gold) || gold <= 0) return;
-            if (count > 0) recordOperation('sell', count);
-        };
-        networkEvents.on('sell', onSellGain);
-
-        // 收获后自动出售
-        if (onFarmHarvested) networkEvents.off('farmHarvested', onFarmHarvested);
-        onFarmHarvested = async () => {
-            if (harvestSellRunning) return;
-            if (!getAutomation().sell) return;
-            harvestSellRunning = true;
-            try {
-                await sellAllFruits();
-            } catch (err) {
-                log('仓库', `收获后自动出售失败: ${  err.message}`, {
-                    module: 'warehouse', event: '收获后出售', result: 'error'
-                });
-            } finally {
-                harvestSellRunning = false;
-            }
-        };
-        networkEvents.on('farmHarvested', onFarmHarvested);
-
-        if (onOwnMaturityChanged) networkEvents.off('ownMaturityChanged', onOwnMaturityChanged);
-        onOwnMaturityChanged = () => {
-            armOwnHarvestGuard();
-            // 新墙钟也立即参与下一轮状态与统一调度重算，但自己的精确定时器独立运行。
-            if (unifiedSchedulerRunning) scheduleUnifiedNextTick();
-        };
-        networkEvents.on('ownMaturityChanged', onOwnMaturityChanged);
-
-        if (onDogSkillGiftPending) networkEvents.off('dogSkillGiftPending', onDogSkillGiftPending);
-        onDogSkillGiftPending = (count) => {
-            const pendingCount = Math.max(0, toNum(count));
-            if (!loginReady || pendingCount <= 0) return;
-            require('../services/dog-skill-gifts').checkAndClaimDogSkillGifts(pendingCount).catch(() => null);
-        };
-        networkEvents.on('dogSkillGiftPending', onDogSkillGiftPending);
-
-        // 获取背包点券数
-        try {
-            const bag = await getBag();
-            const items = getBagItems(bag);
-            let couponCount = 0;
-            for (const item of items || []) {
-                if (toNum(item && item.id) === 1002) {
-                    couponCount = toNum(item.count);
-                    break;
-                }
-            }
-            const state = getUserState();
-            state.coupon = Math.max(0, couponCount);
-        } catch { }
-
-        // 初始化统计数据
-        const userState = getUserState();
-        const accountId = process.env.FARM_ACCOUNT_ID || '';
-        initStatsWithPersistence(
-            accountId,
-            Number(userState.gold || 0),
-            Number(userState.exp || 0),
-            Number(userState.coupon || 0)
-        );
-        resetSessionGains();
-
-        // 处理邀请码
-        await processInviteCodes();
-
-        // 打开肥料礼包
-        if (getAutomation().fertilizer_gift) {
-            await openFertilizerGiftPacksSilently().catch(() => 0);
-        }
-
-        // 延迟执行放虫放草
-        workerScheduler.setTimeoutTask('bad_startup_once', 15000, async () => {
-            try {
-                await runBadOnceOnStartup();
-            } catch (err) {
-                log('好友', `启动时放虫放草执行失败: ${  err.message}`, {
-                    module: 'friend', event: '启动放虫放草失败', error: err.message
-                });
-            }
-        });
-
-        // 启动各检查循环
-        startFarmCheckLoop({ externalScheduler: true });
-        startFriendCheckLoop({ externalScheduler: true });
-        // 重点巡田读到新成熟时刻时立即重排偷菜唤醒
-        setArmStealWakeCallback(armStealWake);
-        armOwnHarvestGuard();
-
-        // 启动统一调度器
-        if (unifiedSchedulerRunning) {
-            resetUnifiedSchedule();
-            scheduleUnifiedNextTick();
-        } else {
-            startUnifiedScheduler();
-        }
-
-        // 启动每日定时器
-        startDailyRoutineTimer();
-        startMysteryShopAutoBuyTimer();
-
-        syncStatus();
-    };
+    bindWorkerNetworkEvents();
 
     // 建立连接
-    connect(code, onReady);
+    connect(code, onLoginReady);
 
     // 定期同步状态
     workerScheduler.setIntervalTask('status_sync', 5000, syncStatus, { preventOverlap: true });
@@ -1443,17 +1335,17 @@ async function stopBot() {
 // ==================== 踢下线处理 ====================
 
 function onKickout(info) {
+    if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') return;
     const reason = info && info.reason ? info.reason : '未知';
     log('系统', `检测到踢下线，准备自动停止账号。原因: ${  reason}`);
     require('../services/daily-events').recordEvent(
         process.env.FARM_ACCOUNT_ID || '', 'warn', 'kickout', `被踢下线：${reason}`);
     sendToMaster({ type: 'account_kicked', reason });
-    workerScheduler.setTimeoutTask('kickout_stop', 500, () => {
-        stopBot().catch(() => exitWorker(0));
-    });
+    workerScheduler.setTimeoutTask('kickout_stop', 500, onTimer_kickout_stop);
 }
 
 function onReconnectFailed(info) {
+    if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') return;
     const reason = info && info.reason ? info.reason : '未知';
     log('系统', `连接多次重试失败，准备停止账号。原因: ${  reason}`);
     require('../services/daily-events').recordEvent(
@@ -1493,6 +1385,8 @@ function onFriendLandsChanged(info) {
         // 证据——进活跃表后巡田自动收紧到 45-75s，施肥证据则直接进 HOT。
         require('../services/friend-activity').recordActivity(hostGid, Date.now(), 'lands_push',
             `${externalLands.length} lands changed`);
+        // Passive evidence may update, but a pause must not dispatch online/push actions.
+        if (pauseRemainMsNow() > 0) return;
         // 推送即出手窗口（2026-09-23 用户定标）：不等 1s 档 tick，直接把该好友
         // 的巡田拉近到 ~300ms 后——推送→进门→偷 的端到端压到 1 秒内。
         require('../services/friend').pullWatchlistPollToNow(hostGid, 300);
@@ -1518,13 +1412,25 @@ const FRIEND_PANEL_ENTRY_METHODS = new Set([
     'syncFriendsFromGids',
 ]);
 
+// 背包面板入口的就绪闸门（2026-10-04 启动窗口 500 收口）：getBag/getBagSeeds
+// 用同一组就绪条件，但单独成集合——上方集合与 isFriendSync 三入口绑定不得扩散。
+// 未就绪照发时，协议加载窗口内 types.BagRequest 尚未原地发布（proto.js 启动
+// 竞态语义），getBag() 以无关键字的 TypeError 失败并污染面板背包 60s 失败冷却
+// （warehouse.panelBagRetryAfter），路由侧又按未知错误回 HTTP 500。未就绪就地
+// 返回下方固定本地拒绝：零上游请求、零 Bag 编码、不等待登录、不重试、
+// 不设置好友同步暂停；就绪后读取立即可用（拒绝不写失败冷却）。
+const BAG_PANEL_ENTRY_METHODS = new Set([
+    'getBag',
+    'getBagSeeds',
+]);
+
 // 萌宠手动操作的业务错误元数据（2026-09-20 跨 Worker 丢失修复）：
 // pet-diary-operate 抛出的业务拒绝带 business 标记 + 固定 code，旧管理通道
 // 只回传 error 字符串导致下游一律按 502 服务故障处理。此处只收集严格布尔
 // 标记与限定格式的固定业务码（PET_DIARY_/WISH_SIGN_/HAPPY_SHARE_/SEASON_WISH_
 // 前缀，2026-09-24 扩展季节活动手动操作），不序列化整个 Error、堆栈、
 // cause 或任意附加属性，也不扩大到其他业务错误。
-const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH)_[A-Z0-9_]{1,48}$/;
+const PET_DIARY_ERROR_CODE_RE = /^(?:PET_DIARY|WISH_SIGN|HAPPY_SHARE|SEASON_WISH|FESTIVAL)_[A-Z0-9_]{1,48}$/;
 
 function collectPetDiaryErrorMeta(err) {
     if (!err || err.business !== true) return null;
@@ -1604,7 +1510,7 @@ async function handleApiCall(msg) {
     let error = null;
     let errorMeta = null;
 
-    if (FRIEND_PANEL_ENTRY_METHODS.has(method)) {
+    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements') {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({
@@ -1783,8 +1689,10 @@ async function handleApiCall(msg) {
                 break;
             }
             case 'getMysteryShop': {
-                const { getActiveMysteryShop } = require('../services/mystery-shop');
-                result = await getActiveMysteryShop();
+                // 面板读走 60s 缓存 + 在途合并（2026-10-03 收口）；自动购买
+                // 链 checkAndAutoBuyMysteryShop 仍直调无缓存的 getActiveMysteryShop。
+                const { getMysteryShopForPanel } = require('../services/mystery-shop');
+                result = await getMysteryShopForPanel();
                 break;
             }
             case 'buyMysteryShopGoods': {
@@ -1802,38 +1710,57 @@ async function handleApiCall(msg) {
                 result = await getActivityDiscoveryList();
                 break;
             }
+            case 'getOfficialAnnouncements': {
+                const { getOfficialAnnouncements } = require('../services/official-announcements');
+                result = await getOfficialAnnouncements();
+                break;
+            }
             case 'getActivityGroupSnapshot': {
                 const { getActivityGroupSnapshot } = require('../services/activity');
                 result = await getActivityGroupSnapshot(args[0], args[1]);
                 break;
             }
-            case 'getBearActivity': {
-                const { getBearActivity } = require('../services/activity');
-                result = await getBearActivity();
+            case 'getMilkTeaActivity': {
+                const { getMilkTeaActivity } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
+                // 活动段入口防护：未登录就绪/连接不在位一律在触达读取前拒绝（零上游）
+                result = await getMilkTeaActivity({
+                    includeGameplay: true,
+                    deps: { getBag, getBagItems, isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
+                });
                 break;
             }
-            case 'getWishActivity': {
-                const { getWishActivity } = require('../services/activity');
-                result = await getWishActivity();
+            case 'getSolarCalendar':
+            case 'operateSolarCalendar': {
+                const service = require('../services/solar-calendar');
+                const deps = { isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() };
+                result = method === 'getSolarCalendar' ? await service.getSolarCalendar(deps) : await service.operateSolarCalendar(args[0], args[1] || {}, deps);
                 break;
             }
-            case 'getHappyShareActivity': {
-                const { getHappyShareActivity } = require('../services/activity');
-                result = await getHappyShareActivity();
+            case 'queryMilkTeaActivity': {
+                const { queryMilkTeaActivity } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
+                result = await queryMilkTeaActivity(args[0], args[1] || {}, {
+                    getBag, getBagItems,
+                    isReady: () => loginReady && getWs()?.readyState === 1,
+                    getConnection: () => getWs(),
+                });
                 break;
             }
-            case 'operatePetDiary': {
-                const { runManualPetDiaryAction } = require('../services/pet-diary-operate');
-                const { getBag } = require('../services/warehouse');
-                const { getBagItems } = require('../services/warehouse');
-                result = await runManualPetDiaryAction(args[0], args[1], { getBag, getBagItems });
+            case 'operateMilkTea': {
+                const { runManualMilkTeaAction } = require('../services/milk-tea-activity');
+                const { getBag, getBagItems } = require('../services/warehouse');
+                result = await runManualMilkTeaAction(args[0], args[1] || {}, {
+                    getBag, getBagItems,
+                    isReady: () => loginReady && getWs()?.readyState === 1,
+                    getConnection: () => getWs(),
+                });
                 break;
             }
-            case 'operateSeasonWish': {
-                const { runManualSeasonWishAction } = require('../services/season-wish-operate');
-                result = await runManualSeasonWishAction(args[0], args[1]);
-                break;
-            }
+            // S3 萌宠 / 秋祈良愿 / 快乐不独享（getBearActivity/getWishActivity/
+            // getHappyShareActivity/operatePetDiary/operateSeasonWish）已随 S4 轮换
+            // 下架（2026-10-15 退役）：Worker case 与 provider 转发一并移除，
+            // 旧公开服务入口在任何读取/发包前固定拒绝。
             case 'getIllustratedList': {
                 const { getIllustratedListV2 } = require('../services/illustrated');
                 result = await getIllustratedListV2(args[0], args[1]);
@@ -2045,7 +1972,9 @@ function syncStatus() {
 
     const userState = getUserState();
     const ws = getWs();
-    const connected = !!(loginReady && ws && ws.readyState === 1);
+    const connected = globalThis.__farmSessionBridge
+        ? globalThis.__farmSessionBridge.readFacts().game.connected === true
+        : !!(loginReady && ws && ws.readyState === 1);
 
     let levelProgress = null;
     const level = userState.level ?? statusData.level ?? 0;
@@ -2101,6 +2030,14 @@ function syncStatus() {
         : { active: false, remainSec: 0, recommendedDelaySec: 0 };
     // 兼容旧面板字段：新机制不再存在整号硬熔断。
     stats.breaker = { active: false, remainSec: 0 };
+    const protectionUntil = getFriendQuietHours().idleProtectionEnabled === true
+        ? getIdleProtectionUntil(now) : 0;
+    stats.idleProtection = {
+        enabled: getFriendQuietHours().idleProtectionEnabled === true,
+        active: protectionUntil > now,
+        remainSec: Math.max(0, Math.ceil((protectionUntil - now) / 1000)),
+        until: protectionUntil,
+    };
 
     // 重点监控好友的成熟倒计时快照（面板展示 + 设置参考）
     stats.watchlistRipe = require('../services/friend').getWatchlistRipeSnapshots(now);
@@ -2134,3 +2071,393 @@ function syncStatus() {
 // 仅测试用：好友推送分支的消费者接线可直接驱动（生产入口仍是
 // networkEvents 的 friendLandsChanged 事件，见 startNetwork 注册处）。
 module.exports = { onFriendLandsChanged };
+
+function bindWorkerReadyEvents() {
+    // 出售收益监听
+    if (onSellGain) networkEvents.off('sell', onSellGain);
+    onSellGain = (sellInfo) => {
+        const gold = Number(sellInfo && sellInfo.gold || sellInfo || 0);
+        const count = Number(sellInfo && sellInfo.count || 0);
+        if (!Number.isFinite(gold) || gold <= 0) return;
+        if (count > 0) recordOperation('sell', count);
+    };
+    networkEvents.on('sell', onSellGain);
+
+    // 收获后自动出售
+    if (onFarmHarvested) networkEvents.off('farmHarvested', onFarmHarvested);
+    onFarmHarvested = async (event = {}) => {
+        if (event.quietPriority || pauseRemainMsNow() > 0) { deferOwnHarvestSale(); return; }
+        if (harvestSellRunning) return;
+        if (!getAutomation().sell) return;
+        harvestSellRunning = true;
+        try {
+            await sellAllFruits();
+        } catch (err) {
+            log('仓库', `收获后自动出售失败: ${  err.message}`, {
+                module: 'warehouse', event: '收获后出售', result: 'error'
+            });
+        } finally {
+            harvestSellRunning = false;
+        }
+    };
+    networkEvents.on('farmHarvested', onFarmHarvested);
+
+    if (onOwnMaturityChanged) networkEvents.off('ownMaturityChanged', onOwnMaturityChanged);
+    onOwnMaturityChanged = () => {
+        armOwnHarvestGuard();
+        // 新墙钟也立即参与下一轮状态与统一调度重算，但自己的精确定时器独立运行。
+        if (unifiedSchedulerRunning) scheduleUnifiedNextTick();
+    };
+    networkEvents.on('ownMaturityChanged', onOwnMaturityChanged);
+
+    if (onDogSkillGiftPending) networkEvents.off('dogSkillGiftPending', onDogSkillGiftPending);
+    onDogSkillGiftPending = (count) => {
+        const pendingCount = Math.max(0, toNum(count));
+        if (!loginReady || pendingCount <= 0 || pauseRemainMsNow() > 0) return;
+        require('../services/dog-skill-gifts').checkAndClaimDogSkillGifts(pendingCount, { automatic: true }).catch(() => null);
+    };
+    networkEvents.on('dogSkillGiftPending', onDogSkillGiftPending);
+
+}
+
+async function onLoginReady() {
+    loginReady = true;
+
+    bindWorkerReadyEvents();
+
+    // 获取背包点券数
+    try {
+        const bag = await getBag();
+        const items = getBagItems(bag);
+        let couponCount = 0;
+        for (const item of items || []) {
+            if (toNum(item && item.id) === 1002) {
+                couponCount = toNum(item.count);
+                break;
+            }
+        }
+        const state = getUserState();
+            if (globalThis.__farmSessionBridge) globalThis.__farmSessionBridge.network.correctSessionWallet('coupon', { value: couponCount });
+            else state.coupon = Math.max(0, couponCount);
+    } catch { }
+
+    // 初始化统计数据
+    const userState = getUserState();
+    const accountId = process.env.FARM_ACCOUNT_ID || '';
+    initStatsWithPersistence(
+        accountId,
+        Number(userState.gold || 0),
+        Number(userState.exp || 0),
+        Number(userState.coupon || 0)
+    );
+    resetSessionGains();
+
+    // 处理邀请码
+    await processInviteCodes();
+
+    // 打开肥料礼包
+    if (getAutomation().fertilizer_gift) {
+        await openFertilizerGiftPacksSilently().catch(() => 0);
+    }
+
+    // 延迟执行放虫放草
+    workerScheduler.setTimeoutTask('bad_startup_once', 15000, onTimer_bad_startup_once);
+
+    // 启动各检查循环
+    startFarmCheckLoop({ externalScheduler: true });
+    startFriendCheckLoop({ externalScheduler: true });
+    // 重点巡田读到新成熟时刻时立即重排偷菜唤醒
+    setArmStealWakeCallback(armStealWake);
+    armOwnHarvestGuard();
+
+    // 启动统一调度器
+    if (unifiedSchedulerRunning) {
+        resetUnifiedSchedule();
+        scheduleUnifiedNextTick();
+    } else {
+        startUnifiedScheduler();
+    }
+
+    // 启动每日定时器
+    startDailyRoutineTimer();
+    startMysteryShopAutoBuyTimer();
+
+    syncStatus();
+}
+
+function bindWorkerNetworkEvents() {
+    // WebSocket 错误监听
+    if (onWsError) {
+        networkEvents.off('ws_error', onWsError);
+        onWsError = null;
+    }
+    onWsError = (wsErr) => {
+        if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') return;
+        if ((Number(wsErr?.code) || 0) !== 400) return;
+        const now = Date.now();
+        if (now - wsErrorHandledAt < 5000) return;
+        wsErrorHandledAt = now;
+
+        log('系统', '连接被拒绝，可能需要更新 Code');
+        sendToMaster({
+            type: 'ws_error',
+            code: 400,
+            message: wsErr?.message || ''
+        });
+        if (isRunning) {
+            workerScheduler.setTimeoutTask('ws_error_cleanup', 500, onTimer_ws_error_cleanup);
+        }
+    };
+    networkEvents.on('ws_error', onWsError);
+    networkEvents.on('reconnect_failed', onReconnectFailed);
+    networkEvents.on('kickout', onKickout);
+    networkEvents.on('friendLandsChanged', onFriendLandsChanged);
+
+    if (onClientVersionUpdate) networkEvents.off('client_version_update', onClientVersionUpdate);
+    onClientVersionUpdate = ({ clientVersion, previous }) => {
+        sendToMaster({
+            type: 'client_version_update',
+            clientVersion: String(clientVersion || ''),
+            previous: String(previous || '')
+        });
+    };
+    networkEvents.on('client_version_update', onClientVersionUpdate);
+
+    // 断线监听
+    if (onDisconnectHandler) networkEvents.off('disconnect', onDisconnectHandler);
+    onDisconnectHandler = () => {
+        if (!loginReady) return;
+        loginReady = false;
+        log('系统', '连接断开，暂停自动化任务，等待重连...');
+    };
+    networkEvents.on('disconnect', onDisconnectHandler);
+
+
+}
+
+function scheduleMysteryShopCheck(delayMs) {
+    workerScheduler.setTimeoutTask('mystery_shop_auto_buy_interval', delayMs, onMysteryShopTimer);
+}
+function onMysteryShopTimer() {
+    return runMysteryShopAutoBuy().catch(() => null).finally(() =>
+        scheduleMysteryShopCheck(require('../services/mystery-shop').nextAutoBuyCheckDelayMs()));
+}
+
+// Named timer bindings are stable across business versions.
+function onTimer_daily_routine_interval() {
+        if (!loginReady || pauseRemainMsNow() > 0) return;
+        const today = getLocalDateKey();
+        if (today === lastDailyRunDate) return;
+        lastDailyRunDate = today;
+        return runDailyRoutines(false)
+            .then(() => runBadOnceOnStartup(true))
+            .catch(() => null);
+    }
+
+async function onTimer_own_harvest_guard() {
+        ownHarvestArmedFor = 0;
+        await runOwnHarvestStrike();
+    }
+
+async function onTimer_unified_next_tick() {
+            try { await runUnifiedTick(); } finally { scheduleUnifiedNextTick(); }
+        }
+
+function onTimer_mystery_shop_auto_buy_after_save() {
+                    return runMysteryShopAutoBuy().catch(() => null);
+                }
+
+function onTimer_daily_routine_immediate() {
+                    return runDailyRoutines(true).catch(() => null);
+                }
+
+async function onTimer_fertilizer_immediate_after_save() {
+                    if (!loginReady || pauseRemainMsNow() > 0) return;
+                    try {
+                        await runFertilizerByConfig([], { skipNormal: true });
+                    } catch (err) {
+                        log('施肥', `保存配置后立即施肥失败: ${  err.message}`, {
+                            module: 'farm', event: '施肥', result: 'error'
+                        });
+                    }
+                }
+
+async function onTimer_friend_bad_immediate() {
+                    if (!loginReady) return;
+                    try {
+                        await runBadOnceOnStartup(true);
+                    } catch (err) {
+                        log('好友', `开启自动捣乱后立即执行失败: ${  err.message}`, {
+                            module: 'friend', event: '开启捣乱立即执行', result: 'error'
+                        });
+                    }
+                }
+
+async function onTimer_friend_golden_bug_immediate() {
+                    if (!loginReady) return;
+                    await runGoldenBugPlacement({ force: true });
+                }
+
+function onTimer_kickout_stop() {
+        stopBot().catch(() => exitWorker(0));
+    }
+
+async function onTimer_bad_startup_once() {
+        try {
+            await runBadOnceOnStartup();
+        } catch (err) {
+            log('好友', `启动时放虫放草执行失败: ${  err.message}`, {
+                module: 'friend', event: '启动放虫放草失败', error: err.message
+            });
+        }
+    }
+
+function onTimer_ws_error_cleanup() {
+                if (isRunning) stopBot().catch(() => exitWorker(0));
+            }
+
+function bindWorkerSessionState() {
+    workerScheduler.bindTimeoutTask('sentinel_strike', runSentinelStrike);
+    workerScheduler.bindTimeoutTask('sentinel_pre_enter', onSentinelPreEnterTimer);
+    bindWorkerNetworkEvents();
+    globalThis.__farmSessionBridge.setLoginCallback(onLoginReady);
+    if (loginReady) bindWorkerReadyEvents();
+    setArmStealWakeCallback(armStealWake);
+        workerScheduler.bindIntervalTask('daily_routine_interval', onTimer_daily_routine_interval);
+        workerScheduler.bindTimeoutTask('own_harvest_guard', onTimer_own_harvest_guard);
+        workerScheduler.bindTimeoutTask('unified_next_tick', onTimer_unified_next_tick);
+        workerScheduler.bindTimeoutTask('mystery_shop_auto_buy_after_save', onTimer_mystery_shop_auto_buy_after_save);
+        workerScheduler.bindTimeoutTask('daily_routine_immediate', onTimer_daily_routine_immediate);
+        workerScheduler.bindTimeoutTask('fertilizer_immediate_after_save', onTimer_fertilizer_immediate_after_save);
+        workerScheduler.bindTimeoutTask('friend_bad_immediate', onTimer_friend_bad_immediate);
+        workerScheduler.bindTimeoutTask('friend_golden_bug_immediate', onTimer_friend_golden_bug_immediate);
+        workerScheduler.bindIntervalTask('status_sync', syncStatus);
+        workerScheduler.bindTimeoutTask('kickout_stop', onTimer_kickout_stop);
+        workerScheduler.bindTimeoutTask('bad_startup_once', onTimer_bad_startup_once);
+        workerScheduler.bindTimeoutTask('ws_error_cleanup', onTimer_ws_error_cleanup);
+        workerScheduler.bindTimeoutTask('mystery_shop_auto_buy_interval', onMysteryShopTimer);
+}
+
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+    // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+    onLoginReady = require('../services/business-state').wrapBusinessFunction('worker:loginReady', onLoginReady);
+    // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+    onSentinelPreEnterTimer = require('../services/business-state').wrapBusinessFunction('worker:sentinelPreEnter', onSentinelPreEnterTimer);
+    module.exports.sessionRuntime = {
+        refreshRewardsSchedule: () => {
+            if (unifiedSchedulerRunning) {
+                // A warm checkpoint may contain the former quiet-until harvest timer.
+                // Re-arm from the preserved crop deadline under the current priority policy.
+                workerScheduler.clear('own_harvest_guard');
+                ownHarvestArmedFor = 0;
+                armOwnHarvestGuard();
+                scheduleUnifiedNextTick();
+            }
+        },
+        send: message => sessionMasterHandler(message),
+        config: () => ({ ...getConfigSnapshot(), __revision: appliedConfigRevision }),
+        restoreConfig(config) {
+            globalThis.__farmSessionBridge.observeReadiness(actual => { if (actual.connected !== true) loginReady = false; });
+            globalThis.__farmSessionBridge.readFacts();
+            CONFIG.platform = config.platform || globalThis.__farmSessionBridge.readFacts().game.platform || 'qq';
+            applyConfigSnapshot(config, { persist: false, accountId: process.env.FARM_ACCOUNT_ID });
+            applyIntervalsToRuntime(config.intervals);
+            this.relabelConfig(config);
+        },
+        relabelConfig(config) {
+            appliedConfigRevision = Number(config.__revision) || 0;
+            globalThis.__farmSessionBridge.setAppliedRevision(appliedConfigRevision);
+        },
+        applyConfig(config, previous) {
+            const identity = value => {
+                const next = { ...value }; delete next.__revision; delete next.code; delete next.platform;
+                const ordered = item => Array.isArray(item) ? item.map(ordered) : item && typeof item === 'object'
+                    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, ordered(item[key])])) : item;
+                return JSON.stringify(ordered(next));
+            };
+            if (identity(config) === identity(previous)) this.relabelConfig(config);
+            else { applyRuntimeConfig(config, true); this.relabelConfig(config); }
+        },
+    };
+}
+
+function scheduleSentinelTimer(name, delay, callback) {
+    return globalThis.process?.env?.FARM_SESSION_BUSINESS === '1'
+        ? workerScheduler.setTimeoutTask(name, delay, callback) : setTimeout(callback, delay);
+}
+async function onSentinelPreEnterTimer() {
+    const payload = sentinelPendingPreEnter;
+    sentinelPendingPreEnter = null;
+    if (!payload) return;
+    const { gid, dueAt, id: entryId } = payload;
+    if (payload.stage === 'expire') {
+        if (sentinelPreEnter?.entryId === entryId) sentinelPreEnter = null;
+        return;
+    }
+        sentinelPreEnterTimer = null;
+        const stillArmed = sentinelArmedFor && Number(sentinelArmedFor.gid) === gid;
+        if (!stillArmed) return;
+        if (pauseRemainMsNow() > 0) return;
+        // 真实 Enter 发起记账（2026-10-07 陈旧名单治理）：仅重点名单目标返回
+        // attempt，该次 Enter 的结局在此登记（偷取复用分支不再重复记账）。
+        // 惰性 require 与请求治理紧急通道同款写法，vm 沙箱测试可注入桩。
+        const wlAttempt = (() => {
+            try {
+                return require('../services/friend-orchestrator').noteWatchlistEnterAttempt(gid);
+            } catch { return null; }
+        })();
+        try {
+            setUrgentStrikeMode(15_000);
+            const enterReply = await require('../services/friend-api').enterFriendFarm(gid);
+            sentinelPreEnter = { gid, dueAt, enteredAt: Date.now(), enterReply, entryId };
+            // 发起代次挂在驻留标记上，Strike 复用分支把它透传进偷取结果
+            sentinelPreEnter.epochAtSend = wlAttempt ? wlAttempt.epoch : 0;
+            try {
+                require('../services/friend-orchestrator').applyWatchlistEnterSuccess(wlAttempt);
+            } catch { /* 记账失败不影响预进门 */ }
+            // 兜底清理：dueAt 后 60s 仍未被 Strike 消费则丢弃驻留标记。
+            sentinelPendingPreEnter = { stage: 'expire', gid, id: entryId };
+            sentinelPreEnterTimer = scheduleSentinelTimer('sentinel_pre_enter', 60_000, onSentinelPreEnterTimer);
+            sentinelPreEnterTimer.unref?.();
+        } catch (err) {
+            try {
+                require('../services/friend-orchestrator').applyWatchlistEnterError(wlAttempt, err);
+            } catch { /* 记账失败不影响兜底路径 */ }
+            /* 预进门失败：Strike 走完整路径 */
+        }
+}
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('../services/business-state');
+  registerDataState('core/worker.js', () => ({ isRunning, loginReady, appliedConfigRevision, unifiedSchedulerRunning, farmTaskRunning, nextFarmRunAt, lastStatusHash, lastStatusSentAt, harvestSellRunning, wsErrorHandledAt, lastDailyRunDate, friendSyncPaused, helpTaskRunning, nextHelpRunAt, stealTaskRunning, nextStealRunAt, lastIdleSleepLogAt, lastIdleAwakeReason, ownHarvestArmedFor, ownHarvestRetryAttempt, ownHarvestStrikeRunning, lastOwnHarvestFailureLogAt, sentinelArmedFor, sentinelPreEnter, stealOverdueStrikes, lastPauseAnnounceAt, sentinelPendingPreEnter, sentinelEntrySeq }), value => {
+      isRunning = value.isRunning;
+      loginReady = value.loginReady;
+      appliedConfigRevision = value.appliedConfigRevision;
+      unifiedSchedulerRunning = value.unifiedSchedulerRunning;
+      farmTaskRunning = value.farmTaskRunning;
+      nextFarmRunAt = value.nextFarmRunAt;
+      lastStatusHash = value.lastStatusHash;
+      lastStatusSentAt = value.lastStatusSentAt;
+      harvestSellRunning = value.harvestSellRunning;
+      wsErrorHandledAt = value.wsErrorHandledAt;
+      lastDailyRunDate = value.lastDailyRunDate;
+      friendSyncPaused = value.friendSyncPaused;
+      helpTaskRunning = value.helpTaskRunning;
+      nextHelpRunAt = value.nextHelpRunAt;
+      stealTaskRunning = value.stealTaskRunning;
+      nextStealRunAt = value.nextStealRunAt;
+      lastIdleSleepLogAt = value.lastIdleSleepLogAt;
+      lastIdleAwakeReason = value.lastIdleAwakeReason;
+      ownHarvestArmedFor = value.ownHarvestArmedFor;
+      ownHarvestRetryAttempt = value.ownHarvestRetryAttempt;
+      ownHarvestStrikeRunning = value.ownHarvestStrikeRunning;
+      lastOwnHarvestFailureLogAt = value.lastOwnHarvestFailureLogAt;
+      sentinelArmedFor = value.sentinelArmedFor;
+      sentinelPreEnter = value.sentinelPreEnter;
+      stealOverdueStrikes = value.stealOverdueStrikes;
+      lastPauseAnnounceAt = value.lastPauseAnnounceAt;
+      sentinelPendingPreEnter = value.sentinelPendingPreEnter;
+      sentinelEntrySeq = value.sentinelEntrySeq;
+  }, { idle: () => !farmTaskRunning && !helpTaskRunning && !stealTaskRunning && !ownHarvestStrikeRunning && !harvestSellRunning, bind: bindWorkerSessionState, });
+}

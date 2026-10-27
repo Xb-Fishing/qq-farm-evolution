@@ -39,7 +39,7 @@ const staticItemImageMap = new Map([
 ]);
 
 // 上面这几项的图标是官方"通用种子图"，不是道具的官方专属图。
-// 抓取到专属 PNG 并人工提交后，应删除对应回退行——这个集合就是自进化闭环的
+// 专属 PNG 经主 Agent 核验并同轮发布后，应删除对应回退行——这个集合就是自进化闭环的
 // 可度量信号（非空 = 仍有图标缺口）。
 const genericFallbackItemIds = new Set([29004, 20522, 20523]);
 

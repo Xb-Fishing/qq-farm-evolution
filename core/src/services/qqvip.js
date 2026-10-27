@@ -1,3 +1,15 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  refreshVipInfo = require('./business-state').wrapBusinessFunction('services/qqvip.js:refreshVipInfo', refreshVipInfo);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  getDailyGiftStatus = require('./business-state').wrapBusinessFunction('services/qqvip.js:getDailyGiftStatus', getDailyGiftStatus);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  claimDailyGift = require('./business-state').wrapBusinessFunction('services/qqvip.js:claimDailyGift', claimDailyGift);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  performDailyVipGift = require('./business-state').wrapBusinessFunction('services/qqvip.js:performDailyVipGift', performDailyVipGift);
+}
 /**
  * QQ会员服务 - 每日自动领取VIP礼包
  *
@@ -223,3 +235,16 @@ module.exports = {
     canClaim: lastCanClaim,
   }),
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/qqvip.js', () => ({ doneDateKey, lastCheckAt, lastClaimAt, lastResult, lastHasGift, lastCanClaim }), value => {
+      doneDateKey = value.doneDateKey;
+      lastCheckAt = value.lastCheckAt;
+      lastClaimAt = value.lastClaimAt;
+      lastResult = value.lastResult;
+      lastHasGift = value.lastHasGift;
+      lastCanClaim = value.lastCanClaim;
+  }, { });
+}

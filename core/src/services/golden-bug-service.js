@@ -1,3 +1,11 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putGoldenBug = require('./business-state').wrapBusinessFunction('services/golden-bug-service.js:putGoldenBug', putGoldenBug);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  runGoldenBugPlacement = require('./business-state').wrapBusinessFunction('services/golden-bug-service.js:runGoldenBugPlacement', runGoldenBugPlacement);
+}
 const {
   getConfigSnapshot,
   getFriendBlacklist,
@@ -176,3 +184,12 @@ module.exports = {
   putGoldenBug,
   runGoldenBugPlacement,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState } = require('./business-state');
+  registerDataState('services/golden-bug-service.js', () => ({ lastRunAt, running }), value => {
+      lastRunAt = value.lastRunAt;
+      running = value.running;
+  }, { idle: () => !running, });
+}

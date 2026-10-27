@@ -1,5 +1,31 @@
+
+// Persistent-session async operation tracking.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  withSelfEchoTicket = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:withSelfEchoTicket', withSelfEchoTicket);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpWater = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpWater', helpWater);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpWeed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpWeed', helpWeed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  helpInsecticide = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:helpInsecticide', helpInsecticide);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  stealHarvest = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:stealHarvest', stealHarvest);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putPlantItems = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putPlantItems', putPlantItems);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putPlantItemsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putPlantItemsDetailed', putPlantItemsDetailed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putInsects = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putInsects', putInsects);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putWeeds = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putWeeds', putWeeds);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putInsectsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putInsectsDetailed', putInsectsDetailed);
+  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
+  putWeedsDetailed = require('./business-state').wrapBusinessFunction('services/friend-operation-limits.js:putWeedsDetailed', putWeedsDetailed);
+}
 const { toNum, log, sleep } = require('../utils/utils');
-const { getPlantByFruitId } = require('../config/gameConfig');
+const { getPlantByFruitId, getItemById } = require('../config/gameConfig');
 const { getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { sendMsgAsync } = require('../utils/network');
@@ -366,21 +392,49 @@ async function stealHarvest(gid, landIds) {
  * "偷 N 个"实为地块数）。只统计能映射到植物的果实 id——每块地回包是
  * "果实+杂物"成对（如 40516x84,1028x2），杂物（1028 等）不计入数量。
  * 回包未携带 items 时返回 0，调用方回退块数。
- * detail 返回 "id xN" 串供日志核对 items 语义。
+ * detail（2026-10-08）返回全名串「名称×N，名称×N」：果实名走权威
+ * getPlantByFruitId，杂物/活动特殊奖励名走 getItemById；查不到或名字是
+ * 占位符（纯数字/物品#N/果实N）时用 未知果实/未知物品，绝不回退数字 ID。
+ * fruits/fruitSummary（2026-10-04，附加字段）为按权威 getPlantByFruitId
+ * 映射出的实际果实名+数量聚合（黄金· 变异是独立植物配置，天然带全名），
+ * 供快车道 daily 记录写明偷到了什么；未知 id 不进名称清单，不编造数量。
  */
+// 展示名占位符（配置缺失时的兜底产物）：命中即视为"没有名字"，不进展示串。
+const PLACEHOLDER_ITEM_NAME = /^(?:\d+|(?:物品|果实|作物|植物|种子)(?:\s*[#:_-])?\s*\d+)$/;
+function displayNameForItemId(id) {
+  const plant = getPlantByFruitId(id);
+  const plantName = plant ? String(plant.name || '').trim() : '';
+  if (plant) return PLACEHOLDER_ITEM_NAME.test(plantName) ? '未知果实' : plantName || '未知果实';
+  // 展示性兜底查询（杂物/活动特殊奖励）：个别测试替身不带 getItemById，
+  // 查名失败只降级为 未知物品，不影响统计语义。
+  let itemName = '';
+  try { itemName = String((getItemById(id) || {}).name || '').trim(); } catch {}
+  return itemName && !PLACEHOLDER_ITEM_NAME.test(itemName) ? itemName : '未知物品';
+}
 function sumHarvestItemCount(reply) {
   const items = (reply && reply.items) || [];
   let total = 0;
   const detail = [];
+  const fruitCounts = new Map();
   for (const it of items) {
     const count = toNum(it && it.count);
     if (count > 0) {
       const id = toNum(it && it.id);
-      if (getPlantByFruitId(id)) total += count;
-      detail.push(`${id}x${count}`);
+      const name = displayNameForItemId(id);
+      if (getPlantByFruitId(id)) {
+        total += count;
+        fruitCounts.set(name, (fruitCounts.get(name) || 0) + count);
+      }
+      detail.push(`${name}×${count}`);
     }
   }
-  return { total, detail: detail.join(',') };
+  const fruits = [...fruitCounts.entries()].map(([name, count]) => ({ name, count }));
+  return {
+    total,
+    detail: detail.join('，'),
+    fruits,
+    fruitSummary: fruits.map(({ name, count }) => `${name}×${count}`).join('，'),
+  };
 }
 
 /**
@@ -543,3 +597,15 @@ module.exports = {
   putInsectsDetailed,
   putWeedsDetailed,
 };
+
+// Persistent-session data capsule. No handles, functions or in-flight work.
+if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
+  const { registerDataState, restoreContainer } = require('./business-state');
+  registerDataState('services/friend-operation-limits.js', () => ({ operationLimits, lastResetDate, canGetHelpExp, helpAutoDisabledByLimit, localBadOperationCount }), value => {
+      restoreContainer(operationLimits, value.operationLimits);
+      lastResetDate = value.lastResetDate;
+      canGetHelpExp = value.canGetHelpExp;
+      helpAutoDisabledByLimit = value.helpAutoDisabledByLimit;
+      localBadOperationCount = value.localBadOperationCount;
+  }, { });
+}

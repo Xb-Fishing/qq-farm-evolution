@@ -14,7 +14,9 @@ function registerAdminAccountRuntimeRoutes({
       }
 
       const refreshed = await provider.refreshAccountCode(accountId, "manual_relogin");
-      if (!refreshed) {
+      // provider 返回 { ok }，旧代码按对象真值判断导致失败也报"直接登录成功"，
+      // 用户永远等不到扫码入口。必须按 ok 字段判断。
+      if (!refreshed || refreshed.ok !== true) {
         const store = require("../models/store");
         const data = typeof store.getAccounts === "function" ? store.getAccounts() : {};
         const account = (Array.isArray(data.accounts) ? data.accounts : [])
@@ -51,14 +53,14 @@ function registerAdminAccountRuntimeRoutes({
     }
   });
 
-  app.post("/api/accounts/:id/stop", (req, res) => {
+  app.post("/api/accounts/:id/stop", async (req, res) => {
     try {
       const accountId = resolveAccountReference(req.params.id);
       if (!canAccessAccount(req, accountId)) {
         return res.status(403).json({ ok: false, error: "无权访问此账号" });
       }
 
-      const stopped = provider.stopAccount(accountId);
+      const stopped = await provider.stopAccount(accountId);
       if (!stopped) {
         return res.status(404).json({ ok: false, error: "Account not found" });
       }
@@ -69,14 +71,14 @@ function registerAdminAccountRuntimeRoutes({
     }
   });
 
-  app.post("/api/accounts/:id/hold-offline", (req, res) => {
+  app.post("/api/accounts/:id/hold-offline", async (req, res) => {
     try {
       const accountId = resolveAccountReference(req.params.id);
       if (!canAccessAccount(req, accountId)) {
         return res.status(403).json({ ok: false, error: "无权访问此账号" });
       }
 
-      const held = provider.holdAccountOffline(accountId);
+      const held = await provider.holdAccountOffline(accountId);
       if (!held) {
         return res.status(404).json({ ok: false, error: "Account not found" });
       }
@@ -87,7 +89,7 @@ function registerAdminAccountRuntimeRoutes({
     }
   });
 
-  app.post("/api/accounts/:id/restart", (req, res) => {
+  app.post("/api/accounts/:id/restart", async (req, res) => {
     try {
       const accountId = resolveAccountReference(req.params.id);
       if (!canAccessAccount(req, accountId)) {
@@ -101,7 +103,18 @@ function registerAdminAccountRuntimeRoutes({
         { accountId }
       );
 
-      const restarted = provider.restartAccount(accountId);
+      const restarted = await provider.restartAccount(accountId);
+      // provider 约定：true/false = 同步 startWorker 结果；undefined = 重启已排队
+      // （等旧进程退出后拉起）。undefined 是「已提交、排队中」，不是 404——
+      // 按真假判断会把排队误报成 Account not found；回执须明确未连接，不冒充成功启动。
+      if (restarted === undefined) {
+        return res.status(202).json({
+          ok: true,
+          queued: true,
+          started: false,
+          error: "重启已排队：等待旧进程退出后自动拉起",
+        });
+      }
       if (!restarted) {
         return res.status(404).json({ ok: false, error: "Account not found" });
       }

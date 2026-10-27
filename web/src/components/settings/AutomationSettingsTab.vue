@@ -11,6 +11,7 @@ interface AutomationSettings {
     harvest: boolean
     plant: boolean
     task: boolean
+    milk_tea_auto_rewards: boolean
     sell: boolean
     friend: boolean
     farm_push: boolean
@@ -137,6 +138,7 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.harvest" label="自动收菜" />
         <BaseSwitch v-model="settings.automation.plant" label="自动种菜" />
         <BaseSwitch v-model="settings.automation.task" label="自动做任务" />
+        <BaseSwitch v-model="settings.automation.milk_tea_auto_rewards" label="奶茶自动领奖（满额收银、快乐值）" />
         <BaseSwitch v-model="settings.automation.sell" label="自动卖果实" />
         <BaseSwitch v-model="settings.automation.friend" label="自动好友互动" />
         <BaseSwitch v-model="settings.automation.farm_push" label="推送触发巡田" />
