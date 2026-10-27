@@ -26,10 +26,30 @@ const types = {};
 let loadPromise = null;
 let loadError = null;
 
+// protobufjs 8.2+ drops explicitly transmitted proto3 scalar defaults unless
+// presence is explicit. Our partial notifications distinguish an omitted field
+// from a transmitted 0/false (balances, fertilizer quota and friend presence).
+// Set the public field option before Root.load resolves and caches features;
+// filling defaults after decoding would erase that distinction.
+class PresenceRoot extends protobuf.Root {
+    resolveAll() {
+        const preservePresence = (node) => {
+            for (const field of node.fieldsArray || []) {
+                if (!field.repeated && !field.map) {
+                    field.setOption('features.field_presence', 'EXPLICIT', true);
+                }
+            }
+            for (const nested of node.nestedArray || []) preservePresence(nested);
+        };
+        preservePresence(this);
+        return super.resolveAll();
+    }
+}
+
 /** 真实执行一次加载：成功后才发布 root 并原地填充 types；任何失败整体抛出。 */
 async function performLoad() {
     const resolved = Object.create(null);
-    const newRoot = new protobuf.Root();
+    const newRoot = new PresenceRoot();
     await newRoot.load([
         getResourcePath('proto', 'game.proto'),
         getResourcePath('proto', 'userpb.proto'),
