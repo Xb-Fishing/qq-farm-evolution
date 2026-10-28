@@ -21,12 +21,12 @@ function harness() {
   const hostStore = { getWirePauseRemainMs: () => paused };
   const context = vm.createContext({ process: { env: { FARM_ACCOUNT_ID: process.env.FARM_ACCOUNT_ID } },
     getStoreModule: () => hostStore, ws: { readyState: 1, send() { sent++; } }, WebSocket: { OPEN: 1 },
-    clientSeq: 1, pendingCallbacks: new Map(), encodeMsg: () => new Promise(resolve => { release = resolve; }),
+    clientSeq: 1, requestGeneration: 0, requestsStopping: false, networkStopped: false, activeRequests: new Map(), performance: { now: () => 0 }, pendingCallbacks: new Map(), encodeMsg: () => new Promise(resolve => { release = resolve; }),
     requestGovernor: { checkRequest: () => { governed++; return { allowed: true }; }, recordSent() { recorded++; } },
     networkScheduler: { setTimeoutTask() {}, clear() {} }, isConnected: () => true, log() {},
     GOVERNED_BUDGET_REASONS: new Set(), sessionTransportHooks: null,
   });
-  vm.runInContext(['sessionAuthorityError', 'businessPauseError', 'sendMsg', 'sendMsgAsync'].map(take).join('\n'), context);
+  vm.runInContext(['sessionAuthorityError', 'businessPauseError', 'createSendContext', 'sendWithContext', 'sendMsg', 'sendMsgAsync'].map(take).join('\n'), context);
   const network = { sendMsgAsync: context.sendMsgAsync, getUserState: () => ({ gid: 42 }) };
   const native = network.sendMsgAsync; install({ network, store: hostStore, types: proto.types, accountId: process.env.FARM_ACCOUNT_ID });
   return { network, native, context, hostStore, counters: () => ({ sent, governed, recorded }),

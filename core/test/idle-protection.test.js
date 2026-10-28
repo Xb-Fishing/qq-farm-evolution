@@ -83,14 +83,15 @@ function wireHarness() {
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-idle-account' } },
     getStoreModule: () => ({ getWirePauseRemainMs: () => paused }),
     ws: { readyState: 1, send: () => { sent++; } }, WebSocket: { OPEN: 1 },
-    clientSeq: 1, pendingCallbacks: new Map(),
+    clientSeq: 1, requestGeneration: 0, requestsStopping: false, networkStopped: false,
+    activeRequests: new Map(), performance: { now: () => 0 }, pendingCallbacks: new Map(),
     encodeMsg: async () => Buffer.from('synthetic'),
     requestGovernor: { checkRequest: () => { governed++; return { allowed: true }; }, recordSent: () => { recorded++; } },
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, fn), clear: key => timers.delete(key) },
     isConnected: () => true, log() {}, GOVERNED_BUDGET_REASONS: new Set(), sessionTransportHooks: null,
   };
   vm.createContext(context);
-  vm.runInContext(['sessionAuthorityError', 'businessPauseError', 'sendMsg', 'sendMsgAsync'].map(n => actualFunction('utils/network.js', n)).join('\n'), context);
+  vm.runInContext(['sessionAuthorityError', 'businessPauseError', 'createSendContext', 'sendWithContext', 'sendMsg', 'sendMsgAsync'].map(n => actualFunction('utils/network.js', n)).join('\n'), context);
   return { context, timers, pause: n => { paused = n; }, counters: () => ({ sent, governed, recorded }),
     blockEncoding() { context.encodeMsg = () => new Promise(r => { release = r; }); }, release() { release(Buffer.from('synthetic')); } };
 }

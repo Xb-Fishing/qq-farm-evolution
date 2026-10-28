@@ -655,15 +655,18 @@ function realGovernedSender(governor, state) {
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
     getStoreModule: () => ({ getWirePauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
     ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, Date,
+    requestGeneration: 0, requestsStopping: false, networkStopped: false,
+    activeRequests: new Map(), performance: { now: () => 0 },
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, { delay, fn }), clear: key => timers.delete(key) },
-    isConnected: () => true, sendMsg: async (_service, method, _body, callback) => {
-      state.actualSends.push(method); callback(null, Buffer.alloc(0), {}); return true;
+    isConnected: () => true, sendWithContext: async (_service, method, _body, request) => {
+      state.actualSends.push(method); request.sent = true; request.finish(null, Buffer.alloc(0), {}); return true;
     },
   };
-  const pauseFrom = src.indexOf('function businessPauseError(');
-  const pauseTo = src.indexOf('async function sendMsg(', pauseFrom);
-  assert.ok(pauseFrom > 0 && pauseTo > pauseFrom);
-  const send = vm.runInNewContext(`${src.slice(pauseFrom, pauseTo)}\n${src.slice(from, to)  }\n;sendMsgAsync`, sandbox, { filename: 'network.js#actual-governor-constructor' });
+  const helpers = ['businessPauseError', 'createSendContext'].map(name => {
+    const start = src.indexOf(`function ${name}(`); const end = src.indexOf('\n}', start);
+    assert.ok(start > 0 && end > start); return src.slice(start, end + 2);
+  }).join('\n');
+  const send = vm.runInNewContext(`${helpers}\n${src.slice(from, to)}\n;sendMsgAsync`, sandbox, { filename: 'network.js#actual-governor-constructor' });
   return { send, timers };
 }
 

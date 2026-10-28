@@ -1,5 +1,6 @@
 const { Buffer } = require('node:buffer');
 const EventEmitter = require('node:events');
+const { performance } = require('node:perf_hooks');
 /**
  * WebSocket 网络层 - 连接/消息编解码/登录/心跳
  */
@@ -73,6 +74,9 @@ let ws = null;
 let clientSeq = 1;
 let serverSeq = 0;
 const pendingCallbacks = new Map();
+const activeRequests = new Map();
+let requestGeneration = 0;
+let requestsStopping = false;
 // 风控探针观察：未知推送只记首次类型，不解析、不响应、不重试；上限避免恶意类型刷日志/内存。
 const unknownNotifyTypes = new Set();
 const MAX_UNKNOWN_NOTIFY_TYPES = 32;
@@ -151,8 +155,17 @@ function stopSecurityRuntime(reason = '停止') {
 }
 
 function rejectAllPendingRequests(reason = '请求被中断') {
-    const entries = Array.from(pendingCallbacks.entries());
+    const stopping = requestsStopping;
+    requestsStopping = true;
+    requestGeneration += 1;
+    const requests = Array.from(activeRequests.values());
+    // Capture legacy callbacks too; preparing requests have not entered the
+    // response map yet and must be cancelled before scheduler.clearAll().
+    const entries = Array.from(pendingCallbacks.entries()).filter(([seq]) => !activeRequests.has(seq));
     pendingCallbacks.clear();
+    for (const request of requests) {
+        try { request.finish(new Error(reason)); } catch { /* Cancel every request. */ }
+    }
     for (const [, callback] of entries) {
         try {
             callback(new Error(reason));
@@ -160,7 +173,8 @@ function rejectAllPendingRequests(reason = '请求被中断') {
             // ignore callback failure
         }
     }
-    return entries.length;
+    requestsStopping = stopping;
+    return requests.length + entries.length;
 }
 
 // ============ 用户状态 (登录后设置) ============
@@ -265,124 +279,130 @@ function businessPauseError(serviceName, methodName) {
     return error;
 }
 
-async function sendMsg(serviceName, methodName, bodyBytes, callback) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        log('系统', '[WS] 连接未打开');
-        return false;
-    }
-    const authorityBeforeEncoding = sessionAuthorityError(serviceName, methodName);
-    if (authorityBeforeEncoding) { if (callback) callback(authorityBeforeEncoding); return false; }
-    const pausedBeforeEncoding = businessPauseError(serviceName, methodName);
-    if (pausedBeforeEncoding) {
-        if (callback) callback(pausedBeforeEncoding);
-        return false;
-    }
-    const seq = clientSeq;
-    clientSeq += 1;
-    const encoded = await encodeMsg(serviceName, methodName, bodyBytes, seq);
-    const authorityBeforeSend = sessionAuthorityError(serviceName, methodName);
-    if (authorityBeforeSend) { if (callback) callback(authorityBeforeSend); return false; }
-    // Encoding awaits encryption; a pause may begin while this request is queued.
-    const pausedBeforeSend = businessPauseError(serviceName, methodName);
-    if (pausedBeforeSend) {
-        if (callback) callback(pausedBeforeSend);
-        return false;
-    }
-    if (callback) pendingCallbacks.set(seq, callback);
-    // ws.send(encoded);
-    try {
-        ws.send(encoded);
-    } catch (err) {
-        if (callback) {
+function createSendContext(methodName, callback, timeout = undefined) {
+    // Reserve identity before authority/governor hooks, which may reenter send.
+    const seq = clientSeq++;
+    const socket = ws;
+    const generation = requestGeneration;
+    const value = Number(timeout);
+    const duration = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    const deadline = timeout === undefined ? Infinity : performance.now() + duration;
+    const timeoutKey = `request_timeout_${seq}`;
+    let settled = false;
+    const current = () => socket === ws && generation === requestGeneration
+        && !requestsStopping && !networkStopped && socket?.readyState === WebSocket.OPEN;
+    const timeoutError = () => Object.assign(new Error(`请求超时: ${methodName} (seq=${seq}, pending=${pendingCallbacks.size})`), { code: 'LOCAL_REQUEST_TIMEOUT' });
+    const connectionError = () => Object.assign(new Error(`连接已关闭或变更: ${methodName}`), { code: 'LOCAL_CONNECTION_CHANGED' });
+    const request = { seq, socket, current, sent: false, expectsReply: typeof callback === 'function',
+        finish(error, body, meta) {
+            if (settled) return false;
+            // A response can be delivered before an overdue timer callback.
+            if (!error && !current()) error = connectionError();
+            if (!error && performance.now() >= deadline) error = timeoutError();
+            settled = true;
+            activeRequests.delete(seq);
             pendingCallbacks.delete(seq);
-            callback(err);
+            networkScheduler.clear(timeoutKey);
+            if (callback) callback(error, body, meta);
+            return true;
+        },
+        check() {
+            if (settled) return false;
+            if (!current()) { request.finish(connectionError()); return false; }
+            if (performance.now() >= deadline) { request.finish(timeoutError()); return false; }
+            return true;
+        },
+        receive(error, body, meta) {
+            if (request.check()) request.finish(error, body, meta);
+        },
+    };
+    activeRequests.set(seq, request);
+    if (timeout !== undefined) networkScheduler.setTimeoutTask(timeoutKey, duration, () => request.finish(timeoutError()));
+    return request;
+}
+
+async function sendWithContext(serviceName, methodName, bodyBytes, request) {
+    try {
+        if (!request.check()) return false;
+        const beforeEncoding = sessionAuthorityError(serviceName, methodName)
+            || businessPauseError(serviceName, methodName);
+        if (beforeEncoding) { request.finish(beforeEncoding); return false; }
+        if (!request.check()) return false;
+        const encoded = await encodeMsg(serviceName, methodName, bodyBytes, request.seq);
+        if (!request.check()) return false;
+        const beforeSend = sessionAuthorityError(serviceName, methodName)
+            || businessPauseError(serviceName, methodName);
+        if (beforeSend) { request.finish(beforeSend); return false; }
+        // Recheck after all synchronous guards; their IO may consume the budget.
+        if (!request.check()) return false;
+        if (pendingCallbacks.size >= 10) {
+            request.finish(Object.assign(new Error(`请求队列已满: ${methodName} (pending=${pendingCallbacks.size})`), { isLocalRequestRejection: true }));
+            return false;
         }
+        if (request.expectsReply) pendingCallbacks.set(request.seq, request.receive);
+        request.sent = true;
+        request.socket.send(encoded);
+        if (!request.expectsReply) request.finish();
+        return true;
+    } catch (error) {
+        if (request.check()) request.finish(error);
         return false;
     }
-    return true;
+}
+
+async function sendMsg(serviceName, methodName, bodyBytes, callback) {
+    // Direct Login keeps its existing lack of a response-timeout parameter.
+    return sendWithContext(serviceName, methodName, bodyBytes, createSendContext(methodName, callback));
 }
 
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
-        const authority = sessionAuthorityError(serviceName, methodName);
-        if (authority) { reject(authority); return; }
-        const paused = businessPauseError(serviceName, methodName);
-        if (paused) { reject(paused); return; }
-        // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
-        // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
-        const gate = requestGovernor.checkRequest(serviceName, methodName);
-        if (!gate.allowed) {
-            const governedError = new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`);
-            // 结构化标记（严格布尔 + 白名单类别）：仅供本地读取观测/警告聚合识别。
-            // 不改错误文案、治理决策或发送流程；非预算拒绝不会走到这里。
-            if (GOVERNED_BUDGET_REASONS.has(gate.reason)) {
-                governedError.isGovernedRejection = true;
-                governedError.governedReason = gate.reason;
-            }
-            reject(governedError);
-            return;
-        }
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            reject(new Error(`连接未打开: ${methodName}`));
-            return;
-        }
-
-        if (pendingCallbacks.size >= 10) {
-            reject(new Error(`请求队列已满: ${methodName} (pending=${pendingCallbacks.size})`));
-            return;
-        }
-
-        const seq = clientSeq;
-        const timeoutKey = `request_timeout_${seq}`;
-        let settled = false;
-
-        networkScheduler.setTimeoutTask(timeoutKey, timeout, () => {
-            if (settled) return;
-            settled = true;
-            pendingCallbacks.delete(seq);
-            // 连接已断时的超时/失败不计入异常窗口：那是重连伴生失败，不是风控信号
-            if (isConnected()) requestGovernor.recordSent(serviceName, methodName, false);
-            const pending = pendingCallbacks.size;
-            reject(new Error(`请求超时: ${methodName} (seq=${seq}, pending=${pending})`));
-        });
-
-        sendMsg(serviceName, methodName, bodyBytes, (err, body, meta) => {
-            networkScheduler.clear(timeoutKey);
-            if (settled) return;
-            settled = true;
+        const request = createSendContext(methodName, (err, body, meta) => {
             if (err) {
-                if (isConnected() && err.code !== 'LOCAL_BUSINESS_PAUSED' && err.isSessionAuthorityRejection !== true) {
-                    // 只允许调用方豁免明确的服务端业务错误。超时、断线、发送失败仍是
-                    // 真实通信异常，不能因为探测模式而从异常统计里消失。
-                    const breakerExempt = options.breakerExemptBusinessError === true
-                        && err.isServerBusinessError === true;
-                    requestGovernor.recordSent(
-                        serviceName,
-                        methodName,
-                        false,
-                        Date.now(),
-                        { breakerExempt }
-                    );
+                if (request.current() && (request.sent || err.code === 'LOCAL_REQUEST_TIMEOUT')
+                    && err.code !== 'LOCAL_BUSINESS_PAUSED'
+                    && err.isSessionAuthorityRejection !== true && err.isLocalRequestRejection !== true) {
+                    const breakerExempt = options.breakerExemptBusinessError === true && err.isServerBusinessError === true;
+                    requestGovernor.recordSent(serviceName, methodName, false, Date.now(), { breakerExempt });
                 }
                 reject(err);
             } else {
                 requestGovernor.recordSent(serviceName, methodName, true);
                 resolve({ body, meta });
             }
-        }).then((sent) => {
-            if (sent || settled) return;
-            networkScheduler.clear(timeoutKey);
-            settled = true;
-            if (isConnected()) requestGovernor.recordSent(serviceName, methodName, false);
-            reject(new Error(`发送失败: ${methodName}`));
-        }).catch((error) => {
-            if (settled) return;
-            networkScheduler.clear(timeoutKey);
-            pendingCallbacks.delete(seq);
-            settled = true;
-            reject(error);
-        });
+        }, timeout);
+        try {
+            if (!request.check()) return;
+            const authority = sessionAuthorityError(serviceName, methodName);
+            if (authority) { request.finish(authority); return; }
+            const paused = businessPauseError(serviceName, methodName);
+            if (paused) { request.finish(paused); return; }
+            // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
+            // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
+            const gate = requestGovernor.checkRequest(serviceName, methodName);
+            if (!gate.allowed) {
+                const governedError = new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`);
+                // 结构化标记（严格布尔 + 白名单类别）：仅供本地读取观测/警告聚合识别。
+                // 不改错误文案、治理决策或发送流程；非预算拒绝不会走到这里。
+                if (GOVERNED_BUDGET_REASONS.has(gate.reason)) {
+                    governedError.isGovernedRejection = true;
+                    governedError.governedReason = gate.reason;
+                }
+                // Local policy rejection must not enter the communication breaker.
+                governedError.isLocalRequestRejection = true;
+                request.finish(governedError);
+                return;
+            }
+            if (!request.check()) return;
+            if (pendingCallbacks.size >= 10) {
+                const error = new Error(`请求队列已满: ${methodName} (pending=${pendingCallbacks.size})`);
+                error.isLocalRequestRejection = true;
+                request.finish(error);
+                return;
+            }
+            sendWithContext(serviceName, methodName, bodyBytes, request).catch(error => request.finish(error));
+        } catch (error) { request.finish(error); }
     });
 }
 
@@ -806,6 +826,8 @@ function startHeartbeat() {
 
     networkScheduler.setIntervalTask('heartbeat_interval', CONFIG.heartbeatInterval, () => {
         if (!userState.gid) return;
+        const socket = ws;
+        const generation = requestGeneration;
 
         const timeSinceLastResponse = Date.now() - lastHeartbeatResponse;
         if (timeSinceLastResponse > HEARTBEAT_TIMEOUT) {
@@ -830,6 +852,7 @@ function startHeartbeat() {
             client_version: CONFIG.clientVersion,
         })).finish();
         sendMsgAsync('gamepb.userpb.UserService', 'Heartbeat', body).then(({ body: replyBody }) => {
+            if (ws !== socket || requestGeneration !== generation || !isConnected()) return;
             lastHeartbeatResponse = Date.now();
             heartbeatMissCount = 0;
             try {
@@ -872,6 +895,7 @@ function closeCurrentWs({ terminate = false } = {}) {
     const current = ws;
     if (!current) return;
     ws = null;
+    rejectAllPendingRequests('连接已切换');
     current.removeAllListeners();
     try {
         if (terminate && typeof current.terminate === 'function') current.terminate();
@@ -950,11 +974,14 @@ function connect(code, onLoginSuccess) {
     socket.binaryType = 'arraybuffer';
 
     socket.on('open', async () => {
+        if (ws !== socket) return;
         reconnectAttempts = 0;
         try {
             await startSecurityRuntime(deviceProtocol);
+            if (ws !== socket || networkStopped) return;
             await sendLogin(onLoginSuccess, deviceProtocol);
         } catch (error) {
+            if (ws !== socket) return;
             logWarn('ACE', `安全运行时启动失败，已中止登录：${error.message}`);
             networkEvents.emit('security_error', { message: error.message });
             stopSecurityRuntime('初始化失败');
@@ -963,11 +990,13 @@ function connect(code, onLoginSuccess) {
     });
 
     socket.on('message', (data) => {
+        if (ws !== socket) return;
         handleMessage(Buffer.isBuffer(data) ? data : Buffer.from(data));
     });
 
     socket.on('close', (code, _reason) => {
-        if (ws === socket) ws = null;
+        if (ws !== socket) return;
+        ws = null;
         logWarn('系统', `[WS] 连接关闭 (code=${code})`);
         networkEvents.emit('disconnect', { code });
         cleanup();
@@ -975,6 +1004,7 @@ function connect(code, onLoginSuccess) {
     });
 
     socket.on('error', (err) => {
+        if (ws !== socket) return;
         const message = err && err.message ? String(err.message) : '';
         logWarn('系统', `[WS] 错误: ${message}`);
         const match = message.match(/Unexpected server response:\s*(\d+)/i);
@@ -989,9 +1019,9 @@ function connect(code, onLoginSuccess) {
 }
 
 function cleanup(reason = '网络清理') {
-    stopSecurityRuntime(reason);
     rejectAllPendingRequests(`请求已中断: ${reason}`);
     networkScheduler.clearAll();
+    stopSecurityRuntime(reason);
     // pendingCallbacks.clear();
 }
 
@@ -1008,9 +1038,9 @@ function stopNetwork(reason = '停止网络') {
     networkStopped = true;
     savedLoginCallback = null;
     reconnectAttempts = 0;
-    stopSecurityRuntime(reason);
     rejectAllPendingRequests(`请求已中断: ${reason}`);
     networkScheduler.clearAll();
+    stopSecurityRuntime(reason);
     closeCurrentWs({ terminate: true });
     userState.gid = 0;
 }
