@@ -51,7 +51,11 @@ test('existing wire send refuses business work while protection is active', asyn
   const error = Object.assign(new Error('synthetic local pause'), { code: 'LOCAL_BUSINESS_PAUSED' });
   const context = { ws: { readyState: 1, send: () => calls++ }, WebSocket: { OPEN: 1 },
     clientSeq: 1, pendingCallbacks: new Map(), encodeMsg: async () => Buffer.from('synthetic'),
+    requestGeneration: 0, requestsStopping: false, networkStopped: false,
+    activeRequests: new Map(), performance: { now: () => 0 }, networkScheduler: { clear() {} },
     businessPauseError: () => error, sessionAuthorityError: () => null, log() {} };
+  loadExisting('utils/network.js', 'createSendContext', context);
+  loadExisting('utils/network.js', 'sendWithContext', context);
   const send = loadExisting('utils/network.js', 'sendMsg', context);
   const result = await send('gamepb.plantpb.PlantService', 'Harvest', Buffer.alloc(0), () => {});
   assert.equal(calls, 0); assert.equal(result, false);
