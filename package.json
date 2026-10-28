@@ -1,4 +1,4 @@
- {
+{
   "name": "qq-farm-bot-ui",
   "packageManager": "pnpm@10.30.2",
   "scripts": {
@@ -20,7 +20,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@babel/traverse": "7.26.10"
+      "@babel/traverse": "7.26.10",
+      "pushoo@^0.1.11>axios": "0.34.0"
     }
   }
 }
