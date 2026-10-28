@@ -473,8 +473,9 @@ function createMitmProxyManager(deps = {}) {
       // 重写请求行为 origin-form
       const lines = head.split('\r\n');
       const parts = (lines[0] || '').split(WHITESPACE_RE);
-      const rewritten = [parts[0], path || '/', parts[2] || 'HTTP/1.1', ...lines.slice(1)].join('\r\n');
-      upstream.write(`${rewritten}\r\n\r\n`);
+      const requestLine = [parts[0], path || '/', parts[2] || 'HTTP/1.1'].join(' ');
+      const rewritten = [requestLine, ...lines.slice(1)].join('\r\n');
+      upstream.write(rewritten);
       if (rest.length > 0) upstream.write(rest);
       rawSocket.on('data', chunk => upstream.write(chunk));
       upstream.on('data', chunk => rawSocket.write(chunk));
