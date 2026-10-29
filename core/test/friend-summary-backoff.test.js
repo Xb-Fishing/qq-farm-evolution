@@ -654,7 +654,7 @@ function realGovernedSender(governor, state) {
   const sandbox = { requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
     getStoreModule: () => ({ getWirePauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
-    ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, Date,
+    ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, nextRequestId: 0, Date,
     requestGeneration: 0, requestsStopping: false, networkStopped: false,
     activeRequests: new Map(), performance: { now: () => 0 },
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, { delay, fn }), clear: key => timers.delete(key) },

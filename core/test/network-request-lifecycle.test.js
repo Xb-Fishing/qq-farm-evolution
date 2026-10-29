@@ -299,3 +299,100 @@ test('an overdue nonzero reply is a timeout and cannot use business-error exempt
   assert.equal(error?.code, 'LOCAL_REQUEST_TIMEOUT'); assert.equal(results.length, 1);
   assert.equal(results[0][2], false); assert.equal(results[0][4].breakerExempt, false);
 }));
+
+
+test('a governor-rejected request does not consume a protocol sequence before heartbeat', () => fixture(async h => {
+  for (let i = 0; i < h.governor.TOTAL_LIMIT; i++) h.governor.recordSent('synthetic.Business', 'Read', true, baseNow);
+  await assert.rejects(h.network.sendMsgAsync('synthetic.Business', 'Read', body), /budget_total/);
+  h.setReplies(value => h.respond(value)); await h.at(25000);
+  assert.equal(h.transmissions.length, 1); assert.equal(h.transmissions[0].method, 'Heartbeat');
+  assert.equal(h.transmissions[0].sequence, 1); assert.equal(h.state().lastHeartbeatResponse, baseNow + 25000);
+}));
+
+test('permission and quiet rejection leave the next transmitted protocol sequence unchanged', () => fixture(async h => {
+  h.network.setSessionTransportHooks({ assertSend() { throw Object.assign(new Error('retired'), { code: 'SESSION_EPOCH_RETIRED' }); } });
+  await assert.rejects(h.network.sendMsgAsync(service, 'Read', body), /retired/);
+  h.network.setSessionTransportHooks(null); h.setPause(60000);
+  await assert.rejects(h.network.sendMsgAsync(service, 'Read', body), { code: 'LOCAL_BUSINESS_PAUSED' });
+  h.setPause(0); h.setReplies(value => h.respond(value)); await h.network.sendMsgAsync(service, 'Read', body);
+  assert.equal(h.transmissions.length, 1); assert.equal(h.transmissions[0].sequence, 1);
+}));
+
+test('a preparation that expires without transmission does not leave a protocol hole', () => fixture(async h => {
+  h.blockEncoding(); const cancelled = h.network.sendMsgAsync(service, 'Slow', body, 1000).catch(error => error);
+  await h.at(2000); await h.releaseEncoding(); await cancelled;
+  h.setReplies(value => h.respond(value)); await h.network.sendMsgAsync(service, 'Read', body);
+  assert.equal(h.transmissions.length, 1); assert.equal(h.transmissions[0].sequence, 1);
+}));
+
+test('a slow internal request expiring cannot delete a faster request using its first wire sequence', () => fixture(async h => {
+  let release;
+  h.setEncrypt(bytes => bytes.toString() === 'slow' ? new Promise(resolve => { release = () => resolve(bytes); }) : Promise.resolve(bytes));
+  const slow = h.network.sendMsgAsync(service, 'Slow', Buffer.from('slow'), 1000).catch(error => error);
+  const fast = h.network.sendMsgAsync(service, 'Fast', body, 40000).catch(error => error);
+  await later(); assert.equal(h.transmissions.length, 1); assert.equal(h.transmissions[0].sequence, 1);
+  await h.at(2000); assert.equal(h.state().pending, 1, 'expiry of an unsent internal id cannot erase wire1');
+  h.respond(frame(h.transmissions[0])); const reply = await fast; assert.equal(reply.meta.method_name, 'Fast');
+  release(); await later(); await slow; assert.equal(h.transmissions.length, 1);
+}));
+
+test('reverse preparation completion keeps each response associated with its actual wire sequence', () => fixture(async h => {
+  let release;
+  h.setEncrypt(bytes => bytes.toString() === 'slow' ? new Promise(resolve => { release = () => resolve(bytes); }) : Promise.resolve(bytes));
+  const slow = h.network.sendMsgAsync(service, 'Slow', Buffer.from('slow'), 40000).catch(error => error);
+  const fast = h.network.sendMsgAsync(service, 'Fast', body, 40000).catch(error => error);
+  await later(); assert.equal(h.transmissions[0].sequence, 1); h.respond(frame(h.transmissions[0]));
+  assert.equal((await fast).meta.method_name, 'Fast'); release(); await later();
+  assert.equal(h.transmissions[1].sequence, 2); h.respond(frame(h.transmissions[1]));
+  assert.equal((await slow).meta.method_name, 'Slow'); assert.equal(h.state().pending, 0);
+}));
+
+test('final pending-capacity rejection does not consume the next heartbeat wire sequence', () => fixture(async h => {
+  h.blockEncoding(); const pending = [];
+  for (let i = 0; i < 11; i++) pending.push(h.network.sendMsgAsync(service, 'Read', body).catch(error => error));
+  await h.releaseEncoding(); assert.equal(h.transmissions.length, 10);
+  assert.deepEqual(h.transmissions.map(row => row.sequence), Array.from({ length: 10 }, (_, i) => i + 1));
+  for (const row of h.transmissions) h.respond(frame(row)); await Promise.all(pending);
+  h.setReplies(value => h.respond(value)); await h.at(25000); assert.equal(h.transmissions.at(-1).sequence, 11);
+}));
+
+test('a socket send attempt is never assigned a reused protocol sequence after an exception', () => fixture(async h => {
+  const original = h.socket.send;
+  h.socket.send = () => { throw new Error('synthetic uncertain write'); };
+  await assert.rejects(h.network.sendMsgAsync(service, 'Read', body), /synthetic uncertain write/);
+  h.socket.send = original; h.setReplies(value => h.respond(value)); await h.network.sendMsgAsync(service, 'Read', body);
+  assert.equal(h.transmissions.length, 1); assert.equal(h.transmissions[0].sequence, 2);
+}));
+
+test('reentrant governor rejection preserves both timer identity and later heartbeat sequence', () => fixture(async h => {
+  for (let i = 0; i < h.governor.TOTAL_LIMIT; i++) h.governor.recordSent('synthetic.Business', 'Read', true, baseNow);
+  let reentered = false; let rejected;
+  h.network.setSessionTransportHooks({ assertSend(_service, method) {
+    if (method === 'Heartbeat' && !reentered) { reentered = true; rejected = h.network.sendMsgAsync('synthetic.Business', 'Read', body).catch(error => error); }
+  } });
+  h.setReplies(value => h.respond(value)); await h.at(25000); await rejected; await h.at(50000);
+  assert.deepEqual(h.transmissions.map(row => row.sequence), [1, 2]);
+}));
+
+test('active slowdown and exhausted business budget keep successful maintenance heartbeats running', () => fixture(async h => {
+  for (let i = 0; i < 12; i++) h.governor.recordSent('synthetic.Business', 'Read', false, baseNow);
+  for (let i = 12; i < h.governor.TOTAL_LIMIT; i++) h.governor.recordSent('synthetic.Business', 'Read', true, baseNow);
+  assert.equal(h.governor.getBreakerState(baseNow).active, true);
+  assert.equal(h.governor.checkRequest('synthetic.Business', 'Read', baseNow).allowed, false);
+  h.setReplies(value => h.respond(value)); await h.at(75000);
+  assert.equal(h.transmissions.length, 3); assert.equal(h.metrics.closeCalls, 0);
+  assert.equal(h.state().lastHeartbeatResponse, baseNow + 75000);
+  assert.equal(h.governor.getBreakerState(baseNow + 75000).active, true);
+}));
+
+test('an inbound blackhole after a healthy heartbeat reproduces50/75/100s without a governor send denial', () => fixture(async h => {
+  for (let i = 0; i < 12; i++) h.governor.recordSent('synthetic.Business', 'Read', false, baseNow);
+  let replied = false;
+  h.setReplies(value => { if (!replied) { replied = true; h.respond(value); } });
+  await h.at(125000);
+  assert.equal(h.metrics.successfulRpcReplies, 1);
+  assert.deepEqual(h.transmissions.filter(row => row.method === 'Heartbeat').map(row => row.atMs), [25000, 50000, 75000, 100000]);
+  const warnings = h.logs.filter(row => row.message.includes('miss='));
+  assert.deepEqual(warnings.map(row => row.message.match(/\((\d+)s/)[1]), ['50', '75', '100']);
+  assert.equal(h.events.filter(row => row.code === 'heartbeat_timeout').length, 1);
+}));

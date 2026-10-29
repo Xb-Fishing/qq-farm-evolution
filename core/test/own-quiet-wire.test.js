@@ -21,7 +21,7 @@ function harness() {
   const hostStore = { getWirePauseRemainMs: () => paused };
   const context = vm.createContext({ process: { env: { FARM_ACCOUNT_ID: process.env.FARM_ACCOUNT_ID } },
     getStoreModule: () => hostStore, ws: { readyState: 1, send() { sent++; } }, WebSocket: { OPEN: 1 },
-    clientSeq: 1, requestGeneration: 0, requestsStopping: false, networkStopped: false, activeRequests: new Map(), performance: { now: () => 0 }, pendingCallbacks: new Map(), encodeMsg: () => new Promise(resolve => { release = resolve; }),
+    clientSeq: 1, nextRequestId: 0, requestGeneration: 0, requestsStopping: false, networkStopped: false, activeRequests: new Map(), performance: { now: () => 0 }, pendingCallbacks: new Map(), encodeMsg: (_service, _method, encoded) => encoded, prepareMsgBody: () => new Promise(resolve => { release = resolve; }),
     requestGovernor: { checkRequest: () => { governed++; return { allowed: true }; }, recordSent() { recorded++; } },
     networkScheduler: { setTimeoutTask() {}, clear() {} }, isConnected: () => true, log() {},
     GOVERNED_BUDGET_REASONS: new Set(), sessionTransportHooks: null,
