@@ -85,9 +85,12 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const rewardAdditions = new Set([2163, 202011, 203012, 205011, 206011, 207012, 208012,
     210031, 210032, 210033, 210034, 210035, 210036, 210037,
     210016, 210026, 210012, 210022, 210013, 210023, 210014, 210024, 210015, 210025, 210011, 210021, 210017, 210027, 210041, 210042, 210043, 401007, 210044, 210045, 210046, 210047]);
-  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254, 1040527]);
+  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254, 1040527, 1040021]);
+  // 204011 is excluded from rewardAdditions on purpose: it is this round's separately
+  // verified milk-tea tower-skin decoration, asserted independently as type 18 below.
+  const decorationAdditions = new Set([204011]);
   const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
-    && !goldenFruitAdditions.has(x.id))
+    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
@@ -95,13 +98,21 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   assert.equal(hash(originalItems), '4baaa0138392f234b1a06ca7dd2161537b8de7cdf9ce8932e5bd950fb072ebe6');
   // Reviewed golden fruits: registered exactly once as type-17 fruits, never as seeds
   // or Plants — the size-2 source plant behind 1049005 does not turn its fruit into a seed.
-  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽'], [1040528, '黄金·森野红柚'], [1042254, '黄金·天山红枫'], [1040527, '黄金·森野甜橙']]) {
+  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽'], [1040528, '黄金·森野红柚'], [1042254, '黄金·天山红枫'], [1040527, '黄金·森野甜橙'], [1040021, '黄金·森野可可豆']]) {
     const rows = items.filter(x => x.id === id);
     assert.equal(rows.length, 1, `${id} must be registered exactly once`);
     assert.equal(rows[0].name, name); assert.equal(rows[0].type, 17);
     assert.equal(config.getPlantByFruitId(id), undefined); assert.equal(config.getPlantBySeedId(id), undefined);
     assert.equal(config.isSeedItem(id), false);
   }
+  // Separately verified 204011: a type-18 decoration with no Plant mapping —
+  // its direct coin price must never grant seed or automatic-sale semantics.
+  const decorationRows = items.filter(x => x.id === 204011);
+  assert.equal(decorationRows.length, 1, '204011 must be registered exactly once');
+  assert.equal(decorationRows[0].name, '金露云酪'); assert.equal(decorationRows[0].type, 18);
+  assert.equal(decorationRows[0].sells, '1001:1000000');
+  assert.equal(config.getPlantBySeedId(204011), undefined); assert.equal(config.getPlantByFruitId(204011), undefined);
+  assert.equal(config.isSeedItem(204011), false);
   for (const [seed, plant] of cases) assert.equal(plants.find(x => x.id === plant && x.seed_id === seed)?.size, 1);
   assert.equal(config.getPlantBySeedId(29005).size, 2); assert.equal(config.getPlantBySeedId(29004).size, 2);
   assert.equal(config.getPlantByFruitId(1040525), undefined, 'golden fruit does not become a seed-bearing Plant');

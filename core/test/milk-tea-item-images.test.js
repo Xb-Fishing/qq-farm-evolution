@@ -60,6 +60,7 @@ const specs = [
   [210037, '茶语装饰', 'icon_zhuangshi04'],
   [210048, '人气招牌装饰', 'icon_zhuangshi06'],
   ...BUNDLE_REWARD_SPECS,
+  [204011, '金露云酪', 'icon_skin_tower_6', 18],
 ];
 const fileName = ([id, , icon]) => `${id}_${icon}.png`;
 const tracked = [__filename, path.join(base, 'event-seed-sources.json'),
@@ -114,6 +115,18 @@ for (const spec of specs) test(`current reward ${spec[0]} resolves its own named
   assert.equal(row.height, row.width);
 });
 
+test('204011 金露云酪 keeps its direct coin price 1001:1000000 and stays outside the seed and fruit classes', () => {
+  const info = config.getItemById(204011);
+  assert.ok(info, '204011 must be registered in EventItems');
+  assert.equal(Number(info.type), 18);
+  assert.equal(info.asset_name, 'Crop_8005');
+  assert.equal(info.icon_res, 'gui/texture/skinIcon/icon_skin_tower_6/spriteFrame');
+  assert.equal(info.sells, '1001:1000000', 'independently assert the direct gold-coin sell price');
+  assert.equal(config.isSeedItem(204011), false, 'a type-18 decoration is not a seed');
+  assert.equal(config.getPlantBySeedId(204011), undefined);
+  assert.equal(config.getPlantByFruitId(204011), undefined, 'no Plant mapping may backdoor it into selling');
+});
+
 function fixture(t, bagError) {
   const paths = ['../src/utils/network', '../src/services/warehouse', '../src/services/activity', '../src/services/milk-tea-activity']
     .map(name => require.resolve(name));
@@ -165,6 +178,15 @@ test('real BagReply and panel cache deliver all reward images; reward metadata g
     assert.notEqual(entry?.category, 'fruit');
     assert.notEqual(entry?.category, 'seed');
   }
+  const decoration = detail.items.find(item => item.id === 204011);
+  assert.equal(decoration?.itemType, 18);
+  assert.equal(decoration?.category, 'item');
+  assert.equal(decoration?.priceId, 1001);
+  assert.equal(decoration?.price, 1000000);
+  assert.equal(decoration?.priceUnit, '金');
+  assert.equal(f.warehouse.getBagSeedsFromItems([{ id: 204011, count: 2 }]).length, 0);
+  assert.equal(detail.seedRecognition.issues.some(issue => issue.itemId === 204011), false);
+  assert.ok(detail.seedRecognition.issues.some(issue => issue.itemId === 799993 && issue.kind === 'unclassified_item'));
   const unknown = detail.items.find(item => item.id === 799993);
   assert.equal(unknown?.image, '');
   assert.equal(config.getItemById(799993), undefined);

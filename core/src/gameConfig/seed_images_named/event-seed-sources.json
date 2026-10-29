@@ -1310,6 +1310,35 @@
       "sha256": "6e76d6caf809e022e43946c39789f06ea5acdb7e197d44218967544ad60db35e",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 204011,
+      "file": "204011_icon_skin_tower_6.png",
+      "itemName": "金露云酪",
+      "assetPath": "gui/texture/skinIcon/icon_skin_tower_6/spriteFrame",
+      "kind": "decoration",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/204011.png",
+      "gitBlob": "70617e64df3e2e50d83b11d6c334c0cd14d5cc3b",
+      "sha256": "e45ac88e17f64d86730d2de1f183f72b4325f9a847bebf48e9896dfe28bf96bf",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 1040021,
+      "file": "1040021_gold_Crop_21.png",
+      "assetName": "gold/Crop_21",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040021.png",
+      "gitBlob": "6f87cca66cc6de62068ae047fc313e4a66de36c8",
+      "sha256": "21fec883682750c0db9f2bb1f8d55fa96206e5e1c294d5d8d922b6feacbe6899",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
