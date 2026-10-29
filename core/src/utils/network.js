@@ -75,6 +75,7 @@ let clientSeq = 1;
 let serverSeq = 0;
 const pendingCallbacks = new Map();
 const activeRequests = new Map();
+let nextRequestId = 0;
 let requestGeneration = 0;
 let requestsStopping = false;
 // 风控探针观察：未知推送只记首次类型，不解析、不响应、不重试；上限避免恶意类型刷日志/内存。
@@ -161,7 +162,8 @@ function rejectAllPendingRequests(reason = '请求被中断') {
     const requests = Array.from(activeRequests.values());
     // Capture legacy callbacks too; preparing requests have not entered the
     // response map yet and must be cancelled before scheduler.clearAll().
-    const entries = Array.from(pendingCallbacks.entries()).filter(([seq]) => !activeRequests.has(seq));
+    const ownedCallbacks = new Set(requests.map(request => request.receive));
+    const entries = Array.from(pendingCallbacks.entries()).filter(([, callback]) => !ownedCallbacks.has(callback));
     pendingCallbacks.clear();
     for (const request of requests) {
         try { request.finish(new Error(reason)); } catch { /* Cancel every request. */ }
@@ -244,11 +246,15 @@ function hasOwn(obj, key) {
 
 // ============ 消息编解码 ============
 // async function encodeMsg(serviceName, methodName, bodyBytes) {
-async function encodeMsg(serviceName, methodName, bodyBytes, clientSeqValue) {
+async function prepareMsgBody(bodyBytes) {
     let finalBody = bodyBytes || Buffer.alloc(0);
     if (finalBody.length > 0) {
         finalBody = await cryptoWasm.encryptBuffer(finalBody);
     }
+    return finalBody;
+}
+
+function encodeMsg(serviceName, methodName, finalBody, clientSeqValue) {
     const gatewayToken = initialGamePackInfo || createGatewayToken();
     initialGamePackInfo = '';
     const msg = types.GateMessage.create({
@@ -280,28 +286,31 @@ function businessPauseError(serviceName, methodName) {
 }
 
 function createSendContext(methodName, callback, timeout = undefined) {
-    // Reserve identity before authority/governor hooks, which may reenter send.
-    const seq = clientSeq++;
+    // Internal identity may be allocated before reentrant guards; protocol
+    // sequence numbers belong only to requests that actually reach the socket.
+    const id = ++nextRequestId;
     const socket = ws;
     const generation = requestGeneration;
     const value = Number(timeout);
     const duration = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
     const deadline = timeout === undefined ? Infinity : performance.now() + duration;
-    const timeoutKey = `request_timeout_${seq}`;
+    const timeoutKey = `request_timeout_${id}`;
     let settled = false;
     const current = () => socket === ws && generation === requestGeneration
         && !requestsStopping && !networkStopped && socket?.readyState === WebSocket.OPEN;
-    const timeoutError = () => Object.assign(new Error(`请求超时: ${methodName} (seq=${seq}, pending=${pendingCallbacks.size})`), { code: 'LOCAL_REQUEST_TIMEOUT' });
+    const timeoutError = () => Object.assign(new Error(`请求超时: ${methodName} (seq=${request.seq ?? '未发送'}, pending=${pendingCallbacks.size})`), { code: 'LOCAL_REQUEST_TIMEOUT' });
     const connectionError = () => Object.assign(new Error(`连接已关闭或变更: ${methodName}`), { code: 'LOCAL_CONNECTION_CHANGED' });
-    const request = { seq, socket, current, sent: false, expectsReply: typeof callback === 'function',
+    const request = { id, seq: null, socket, current, sent: false, expectsReply: typeof callback === 'function',
         finish(error, body, meta) {
             if (settled) return false;
             // A response can be delivered before an overdue timer callback.
             if (!error && !current()) error = connectionError();
             if (!error && performance.now() >= deadline) error = timeoutError();
             settled = true;
-            activeRequests.delete(seq);
-            pendingCallbacks.delete(seq);
+            activeRequests.delete(id);
+            if (request.seq !== null && pendingCallbacks.get(request.seq) === request.receive) {
+                pendingCallbacks.delete(request.seq);
+            }
             networkScheduler.clear(timeoutKey);
             if (callback) callback(error, body, meta);
             return true;
@@ -316,7 +325,7 @@ function createSendContext(methodName, callback, timeout = undefined) {
             if (request.check()) request.finish(error, body, meta);
         },
     };
-    activeRequests.set(seq, request);
+    activeRequests.set(id, request);
     if (timeout !== undefined) networkScheduler.setTimeoutTask(timeoutKey, duration, () => request.finish(timeoutError()));
     return request;
 }
@@ -328,7 +337,7 @@ async function sendWithContext(serviceName, methodName, bodyBytes, request) {
             || businessPauseError(serviceName, methodName);
         if (beforeEncoding) { request.finish(beforeEncoding); return false; }
         if (!request.check()) return false;
-        const encoded = await encodeMsg(serviceName, methodName, bodyBytes, request.seq);
+        const preparedBody = await prepareMsgBody(bodyBytes);
         if (!request.check()) return false;
         const beforeSend = sessionAuthorityError(serviceName, methodName)
             || businessPauseError(serviceName, methodName);
@@ -339,6 +348,14 @@ async function sendWithContext(serviceName, methodName, bodyBytes, request) {
             request.finish(Object.assign(new Error(`请求队列已满: ${methodName} (pending=${pendingCallbacks.size})`), { isLocalRequestRejection: true }));
             return false;
         }
+        const seq = clientSeq;
+        const encoded = encodeMsg(serviceName, methodName, preparedBody, seq);
+        if (!request.check()) return false;
+        // No await or user guard between committing the wire identity and
+        // attempting send. A send attempt may have written bytes even if it
+        // throws, so its sequence must never be rolled back or reused.
+        clientSeq += 1;
+        request.seq = seq;
         if (request.expectsReply) pendingCallbacks.set(request.seq, request.receive);
         request.sent = true;
         request.socket.send(encoded);

@@ -50,7 +50,7 @@ test('existing wire send refuses business work while protection is active', asyn
   let calls = 0;
   const error = Object.assign(new Error('synthetic local pause'), { code: 'LOCAL_BUSINESS_PAUSED' });
   const context = { ws: { readyState: 1, send: () => calls++ }, WebSocket: { OPEN: 1 },
-    clientSeq: 1, pendingCallbacks: new Map(), encodeMsg: async () => Buffer.from('synthetic'),
+    clientSeq: 1, nextRequestId: 0, pendingCallbacks: new Map(), prepareMsgBody: async () => Buffer.from('synthetic'), encodeMsg: (_service, _method, encoded) => encoded,
     requestGeneration: 0, requestsStopping: false, networkStopped: false,
     activeRequests: new Map(), performance: { now: () => 0 }, networkScheduler: { clear() {} },
     businessPauseError: () => error, sessionAuthorityError: () => null, log() {} };
