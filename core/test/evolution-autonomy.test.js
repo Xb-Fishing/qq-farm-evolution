@@ -267,19 +267,24 @@ const CHILD_SOURCE = [
   '  const treeBefore = git(["status", "--porcelain"]);',
   '  // 首次接管（无 defer 记录）允许立即一跳。',
   '  out.firstDelay = service.scheduleAutonomyFromState();',
+  '  // Measure from before the action; reading state after scheduling consumes real time.',
+  '  const hop1StartedAt = Date.now();',
   '  await service.runAutonomyStep();',
   '  let state = readState();',
   '  assert.equal(state.status, "review_blocked");',
   '  assert.equal(state.autonomy.reworkAttempts, 1);',
   '  assert.equal(state.autonomy.deferredTarget, target);',
-  '  const hop1 = nextAutonomyRunAt() - Date.now();',
+  '  const hop1 = nextAutonomyRunAt() - hop1StartedAt;',
+  '  out.hop1StillFuture = nextAutonomyRunAt() > Date.now();',
   '  out.hop1RegistryIn = hop1;',
   '  // 第二跳：同目标真实退避增长（10min 档 → 20min 档），期间不启动 Agent 不改仓库。',
+  '  const hop2StartedAt = Date.now();',
   '  await service.runAutonomyStep();',
   '  state = readState();',
   '  assert.equal(state.autonomy.reworkAttempts, 2);',
   '  assert.equal(state.autonomy.preferDiagnosis, true);',
-  '  const hop2 = nextAutonomyRunAt() - Date.now();',
+  '  const hop2 = nextAutonomyRunAt() - hop2StartedAt;',
+  '  out.hop2StillFuture = nextAutonomyRunAt() > Date.now();',
   '  out.hop2RegistryIn = hop2;',
   '  out.repoUntouched = git(["rev-parse", "HEAD"]) === headBefore && git(["status", "--porcelain"]) === treeBefore',
   '    && fs.readFileSync(path.join(dir, "unauthorized.txt"), "utf8") === "local edit\\n";',
@@ -356,6 +361,8 @@ test('真实 scheduler registry：不安全脏树两跳退避增长、措辞变�
   assert.equal(child.candidateUntouched, true, '子进程不得改动候选仓源码或工作区');
   const out = JSON.parse(child.stdout.trim().split('\n').pop());
   assert.equal(out.firstDelay, 0, '首次接管允许立即一跳');
+  assert.equal(out.hop1StillFuture, true, '首跳必须仍有真实未来 timer');
+  assert.equal(out.hop2StillFuture, true, '次跳必须仍有真实未来 timer');
   assert.ok(out.hop1RegistryIn >= 10 * MIN && out.hop1RegistryIn <= 10 * MIN + 90 * 1000 + 2000,
     `hop1 应排 ~10min 真实未来 timer，实际 ${out.hop1RegistryIn}`);
   assert.ok(out.hop2RegistryIn >= 20 * MIN && out.hop2RegistryIn <= 20 * MIN + 90 * 1000 + 2000,
