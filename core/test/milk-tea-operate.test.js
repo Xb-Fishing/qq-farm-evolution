@@ -112,7 +112,7 @@ function defaultScenario() {
     },
     exchangeShop: {
       items: [
-        { id: 9001, name: '森野甜莓种子', order: 1, rewards: [{ id: 20525, count: '1' }], costs: [{ id: TICKET, count: '10' }], purchaseLimit: 5, purchasedCount: 0, diamondCostCount: 0, condHints: [] },
+        { id: 9001, name: '森野甜莓种子', order: 1, rewards: [{ id: 20525, count: '1' }], costs: [{ id: TICKET, count: '10' }], purchaseLimit: 5, purchaseLimitKnown: true, purchasedCountKnown: true, purchasedCount: 0, diamondCostCount: 0, condHints: [] },
         { id: 9002, name: '奶茶券包', order: 2, rewards: [{ id: TICKET, count: '30' }], costs: [{ id: TICKET, count: '10' }], purchaseLimit: 0, purchasedCount: 0, diamondCostCount: 0, condHints: [] },
       ],
     },
@@ -250,7 +250,10 @@ function buildEnv(overrides = {}) {
 }
 
 /** 每个用例装配全新服务实例（模块级租约/结束证据随 require 缓存重置）。 */
+let fixtureAccount = 0;
 async function withFreshService(overrides, run) {
+  const previousAccount = process.env.FARM_ACCOUNT_ID;
+  process.env.FARM_ACCOUNT_ID = `synthetic-milk-operate-${++fixtureAccount}`;
   await loadProto();
   const networkPath = require.resolve('../src/utils/network');
   const protoPath = require.resolve('../src/utils/proto');
@@ -264,6 +267,8 @@ async function withFreshService(overrides, run) {
     const service = require('../src/services/milk-tea-activity');
     await run(service, env);
   } finally {
+    if (previousAccount === undefined) delete process.env.FARM_ACCOUNT_ID;
+    else process.env.FARM_ACCOUNT_ID = previousAccount;
     for (const [p, entry] of previous) {
       if (entry) require.cache[p] = entry;
       else delete require.cache[p];
@@ -692,7 +697,9 @@ test('工资/互动/雇佣开关：班次校验、互动选项、玩法输赢与
     assert.equal(interacted.ok, true);
     assert.equal(interacted.gameplaySuccess, true);
     assert.equal(hex(env.operateRequests.at(-1).buffer), '0895f98fc6071041d20a0408651001');
-    // 玩法输赢 ≠ 请求失败：success=false 仍 ok=true
+    // 玩法输赢 ≠ 请求失败：success=false 仍 ok=true；同一班次不重复互动
+    await assert.rejects(run('interact', { interactionType: 1 }), business('SEASON_WISH_MILK_TEA_LIMIT'));
+    shift().shift_id = 3002;
     env.scenario.operateBodies[65].milk_tea_interact.success = false;
     const lost = await run('interact', { interactionType: 1 });
     assert.equal(lost.ok, true);

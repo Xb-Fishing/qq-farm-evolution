@@ -284,3 +284,16 @@ for (const failure of ['response', 'throw']) {
     assert.deepEqual(page.notifications[1], ['默认方案已保存']);
   });
 }
+
+test('milk seed/work/upgrade preferences and exact budgets survive real default-plan save and remount', async t => {
+  const page = await mountPage(t, completeConfig()); await section(page, '自动控制');
+  for (const label of ['自动购买活动种子', '自动班次工作（互动与工资）', '自动升级店铺', '森野甜莓种子']) await setSwitch(page, label, true);
+  click(button(page.root, '展开高级预算')); await vue.nextTick();
+  await setInput(page, '奶茶券每日上限', '0');
+  const saved = await save(page);
+  assert.equal(saved.automation.milk_tea_auto_seeds, true); assert.equal(saved.automation.milk_tea_auto_work, true); assert.equal(saved.automation.milk_tea_auto_upgrade, true);
+  assert.deepEqual(saved.automation.milk_tea_seed_policy.targetSeedIds, [20525]); assert.equal(saved.automation.milk_tea_seed_policy.ticketDailyLimit, '0');
+  assert.equal(saved.automation.task, false);
+  await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '森野甜莓种子').checked, true);
+  page.api.failure = 'response'; await save(page); assert.ok(page.notifications.some(row => row[1] === 'danger'));
+});

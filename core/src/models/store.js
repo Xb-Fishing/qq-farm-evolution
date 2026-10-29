@@ -4,6 +4,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { getDataFile, ensureDataDir } = require('../config/runtime-paths');
 const { readTextFile, readJsonFile, writeJsonFileAtomic } = require('../services/json-db');
+const milkTeaPolicy = require('../services/milk-tea-auto-policy');
 const { parsePauseUntilMs, normalizePauseUntil, getDailyQuietRemainMs } = require('../utils/pause-until');
 
 // ==================== 文件路径 ====================
@@ -256,6 +257,12 @@ const DEFAULT_AUTOMATION = {
     friend_golden_bug: false,
     task: true,
     milk_tea_auto_rewards: false,
+    // 奶茶自主动作（购种/班次工作/升级）独立开关，默认全关；策略见 milk_tea_seed_policy
+    milk_tea_auto_seeds: false,
+    milk_tea_auto_work: false,
+    milk_tea_auto_upgrade: false,
+    milk_tea_seed_policy: milkTeaPolicy.cloneSeedPolicy(milkTeaPolicy.DEFAULT_SEED_POLICY),
+    milk_tea_work_interaction_type: 1,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
@@ -597,6 +604,19 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
             auto[key] = normalizeFertilizerLandTypes(srcAuto[key], DEFAULT_FERTILIZER_LAND_TYPES);
             continue;
         }
+        if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+            auto[key] = srcAuto[key] === true;
+            continue;
+        }
+        if (key === 'milk_tea_seed_policy') {
+            // 深拷贝+failclosed 规范化：多账号/多次克隆不得共享嵌套对象引用
+            auto[key] = milkTeaPolicy.normalizeSeedPolicy(srcAuto[key]);
+            continue;
+        }
+        if (key === 'milk_tea_work_interaction_type') {
+            auto[key] = milkTeaPolicy.normalizeWorkInteractionType(srcAuto[key]);
+            continue;
+        }
         if (srcAuto[key] !== undefined) {
             auto[key] = srcAuto[key];
         }
@@ -712,7 +732,13 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
         for (const [key, value] of Object.entries(input.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(key)) continue;
 
-            if (key === 'fertilizer') {
+            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+                cfg.automation[key] = value === true;
+            } else if (key === 'milk_tea_seed_policy') {
+                cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
+            } else if (key === 'milk_tea_work_interaction_type') {
+                cfg.automation[key] = milkTeaPolicy.normalizeWorkInteractionType(value, cfg.automation[key]);
+            } else if (key === 'fertilizer') {
                 const allowed = ['both', 'normal', 'organic', 'smart', 'smart_only', 'smart_normal', 'final_normal', 'final_organic', 'none'];
                 cfg.automation[key] = allowed.includes(value) ? value : cfg.automation[key];
             } else if (key === 'fertilizer_land_types') {
@@ -864,8 +890,10 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
 
 function pickDefaultPlanConfig(raw) {
     const cfg = normalizeAccountConfig(raw, DEFAULT_ACCOUNT_CONFIG);
+    const automation = { ...cfg.automation };
+    automation.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(automation.milk_tea_seed_policy);
     return {
-        automation: { ...cfg.automation },
+        automation,
         autoCodeRefresh: { ...cfg.autoCodeRefresh },
         plantingStrategy: cfg.plantingStrategy,
         preferredSeedId: cfg.preferredSeedId,
@@ -1225,12 +1253,14 @@ loadGlobalConfig();
 function getAutomation(accountId) {
     const auto = { ...getAccountConfigSnapshot(accountId).automation };
     auto.fertilizer_land_types = normalizeFertilizerLandTypes(auto.fertilizer_land_types);
+    auto.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(auto.milk_tea_seed_policy);
     return auto;
 }
 
 function getConfigSnapshot(accountId) {
     const cfg = getAccountConfigSnapshot(accountId);
     const auto = { ...cfg.automation };
+    auto.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(auto.milk_tea_seed_policy);
     const ui = { ...globalConfig.ui };
     return {
         automation: auto,
@@ -1272,7 +1302,13 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     if (patch.automation && typeof patch.automation === 'object') {
         for (const [key, value] of Object.entries(patch.automation)) {
             if (cfg.automation[key] === undefined) continue;
-            if (key === 'fertilizer') {
+            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+                cfg.automation[key] = value === true;
+            } else if (key === 'milk_tea_seed_policy') {
+                cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
+            } else if (key === 'milk_tea_work_interaction_type') {
+                cfg.automation[key] = milkTeaPolicy.normalizeWorkInteractionType(value, cfg.automation[key]);
+            } else if (key === 'fertilizer') {
                 const allowed = ['both', 'normal', 'organic', 'smart', 'smart_only', 'smart_normal', 'final_normal', 'final_organic', 'none'];
                 cfg.automation[key] = allowed.includes(value) ? value : cfg.automation[key];
             } else if (key === 'fertilizer_land_types') {
@@ -1392,6 +1428,19 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
 }
 
 function setAutomation(key, value, accountId) {
+    // The legacy management route publishes one key at a time. Keep the milk
+    // policy and its enable switches in one committed authorization snapshot.
+    if (key === 'milk_tea_control') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid milk automation settings');
+        const allowed = new Set(['milk_tea_auto_rewards', ...Object.keys(milkTeaPolicy.defaultMilkTeaAutomation())]);
+        const automation = Object.fromEntries(Object.entries(value).filter(([field]) => allowed.has(field)));
+        if (!Object.keys(automation).length) throw new Error('Empty milk automation settings');
+        const previous = getAccountConfigSnapshot(accountId);
+        const result = applyConfigSnapshot({ automation }, { accountId, persist: false });
+        try { saveGlobalConfig({ throwOnError: true }); }
+        catch (error) { setAccountConfigSnapshot(accountId, previous, false); throw error; }
+        return result;
+    }
     const patch = { automation: { [key]: value } };
     if (key === 'friend_bad' && value === true) {
         patch.friendBadRetryDate = '';

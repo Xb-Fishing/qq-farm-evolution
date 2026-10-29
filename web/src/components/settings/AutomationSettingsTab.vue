@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import MilkTeaAutomationSettings from '@/components/settings/MilkTeaAutomationSettings.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -12,6 +13,18 @@ interface AutomationSettings {
     plant: boolean
     task: boolean
     milk_tea_auto_rewards: boolean
+    milk_tea_auto_seeds?: boolean
+    milk_tea_auto_work?: boolean
+    milk_tea_auto_upgrade?: boolean
+    milk_tea_work_interaction_type?: number
+    milk_tea_seed_policy?: {
+      targetSeedIds: number[]
+      targetStock: number
+      coinReserve: string
+      coinDailyLimit: string
+      ticketReserve: string
+      ticketDailyLimit: string
+    }
     sell: boolean
     friend: boolean
     farm_push: boolean
@@ -161,6 +174,8 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.skip_own_weed_bug" label="不除自己草虫" />
         <BaseSwitch v-model="settings.automation.golden_bug_clear" label="自动清除黄金虫" />
       </div>
+
+      <MilkTeaAutomationSettings v-model:automation="settings.automation" />
 
       <Transition name="fade">
         <div v-if="mysteryShopSettingsVisible" class="fixed inset-0 z-50 grid place-items-center bg-gray-950/45 p-4 backdrop-blur-[2px]" @click.self="mysteryShopSettingsVisible = false">

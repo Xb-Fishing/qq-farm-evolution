@@ -631,6 +631,18 @@ export interface MilkTeaExchangeBounds {
   blockReason: string
   unitCosts: Array<{ itemId: number, count: string, name: string }>
 }
+export interface MilkTeaAutomationStatus {
+  unavailable?: boolean
+  lastMessage?: string
+  rewardsEnabled?: boolean
+  seedsEnabled?: boolean
+  workEnabled?: boolean
+  upgradeEnabled?: boolean
+  pendingPurchases?: number
+  pendingInteractions?: number
+  wagesPending?: boolean
+  upgradePending?: boolean
+}
 export interface MilkTeaActivityData {
   activityId?: number
   title?: string
@@ -638,9 +650,10 @@ export interface MilkTeaActivityData {
   rules?: string[]
   summary?: { shopOpenAt?: number, shopName?: string, level?: number, totalRevenue?: number, canUpgrade?: boolean, hireDisabled?: boolean, hasUnclaimedWage?: boolean }
   inventory?: { available?: boolean, ticketCount?: number, boostItemCount?: number }
-  exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchasedCount?: number, diamondCostCount?: number, exchangeBounds?: MilkTeaExchangeBounds }> }
+  exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchaseLimitKnown?: boolean, purchasedCountKnown?: boolean, purchasedCount?: number, diamondCostCount?: number, exchangeBounds?: MilkTeaExchangeBounds }> }
   growthFund?: { unlocked?: boolean, tiers?: Array<{ tierId?: number, state?: number, conditions?: Array<{ reached?: boolean }>, reward?: MilkTeaItem[] }> }
   shareReward?: MilkTeaShareReward
+  automationStatus?: MilkTeaAutomationStatus | null
   gameplay?: Partial<Record<'shop' | 'workshop' | 'work', {
     available: boolean
     data: Record<string, any> | null

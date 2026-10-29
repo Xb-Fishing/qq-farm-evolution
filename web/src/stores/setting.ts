@@ -3,6 +3,15 @@ import { ref } from 'vue'
 import api from '@/api'
 import { useAccountStore } from '@/stores/account'
 
+export interface MilkTeaSeedPolicy {
+  targetSeedIds: number[]
+  targetStock: number
+  coinReserve: string
+  coinDailyLimit: string
+  ticketReserve: string
+  ticketDailyLimit: string
+}
+
 export interface AutomationConfig {
   farm?: boolean
   harvest?: boolean
@@ -12,6 +21,11 @@ export interface AutomationConfig {
   friend?: boolean
   task?: boolean
   milk_tea_auto_rewards?: boolean
+  milk_tea_auto_seeds?: boolean
+  milk_tea_auto_work?: boolean
+  milk_tea_auto_upgrade?: boolean
+  milk_tea_work_interaction_type?: number
+  milk_tea_seed_policy?: MilkTeaSeedPolicy
   sell?: boolean
   fertilizer_gift?: boolean
   fertilizer_buy_organic?: boolean
@@ -290,9 +304,13 @@ export const useSettingStore = defineStore('setting', () => {
     }
   }
 
-  async function saveSettings(accountId: string, newSettings: any) {
+  async function saveSettings(accountId: string, newSettings: any, isStillActive: () => boolean = () => true) {
     if (!accountId)
       return { ok: false, error: '未选择账号' }
+    // Freeze the user's complete authorization at the save click. Editing the
+    // form while the first request is pending must not authorize unsaved policy.
+    const automationSnapshot = newSettings.automation ? JSON.parse(JSON.stringify(newSettings.automation)) : null
+    const requestId = ++fetchRequestId
     loading.value = true
     try {
       const settingsPayload = {
@@ -319,21 +337,40 @@ export const useSettingStore = defineStore('setting', () => {
         goldenBugRoundLimit: newSettings.goldenBugRoundLimit ?? 24,
       }
 
-      await api.post('/api/settings/save', settingsPayload, {
+      const settingsResult = await api.post('/api/settings/save', settingsPayload, {
         headers: { 'x-account-id': accountId },
       })
 
-      if (newSettings.automation) {
-        await api.post('/api/automation', newSettings.automation, {
+      if (settingsResult.data?.ok !== true)
+        return { ok: false, error: settingsResult.data?.error || '设置保存失败' }
+      if (!isCurrentAccount(accountId) || !isStillActive())
+        return { ok: false, error: '账号已切换，请在原账号核对已提交设置' }
+
+      if (automationSnapshot) {
+        const automationPayload: Record<string, unknown> = {}
+        const milkControl: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(automationSnapshot)) {
+          if (key.startsWith('milk_tea_'))
+            milkControl[key] = value
+          else automationPayload[key] = value
+        }
+        if (Object.keys(milkControl).length)
+          automationPayload.milk_tea_control = milkControl
+        const automationResult = await api.post('/api/automation', automationPayload, {
           headers: { 'x-account-id': accountId },
         })
+        if (automationResult.data?.ok !== true)
+          return { ok: false, error: automationResult.data?.error || '自动控制保存失败' }
       }
 
+      if (!isCurrentAccount(accountId) || !isStillActive())
+        return { ok: false, error: '账号已切换，请在原账号核对已提交设置' }
       await fetchSettings(accountId)
       return { ok: true }
     }
     finally {
-      loading.value = false
+      if (requestId === fetchRequestId)
+        loading.value = false
     }
   }
 

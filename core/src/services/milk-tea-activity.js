@@ -25,7 +25,8 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
  * core/data/client-config-evidence/sources.json），并与当前 ActivityService.List
  * 下发、官方公告正文交叉核对。evidence=official-encoder-reconstruction
  * （非自然成功请求样本）。用户明确要求的免费奖励自动领取复用同一资格校验，
- * 满额收银、每日/首次分享与档位之外的经济操作仍仅走面板确认。
+ * 新增购种、已有班次处理和升级复用已审手动链，独立策略默认关闭；
+ * 购种仅在保存目标、库存、保留量及日预算范围内执行，未知结果不重放。
  *
  * 安全边界（照 pet-diary-operate 的手动模式）：
  * - 每次操作前重读 List + 根 GetGroup
@@ -44,6 +45,7 @@ const Long = require('long');
 const { sendMsgAsync, getWs } = require('../utils/network');
 const { types } = require('../utils/proto');
 const CONFIG = require('../gameConfig/MilkTeaActivity.json');
+const milkTeaPolicy = require('./milk-tea-auto-policy');
 const { getItemById, getItemImageById, getGenericFallbackItemIds } = require('../config/gameConfig');
 
 const MILK_TEA_ROOT_ACTIVITY_ID = 2026110100;
@@ -178,6 +180,9 @@ function milkTeaSummaryDto(body) {
     openingGiftPreview: itemsDto(summary.opening_gift_preview, 10),
     hasWorkerShift: summary.has_worker_shift === true,
     hasUnclaimedWage: summary.has_unclaimed_wage === true,
+    // 缺省 bool 会被上面的 ===true 折成 false；工资 latch 只认「明确 false」释放，
+    // 用已知标志区分「字段未下发」与「明确没有未领工资」。
+    hasUnclaimedWageKnown: Object.prototype.hasOwnProperty.call(summary, 'has_unclaimed_wage') && typeof summary.has_unclaimed_wage === 'boolean',
     nextCupAt: num64(summary.next_cup_at),
   };
 }
@@ -218,18 +223,31 @@ function exchangeShopRichDto(body) {
   const shop = body && body.shop;
   if (!shop) return null;
   return {
-    items: list(shop.goods).filter(Boolean).slice(0, 80).map(goods => ({
-      id: num64(goods.id),
-      name: trimTo(goods.name, 60),
-      desc: trimTo(goods.desc, 200),
-      order: num64(goods.order),
-      rewards: itemsDto(goods.item, 10),
-      costs: itemsDto(goods.cost, 10),
-      purchaseLimit: num64(goods.purchase_limit),
-      purchasedCount: num64(goods.purchased_count),
-      diamondCostCount: num64(goods.diamond_cost_count),
-      condHints: list(goods.cond_hints).filter(Boolean).slice(0, 12).map(condHintDto).filter(Boolean),
-    })),
+    items: list(shop.goods).filter(Boolean).slice(0, 80).map(goods => {
+      const rewards = itemsDto(goods.item, 10);
+      const costs = itemsDto(goods.cost, 10);
+      const condHints = list(goods.cond_hints).filter(Boolean).slice(0, 12).map(condHintDto).filter(Boolean);
+      return {
+        id: num64(goods.id),
+        name: trimTo(goods.name, 60),
+        desc: trimTo(goods.desc, 200),
+        order: num64(goods.order),
+        rewards,
+        costs,
+        purchaseLimit: num64(goods.purchase_limit),
+        // 限购/已购字段是否真实下发（protobuf 原型默认值不能证明下发）：
+        // 自动购种不允许把缺省 0 冒充「已确认未限购/已确认 0 已购」。
+        purchaseLimitKnown: Object.prototype.hasOwnProperty.call(goods, 'purchase_limit') && Number.isSafeInteger(Number(goods.purchase_limit)) && Number(goods.purchase_limit) >= 0,
+        purchasedCountKnown: Object.prototype.hasOwnProperty.call(goods, 'purchased_count') && Number.isSafeInteger(Number(goods.purchased_count)) && Number(goods.purchased_count) >= 0,
+        purchasedCount: num64(goods.purchased_count),
+        diamondCostCount: num64(goods.diamond_cost_count),
+        condHints,
+        // Display bounds must never hide a cost, reward or condition from the
+        // automatic authorization check. This is local metadata, not a wire field.
+        automaticPurchaseDataComplete: rewards.length === list(goods.item).length
+          && costs.length === list(goods.cost).length && condHints.length === list(goods.cond_hints).length,
+      };
+    }),
   };
 }
 
@@ -369,11 +387,11 @@ function currentConnection(deps) {
 
 /** 入口捕获连接对象：之后每个 await 都用它复查所有权（连接重建/未就绪即停）。 */
 function captureConnectionContext(deps) {
-  return { ws: currentConnection(deps) };
+  return { ws: currentConnection(deps), account: String(process.env.FARM_ACCOUNT_ID || '') };
 }
 
 function assertConnectionOwned(deps, context) {
-  if (currentConnection(deps) !== context.ws) {
+  if (currentConnection(deps) !== context.ws || String(process.env.FARM_ACCOUNT_ID || '') !== context.account) {
     fail('SEASON_WISH_MILK_TEA_CONNECTION_CHANGED', '连接已更换，停止本次奶茶操作（请重新发起）');
   }
   if (deps && typeof deps.isReady === 'function' && deps.isReady() !== true) {
@@ -389,13 +407,24 @@ function assertConnectionOwned(deps, context) {
  */
 async function operateMilkTeaRequest(operation, params, deps, context) {
   const [targetId, command, selector] = operation;
-  assertConnectionOwned(deps, context);
-  const payload = { activity_id: toLong(targetId), operate_type: command };
-  if (selector) payload[selector] = params || {};
-  const request = types.MilkTeaOperateRequest.encode(
-    types.MilkTeaOperateRequest.create(payload),
-  ).finish();
+  // 预发送段（连接校验/编码）内抛出的错误是结构上可证的「从未交给传输层」本地拒绝；
+  // 打上 preSend 标志，写前声明可据此安全释放。传输 await 之后的任何失败不带此标志。
+  let request;
+  try {
+    assertConnectionOwned(deps, context);
+    deps.assertAutomaticAllowed?.();
+    const payload = { activity_id: toLong(targetId), operate_type: command };
+    if (selector) payload[selector] = params || {};
+    request = types.MilkTeaOperateRequest.encode(
+      types.MilkTeaOperateRequest.create(payload),
+    ).finish();
+  }
+  catch (err) {
+    if (err && typeof err === 'object') err.preSend = true;
+    throw err;
+  }
   const { body } = await sendMsgAsync('gamepb.activitypb.ActivityService', 'Operate', request);
+  assertConnectionOwned(deps, context);
   const reply = types.MilkTeaOperateReply.decode(body);
   if (num64(reply.activity_id) !== targetId || num64(reply.operate_type) !== command) {
     // 读路径普通错误（不标 business）：面板展示为普通失败；写路径由调用方归为结果未知
@@ -415,7 +444,9 @@ async function readBalances(deps) {
   const bag = await deps.getBag();
   for (const item of deps.getBagItems(bag) || []) {
     const id = String(num64(item && item.id));
-    result.set(id, (BigInt(result.get(id) || '0') + BigInt(str64(item && item.count) || '0')).toString());
+    const count = milkTeaPolicy.parseExactCount(str64(item?.count));
+    if (count === null) fail('SEASON_WISH_MILK_TEA_NO_STATE', '背包数量未确认');
+    result.set(id, (BigInt(result.get(id) || '0') + BigInt(count)).toString());
   }
   return { balances: result, available: true };
 }
@@ -498,6 +529,23 @@ function getMilkTeaExchangeBounds(goods, inventory, timing = {}) {
   return bounds;
 }
 
+/** 面板只读自动化状态：开关 + 未决计数，无 journal 身份；读失败返回 null 不阻塞首屏。 */
+function readAutomationStatusForOverview() {
+  try {
+    const auto = require('../models/store').getAutomation();
+    return {
+      rewardsEnabled: auto.milk_tea_auto_rewards === true,
+      seedsEnabled: auto.milk_tea_auto_seeds === true,
+      workEnabled: auto.milk_tea_auto_work === true,
+      upgradeEnabled: auto.milk_tea_auto_upgrade === true,
+      ...actionStateSummary(),
+    };
+  }
+  catch {
+    return { unavailable: true };
+  }
+}
+
 function buildMilkTeaOverview(snapshot, inventory, now) {
   const displayItems = rows => list(rows).map(item => {
     const id = toNum(item.id); const image = getItemImageById(id) || '';
@@ -533,6 +581,8 @@ function buildMilkTeaOverview(snapshot, inventory, now) {
       ticketCount: toNum(counts.get(TICKET_ITEM_ID)),
       boostItemCount: toNum(counts.get(BOOST_ITEM_ID)),
     },
+    // 脱敏自动化状态（只含开关与未决计数，不含 journal 键/身份/时间戳）
+    automationStatus: readAutomationStatusForOverview(),
   };
 }
 
@@ -1017,6 +1067,18 @@ function unknownOutcome(action, command, err) {
   };
 }
 
+function definitelyUnsent(err) {
+  if (!err || typeof err !== 'object') return false;
+  if (err.preSend === true) return true;
+  // These two strict fields survive the host's real session codec. They are
+  // emitted by the network budget gate before WS.send. Neither error text nor
+  // business/timeout/session errors prove that a write was never transmitted.
+  return err.isGovernedRejection === true
+    && ['budget_total', 'budget_method'].includes(err.governedReason)
+    && err.business !== true && err.isServerBusinessError !== true
+    && err.serverErrorCode == null && err.unknown !== true && err.code == null;
+}
+
 function rewardRows(rows) {
   return itemsDto(rows, 30).map(item => ({ itemId: item.id, count: item.count, name: getItemById(item.id)?.name || '未知物品' }));
 }
@@ -1033,13 +1095,15 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
   }
   const lease = acquireLease();
   if (!lease) fail('SEASON_WISH_MILK_TEA_BUSY', '奶茶查询/操作进行中，请稍后再试（不排队）');
+  let declared = null;
+  let context;
   try {
     const activityService = require('./activity');
     const listReader = deps.getActivityDiscoveryList || activityService.getActivityDiscoveryList;
     const snapshotReader = deps.getActivityGroupSnapshot || activityService.getActivityGroupSnapshot;
     // 连接在首个 await 前入口捕获；此后每个 await 都复查所有权/就绪，并按当前
     // 时间重核动作相位（读取途中跨入结算期/最终截止即停，零后续写）。
-    const context = captureConnectionContext(deps);
+    context = captureConnectionContext(deps);
     let timingSource = null;
     let minimumHireRemainSec = 0;
     const recheck = () => {
@@ -1070,6 +1134,9 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     const exchangeShop = findChild(MILK_TEA_SHOP_ACTIVITY_ID)?.details?.exchangeShop || null;
     const growthFund = findChild(MILK_TEA_FUND_ACTIVITY_ID)?.details?.growthFund || null;
     const shareReward = findChild(MILK_TEA_HAPPY_SHARE_ACTIVITY_ID)?.details?.shareReward || null;
+    if (['claimWages', 'interact', 'upgrade'].includes(action) || (action === 'exchange' && list(exchangeShop?.items).some(row => num64(row.id) === Number(input.goodsId) && list(row.rewards).some(item => CONFIG.activitySeedItemIds.includes(num64(item.id)))))) {
+      reconcileActionState({ summary, goodsById: new Map(list(exchangeShop?.items).map(row => [num64(row.id), row])), nowMs: nowSec() * 1000 });
+    }
 
     const send = async (operationName, params) => {
       const operation = OPERATIONS[operationName];
@@ -1082,7 +1149,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       catch (err) {
         // 写前的固定拒绝（连接/就绪/编码前校验，business）原样抛出；写请求已发出
         // 之后的传输失败/解码失败/回显不匹配 = 结果未知（可能已执行），不自动重试
-        if (err && err.business === true) throw err;
+        if (err && (err.business === true || definitelyUnsent(err))) throw err;
         throw Object.assign(new Error('奶茶操作结果未知'), { unknown: true, err });
       }
     };
@@ -1094,6 +1161,10 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     };
     let operationName = action;
     let params = {};
+    // 写前声明所需的活动上下文（upgrade/interact/exchange 分支就地填充）
+    let preUpgradeLevel = 0;
+    let interactShiftId = '';
+    let exchangeDeclaration = null;
 
     if (action === 'createShop' || action === 'renameShop') {
       const name = shopNameValid(input.shopName);
@@ -1180,6 +1251,9 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       // 不再读 cmd55 后核对不存在的 can_upgrade）
       if (!summary) fail('SEASON_WISH_MILK_TEA_NO_STATE', '服务端未返回奶茶店铺状态');
       if (summary.canUpgrade !== true) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '当前营业额尚未达到升级条件');
+      preUpgradeLevel = num64(summary.level);
+      if (!validInteger(preUpgradeLevel, 1)) fail('SEASON_WISH_MILK_TEA_NO_STATE', '升级前等级未确认');
+      if (['upgradeCost', 'upgradeCosts', 'upgrade_cost', 'upgrade_costs'].some(key => summary[key] != null && (!Array.isArray(summary[key]) || summary[key].length > 0))) fail('SEASON_WISH_MILK_TEA_UNKNOWN_COST', '升级费用未确认');
     }
     else if (action === 'craft') {
       const fruitUids = list(input.fruitUids).map(value => str64(value));
@@ -1276,6 +1350,9 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       }
       if (input.targetGid != null && str64(input.targetGid) !== str64(shift.employer.gid)) fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '互动目标与当前班次不符');
       if (toNum(shift.end_at) > 0 && toNum(shift.end_at) <= nowSec()) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '当前班次已经结束');
+      interactShiftId = str64(shift.shift_id);
+      if (deps.assertAutomaticAllowed && !workInteractionReady(work, nowSec(), interactionType)) fail('SEASON_WISH_MILK_TEA_NO_STATE', '本班次互动资格未完整确认');
+      reconcileActionState({ summary, myShiftId: interactShiftId, nowMs: nowSec() * 1000 });
       params = { target_gid: shift.employer.gid, interaction_type: interactionType };
     }
     else if (action === 'hireSetting') {
@@ -1320,6 +1397,18 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
         fail('SEASON_WISH_MILK_TEA_SETTLING_SEEDS', '结算期已停止活动专属种子购买');
       }
       if ((goods.costs || []).some(cost => !getItemById(toNum(cost.id)))) fail('SEASON_WISH_MILK_TEA_UNKNOWN_COST', '未知费用道具，停止兑换');
+      // 内部自动授权上下文：写前用 fresh 商品奖励身份复核已保存目标。
+      // 同商品ID/同价格但奖励已换成别的种子时零写（前端不传该字段，只会更严）。
+      const expectedSeedId = inputNumber(input.expectedSeedId);
+      if (input.expectedSeedId != null) {
+        if (!Number.isSafeInteger(expectedSeedId) || expectedSeedId <= 0) {
+          fail('SEASON_WISH_MILK_TEA_INVALID_INPUT', '自动购种目标无效');
+        }
+        const rewardRow = (goods.rewards || []).find(item => toNum(item.id) === expectedSeedId);
+        if (!rewardRow || num64(rewardRow.count) <= 0) {
+          fail('SEASON_WISH_MILK_TEA_COST_CHANGED', '商品奖励已变化，不再匹配所选种子，停止兑换');
+        }
+      }
       const totals = costTotals(goods.costs || [], count);
       if (!totals || totals.size === 0) {
         fail('SEASON_WISH_MILK_TEA_UNKNOWN_COST', '该商品费用无法证实，已阻止兑换');
@@ -1335,6 +1424,17 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
           fail('SEASON_WISH_MILK_TEA_INSUFFICIENT', '兑换余额不足');
         }
       }
+      const activitySeedSet = new Set((CONFIG.activitySeedItemIds || []).map(toNum));
+      deps.validateAutomaticPurchase?.({ goods, balances });
+      exchangeDeclaration = {
+        goodsId,
+        seedId: (goods.rewards || []).map(item => toNum(item.id)).find(id => activitySeedSet.has(id)) || 0,
+        count,
+        baselinePurchased: goods.purchasedCountKnown === true && Number.isSafeInteger(Number(goods.purchasedCount)) ? Number(goods.purchasedCount) : null,
+        counterKnown: goods.purchasedCountKnown === true,
+        rewards: rewardAmounts(goods.rewards, count),
+        spent: Object.fromEntries([...totals].map(([itemId, amount]) => [itemId, amount.toString()])),
+      };
       operationName = 'exchange';
       params = { goods_id: goodsId, count };
     }
@@ -1379,7 +1479,18 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       for (const key of rewardKeys) automaticState.claims[key] = nowSec() * 1000;
       persistAutomaticState();
     }
+    // 工资/升级/互动/购种：手动与自动共用同一写前持久声明（含多币种预留），
+    // 先落盘后发包；持久化失败抛出 = 零写。未知结果不重发，仅 fresh 对账释放。
     deps.beforeAutomaticWrite?.(action);
+    recheck();
+    declared = declareManualAction(action, {
+      preUpgradeLevel,
+      interactShiftId,
+      exchangeDeclaration,
+      freshLevel: num64(summary?.level),
+      automatic: typeof deps.assertAutomaticAllowed === 'function',
+      nowMs: nowSec() * 1000,
+    });
     const outcome = await send(operationName, params);
     const { reply, selector, command } = outcome;
     // 写请求已成功送达且回显匹配后，仍要求结果体存在；缺失 = 结果未知（不重试）
@@ -1400,12 +1511,15 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     else if (action === 'claimCashier') confirmed = positiveItems(result.items);
     else if (action === 'claimWages') confirmed = num64(result.claimed_count) > 0 || positiveItems(result.items);
     else if (action === 'createShop') confirmed = positiveItems(result.opening_gift);
-    else if (action === 'exchange') confirmed = positiveItems(result.awards);
+    else if (action === 'exchange') confirmed = exchangeDeclaration?.seedId > 0 ? sameAmounts(rewardAmounts(result.awards), exchangeDeclaration.rewards) : positiveItems(result.awards);
+    else if (action === 'interact') confirmed = own(result, 'success') && typeof result.success === 'boolean';
     else if (action === 'boost') confirmed = num64(result.cups) > 0;
-    else if (action === 'upgrade') confirmed = num64(result.level) > 0;
+    else if (action === 'upgrade') confirmed = num64(result.level) > preUpgradeLevel;
     else if (action === 'craft') confirmed = mapEntries(result.crafted_cups).some(([, count]) => num64(count) > 0);
     else if (action === 'hireSetting') confirmed = result.hire_disabled === input.hireDisabled;
     if (!confirmed) return unknownOutcome(action, command, new Error('回复未确认预期动作结果'));
+    try { settleDeclaredAction(declared, { action, result, day: beijingDayOf(nowSec() * 1000) }); }
+    catch { return unknownOutcome(action, command, new Error('动作已发送，结果持久化未完成')); }
 
 
     if (action === 'hire') {
@@ -1478,6 +1592,12 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     if (err && err.unknown === true) {
       return unknownOutcome(action, action in OPERATIONS ? OPERATIONS[action][1] : 0, err.err);
     }
+    // Only structured proof of no physical send releases this declaration.
+    // A failed durable release rolls memory back and retains the reservation.
+    if (definitelyUnsent(err) && declared && context
+      && currentConnection(deps) === context.ws && String(process.env.FARM_ACCOUNT_ID || '') === context.account) {
+      releaseDeclaredAction(declared);
+    }
     throw err;
   }
   finally {
@@ -1487,7 +1607,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
 
 // Only free, explicitly requested rewards participate. A durable latch is
 // installed immediately before sending; an unknown result is never replayed.
-let automaticState = { nextCheckAt: 0, claims: {}, loaded: false };
+let automaticState = { nextCheckAt: 0, claims: {}, actionState: null, loaded: false };
 let automaticRunning = false;
 function automaticStateFile() {
   const account = String(process.env.FARM_ACCOUNT_ID || 'default').replace(/[^\w.-]/g, '_').slice(0, 80);
@@ -1496,9 +1616,15 @@ function automaticStateFile() {
 function loadAutomaticState() {
   if (automaticState.loaded) return;
   try {
-    const value = JSON.parse(require('node:fs').readFileSync(automaticStateFile(), 'utf8'));
+    const fs = require('node:fs');
+    if (fs.statSync(automaticStateFile()).size > 262144) throw new Error('milk_journal_too_large');
+    const value = JSON.parse(fs.readFileSync(automaticStateFile(), 'utf8'));
     if (value?.version !== 1 || !value.claims || Array.isArray(value.claims) || typeof value.claims !== 'object') throw new Error('invalid_reward_journal');
     automaticState.claims = Object.fromEntries(Object.entries(value.claims).filter(([key, time]) => key.length <= 200 && Number.isSafeInteger(time) && time > 0).slice(-50));
+    // 兼容旧胶囊：无 actionState 字段的旧 version1 journal 安全加载（新声明体为空）
+    if (value.actionState !== undefined && value.actionState !== null) {
+      automaticState.actionState = normalizeActionStateJournal(value.actionState);
+    }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
@@ -1511,14 +1637,241 @@ function persistAutomaticState() {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, claims: automaticState.claims }), { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, claims: automaticState.claims, actionState: automaticState.actionState }), { mode: 0o600 });
     fs.renameSync(tmp, file);
   } finally { try { fs.unlinkSync(tmp); } catch {} }
 }
+
+// ---------- 工资/升级/互动/购种 写前持久声明与对账（version1 journal 可选新字段） ----------
+//
+// actionState 与 claims 完全独立：claims 保留既有两日/50 条裁剪；actionState 的
+// 未决声明不被裁剪驱逐，只在 fresh 状态给出明确证据时释放。写前先持久化声明与
+// 多币种预留，持久化失败抛出（零写）；未知结果不重发。
+
+// New action records deliberately do not participate in reward claim expiry.
+const ACTION_JOURNAL_LIMITS = { purchases: 32, interactions: 64 };
+const AUTO_COST_ITEM_IDS = [1001, 1041];
+const own = (value, key) => value != null && Object.prototype.hasOwnProperty.call(value, key);
+const validInteger = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
+function beijingDayOf(nowMs) { return new Date(nowMs + 8 * 3600_000).toISOString().slice(0, 10); }
+function normalizeActionStateJournal(raw) {
+  const empty = { wages: null, upgrades: null, interactions: {}, purchases: {}, spend: {} };
+  if (raw == null) return empty; // Old version-1 journals and capsules.
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const reject = () => { throw new Error('invalid_milk_action_journal'); };
+  if (!object(raw)) reject();
+  const value = JSON.parse(JSON.stringify(raw));
+  for (const key of ['interactions', 'purchases', 'spend']) if (!object(value[key])) reject();
+  if (Object.keys(value.purchases).length > ACTION_JOURNAL_LIMITS.purchases || Object.keys(value.interactions).length > ACTION_JOURNAL_LIMITS.interactions || Object.keys(value.spend).length > 4) reject();
+  const statusValid = row => row.status === 'pending' || row.status === 'confirmed';
+  if (value.wages != null && (!object(value.wages) || value.wages.pending !== true || !validInteger(value.wages.at, 1) || !statusValid(value.wages))) reject();
+  if (value.upgrades != null && (!object(value.upgrades) || !validInteger(value.upgrades.pendingLevel, 1) || !validInteger(value.upgrades.at, 1) || !statusValid(value.upgrades))) reject();
+  for (const [id, row] of Object.entries(value.interactions)) {
+    if (!/^[1-9]\d{0,18}$/.test(id) || !object(row) || !validInteger(row.at, 1) || !statusValid(row)) reject();
+  }
+  const costsValid = rows => object(rows) && Object.keys(rows).length > 0 && Object.entries(rows).every(([id, count]) => /^[1-9]\d*$/.test(id) && milkTeaPolicy.parseExactCount(count) !== null && BigInt(count) > 0n);
+  for (const [id, row] of Object.entries(value.purchases)) {
+    if (!object(row) || String(row.goodsId) !== id || !validInteger(row.goodsId, 1) || !validInteger(row.seedId, 1)
+      || !validInteger(row.count, 1) || row.count > 999 || (row.baselinePurchased !== null && !validInteger(row.baselinePurchased))
+      || !validInteger(row.at, 1) || !/^\d{4}-\d{2}-\d{2}$/.test(row.day) || !statusValid(row)
+      || !costsValid(row.spent) || !costsValid(row.rewards)) reject();
+  }
+  for (const [day, row] of Object.entries(value.spend)) if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !costsValid(row)) reject();
+  return { ...empty, ...value };
+}
+function ensureActionState() {
+  if (automaticState.actionState == null) automaticState.actionState = normalizeActionStateJournal(null);
+  return automaticState.actionState;
+}
+// Publish a memory update only with its durable write. A failed rename must not
+// make the next in-process invocation forget an unknown request.
+function changeActionState(update) {
+  loadAutomaticState();
+  const previous = ensureActionState();
+  const next = JSON.parse(JSON.stringify(previous));
+  const result = update(next);
+  automaticState.actionState = next;
+  try { persistAutomaticState(); }
+  catch (error) { automaticState.actionState = previous; throw error; }
+  return result;
+}
+function pendingSpendByCurrency(state) {
+  const totals = new Map();
+  for (const row of Object.values(state?.purchases || {})) {
+    if (row.status === 'confirmed') continue;
+    for (const [id, amount] of Object.entries(row.spent)) totals.set(id, (totals.get(id) || 0n) + BigInt(amount));
+  }
+  return totals;
+}
+function dailyBudgetUsage(state, day) {
+  const confirmed = new Map(Object.entries(state?.spend?.[day] || {}).map(([id, n]) => [id, BigInt(n)]));
+  const pending = pendingSpendByCurrency(state);
+  const used = new Map(confirmed);
+  for (const [id, n] of pending) used.set(id, (used.get(id) || 0n) + n);
+  return { confirmed, pending, used };
+}
+function recordConfirmedSpend(state, day, spent) {
+  const row = state.spend[day] || {};
+  for (const [id, n] of Object.entries(spent)) row[id] = ((BigInt(row[id] || '0')) + BigInt(n)).toString();
+  state.spend[day] = row;
+}
+function rewardAmounts(rows, multiplier = 1) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const amounts = {};
+  for (const row of rows) {
+    const id = num64(row?.id); const n = milkTeaPolicy.parseExactCount(str64(row?.count));
+    if (!validInteger(id, 1) || n === null || BigInt(n) <= 0n) return null;
+    amounts[id] = ((BigInt(amounts[id] || '0')) + BigInt(n) * BigInt(multiplier)).toString();
+  }
+  return amounts;
+}
+function sameAmounts(a, b) {
+  return a && b && Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([id, n]) => b[id] === n);
+}
+function reconcileActionState({ summary, myShiftId, goodsById, nowMs }) {
+  loadAutomaticState();
+  // Do not write an empty journal on every read.
+  const before = JSON.stringify(ensureActionState());
+  const update = state => {
+    const day = beijingDayOf(nowMs);
+    state.spend = Object.fromEntries(Object.entries(state.spend).filter(([key]) => key === day));
+    if (state.wages && summary?.hasUnclaimedWageKnown === true && summary.hasUnclaimedWage === false) state.wages = null;
+    if (state.upgrades && validInteger(summary?.level, 1) && summary.level > state.upgrades.pendingLevel) state.upgrades = null;
+    if (/^[1-9]\d{0,18}$/.test(String(myShiftId || ''))) {
+      state.interactions = Object.fromEntries(Object.entries(state.interactions).filter(([id]) => id === String(myShiftId)));
+    }
+    for (const [key, row] of Object.entries(state.purchases)) {
+      const goods = goodsById?.get(row.goodsId);
+      if (goods?.purchasedCountKnown !== true || !validInteger(goods.purchasedCount)
+        || (row.status === 'confirmed' && row.baselinePurchased === null ? goods.purchasedCount < row.count
+          : !validInteger(row.baselinePurchased) || goods.purchasedCount < row.baselinePurchased + row.count)
+        || !sameAmounts(rewardAmounts(goods.rewards, row.count), row.rewards)) continue;
+      // The actual debit day of an unknown write is unproven. Charge the day
+      // of natural confirmation so a delayed debit cannot free a second allowance.
+      if (row.status !== 'confirmed') recordConfirmedSpend(state, day, row.spent);
+      delete state.purchases[key];
+    }
+  };
+  const probe = JSON.parse(before); update(probe);
+  if (JSON.stringify(probe) === before) return false;
+  changeActionState(state => Object.assign(state, probe));
+  return true;
+}
+function actionStateSummary() {
+  loadAutomaticState(); const state = ensureActionState();
+  return { pendingPurchases: Object.values(state.purchases).filter(row => row.status !== 'confirmed').length,
+    pendingInteractions: Object.values(state.interactions).filter(row => row.status !== 'confirmed').length,
+    wagesPending: !!state.wages, upgradePending: !!state.upgrades, lastMessage: automaticState.lastMessage || '' };
+}
+function declareManualAction(action, { preUpgradeLevel, interactShiftId, exchangeDeclaration, nowMs, automatic }) {
+  if (!['claimWages', 'interact', 'upgrade'].includes(action) && !(action === 'exchange' && exchangeDeclaration?.seedId > 0)) return null;
+  return changeActionState(state => {
+    const common = { at: nowMs, status: 'pending' };
+    if (action === 'claimWages') {
+      if (state.wages) fail('SEASON_WISH_MILK_TEA_NO_CLAIMABLE', '工资已提交，等待明确无待领状态对账');
+      state.wages = { pending: true, ...common }; return { kind: 'wages' };
+    }
+    if (action === 'upgrade') {
+      if (!validInteger(preUpgradeLevel, 1) || state.upgrades) fail('SEASON_WISH_MILK_TEA_INVALID_STATE', '升级等级未确认或上次升级待对账');
+      state.upgrades = { pendingLevel: preUpgradeLevel, ...common }; return { kind: 'upgrade' };
+    }
+    if (action === 'interact') {
+      if (!/^[1-9]\d{0,18}$/.test(interactShiftId) || state.interactions[interactShiftId] || Object.keys(state.interactions).length >= ACTION_JOURNAL_LIMITS.interactions) fail('SEASON_WISH_MILK_TEA_LIMIT', '本班次已尝试或班次记录无法确认');
+      state.interactions[interactShiftId] = common; return { kind: 'interact', shiftId: interactShiftId };
+    }
+    const row = exchangeDeclaration; const key = String(row.goodsId);
+    const previous = state.purchases[key];
+    // A fresh manual confirmation is a new intent after a confirmed result.
+    // Automatic execution still needs a known counter and natural reconciliation;
+    // a manual unknown result is never replaced, including an unknown baseline.
+    if ((automatic && (!validInteger(row.baselinePurchased) || !row.counterKnown || previous))
+      || (!automatic && previous?.status === 'pending') || !row.rewards
+      || (!previous && Object.keys(state.purchases).length >= ACTION_JOURNAL_LIMITS.purchases)) fail('SEASON_WISH_MILK_TEA_LIMIT', '商品计数未确认或上次购买待对账');
+    state.purchases[key] = { ...row, day: beijingDayOf(nowMs), ...common };
+    delete state.purchases[key].counterKnown;
+    return { kind: 'purchase', key };
+  });
+}
+function settleDeclaredAction(declared, { day }) {
+  if (!declared) return;
+  changeActionState(state => {
+    const row = declared.kind === 'wages' ? state.wages : declared.kind === 'upgrade' ? state.upgrades
+      : declared.kind === 'interact' ? state.interactions[declared.shiftId] : state.purchases[declared.key];
+    if (!row) throw new Error('missing_milk_action_declaration');
+    if (declared.kind === 'purchase' && row.status !== 'confirmed') recordConfirmedSpend(state, day, row.spent);
+    row.status = 'confirmed'; // Keep identity until a fresh state advances it.
+  });
+}
+function releaseDeclaredAction(declared) {
+  if (!declared) return;
+  changeActionState(state => {
+    if (declared.kind === 'wages') state.wages = null;
+    else if (declared.kind === 'upgrade') state.upgrades = null;
+    else if (declared.kind === 'interact') delete state.interactions[declared.shiftId];
+    else delete state.purchases[declared.key];
+  });
+}
+function automationPolicyIdentity(auto) {
+  return JSON.stringify([auto.milk_tea_auto_rewards === true, auto.milk_tea_auto_seeds === true, auto.milk_tea_auto_work === true,
+    auto.milk_tea_auto_upgrade === true, auto.milk_tea_work_interaction_type, auto.milk_tea_seed_policy]);
+}
 function automaticMilkTeaWakeAt(now = Date.now()) {
-  if (require('../models/store').getAutomation().milk_tea_auto_rewards !== true || endedEvidenceActive(Math.floor(now / 1000))) return now + 86400_000;
+  const auto = require('../models/store').getAutomation();
+  if (automaticState.policyIdentity == null && automaticState.nextCheckAt > 0) automaticState.policyIdentity = automationPolicyIdentity(auto);
+  if (!milkTeaPolicy.anyMilkTeaAutoSwitchOn(auto) || endedEvidenceActive(Math.floor(now / 1000))) return now + 86400_000;
+  if (automationPolicyIdentity(auto) !== automaticState.policyIdentity) return now;
   return automaticState.nextCheckAt || now;
 }
+function seedPurchaseForGoods(auto, goods, balances, nowMs, onBlocked) {
+  const blocked = message => { onBlocked?.(message); return null; };
+  const policy = milkTeaPolicy.normalizeSeedPolicy(auto.milk_tea_seed_policy);
+  const state = ensureActionState();
+  if (goods?.automaticPurchaseDataComplete !== true || goods?.purchaseLimitKnown !== true || goods?.purchasedCountKnown !== true
+    || !validInteger(goods.purchaseLimit) || !validInteger(goods.purchasedCount) || state.purchases[String(goods.id)]
+    || !Array.isArray(goods.condHints) || goods.condHints.some(hint => hint?.satisfied !== true)
+    || num64(goods.diamondCostCount) > 0) return blocked('购种暂停：商城条件、限购或已购信息未确认，或该商品上次购买待对账');
+  const rewards = rewardAmounts(goods.rewards);
+  if (!rewards || Object.keys(rewards).length !== 1) return blocked('购种暂停：商品奖励身份或数量未确认');
+  const seedId = Number(Object.keys(rewards)[0]);
+  if (!policy.targetSeedIds.includes(seedId) || !milkTeaPolicy.ACTIVITY_SEED_ITEM_IDS.includes(seedId)) return null;
+  const each = BigInt(rewards[seedId]);
+  if (each > 9999n) return null;
+  const totals = milkTeaPolicy.mergeCosts(list(goods.costs).map(row => ({ itemId: num64(row.id), count: str64(row.count) })));
+  if (!totals?.size || [...totals.keys()].some(id => !AUTO_COST_ITEM_IDS.includes(Number(id)))) return blocked('购种暂停：费用未确认或含不允许自动支付的货币');
+  const { used, pending } = dailyBudgetUsage(state, beijingDayOf(nowMs));
+  const limits = { 1001: policy.coinDailyLimit, 1041: policy.ticketDailyLimit };
+  const reserve = { 1001: policy.coinReserve, 1041: policy.ticketReserve };
+  const reserves = {}; const dailyRemaining = {};
+  for (const id of AUTO_COST_ITEM_IDS) {
+    reserves[id] = (BigInt(reserve[id]) + (pending.get(String(id)) || 0n)).toString();
+    const remaining = BigInt(limits[id]) - (used.get(String(id)) || 0n);
+    dailyRemaining[id] = (remaining > 0n ? remaining : 0n).toString();
+  }
+  const gap = BigInt(policy.targetStock) - balanceOf(balances, seedId);
+  if (gap < each) return blocked(gap <= 0n ? '购种跳过：目标库存已满足' : '购种跳过：库存缺口不足一份商品');
+  if (goods.purchaseLimit > 0 && goods.purchasedCount >= goods.purchaseLimit) return blocked('购种暂停：当前商品限购已用尽');
+  for (const [id, cost] of totals) {
+    if (BigInt(dailyRemaining[id] || '0') < cost) return blocked('购种暂停：日预算不足，未决购买仍占用额度');
+    if (balanceOf(balances, id) - BigInt(reserves[id] || '0') < cost) return blocked('购种暂停：余额不足或需要保留资源');
+  }
+  const count = milkTeaPolicy.purchasePortionCount({ stockGap: policy.targetStock - Number(balanceOf(balances, seedId)), seedsPerPortion: Number(each),
+    remainingLimit: goods.purchaseLimit === 0 ? Infinity : Math.max(0, goods.purchaseLimit - goods.purchasedCount),
+    unitCosts: totals, balances, reserves, dailyRemaining });
+  if (count <= 0) return blocked('购种暂停：当前库存、限购与预算未同时满足');
+  return { goodsId: goods.id, seedId, count, rewards: rewardAmounts(goods.rewards, count),
+    unitRewards: rewards, unitCosts: Object.fromEntries([...totals].map(([id, n]) => [id, n.toString()])),
+    confirmedCosts: [...totals].map(([id, n]) => ({ itemId: Number(id), count: (n * BigInt(count)).toString() })) };
+}
+function workInteractionReady(work, nowSec, type) {
+  const shift = work?.my_shift;
+  return !!shift && own(work, 'interact_done') && work.interact_done === false
+    && own(shift, 'interact_count') && own(shift, 'interact_limit') && own(shift, 'end_at')
+    && validInteger(num64(shift.interact_count)) && validInteger(num64(shift.interact_limit), 1)
+    && num64(shift.interact_count) < num64(shift.interact_limit) && num64(shift.end_at) > nowSec
+    && /^[1-9]\d{0,18}$/.test(str64(shift.shift_id))
+    && list(shift.interact_previews).some(row => num64(row.interaction_type) === type);
+}
+
 function rewardAttemptKeys(action, share, now) {
   const day = new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
   if (action === 'claimCashier') return ['cashier'];
@@ -1529,74 +1882,123 @@ function rewardAttemptKeys(action, share, now) {
 }
 async function runAutomaticMilkTea(deps = {}) {
   const nowMs = () => typeof deps.now === 'function' ? deps.now() : Date.now();
-  const enabled = () => typeof deps.enabled === 'function' ? deps.enabled() : require('../models/store').getAutomation().milk_tea_auto_rewards === true;
+  const autoCfg = () => typeof deps.getAutomation === 'function' ? deps.getAutomation() : require('../models/store').getAutomation();
+  const enabled = () => (typeof deps.enabled !== 'function' || deps.enabled() === true) && milkTeaPolicy.anyMilkTeaAutoSwitchOn(autoCfg());
   const paused = () => typeof deps.isPaused === 'function' ? deps.isPaused() : require('../models/store').getPauseRemainMs(process.env.FARM_ACCOUNT_ID || '') > 0;
-  if (automaticRunning || !enabled() || paused() || nowMs() < automaticState.nextCheckAt || endedEvidenceActive(Math.floor(nowMs() / 1000))) return;
+  const identity = automationPolicyIdentity(autoCfg());
+  if (automaticState.policyIdentity == null && automaticState.nextCheckAt > 0) automaticState.policyIdentity = identity;
+  if (automaticRunning || !enabled() || paused() || (identity === automaticState.policyIdentity && nowMs() < automaticState.nextCheckAt) || endedEvidenceActive(Math.floor(nowMs() / 1000))) return;
   const lease = acquireLease();
   if (!lease) { automaticState.nextCheckAt = nowMs() + 60_000; return; }
-  automaticRunning = true;
-  let held = true;
-  const results = [];
+  automaticRunning = true; automaticState.policyIdentity = identity;
+  let held = true; const results = [];
   automaticState.nextCheckAt = nowMs() + 15 * 60_000;
   try {
+    const warehouse = require('./warehouse');
+    deps = { getBag: warehouse.getBag, getBagItems: warehouse.getBagItems, ...deps };
     loadAutomaticState();
-    const day = new Date(nowMs() + 8 * 3600_000).toISOString().slice(0, 10);
+    const day = beijingDayOf(nowMs());
     const context = captureConnectionContext(deps);
+    let timingSource = null;
     const recheck = () => {
       assertConnectionOwned(deps, context);
-      if (!enabled() || paused()) fail('SEASON_WISH_MILK_TEA_PAUSED', '自动奖励已暂停');
+      if (!enabled() || paused() || automationPolicyIdentity(autoCfg()) !== identity || beijingDayOf(nowMs()) !== day) fail('SEASON_WISH_MILK_TEA_PAUSED', '自动化设置或日期已变化，等待重新核对');
       if (typeof deps.canRun === 'function' && deps.canRun() !== true) fail('SEASON_WISH_MILK_TEA_YIELD', '优先处理到点收获');
-      if (new Date(nowMs() + 8 * 3600_000).toISOString().slice(0, 10) !== day) fail('SEASON_WISH_MILK_TEA_PAUSED', '跨日后重新核对奖励');
+      if (timingSource && timingOf(timingSource, Math.floor(nowMs() / 1000)).phase === 'ended') {
+        recordEndedEvidence(timingOf(timingSource, Math.floor(nowMs() / 1000)), null);
+        fail('SEASON_WISH_MILK_TEA_ENDED', '奶茶活动已结束');
+      }
     };
     recheck();
-    const activityService = require('./activity');
-    const listReader = deps.getActivityDiscoveryList || activityService.getActivityDiscoveryList;
-    const snapshotReader = deps.getActivityGroupSnapshot || activityService.getActivityGroupSnapshot;
-    const activities = await listReader(); recheck();
-    if (!findMilkTeaRootNode(activities)) { automaticState.nextCheckAt = nowMs() + 6 * 3600_000; return; }
-    const snapshot = await snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, ''); recheck();
-    if (toNum(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) return;
-    const timing = timingOf(snapshot, Math.floor(nowMs() / 1000));
-    recordEndedEvidence(timing, null);
-    if (!['open', 'settle'].includes(timing.phase)) return;
+    const activity = require('./activity');
+    const activities = await (deps.getActivityDiscoveryList || activity.getActivityDiscoveryList)(); recheck();
+    timingSource = findMilkTeaRootNode(activities);
+    if (!timingSource) { automaticState.nextCheckAt = nowMs() + 6 * 3600_000; return results; }
+    recheck();
+    const snapshot = await (deps.getActivityGroupSnapshot || activity.getActivityGroupSnapshot)(MILK_TEA_ROOT_ACTIVITY_ID, ''); recheck();
+    if (num64(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) return results;
+    timingSource = snapshot;
+    const timing = timingOf(snapshot, Math.floor(nowMs() / 1000)); recordEndedEvidence(timing, null);
+    if (!['open', 'settle'].includes(timing.phase)) return results;
     const children = list(snapshot.children);
-    const summary = children.find(row => toNum(row.id) === MILK_TEA_MAIN_ACTIVITY_ID)?.details?.milkTea;
-    const share = children.find(row => toNum(row.id) === MILK_TEA_HAPPY_SHARE_ACTIVITY_ID)?.details?.shareReward;
-    const actions = [];
-    if (summary?.shopOpenAt > 0) {
-      const reply = await operateMilkTeaRequest(OPERATIONS.queryShop, {}, deps, context); recheck();
-      const view = reply?.milk_tea_get_shop?.shop;
-      const cashier = cashierState(view, Math.floor(nowMs() / 1000));
-      if (cashier.known && !cashier.full && automaticState.claims.cashier) {
-        delete automaticState.claims.cashier; persistAutomaticState();
-      }
-      if (cashier.full && list(view?.pending_rewards).some(item => num64(item?.id) > 0 && num64(item?.count) > 0)) actions.push(['claimCashier', 'cashier']);
-      if (timing.phase === 'open' && cashier.nextCheckAt > nowMs()) automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, cashier.nextCheckAt);
+    const summary = children.find(row => num64(row.id) === MILK_TEA_MAIN_ACTIVITY_ID)?.details?.milkTea;
+    const share = children.find(row => num64(row.id) === MILK_TEA_HAPPY_SHARE_ACTIVITY_ID)?.details?.shareReward;
+    const goodsList = list(children.find(row => num64(row.id) === MILK_TEA_SHOP_ACTIVITY_ID)?.details?.exchangeShop?.items);
+    let work = null;
+    if (autoCfg().milk_tea_auto_work === true) {
+      const reply = await operateMilkTeaRequest(OPERATIONS.queryWorkPage, {}, deps, context); recheck();
+      work = reply?.milk_tea_get_work_page;
+      const end = num64(work?.my_shift?.end_at) * 1000;
+      if (end > nowMs()) automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, end + 1000);
     }
-    if (share?.daily?.rewardClaimed === false) actions.push(['shareDaily', `daily:${day}`]);
-    if (share?.daily?.firstShareAwarded === false) actions.push(['shareFirst', `first:${day}`]);
-    const tiers = list(share?.milestones).filter(row => toNum(row.state) === 2 && toNum(share.currentScore) >= toNum(row.threshold)).map(row => toNum(row.id)).sort((a, b) => a - b);
-    if (tiers.length) actions.push(['shareMilestones', tiers.map(id => `tier:${id}`)]);
-    // Keep only current/previous-day claims plus the current cashier/tier latch.
+    reconcileActionState({ summary, myShiftId: work?.my_shift?.shift_id, goodsById: new Map(goodsList.map(row => [row.id, row])), nowMs: nowMs() });
+    const freeActions = [];
+    automaticState.lastMessage = '本轮已核对，暂无已确认可执行动作';
+    if (autoCfg().milk_tea_auto_rewards === true) {
+      if (summary?.shopOpenAt > 0) {
+        const reply = await operateMilkTeaRequest(OPERATIONS.queryShop, {}, deps, context); recheck();
+        const view = reply?.milk_tea_get_shop?.shop;
+        const cashier = cashierState(view, Math.floor(nowMs() / 1000));
+        if (cashier.known && !cashier.full && automaticState.claims.cashier) { delete automaticState.claims.cashier; persistAutomaticState(); }
+        if (cashier.full && list(view?.pending_rewards).some(row => num64(row?.id) > 0 && num64(row?.count) > 0)) freeActions.push(['claimCashier', ['cashier']]);
+        if (timing.phase === 'open' && cashier.nextCheckAt > nowMs()) automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, cashier.nextCheckAt);
+      }
+      if (share?.daily?.rewardClaimed === false) freeActions.push(['shareDaily', [`daily:${day}`]]);
+      if (share?.daily?.firstShareAwarded === false) freeActions.push(['shareFirst', [`first:${day}`]]);
+      const tiers = list(share?.milestones).filter(row => num64(row.state) === 2 && num64(share.currentScore) >= num64(row.threshold)).map(row => num64(row.id));
+      if (tiers.length) freeActions.push(['shareMilestones', tiers.map(id => `tier:${id}`)]);
+    }
     automaticState.claims = Object.fromEntries(Object.entries(automaticState.claims).filter(([key, at]) => key === 'cashier' || key.startsWith('tier:') || nowMs() - at < 2 * 86400_000).slice(-50));
+    let purchase = null;
+    if (autoCfg().milk_tea_auto_seeds === true) automaticState.lastMessage = autoCfg().milk_tea_seed_policy?.targetSeedIds?.length
+      ? '购种暂停：当前商城未发现符合目标的可购商品' : '未选择购种目标，本轮不购买';
+    if (autoCfg().milk_tea_auto_seeds === true && timing.phase === 'open' && autoCfg().milk_tea_seed_policy?.targetSeedIds?.length) {
+      const { balances, available } = await readBalances(deps); recheck();
+      if (available) for (const seedId of autoCfg().milk_tea_seed_policy.targetSeedIds) {
+        for (const goods of goodsList) {
+          if (!list(goods.rewards).some(row => num64(row.id) === seedId)) continue;
+          const plan = seedPurchaseForGoods(autoCfg(), goods, balances, nowMs(), message => { automaticState.lastMessage = message; });
+          if (plan?.seedId === seedId) { purchase = plan; break; }
+        }
+        if (purchase) break;
+      }
+    }
     releaseLease(lease); held = false;
-    for (const [action, key] of actions) {
-      recheck();
-      const keys = Array.isArray(key) ? key : [key];
-      if (keys.some(id => automaticState.claims[id])) continue;
-      const result = await runManualMilkTeaAction(action, {}, { ...deps,
-        assertAutomaticAllowed: recheck,
+    for (const [action, keys] of freeActions) {
+      recheck(); if (keys.some(key => automaticState.claims[key])) continue;
+      const result = await runManualMilkTeaAction(action, {}, { ...deps, assertAutomaticAllowed: recheck }); results.push(result);
+      if (result?.ok !== true || result?.outcome === 'unknown') { automaticState.lastMessage = '上次操作结果未知，已暂停重复操作，请稍后刷新核对'; return results; }
+      if (autoCfg().milk_tea_auto_seeds !== true) automaticState.lastMessage = '本轮免费奖励已处理，后续按状态复核';
+      automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, nowMs() + 60_000);
+    }
+    const actions = [];
+    if (autoCfg().milk_tea_auto_work === true) {
+      if (summary?.hasUnclaimedWage === true && !ensureActionState().wages && (list(work?.slips).length || work?.my_shift)) actions.push(['claimWages', {}]);
+      const type = milkTeaPolicy.normalizeWorkInteractionType(autoCfg().milk_tea_work_interaction_type);
+      if (timing.phase === 'open' && workInteractionReady(work, Math.floor(nowMs() / 1000), type) && !ensureActionState().interactions[str64(work.my_shift.shift_id)]) actions.push(['interact', { interactionType: type, shiftId: str64(work.my_shift.shift_id) }]);
+    }
+    if (timing.phase === 'open' && autoCfg().milk_tea_auto_upgrade === true && summary?.canUpgrade === true && validInteger(summary?.level, 1) && !ensureActionState().upgrades) actions.push(['upgrade', {}]);
+    if (purchase) actions.push(['exchange', { goodsId: purchase.goodsId, count: purchase.count, confirmedCosts: purchase.confirmedCosts }]);
+    let newWrites = 0;
+    for (const [action, input] of actions) {
+      recheck(); if (newWrites >= 3) break;
+      const result = await runManualMilkTeaAction(action, input, { ...deps, assertAutomaticAllowed: recheck,
+        beforeAutomaticWrite: () => { recheck(); if (newWrites >= 3) fail('SEASON_WISH_MILK_TEA_LIMIT', '本轮自动动作额度已用尽'); newWrites++; },
+        validateAutomaticPurchase: action !== 'exchange' ? undefined : ({ goods, balances }) => {
+          recheck(); const fresh = seedPurchaseForGoods(autoCfg(), goods, balances, nowMs());
+          if (!fresh || fresh.seedId !== purchase.seedId || fresh.count < purchase.count || !sameAmounts(fresh.unitRewards, purchase.unitRewards)
+            || !sameAmounts(fresh.unitCosts, purchase.unitCosts)) fail('SEASON_WISH_MILK_TEA_COST_CHANGED', '自动购买的目标、费用、库存或预算已变化，停止本次购买');
+        },
       });
       results.push(result);
-      if (result?.outcome === 'unknown' || result?.ok !== true) break;
-      // Success may unlock a new tier or reset the cashier. Reconcile shortly,
-      // rather than treating the earlier snapshot as proof of the new state.
-      automaticState.nextCheckAt = Math.min(automaticState.nextCheckAt, nowMs() + 60_000);
+      if (result?.ok !== true || result?.outcome === 'unknown') { automaticState.lastMessage = '上次操作结果未知，已暂停重复操作，请稍后刷新核对'; break; }
+      if (autoCfg().milk_tea_auto_seeds !== true || purchase) automaticState.lastMessage = '本轮动作已提交，等待最新状态确认';
     }
     return results;
   } catch (error) {
+    automaticState.lastMessage = error?.code === 'SEASON_WISH_MILK_TEA_YIELD' ? '已让位于成熟收获或好友抢收' : '本轮检查未完成，已暂停操作，等待下一次复核';
     automaticState.nextCheckAt = error?.code === 'SEASON_WISH_MILK_TEA_YIELD' ? nowMs() + 1000 : Math.max(automaticState.nextCheckAt, nowMs() + 60_000);
-    if (!['SEASON_WISH_MILK_TEA_PAUSED', 'SEASON_WISH_MILK_TEA_YIELD'].includes(error?.code)) log('活动', '自动奖励本轮未完成，稍后核对状态', { module: 'activity', event: 'milk_tea_auto_check', result: 'error', code: String(error?.code || 'read_failed').slice(0, 80) });
+    if (!['SEASON_WISH_MILK_TEA_PAUSED', 'SEASON_WISH_MILK_TEA_YIELD'].includes(error?.code)) log('活动', '奶茶自动化本轮未完成，等待下次状态复核', { module: 'activity', event: 'milk_tea_auto_check', result: 'error', code: String(error?.code || 'read_failed').slice(0, 80) });
     return results;
   } finally {
     if (held) releaseLease(lease);
@@ -1628,6 +2030,12 @@ module.exports = {
   cashierState,
   runAutomaticMilkTea,
   automaticMilkTeaWakeAt,
+  // 自主动作对账/预算（无网络纯函数，测试与面板状态用）
+  reconcileActionState,
+  dailyBudgetUsage,
+  actionStateSummary,
+  normalizeActionStateJournal,
+  beijingDayOf,
 };
 
 // Persistent-session data capsule. No handles, functions or in-flight work.
@@ -1639,9 +2047,13 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
     validate(value) {
       const keys = value && Object.keys(value).sort().join(',');
       if (keys !== 'endedEvidence' && keys !== 'automaticState,endedEvidence') throw new Error('Invalid milk reward checkpoint');
-      if (value.automaticState && (!Number.isFinite(value.automaticState.nextCheckAt) || !value.automaticState.claims || typeof value.automaticState.loaded !== 'boolean')) throw new Error('Invalid milk automatic state');
+      if (value.automaticState && (!Number.isFinite(value.automaticState.nextCheckAt) || !value.automaticState.claims || Array.isArray(value.automaticState.claims) || typeof value.automaticState.claims !== 'object' || typeof value.automaticState.loaded !== 'boolean')) throw new Error('Invalid milk automatic state');
+      // actionState 为可选新字段：旧胶囊无该字段合法；存在时必须能规范化
+      if (value.automaticState?.actionState !== undefined && value.automaticState.actionState !== null) {
+        normalizeActionStateJournal(value.automaticState.actionState);
+      }
     },
-    restore(value) { endedEvidence = value.endedEvidence; automaticState = value.automaticState || { nextCheckAt: 0, claims: {}, loaded: false }; },
+    restore(value) { endedEvidence = value.endedEvidence; automaticState = value.automaticState || { nextCheckAt: 0, claims: {}, actionState: null, loaded: false }; },
     idle: () => actionLeaseOwner === null && !automaticRunning,
   });
 }

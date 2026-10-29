@@ -427,6 +427,30 @@ function exchange(goods: ExchangeGoods) {
           {{ queries.shop.error }}
         </p>
       </section>
+      <section v-if="!notOpened" data-gameplay="automation" class="milk-card">
+        <div class="milk-card-heading">
+          <span class="i-carbon-settings-check" aria-hidden="true" /><div><h3>活动自动化</h3><p>开关与预算在设置的奶茶活动自动化中配置</p></div>
+        </div>
+        <p v-if="!activity?.automationStatus || activity.automationStatus.unavailable" class="milk-notice">
+          自动化状态读取失败或尚未取得，请刷新核对；不能据此认定开关已关闭。
+        </p>
+        <div v-else class="milk-cashier">
+          <span>自动领奖 {{ activity?.automationStatus?.rewardsEnabled ? '已开启' : '未开启' }}</span>
+          <span>班次工作 {{ activity?.automationStatus?.workEnabled ? '已开启' : '未开启' }}</span>
+          <span>升级 {{ activity?.automationStatus?.upgradeEnabled ? '已开启' : '未开启' }}</span>
+          <span>购种 {{ activity?.automationStatus?.seedsEnabled ? '已开启' : '未开启' }}</span>
+        </div>
+        <p v-if="activity?.automationStatus?.lastMessage" class="milk-muted" role="status">
+          {{ activity.automationStatus.lastMessage }}
+        </p>
+        <a class="milk-action min-h-11 inline-flex items-center border border-orange-200 rounded-lg px-3 text-sm text-orange-800 dark:border-orange-700 dark:text-orange-200" href="/settings?tab=automation">打开自动化设置</a>
+        <p class="milk-muted">
+          自动化约每 15 分钟或到关键节点（班次结束/收银满）复核一次，不会主动找工作或雇佣陌生人。
+        </p>
+        <p v-if="activity?.automationStatus?.wagesPending || activity?.automationStatus?.upgradePending || (activity?.automationStatus?.pendingPurchases ?? 0) > 0 || (activity?.automationStatus?.pendingInteractions ?? 0) > 0" class="milk-notice" role="status">
+          上次操作仍待确认（工资/升级/互动/购买），暂不重复执行；请稍后刷新核对。
+        </p>
+      </section>
       <section v-if="!notOpened" data-gameplay="cashier" class="milk-card">
         <div class="milk-card-heading">
           <span class="i-carbon-wallet" aria-hidden="true" /><div><h3>收银台与宣传喇叭</h3><p>开启奶茶自动领奖后，满额自动领取营业收益</p></div>

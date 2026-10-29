@@ -1041,7 +1041,13 @@ async function runUnifiedTick() {
     const shouldHelp = now >= nextHelpRunAt;
     const shouldSteal = stealAt > 0 && now >= stealAt;
 
-    const shouldActivity = autoConfig.milk_tea_auto_rewards === true && now >= nextActivityRewardsAt(now);
+    // 任一奶茶自动化开关（免费领奖/购种/班次工作/升级）都可唤醒统一活动调度；
+    // 其余成熟/好友/HOT/治理/登录链不受这些开关影响。
+    const milkTeaAutoOn = autoConfig.milk_tea_auto_rewards === true
+        || autoConfig.milk_tea_auto_seeds === true
+        || autoConfig.milk_tea_auto_work === true
+        || autoConfig.milk_tea_auto_upgrade === true;
+    const shouldActivity = milkTeaAutoOn && now >= nextActivityRewardsAt(now);
     if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
     if (!autoConfig.friend_steal) {
@@ -1063,6 +1069,9 @@ async function runUnifiedTick() {
         await require('../services/milk-tea-activity').runAutomaticMilkTea({
             isReady: () => loginReady && !friendSyncPaused,
             canRun: () => !ownHarvestIsDue() && !ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS) && !stealIsDue() && !stealIsImminent(1500),
+            // 真实仓库背包读取（购种预算/库存缺口依赖），非测试桩
+            getBag,
+            getBagItems,
         });
     }
 }
