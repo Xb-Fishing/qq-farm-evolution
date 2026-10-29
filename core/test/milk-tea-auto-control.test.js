@@ -15,6 +15,7 @@ const milk = require('../src/services/milk-tea-activity');
 
 test('activity rewards default off and enabling them leaves disabled ordinary tasks unchanged', () => {
   assert.equal(store.getAutomation().milk_tea_auto_rewards, false);
+  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade']) assert.equal(store.getAutomation()[key], false);
   store.applyConfigSnapshot({ automation: { task: false, milk_tea_auto_rewards: true } }, { persist: false });
   assert.equal(store.getAutomation().task, false);
   assert.equal(store.getAutomation().milk_tea_auto_rewards, true);
@@ -43,6 +44,8 @@ test('real unified caller dispatches activity rewards with task off, and never d
     nextStealRunAt: now + 600000,
     stealIsImminent: () => false, stealIsDue: () => false, markStealDueAt() {}, STEAL_IDLE_MS: 86400000,
     ownHarvestIsDue: () => false, ownHarvestIsImminent: () => false, OWN_HARVEST_RESERVE_MS: 10000,
+    // 真实 runAutomaticMilkTea 依赖注入的真实仓库背包读取在沙箱内的占位（原断言不变）
+    getBag: async () => ({}), getBagItems: () => [],
     require: name => {
       assert.equal(name, '../services/milk-tea-activity');
       return { runAutomaticMilkTea: async deps => { assert.equal(deps.canRun(), true); calls++; } };
@@ -52,4 +55,9 @@ test('real unified caller dispatches activity rewards with task off, and never d
   await sandbox.runUnifiedTick(); assert.equal(calls, 1);
   auto.task = true; auto.milk_tea_auto_rewards = false;
   await sandbox.runUnifiedTick(); assert.equal(calls, 1);
+  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade']) {
+    auto.task = false; auto[key] = true;
+    const before = calls; await sandbox.runUnifiedTick(); assert.equal(calls, before + 1, key);
+    auto[key] = false; await sandbox.runUnifiedTick(); assert.equal(calls, before + 1);
+  }
 });

@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import api from '@/api'
 import { useSettingStore } from '@/stores/setting'
 
@@ -14,6 +14,18 @@ const defaultAutomation = {
   plant: false,
   task: false,
   milk_tea_auto_rewards: false,
+  milk_tea_auto_seeds: false,
+  milk_tea_auto_work: false,
+  milk_tea_auto_upgrade: false,
+  milk_tea_work_interaction_type: 1,
+  milk_tea_seed_policy: {
+    targetSeedIds: [] as number[],
+    targetStock: 24,
+    coinReserve: '1000000',
+    coinDailyLimit: '240000',
+    ticketReserve: '8000',
+    ticketDailyLimit: '0',
+  },
   sell: false,
   friend: false,
   farm_push: false,
@@ -69,7 +81,17 @@ export function useAutomationSettings({
     intervalMinutes: 60,
   })
 
+  let saveEpoch = 0
+  let disposed = false
+  onBeforeUnmount(() => {
+    disposed = true
+    saveEpoch++
+  })
   const automationSaving = ref(false)
+  watch(currentAccountId, () => {
+    saveEpoch++
+    automationSaving.value = false
+  })
   const autoCodeRefreshing = ref(false)
 
   const fertilizerLandTypeOptions = [
@@ -116,6 +138,17 @@ export function useAutomationSettings({
         : { ...defaultAutomation }
 
       localAutomationSettings.value.automation.fertilizer_land_types = normalizeFertilizerLandTypes(localAutomationSettings.value.automation.fertilizer_land_types)
+      // 奶茶自主动作策略深拷贝兜底：旧配置无该对象时补推荐默认值
+      const policyDefaults = defaultAutomation.milk_tea_seed_policy
+      const loadedPolicy: Partial<typeof policyDefaults> = settings.value.automation?.milk_tea_seed_policy || {}
+      localAutomationSettings.value.automation.milk_tea_seed_policy = {
+        targetSeedIds: [...(loadedPolicy.targetSeedIds || [])],
+        targetStock: loadedPolicy.targetStock ?? policyDefaults.targetStock,
+        coinReserve: loadedPolicy.coinReserve ?? policyDefaults.coinReserve,
+        coinDailyLimit: loadedPolicy.coinDailyLimit ?? policyDefaults.coinDailyLimit,
+        ticketReserve: loadedPolicy.ticketReserve ?? policyDefaults.ticketReserve,
+        ticketDailyLimit: loadedPolicy.ticketDailyLimit ?? policyDefaults.ticketDailyLimit,
+      }
       if (localAutomationSettings.value.automation.fertilizer_smart_seconds === undefined) {
         localAutomationSettings.value.automation.fertilizer_smart_seconds = 300
       }
@@ -147,9 +180,18 @@ export function useAutomationSettings({
   }
 
   async function saveAutomationSettings() {
+    if (automationSaving.value)
+      return
     if (!currentAccountId.value)
       return
     const accountId = String(currentAccountId.value)
+    const epoch = ++saveEpoch
+    const active = () => !disposed && epoch === saveEpoch && String(currentAccountId.value) === accountId
+    const policy = localAutomationSettings.value.automation.milk_tea_seed_policy
+    if (localAutomationSettings.value.automation.milk_tea_auto_seeds && (!Number.isSafeInteger(policy.targetStock) || policy.targetStock < 0 || policy.targetStock > 9999 || [policy.coinReserve, policy.coinDailyLimit, policy.ticketReserve, policy.ticketDailyLimit].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value))))) {
+      showAlert('请修正奶茶购种库存目标与预算后保存', 'danger')
+      return
+    }
     automationSaving.value = true
     try {
       localAutoCodeRefresh.value.intervalMinutes = normalizeAutoCodeRefreshInterval(localAutoCodeRefresh.value.intervalMinutes)
@@ -167,7 +209,9 @@ export function useAutomationSettings({
         goldenBugKeepCount: localAutomationSettings.value.goldenBugKeepCount,
         goldenBugRoundLimit: localAutomationSettings.value.goldenBugRoundLimit,
       }
-      const res = await settingStore.saveSettings(accountId, fullSettings)
+      const res = await settingStore.saveSettings(accountId, fullSettings, active)
+      if (!active())
+        return
       if (res.ok) {
         showAlert('自动控制设置已保存', 'primary')
 
@@ -200,8 +244,13 @@ export function useAutomationSettings({
         showAlert(`保存失败: ${res.error}`, 'danger')
       }
     }
+    catch (error: any) {
+      if (active())
+        showAlert(error?.response?.data?.error || error?.message || '自动控制保存失败', 'danger')
+    }
     finally {
-      automationSaving.value = false
+      if (active())
+        automationSaving.value = false
     }
   }
 

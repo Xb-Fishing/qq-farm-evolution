@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import api from '@/api'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import AutomationSettingsTab from '@/components/settings/AutomationSettingsTab.vue'
@@ -42,6 +42,10 @@ const exists = ref(false)
 const enabled = ref(true)
 const updatedAt = ref(0)
 let draggedSeedId: number | null = null
+let disposed = false
+onBeforeUnmount(() => {
+  disposed = true
+})
 
 const strategySettings = ref(createStrategySettings())
 const automationSettings = ref(createAutomationSettings())
@@ -70,6 +74,18 @@ function createAutomationSettings() {
       plant: false,
       task: false,
       milk_tea_auto_rewards: false,
+      milk_tea_auto_seeds: false,
+      milk_tea_auto_work: false,
+      milk_tea_auto_upgrade: false,
+      milk_tea_work_interaction_type: 1,
+      milk_tea_seed_policy: {
+        targetSeedIds: [] as number[],
+        targetStock: 24,
+        coinReserve: '1000000',
+        coinDailyLimit: '240000',
+        ticketReserve: '8000',
+        ticketDailyLimit: '0',
+      },
       sell: false,
       friend: false,
       farm_push: false,
@@ -179,11 +195,15 @@ async function fetchPlan() {
   loading.value = true
   try {
     const { data } = await api.get('/api/settings/default-plan')
-    if (data?.ok)
-      applyPlan(data.data)
+    if (disposed)
+      return
+    if (!data?.ok || !data.data?.config)
+      throw new Error(data?.error || '默认方案状态未取得')
+    applyPlan(data.data)
   }
   catch (error: any) {
-    emit('notify', error.response?.data?.error || '默认方案加载失败', 'danger')
+    if (!disposed)
+      emit('notify', error.response?.data?.error || error.message || '默认方案加载失败', 'danger')
   }
   finally {
     loading.value = false
@@ -191,19 +211,27 @@ async function fetchPlan() {
 }
 
 async function savePlan() {
+  if (saving.value)
+    return
   saving.value = true
   try {
+    const policy = automationSettings.value.automation.milk_tea_seed_policy
+    if (automationSettings.value.automation.milk_tea_auto_seeds && (!Number.isSafeInteger(policy.targetStock) || policy.targetStock < 0 || policy.targetStock > 9999 || [policy.coinReserve, policy.coinDailyLimit, policy.ticketReserve, policy.ticketDailyLimit].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value)))))
+      throw new Error('请修正奶茶购种库存目标与预算后保存')
     const { data } = await api.put('/api/settings/default-plan', {
       enabled: enabled.value,
       config: buildConfig(),
     })
+    if (disposed)
+      return
     if (!data?.ok)
       throw new Error(data?.error || '保存失败')
     applyPlan(data.data)
     emit('notify', '默认方案已保存')
   }
   catch (error: any) {
-    emit('notify', error.response?.data?.error || error.message || '默认方案保存失败', 'danger')
+    if (!disposed)
+      emit('notify', error.response?.data?.error || error.message || '默认方案保存失败', 'danger')
   }
   finally {
     saving.value = false
