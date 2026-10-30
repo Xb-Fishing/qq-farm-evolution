@@ -399,6 +399,23 @@ function assertConnectionOwned(deps, context) {
   }
 }
 
+// ---------- 阶段标记（2026-10-30 跨 Worker 预算拒绝定位） ----------
+// 只在真实请求点给错误附着有限 stage（list=ActivityService.List /
+// group=根 GetGroup / precondition=前置读与读 Operate / write=经济写 Operate），
+// 供 worker 元数据收集与路由层 429 分类使用。读 Operate 一律 precondition，
+// 绝不标 write；本地结构化阶段不携带任何请求参数。
+const MILK_TEA_STAGES = new Set(['list', 'group', 'precondition', 'write']);
+
+async function withMilkTeaStage(stage, run) {
+  try {
+    return await run();
+  }
+  catch (err) {
+    try { if (err && typeof err === 'object' && MILK_TEA_STAGES.has(stage)) err.milkTeaStage = stage; } catch { /* stage is diagnostic only */ }
+    throw err;
+  }
+}
+
 // ---------- 低层收发 ----------
 
 /**
@@ -441,7 +458,7 @@ async function readBalances(deps) {
   if (typeof deps.getBag !== 'function' || typeof deps.getBagItems !== 'function') {
     return { balances: result, available: false };
   }
-  const bag = await deps.getBag();
+  const bag = await withMilkTeaStage('precondition', () => deps.getBag());
   for (const item of deps.getBagItems(bag) || []) {
     const id = String(num64(item && item.id));
     const count = milkTeaPolicy.parseExactCount(str64(item?.count));
@@ -616,7 +633,7 @@ async function readMilkTeaOverview(options = {}) {
   recheck();
 
   // 缺根：仅这一次 List，零 GetGroup/库存/Operate 后续，也不重试
-  const activities = await listReader();
+  const activities = await withMilkTeaStage('list', () => listReader());
   recheck();
   assertMilkTeaRootListed(activities, '读取活动详情');
   // List 根时间即拦截：未开始/已过最终截止时零根快照、零库存读取
@@ -628,7 +645,7 @@ async function readMilkTeaOverview(options = {}) {
   if (rootTiming.phase === 'beforeStart') {
     fail('SEASON_WISH_MILK_TEA_NOT_STARTED', '奶茶热销中尚未开始，停止新增玩法读取');
   }
-  const snapshot = await snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, '');
+  const snapshot = await withMilkTeaStage('group', () => snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, ''));
   recheck();
   if (toNum(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) {
     fail('SEASON_WISH_MILK_TEA_UNAVAILABLE', '奶茶活动组不匹配，停止读取');
@@ -640,7 +657,7 @@ async function readMilkTeaOverview(options = {}) {
       const catalog = list(snapshot.children).find(node => toNum(node?.id) === MILK_TEA_SHOP_ACTIVITY_ID)?.details?.exchangeShop;
       const costIds = list(catalog?.items).flatMap(goods => list(goods.costs).map(cost => toNum(cost.id)))
         .filter(id => id > 0 && id !== DIAMOND_ITEM_ID && !!getItemById(id));
-      inventory = await inventoryReader([...new Set([TICKET_ITEM_ID, BOOST_ITEM_ID, ...costIds])]);
+      inventory = await withMilkTeaStage('precondition', () => inventoryReader([...new Set([TICKET_ITEM_ID, BOOST_ITEM_ID, ...costIds])]));
     } catch (err) { if (err && err.business) throw err; /* 库存失败仍展示活动说明与状态，数量保持未知，不循环重试 */ }
     recheck();
   }
@@ -696,7 +713,8 @@ async function readInitialGameplay(overview, snapshot, deps, context, nowSec) {
 
 async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context, recheck, nowSec) {
   const operation = OPERATIONS[QUERY_KINDS[kind]];
-  const reply = await operateMilkTeaRequest(operation, operateParams, deps, context);
+  // 读 Operate（显式查询/前置校验读取共用）：失败标 precondition，不算 write
+  const reply = await withMilkTeaStage('precondition', () => operateMilkTeaRequest(operation, operateParams, deps, context));
   recheck(snapshot);
   const selector = operation[2];
   const rsp = selector ? reply[selector] : null;
@@ -713,7 +731,7 @@ async function readMilkTeaQueryData(kind, operateParams, snapshot, deps, context
           : kind === 'rank' ? rankDto(rsp)
             : salesLogDto(rsp);
   if (kind === 'workshop' && data && typeof deps.getBag === 'function' && typeof deps.getBagItems === 'function') {
-    const bag = await deps.getBag();
+    const bag = await withMilkTeaStage('precondition', () => deps.getBag());
     recheck(snapshot);
     const fruitIds = new Set(CONFIG.recipes.map(row => row.fruitItemId).filter(Boolean));
     data.fruits = list(deps.getBagItems(bag)).filter(item => fruitIds.has(num64(item.id))).slice(0, 100).map(item => ({
@@ -1008,11 +1026,11 @@ async function queryMilkTeaActivity(kind, params = {}, deps = {}) {
     };
     recheck();
 
-    const activities = await listReader();
+    const activities = await withMilkTeaStage('list', () => listReader());
     const rootNode = findMilkTeaRootNode(activities);
     if (!rootNode) fail('SEASON_WISH_MILK_TEA_UNAVAILABLE', '奶茶热销中未由当前 ActivityService.List 下发，停止查询');
     recheck(rootNode);
-    const snapshot = await snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, '');
+    const snapshot = await withMilkTeaStage('group', () => snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, ''));
     if (toNum(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) {
       fail('SEASON_WISH_MILK_TEA_UNAVAILABLE', '奶茶活动组不匹配，停止查询');
     }
@@ -1114,12 +1132,12 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     };
     recheck();
     // 每次操作重读 List + 根状态（服务端前置校验，不用本地缓存资格）
-    const activities = await listReader();
+    const activities = await withMilkTeaStage('list', () => listReader());
     const rootNode = findMilkTeaRootNode(activities);
     if (!rootNode) fail('SEASON_WISH_MILK_TEA_UNAVAILABLE', '奶茶热销中未由当前 ActivityService.List 下发，停止操作');
     timingSource = rootNode;
     recheck();
-    const snapshot = await snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, '');
+    const snapshot = await withMilkTeaStage('group', () => snapshotReader(MILK_TEA_ROOT_ACTIVITY_ID, ''));
     if (toNum(snapshot?.id) !== MILK_TEA_ROOT_ACTIVITY_ID) {
       fail('SEASON_WISH_MILK_TEA_UNAVAILABLE', '奶茶活动组不匹配，停止操作');
     }
@@ -1142,7 +1160,8 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       const operation = OPERATIONS[operationName];
       const command = operation[1];
       try {
-        const reply = await operateMilkTeaRequest(operation, params, deps, context);
+        // 经济写 Operate：失败标 write（业务/严格零发送拒绝原样透传由下方归类）
+        const reply = await withMilkTeaStage('write', () => operateMilkTeaRequest(operation, params, deps, context));
         // 回复选择子可与请求选择子不同（如 cmd76 空参请求、176 回复字段）
         return { ok: true, reply, selector: operation[3] || operation[2], command };
       }
@@ -1153,9 +1172,10 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
         throw Object.assign(new Error('奶茶操作结果未知'), { unknown: true, err });
       }
     };
-    // 读侧 Operate（写前前置校验用的查询）也要在每个 await 后复查连接与相位
+    // 读侧 Operate（写前前置校验用的查询）也要在每个 await 后复查连接与相位；
+    // 失败标 precondition（读 Operate 不算 write）
     const readOperate = async (operation, params) => {
-      const reply = await operateMilkTeaRequest(operation, params, deps, context);
+      const reply = await withMilkTeaStage('precondition', () => operateMilkTeaRequest(operation, params, deps, context));
       recheck();
       return reply;
     };
@@ -1589,6 +1609,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     };
   }
   catch (err) {
+    try { if (err && typeof err === 'object' && !MILK_TEA_STAGES.has(err.milkTeaStage)) err.milkTeaStage = 'precondition'; } catch { /* diagnostic only */ }
     if (err && err.unknown === true) {
       return unknownOutcome(action, action in OPERATIONS ? OPERATIONS[action][1] : 0, err.err);
     }

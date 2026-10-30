@@ -1445,7 +1445,7 @@ function collectPetDiaryErrorMeta(err) {
     if (!err || err.business !== true) return null;
     const code = err.code;
     if (typeof code !== 'string' || !PET_DIARY_ERROR_CODE_RE.test(code)) return null;
-    return { business: true, code };
+    return { business: true, code, ...(['list', 'group', 'precondition', 'write'].includes(err.milkTeaStage) ? { stage: err.milkTeaStage } : {}) };
 }
 
 /**
@@ -1851,7 +1851,11 @@ async function handleApiCall(msg) {
         }
     } catch (err) {
         error = err.message;
-        errorMeta = collectPetDiaryErrorMeta(err);
+        // 业务码元数据优先；否则尝试严格预算拒绝元数据（governed/stage，
+        // 2026-10-30 奶茶 502 定位修复），二者按白名单互斥、附加属性不回传。
+        errorMeta = collectPetDiaryErrorMeta(err)
+            || (['getMilkTeaActivity', 'queryMilkTeaActivity', 'operateMilkTea'].includes(method)
+                ? require('../services/operation-error-meta').collectOperationErrorMeta(err) : null);
     }
 
     if (isFriendSync) {

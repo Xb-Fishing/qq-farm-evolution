@@ -7,7 +7,7 @@ const path = require('node:path');
 // CheckCanOperate 预检查失败诊断（2026-09-28）：
 // 真实导出的 checkCanOperateRemote + 模拟传输（require.cache 注入 network/
 // proto/utils），验证：成功/服务端业务错误/传输错误各只发一次现有预检查请求、
-// 返回语义不变、诊断只记固定事件名+类别+操作号+严格整数业务码、同签名只记
+// 已确认业务兼容放行、传输失败停止本次写推进、诊断只记固定事件名+类别+操作号+严格整数业务码、同签名只记
 // 一次、不同签名分开记、签名表与日志总量有固定上限、日志不含错误原文与身份。
 process.env.FARM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'precheck-diagnostic-'));
 test.after(() => fs.rmSync(process.env.FARM_DATA_DIR, { recursive: true, force: true }));
@@ -91,7 +91,7 @@ function diagnosticEntries(state) {
   return state.logs.filter(args => args[2] && args[2].event === 'friend_precheck_failure');
 }
 
-test('成功/业务错误/传输错误各只发一次预检查请求，返回语义不变', async () => {
+test('成功/业务错误/传输错误各只发一次预检查请求，已确认业务兼容放行、传输失败停止本次写推进', async () => {
   const { api, state } = loadFriendApiWithMocks();
   try {
     // 成功且允许：回包语义原样透出
@@ -113,7 +113,7 @@ test('成功/业务错误/传输错误各只发一次预检查请求，返回语
     // 传输错误：同样一次请求 + 一条诊断
     state.behaviors.push({ reject: transportError() });
     assert.deepEqual(await api.checkCanOperateRemote(SYNTHETIC_GID, 10003),
-      { canOperate: true, canStealNum: 0 });
+      { canOperate: false, canStealNum: 0, deferred: true });
 
     assert.equal(state.calls.length, 4, '不新增重试或任何额外请求');
     assert.ok(state.calls.every(c =>
@@ -172,7 +172,8 @@ test('同签名只记一次；不同类别/业务码/操作号分开记', async 
     for (const behavior of calls) {
       state.behaviors.push(behavior);
       assert.deepEqual(await api.checkCanOperateRemote(SYNTHETIC_GID, 10003),
-        { canOperate: true, canStealNum: 0 });
+        behavior.reject.isServerBusinessError === true && Number.isSafeInteger(behavior.reject.serverErrorCode) && behavior.reject.serverErrorCode > 0
+          ? { canOperate: true, canStealNum: 0 } : { canOperate: false, canStealNum: 0, deferred: true });
     }
     // 不同操作号 = 不同签名
     state.behaviors.push({ reject: businessError(1002003, '合成A') });
@@ -239,7 +240,7 @@ test('业务码只记录严格十进制整数；非严格整数输入一律记 u
     for (let i = 0; i < badCodes.length; i += 1) {
       state.behaviors.push({ reject: businessError(badCodes[i], '合成E') });
       assert.deepEqual(await api.checkCanOperateRemote(SYNTHETIC_GID, 30000 + i),
-        { canOperate: true, canStealNum: 0 });
+        { canOperate: false, canStealNum: 0, deferred: true });
     }
     const entries = diagnosticEntries(state);
     assert.equal(entries.length, badCodes.length,
