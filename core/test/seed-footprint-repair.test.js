@@ -85,7 +85,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const rewardAdditions = new Set([2163, 202011, 203012, 205011, 206011, 207012, 208012,
     210031, 210032, 210033, 210034, 210035, 210036, 210037,
     210016, 210026, 210012, 210022, 210013, 210023, 210014, 210024, 210015, 210025, 210011, 210021, 210017, 210027, 210041, 210042, 210043, 401007, 210044, 210045, 210046, 210047]);
-  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254, 1040527, 1040021]);
+  const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254, 1040527, 1040021, 1041435]);
   // 204011 is excluded from rewardAdditions on purpose: it is this round's separately
   // verified milk-tea tower-skin decoration, asserted independently as type 18 below.
   const decorationAdditions = new Set([204011]);
@@ -98,7 +98,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   assert.equal(hash(originalItems), '4baaa0138392f234b1a06ca7dd2161537b8de7cdf9ce8932e5bd950fb072ebe6');
   // Reviewed golden fruits: registered exactly once as type-17 fruits, never as seeds
   // or Plants — the size-2 source plant behind 1049005 does not turn its fruit into a seed.
-  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽'], [1040528, '黄金·森野红柚'], [1042254, '黄金·天山红枫'], [1040527, '黄金·森野甜橙'], [1040021, '黄金·森野可可豆']]) {
+  for (const [id, name] of [[1040165, '黄金·茱萸'], [1040526, '黄金·森野白桃'], [1049005, '黄金·森野黄金芽'], [1040528, '黄金·森野红柚'], [1042254, '黄金·天山红枫'], [1040527, '黄金·森野甜橙'], [1040021, '黄金·森野可可豆'], [1041435, '黄金·森野柿子']]) {
     const rows = items.filter(x => x.id === id);
     assert.equal(rows.length, 1, `${id} must be registered exactly once`);
     assert.equal(rows[0].name, name); assert.equal(rows[0].type, 17);
