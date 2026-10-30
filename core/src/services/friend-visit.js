@@ -62,28 +62,81 @@ const {
   putWeedsDetailed,
 } = require('./friend-operation-limits');
 
+const crypto = require('node:crypto');
+const { strictServerBusinessError, strictBudgetRejection } = require('./operation-error-meta');
+const visitDiagnosticSalt = crypto.randomBytes(32);
+let visitDiagnosticCount = 0;
+function visitTrace(gid) {
+  return { visitTrace: crypto.randomUUID(), targetRef: crypto.createHmac('sha256', visitDiagnosticSalt).update(String(gid)).digest('hex').slice(0, 16) };
+}
+function noteVisitFailure(trace, phase, count, error) {
+  try {
+    if (visitDiagnosticCount >= 128) return;
+    visitDiagnosticCount++;
+    const business = strictServerBusinessError(error), budget = strictBudgetRejection(error);
+    log('好友', '好友操作阶段诊断', { module: 'friend', event: 'friend_visit_failure', ...trace,
+      phase, landCount: count, category: business ? 'business' : budget ? 'budget' : 'transport',
+      serverCode: business?.code || 0 });
+  } catch { /* Observability must not change the operation. */ }
+}
+
+// A non-business failure can mean an already-sent write has an unknown result.
+// Stop this visit and keep its due evidence for a new land read, not a replay.
+async function stealVisitBatch(gid, targetLands, analysis, trace) {
+  const result = { stolen: 0, stolenQty: 0, stolenItems: [], stolenNames: [], interrupted: false };
+  const collect = (reply, ids) => {
+    const got = sumHarvestItemCount(reply);
+    result.stolen += ids.length; result.stolenQty += got.total;
+    if (got.detail) result.stolenItems.push(got.detail);
+    for (const landId of ids) {
+      const info = analysis.stealableInfo.find(row => row.landId === landId);
+      if (info) result.stolenNames.push(info.name);
+    }
+  };
+  try { collect(await stealHarvest(gid, targetLands), targetLands); }
+  catch (error) {
+    noteVisitFailure(trace, 'batch', targetLands.length, error);
+    if (!strictServerBusinessError(error)) result.interrupted = true;
+    else {
+      for (const landId of targetLands) {
+        try { collect(await stealHarvest(gid, [landId]), [landId]); }
+        catch (singleError) {
+          if (!strictServerBusinessError(singleError)) {
+            result.interrupted = true;
+            noteVisitFailure(trace, 'single', targetLands.length - result.stolen, singleError);
+            break;
+          }
+        }
+      }
+      noteVisitFailure(trace, 'summary', result.stolen, error);
+    }
+  }
+  return result;
+}
+
 // ===== Batch helper =====
 
 /**
  * Run an operation on multiple land IDs. Falls back to single-ID calls if batch fails.
  * Returns the number of successful operations.
  */
-async function runBatchWithFallback(landIds, batchFn, singleFn) {
+async function runBatchWithFallback(landIds, batchFn, singleFn, onDeferred = () => {}) {
   const ids = Array.isArray(landIds) ? landIds.filter(Boolean) : [];
   if (ids.length === 0) return 0;
 
   try {
     await batchFn(ids);
     return ids.length;
-  } catch {
+  } catch (error) {
+    if (!strictServerBusinessError(error)) { onDeferred(); return 0; }
     // Fallback: one by one
     let ok = 0;
     for (const id of ids) {
       try {
         await singleFn([id]);
         ok++;
-      } catch {
-        // Skip individual failures
+      } catch (error) {
+        if (!strictServerBusinessError(error)) { onDeferred(); break; }
       }
       await sleep(100);
     }
@@ -375,6 +428,8 @@ async function doFriendOperation(gid, opType) {
  */
 async function visitFriend(friend, tally, myGid, accountId) {
   const { gid, name } = friend;
+  const diagnosticTrace = visitTrace(gid);
+  let stopVisit = false;
   const govWarnSeq = captureGovernedWarnSeq();
   let enterReply;
 
@@ -433,42 +488,15 @@ async function visitFriend(friend, tally, myGid, accountId) {
   // ---- Steal first (highest priority vs water/weed/bug) ----
   if (isAutomationOn('friend_steal') && analysis.stealable.length > 0) {
     const canOp = await checkCanOperateRemote(gid, 0x2714); // 10004
+    if (canOp.deferred === true) { stopVisit = true; noteVisitFailure(diagnosticTrace, 'precheck', analysis.stealable.length, null); }
     if (canOp.canOperate) {
       const stealCount = canOp.canStealNum > 0
         ? canOp.canStealNum
         : analysis.stealable.length;
       const targetLands = analysis.stealable.slice(0, stealCount);
-      let stolen = 0;
-      let stolenQty = 0;
-      const stolenItems = [];
-      const stolenNames = [];
-
-      try {
-        const reply = await stealHarvest(gid, targetLands);
-        const got = sumHarvestItemCount(reply);
-        stolenQty += got.total;
-        if (got.detail) stolenItems.push(got.detail);
-        stolen = targetLands.length;
-        targetLands.forEach(landId => {
-          const info = analysis.stealableInfo.find(s => s.landId === landId);
-          if (info) stolenNames.push(info.name);
-        });
-      } catch {
-        for (const landId of targetLands) {
-          try {
-            const reply = await stealHarvest(gid, [landId]);
-            const got = sumHarvestItemCount(reply);
-            stolenQty += got.total;
-            if (got.detail) stolenItems.push(got.detail);
-            stolen++;
-            const info = analysis.stealableInfo.find(s => s.landId === landId);
-            if (info) stolenNames.push(info.name);
-          } catch {
-            // Skip individual failures
-          }
-        }
-      }
-
+      const { stolen, stolenQty, stolenItems, stolenNames, interrupted } =
+        await stealVisitBatch(gid, targetLands, analysis, diagnosticTrace);
+      if (interrupted) stopVisit = true;
       if (stolen > 0) {
         const namesStr = [...new Set(stolenNames)].join('/');
         actionLogs.push(`偷${stolen}${namesStr ? `(${namesStr})` : ''}`);
@@ -493,7 +521,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
 
   if (!expLimitEnabled) setCanGetHelpExp(true);
 
-  if (helpEnabled) {
+  if (helpEnabled && !stopVisit) {
     // Skip help if exp limit is reached and we haven't been overridden
     if (!expLimitEnabled || getCanGetHelpExp()) {
       const helpOptions = [
@@ -532,18 +560,21 @@ async function visitFriend(friend, tally, myGid, accountId) {
 
         if (opt.list.length > 0 && canGetExp) {
           const canOp = await checkCanOperateRemote(gid, opt.id);
+          if (canOp.deferred === true) { stopVisit = true; noteVisitFailure(diagnosticTrace, 'precheck', opt.list.length, null); break; }
           if (canOp.canOperate) {
             const okCount = await runBatchWithFallback(
               opt.list,
               ids => opt.fn(gid, ids, expLimitEnabled),
-              id => opt.fn(gid, id, expLimitEnabled)
+              id => opt.fn(gid, id, expLimitEnabled),
+              () => { stopVisit = true; }
             );
             if (okCount > 0) {
               actionLogs.push(`${opt.name}${okCount}`);
               tally[opt.key] += okCount;
               recordOperation(opt.record, okCount);
-              await randomDelay(500, 1000);
+              if (!stopVisit) await randomDelay(500, 1000);
             }
+            if (stopVisit) break;
           }
         }
       }
@@ -557,12 +588,14 @@ async function visitFriend(friend, tally, myGid, accountId) {
   let putWeedCount = 0;
   const badFailedMsgs = [];
 
-  if (badEnabled) {
+  if (badEnabled && !stopVisit) {
     const canPutBug = await checkCanOperateRemote(gid, PUT_BUG_OPERATION_ID);
-    const canPutWeed = await checkCanOperateRemote(gid, PUT_WEED_OPERATION_ID);
+    if (canPutBug.deferred === true) stopVisit = true;
+    const canPutWeed = stopVisit ? { canOperate: false } : await checkCanOperateRemote(gid, PUT_WEED_OPERATION_ID);
+    if (canPutWeed.deferred === true) stopVisit = true;
 
     // Put insects
-    if (analysis.canPutBug.length > 0 && canPutBug.canOperate && getBadRemainingTimes() > 0) {
+    if (!stopVisit && analysis.canPutBug.length > 0 && canPutBug.canOperate && getBadRemainingTimes() > 0) {
       const remainingBug = Math.min(
         getRemainingTimes(PUT_BUG_OPERATION_ID, BAD_DAILY_LIMIT),
         getBadRemainingTimes()
@@ -581,7 +614,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
     }
 
     // Put weeds
-    if (analysis.canPutWeed.length > 0 && canPutWeed.canOperate && getBadRemainingTimes() > 0) {
+    if (!stopVisit && analysis.canPutWeed.length > 0 && canPutWeed.canOperate && getBadRemainingTimes() > 0) {
       const remainingWeed = Math.min(
         getRemainingTimes(PUT_WEED_OPERATION_ID, BAD_DAILY_LIMIT),
         getBadRemainingTimes()
@@ -616,6 +649,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
   await leaveFriendFarm(gid);
   return {
     acted: actionLogs.length > 0,
+    retryNeeded: stopVisit,
     entered: true,
     ripeAtMs,
     count: badCount,
@@ -741,6 +775,7 @@ async function maybeLurkLeave(gid) {
 
 async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}) {
   const { gid, name } = friend;
+  const diagnosticTrace = visitTrace(gid);
   const govWarnSeq = captureGovernedWarnSeq();
   const preEnter = options && options.preEnter && Number(options.preEnter.gid) === Number(gid)
     ? options.preEnter
@@ -839,42 +874,15 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
   // Steal
   if (analysis.stealable.length > 0) {
     const canOp = await checkCanOperateRemote(gid, 0x2714); // 10004
+    if (canOp.deferred === true) { stealAttemptFailed = true; noteVisitFailure(diagnosticTrace, 'precheck', analysis.stealable.length, null); }
     if (canOp.canOperate) {
       const stealCount = canOp.canStealNum > 0
         ? canOp.canStealNum
         : analysis.stealable.length;
       const targetLands = analysis.stealable.slice(0, stealCount);
-      let stolen = 0;
-      let stolenQty = 0;
-      const stolenItems = [];
-      const stolenNames = [];
-
-      try {
-        const reply = await stealHarvest(gid, targetLands);
-        const got = sumHarvestItemCount(reply);
-        stolenQty += got.total;
-        if (got.detail) stolenItems.push(got.detail);
-        stolen = targetLands.length;
-        targetLands.forEach(landId => {
-          const info = analysis.stealableInfo.find(s => s.landId === landId);
-          if (info) stolenNames.push(info.name);
-        });
-      } catch {
-        for (const landId of targetLands) {
-          try {
-            const reply = await stealHarvest(gid, [landId]);
-            const got = sumHarvestItemCount(reply);
-            stolenQty += got.total;
-            if (got.detail) stolenItems.push(got.detail);
-            stolen++;
-            const info = analysis.stealableInfo.find(s => s.landId === landId);
-            if (info) stolenNames.push(info.name);
-          } catch {
-            // Skip individual failures
-          }
-        }
-      }
-
+      const { stolen, stolenQty, stolenItems, stolenNames, interrupted } =
+        await stealVisitBatch(gid, targetLands, analysis, diagnosticTrace);
+      if (interrupted) stealAttemptFailed = true;
       if (stolen > 0) {
         const namesStr = [...new Set(stolenNames)].join('/');
         actionLogs.push(`偷${stolen}${namesStr ? `(${namesStr})` : ''}`);
@@ -930,6 +938,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
 async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimit = false, expLimitMode = false) {
   if (stealIsDue()) return { acted: false, entered: false };
   const { gid, name } = friend;
+  let stopVisit = false;
   const govWarnSeq = captureGovernedWarnSeq();
   const expLimitEnabled = !!isAutomationOn('friend_help_exp_limit');
   const checkExpLimit = expLimitEnabled && !ignoreExpLimit;
@@ -1027,12 +1036,14 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
 
     if (opt.list.length > 0 && canGetExp) {
       const canOp = await checkCanOperateRemote(gid, opt.id);
+      if (canOp.deferred === true) { stopVisit = true; break; }
       if (canOp.canOperate) {
         const useExpCheck = hasGuardDog ? false : checkExpLimit;
         const okCount = await runBatchWithFallback(
           opt.list,
           ids => opt.fn(gid, ids, useExpCheck),
-          id => opt.fn(gid, id, useExpCheck)
+          id => opt.fn(gid, id, useExpCheck),
+          () => { stopVisit = true; }
         );
         if (okCount > 0) {
           actionLogs.push(`${opt.name}${okCount}`);
@@ -1048,8 +1059,9 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
               count: okCount,
             });
           }
-          await randomDelay(300, 900);
+          if (!stopVisit) await randomDelay(300, 900);
         }
+        if (stopVisit) break;
       }
     }
   }
@@ -1066,6 +1078,7 @@ async function visitFriendForHelp(friend, tally, myGid, accountId, ignoreExpLimi
   }
 
   await leaveFriendFarm(gid);
+  if (stopVisit) return { acted: actionLogs.length > 0, entered: true, ripeAtMs, retryNeeded: true };
   return { acted: actionLogs.length > 0, entered: true, ripeAtMs };
 }
 

@@ -976,12 +976,14 @@ async function leaveFriendFarm(gid) {
 // 巡查证据：某账号的 CheckCanOperate 曾单段巡查内连续 12 次失败并连带
 // 触发降速；旧实现吞掉错误详情，业务拒绝/传输失败已不可分辨，catch 后
 // 静默放行使预检查失败完全不可见。
-// 这里只补一条脱敏诊断日志：不改请求次数、不加重试、不传治理豁免参数、
-// 返回语义原样。记录字段仅限固定事件名、错误类别（business=服务端业务
+// 诊断保持有界、不新增重试/治理豁免。已证实的服务端业务失败兼容放行，
+// 传输/预算/代次失败停止本次写推进，返回deferred交还既有调度。字段仅限
+// 固定事件名、错误类别（business=服务端业务
 // 错误 / transport=传输类错误）、操作号、可严格解析为十进制整数的服务端
 // 业务码（缺失或非严格十进制整数记 unknown）；错误原文、账号/好友身份与
 // 请求回包内容一律不落。诊断记录器自身抛错也只静默吞掉——绝不把原本的
 // 兜底返回变成 Promise 拒绝。
+const { strictServerBusinessError } = require('./operation-error-meta');
 const PRECHECK_FAILURE_EVENT = 'friend_precheck_failure';
 const MAX_PRECHECK_FAILURE_SIGNATURES = 16;
 const MAX_PRECHECK_FAILURE_LOGS = 32;
@@ -1017,7 +1019,7 @@ function recordPrecheckFailure(operationId, err) {
     precheckFailureSignatures.add(signature);
     precheckFailureLogCount += 1;
     log('好友',
-      `CheckCanOperate 预检查失败已兜底放行: category=${info.category} code=${info.code} operationId=${toNum(operationId)}`,
+      `CheckCanOperate 预检查失败: category=${info.category} code=${info.code} operationId=${toNum(operationId)}`,
       {
         module: 'friend',
         event: PRECHECK_FAILURE_EVENT,
@@ -1055,7 +1057,10 @@ async function checkCanOperateRemote(gid, operationId) {
     };
   } catch (err) {
     recordPrecheckFailure(operationId, err);
-    return { canOperate: true, canStealNum: 0 };
+    if (strictServerBusinessError(err)) return { canOperate: true, canStealNum: 0 };
+    // An unconfirmed precheck is not permission to write. Keep the visit due
+    // for a fresh read through the existing scheduler, never replay here.
+    return { canOperate: false, canStealNum: 0, deferred: true };
   }
 }
 

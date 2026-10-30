@@ -13,8 +13,13 @@ function normalizePetDiaryErrorMeta(meta) {
     if (meta.business !== true) return null;
     const code = meta.code;
     if (typeof code !== 'string' || !PET_DIARY_ERROR_CODE_RE.test(code)) return null;
-    return { business: true, code };
+    return { business: true, code, ...(['list', 'group', 'precondition', 'write'].includes(meta.stage) ? { stage: meta.stage } : {}) };
 }
+
+// 预算拒绝元数据还原（2026-10-30 奶茶 502 定位修复）：与萌宠业务码共用
+// errorMeta 字段但白名单互斥（governed 标记 vs business 标记），校验在
+// services/operation-error-meta.js 统一实现；畸形值不还原、维持普通 Error。
+const { applyOperationErrorMeta } = require('../services/operation-error-meta');
 
 /**
  * 创建 Worker 管理器
@@ -825,11 +830,17 @@ function createWorkerManager(deps) {
                 if (error) {
                     const err = new Error(error);
                     // 萌宠业务错误元数据还原：校验通过才恢复 business 标记与
-                    // 固定 code；旧式仅含 error 字符串的响应仍是普通 Error
+                    // 固定 code；旧式仅含 error 字符串的响应仍是普通 Error。
+                    // 否则尝试严格预算拒绝元数据还原（governed 原因 + 有限
+                    // stage），供路由层区分 429 与普通 502。
                     const meta = normalizePetDiaryErrorMeta(msg.errorMeta);
                     if (meta) {
                         err.business = true;
                         err.code = meta.code;
+                        if (meta.stage) err.milkTeaStage = meta.stage;
+                    }
+                    else {
+                        applyOperationErrorMeta(err, msg.errorMeta);
                     }
                     pending.reject(err);
                 } else {

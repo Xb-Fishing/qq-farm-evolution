@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 
 const privateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-priority-runtime-'));
 process.env.FARM_DATA_DIR = privateDir;
@@ -51,7 +52,7 @@ function fixture(t, options = {}) {
     const logs = [];
     let leaves = 0;
     const context = {
-        Date, Set, Map, Number, Math, Array,
+        Date, Set, Map, Number, Math, Array, crypto, visitDiagnosticSalt: crypto.randomBytes(32),
         require: name => {
             assert.equal(name, './friend-auto-bad', 'watchlistPollTick 只允许依赖 friend-auto-bad');
             return autoBadModule;
@@ -127,7 +128,7 @@ function fixture(t, options = {}) {
     vm.runInContext([sourceReadState(), ...functions,
         sourceFunction(visits, 'captureGovernedWarnSeq'), sourceFunction(visits, 'wireGovernedEnterWarn'),
         sourceFunction(api, 'enterFriendFarm'),
-        sourceFunction(visits, 'visitFriendForSteal')].join('\n'), context);
+        sourceFunction(visits, 'visitTrace'), sourceFunction(visits, 'visitFriendForSteal')].join('\n'), context);
     return { flags, context, transport, logs,
         tick: () => context.watchlistPollTick(), time: () => time,
         setTime: value => { time = value; }, setGids: value => { gids = value; },

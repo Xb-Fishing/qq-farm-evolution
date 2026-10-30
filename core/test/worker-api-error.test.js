@@ -25,7 +25,11 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
   const service = require(files[1]); const { manager, proc, cleanup } = buildManagerHarness();
   try {
     const sandbox = { isRunning: true, loginReady: true, friendSyncPaused: false, getWs: () => ws, isConnected: () => true,
-      sendToMaster: message => responses.push(message), log() {}, require: name => { assert.equal(name, '../services/solar-calendar'); return service; } };
+      sendToMaster: message => responses.push(message), log() {}, require: name => {
+        if (name === '../services/solar-calendar') return service;
+        if (name === '../services/operation-error-meta') return require('../src/services/operation-error-meta');
+        throw new Error(`unexpected worker dependency: ${name}`);
+      } };
     const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));
     proc.send = message => { proc.sent.push(message); if (message.type === 'api_call') Promise.resolve().then(async () => { await entry.handleApiCall(wire(message)); proc.emitMessage(wire(responses.at(-1))); }); };
     const provider = createDataProvider({ getAccounts: () => ({ accounts: [{ id: 'acct-1' }] }), callWorkerApi: manager.callWorkerApi });
@@ -269,6 +273,7 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
     const sandbox = { isRunning: true, loginReady: true, friendSyncPaused: false, getWs: () => ws, isConnected: () => ready, sendToMaster: message => responses.push(message), log: () => {}, require: request => {
       if (request === '../services/milk-tea-activity') return service;
       if (request === '../services/warehouse') return { getBag: async () => ({ items: [{ id: 1042, count: 10 }] }), getBagItems: bag => bag.items };
+      if (request === '../services/operation-error-meta') return require('../src/services/operation-error-meta');
       throw new Error(`unexpected worker dependency: ${request}`);
     } };
     const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));

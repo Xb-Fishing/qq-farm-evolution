@@ -553,7 +553,7 @@ test('valid pre-enter reply is reused once and actual CheckCanOperate/batch per-
   const h = makeHarness(t); const now = h.clock.now;
   const lands = [1, 2].map(id => ({ id, plant: { id: 1, stealable: true, steal_num: 1, phases: [{ phase: 4 }] } }));
   h.state.analyzer = { stealable: [1, 2], stealableInfo: [{ landId: 1, name: '合成果实' }, { landId: 2, name: '合成果实' }] };
-  h.state.stealHandler = (_gid, ids) => { if (ids.length > 1) throw new Error('expected batch competition'); return {}; };
+  h.state.stealHandler = (_gid, ids) => { if (ids.length > 1) throw Object.assign(new Error('expected batch competition'), { isServerBusinessError: true, serverErrorCode: 12345 }); return {}; };
   const tally = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
   const result = await h.visit.visitFriendForSteal({ gid: 81001, name: '合成好友' }, tally, 80001, 'synthetic-budget-account',
     { preEnter: { gid: 81001, enteredAt: now, epochAtSend: 7, enterReply: { lands } } });
@@ -603,7 +603,7 @@ test('actual visit retryNeeded retains original 90-second evidence and future la
   const h = makeHarness(t); const sec = h.clock.now / 1000;
   seed(h, [dueFriend(81001, 0, { steal_plant_num: 1 })]); const first = stateOf(h).actionCache[0];
   h.state.analyzer = { stealable: [1], stealableInfo: [{ landId: 1, name: '合成果实' }] };
-  h.state.stealHandler = () => { throw new Error('expected competition'); };
+  h.state.stealHandler = () => { throw Object.assign(new Error('expected competition'), { isServerBusinessError: true, serverErrorCode: 12345 }); };
   const enter = deferred(); enter.resolve({ lands: [{ id: 1, plant: { id: 100, stealable: true, steal_num: 1, phases: [{ begin_time: sec - 10 }, { begin_time: sec - 1 }] } }] });
   h.state.enterGate = enter;
   await h.orchestrator.checkFriends({ onlySteal: true });
