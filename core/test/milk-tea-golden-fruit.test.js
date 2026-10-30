@@ -5,7 +5,8 @@
 // 2026-10-21 轮新增自然 Bag 出现的 1040528（黄金·森野红柚）；
 // 2026-10-23 轮新增自然 Bag 出现的 1042254（黄金·天山红枫）；
 // 2026-10-24 轮新增自然 Bag 出现的 1040527（黄金·森野甜橙）；
-// 2026-10-29 轮新增自然 Bag 出现的 1040021（黄金·森野可可豆）。
+// 2026-10-29 轮新增自然 Bag 出现的 1040021（黄金·森野可可豆）；
+// 2026-10-30 轮新增自然 Bag 出现的 1041435（黄金·森野柿子）。
 // 覆盖：真实 loadProto + 模拟 BagReply 走真实 getBag/getBagDetail/
 // getBagSeedsFromItems 入口（网络为注入替身，零真实游戏请求）；
 // 名称/type17/category=fruit/金豆豆 1005:3/重复堆叠/种子排除/未知合成 ID
@@ -159,6 +160,19 @@ const NEW_GOLDEN_FRUITS = [
     sourcePath: 'core/src/gameConfig/seed_images_named/seed_images/1040021.png',
     gitBlob: '6f87cca66cc6de62068ae047fc313e4a66de36c8',
     sha256: '21fec883682750c0db9f2bb1f8d55fa96206e5e1c294d5d8d922b6feacbe6899',
+  },
+  {
+    id: 1041435,
+    name: '黄金·森野柿子',
+    plantId: 1121435,
+    assetName: 'gold/Crop_1435',
+    file: '1041435_gold_Crop_1435.png',
+    sells: '1005:6',
+    price: 6,
+    sourceCommit: '4eb9b2a6a720e4dcc9f19b0ca7f19cc2f73f7811',
+    sourcePath: 'core/src/gameConfig/seed_images_named/seed_images/1041435.png',
+    gitBlob: '8febe0b3ff5bebd7a3d618859d13c80ed62ce3a0',
+    sha256: 'e127af103b4ea7685f9ea1f96808d7463e0ac8926ea1f221dcf7244b72fb260a',
   },
 ];
 const CANDIDATE_SOURCES = [
@@ -345,7 +359,7 @@ test('已确认普通活动种子按单格、四格保持原占地，真正未�
   assert.equal(byId.get(29004)?.mappingStatus, 'mapped');
 });
 
-// ===== 1.5 已登记黄金果实（2026-10-18 三项 + 2026-10-21 一项 + 2026-10-23 一项 + 2026-10-24 一项 + 2026-10-29 一项）：登记/资源证明表驱动 =====
+// ===== 1.5 已登记黄金果实（2026-10-18 三项 + 2026-10-21 一项 + 2026-10-23 一项 + 2026-10-24 一项 + 2026-10-29 一项 + 2026-10-30 一项）：登记/资源证明表驱动 =====
 
 for (const spec of NEW_GOLDEN_FRUITS) {
   test(`${spec.id} ${spec.name} 登记字段逐项核对、无伪造 Plant、非种子且专属图与资源证明对齐`, () => {
