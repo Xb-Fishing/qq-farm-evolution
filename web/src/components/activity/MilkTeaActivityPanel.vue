@@ -15,6 +15,7 @@ const emit = defineEmits<{
   operate: [action: string, input: Record<string, unknown>]
 }>()
 const number = (value: unknown) => value == null || !Number.isFinite(Number(value)) ? '待确认' : Number(value).toLocaleString()
+const autoFlag = (value: unknown) => typeof value === 'boolean' ? (value ? '已开启' : '未开启') : '待确认'
 const shopName = ref('')
 const durationId = ref(1)
 const targetGid = ref('')
@@ -435,20 +436,29 @@ function exchange(goods: ExchangeGoods) {
           自动化状态读取失败或尚未取得，请刷新核对；不能据此认定开关已关闭。
         </p>
         <div v-else class="milk-cashier">
-          <span>自动领奖 {{ activity?.automationStatus?.rewardsEnabled ? '已开启' : '未开启' }}</span>
-          <span>班次工作 {{ activity?.automationStatus?.workEnabled ? '已开启' : '未开启' }}</span>
-          <span>升级 {{ activity?.automationStatus?.upgradeEnabled ? '已开启' : '未开启' }}</span>
-          <span>购种 {{ activity?.automationStatus?.seedsEnabled ? '已开启' : '未开启' }}</span>
+          <span>自动领奖 {{ autoFlag(activity?.automationStatus?.rewardsEnabled) }}</span>
+          <span>班次工作 {{ autoFlag(activity?.automationStatus?.workEnabled) }}</span>
+          <span>升级 {{ autoFlag(activity?.automationStatus?.upgradeEnabled) }}</span>
+          <span>购种 {{ autoFlag(activity?.automationStatus?.seedsEnabled) }}</span>
+          <span>制作 {{ autoFlag(activity?.automationStatus?.craftEnabled) }}</span>
+          <span>雇佣 {{ autoFlag(activity?.automationStatus?.hireEnabled) }}</span>
+          <span>免费开店 {{ autoFlag(activity?.automationStatus?.openEnabled) }}</span>
+          <span>现有喇叭 {{ autoFlag(activity?.automationStatus?.boostEnabled) }}</span>
         </div>
+        <p v-if="activity?.automationStatus?.hirePolicy" class="milk-muted">
+          雇佣券每日上限 {{ activity.automationStatus.hirePolicy.ticketDailyLimit }}，保留 {{ activity.automationStatus.hirePolicy.ticketReserve }}；购种预算独立配置。
+        </p>
+        <p v-for="(reason, family) in activity?.automationStatus?.familyReasons || {}" :key="family" class="milk-muted">{{ reason }}</p>
+        <p v-for="row in activity?.automationStatus?.seedReasons || []" :key="row.name" class="milk-muted">{{ row.name }}：{{ row.reason }}</p>
         <p v-if="activity?.automationStatus?.lastMessage" class="milk-muted" role="status">
           {{ activity.automationStatus.lastMessage }}
         </p>
         <a class="milk-action min-h-11 inline-flex items-center border border-orange-200 rounded-lg px-3 text-sm text-orange-800 dark:border-orange-700 dark:text-orange-200" href="/settings?tab=automation">打开自动化设置</a>
         <p class="milk-muted">
-          自动化约每 15 分钟或到关键节点（班次结束/收银满）复核一次，不会主动找工作或雇佣陌生人。
+          自动化约每 15 分钟或到关键节点复核；每轮最多 3 项操作，短复核最多连续 2 次。制作消耗整组果实，雇佣选择当前合格候选，不会主动找工作。
         </p>
-        <p v-if="activity?.automationStatus?.wagesPending || activity?.automationStatus?.upgradePending || (activity?.automationStatus?.pendingPurchases ?? 0) > 0 || (activity?.automationStatus?.pendingInteractions ?? 0) > 0" class="milk-notice" role="status">
-          上次操作仍待确认（工资/升级/互动/购买），暂不重复执行；请稍后刷新核对。
+        <p v-if="activity?.automationStatus?.wagesPending || activity?.automationStatus?.upgradePending || (activity?.automationStatus?.pendingPurchases ?? 0) > 0 || (activity?.automationStatus?.pendingInteractions ?? 0) > 0 || (activity?.automationStatus?.reservedFruitStacks ?? 0) > 0 || (activity?.automationStatus?.pendingHires ?? 0) > 0" class="milk-notice" role="status">
+          上次操作仍待确认或材料仍预留，暂不重复执行；请稍后刷新核对。
         </p>
       </section>
       <section v-if="!notOpened" data-gameplay="cashier" class="milk-card">

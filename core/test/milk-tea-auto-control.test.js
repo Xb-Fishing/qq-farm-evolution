@@ -15,7 +15,7 @@ const milk = require('../src/services/milk-tea-activity');
 
 test('activity rewards default off and enabling them leaves disabled ordinary tasks unchanged', () => {
   assert.equal(store.getAutomation().milk_tea_auto_rewards, false);
-  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade']) assert.equal(store.getAutomation()[key], false);
+  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost']) assert.equal(store.getAutomation()[key], false);
   store.applyConfigSnapshot({ automation: { task: false, milk_tea_auto_rewards: true } }, { persist: false });
   assert.equal(store.getAutomation().task, false);
   assert.equal(store.getAutomation().milk_tea_auto_rewards, true);
@@ -55,7 +55,7 @@ test('real unified caller dispatches activity rewards with task off, and never d
   await sandbox.runUnifiedTick(); assert.equal(calls, 1);
   auto.task = true; auto.milk_tea_auto_rewards = false;
   await sandbox.runUnifiedTick(); assert.equal(calls, 1);
-  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade']) {
+  for (const key of ['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost']) {
     auto.task = false; auto[key] = true;
     const before = calls; await sandbox.runUnifiedTick(); assert.equal(calls, before + 1, key);
     auto[key] = false; await sandbox.runUnifiedTick(); assert.equal(calls, before + 1);

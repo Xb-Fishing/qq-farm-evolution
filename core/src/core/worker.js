@@ -1046,7 +1046,11 @@ async function runUnifiedTick() {
     const milkTeaAutoOn = autoConfig.milk_tea_auto_rewards === true
         || autoConfig.milk_tea_auto_seeds === true
         || autoConfig.milk_tea_auto_work === true
-        || autoConfig.milk_tea_auto_upgrade === true;
+        || autoConfig.milk_tea_auto_upgrade === true
+        || autoConfig.milk_tea_auto_craft === true
+        || autoConfig.milk_tea_auto_hire === true
+        || autoConfig.milk_tea_auto_open === true
+        || autoConfig.milk_tea_auto_boost === true;
     const shouldActivity = milkTeaAutoOn && now >= nextActivityRewardsAt(now);
     if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
@@ -2099,6 +2103,11 @@ function bindWorkerReadyEvents() {
     // 收获后自动出售
     if (onFarmHarvested) networkEvents.off('farmHarvested', onFarmHarvested);
     onFarmHarvested = async (event = {}) => {
+        // Local dirty flag only: the existing activity scheduler merges a wake
+        // at least 60s later. Never craft inside the harvest/priority chain.
+        if (getAutomation().milk_tea_auto_craft === true) {
+            try { require('../services/milk-tea-activity').markMilkTeaMaterialsDirty(); } catch { /* harvest remains independent */ }
+        }
         if (event.quietPriority || pauseRemainMsNow() > 0) { deferOwnHarvestSale(); return; }
         if (harvestSellRunning) return;
         if (!getAutomation().sell) return;

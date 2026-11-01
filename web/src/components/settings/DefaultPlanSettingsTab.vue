@@ -77,6 +77,11 @@ function createAutomationSettings() {
       milk_tea_auto_seeds: false,
       milk_tea_auto_work: false,
       milk_tea_auto_upgrade: false,
+      milk_tea_auto_craft: false,
+      milk_tea_auto_hire: false,
+      milk_tea_auto_open: false,
+      milk_tea_auto_boost: false,
+      milk_tea_hire_policy: { durationId: 1, ticketDailyLimit: '480', ticketReserve: '8000' },
       milk_tea_work_interaction_type: 1,
       milk_tea_seed_policy: {
         targetSeedIds: [] as number[],
@@ -216,6 +221,10 @@ async function savePlan() {
   saving.value = true
   try {
     const policy = automationSettings.value.automation.milk_tea_seed_policy
+    const hirePolicy = automationSettings.value.automation.milk_tea_hire_policy
+    if (automationSettings.value.automation.milk_tea_auto_hire && (![1, 2, 3].includes(hirePolicy.durationId)
+      || [hirePolicy.ticketDailyLimit, hirePolicy.ticketReserve].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value)))))
+      throw new Error('请修正奶茶雇佣班次与预算后保存')
     if (automationSettings.value.automation.milk_tea_auto_seeds && (!Number.isSafeInteger(policy.targetStock) || policy.targetStock < 0 || policy.targetStock > 9999 || [policy.coinReserve, policy.coinDailyLimit, policy.ticketReserve, policy.ticketDailyLimit].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value)))))
       throw new Error('请修正奶茶购种库存目标与预算后保存')
     const { data } = await api.put('/api/settings/default-plan', {

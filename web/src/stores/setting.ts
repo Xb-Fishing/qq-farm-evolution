@@ -11,6 +11,11 @@ export interface MilkTeaSeedPolicy {
   ticketReserve: string
   ticketDailyLimit: string
 }
+export interface MilkTeaHirePolicy {
+  durationId: number
+  ticketDailyLimit: string
+  ticketReserve: string
+}
 
 export interface AutomationConfig {
   farm?: boolean
@@ -24,6 +29,11 @@ export interface AutomationConfig {
   milk_tea_auto_seeds?: boolean
   milk_tea_auto_work?: boolean
   milk_tea_auto_upgrade?: boolean
+  milk_tea_auto_craft?: boolean
+  milk_tea_auto_hire?: boolean
+  milk_tea_auto_open?: boolean
+  milk_tea_auto_boost?: boolean
+  milk_tea_hire_policy?: MilkTeaHirePolicy
   milk_tea_work_interaction_type?: number
   milk_tea_seed_policy?: MilkTeaSeedPolicy
   sell?: boolean

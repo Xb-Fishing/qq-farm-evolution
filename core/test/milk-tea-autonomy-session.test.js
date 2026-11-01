@@ -31,6 +31,8 @@ test('actual old adapter and old store pass new policy to real business Workers,
   t.after(() => adapter.dispose());
   const config = adapter.syncConfig({ platform: 'wx', automation: { farm: false, harvest: false, plant: false, task: false, friend: false, friend_steal: false,
     milk_tea_auto_rewards: false, milk_tea_auto_work: true, milk_tea_auto_upgrade: true, milk_tea_auto_seeds: true, milk_tea_work_interaction_type: 3,
+    milk_tea_auto_craft: true, milk_tea_auto_hire: true, milk_tea_auto_open: true, milk_tea_auto_boost: false,
+    milk_tea_hire_policy: { durationId: 1, ticketDailyLimit: '480', ticketReserve: '8000' },
     milk_tea_seed_policy: { targetSeedIds: [20525], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '240000', ticketReserve: '8000', ticketDailyLimit: '0' } } });
   assert.equal(oldStore.getAutomation(account.id).milk_tea_auto_seeds, undefined, 'old host store really does not understand new keys');
   assert.equal(config.automation.milk_tea_auto_seeds, true, 'adapter returns raw config, not old normalized config');
@@ -56,6 +58,8 @@ test('actual old adapter and old store pass new policy to real business Workers,
   assert.equal(after.state.domains['services/milk-tea-activity.js'].value.automaticState.nextCheckAt, deadline);
   assert.deepEqual(after.state.domains['services/milk-tea-activity.js'].value.automaticState.claims, { 'daily:2099-01-01': 1 });
   assert.equal(after.config.automation.milk_tea_auto_upgrade, true); assert.equal(after.config.automation.milk_tea_work_interaction_type, 3);
+  assert.equal(after.config.automation.milk_tea_auto_craft, true); assert.equal(after.config.automation.milk_tea_auto_hire, true);
+  assert.deepEqual(after.config.automation.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '480', ticketReserve: '8000' });
   const pending = { wages: { pending: true, at: 1793268000000, status: 'pending' }, upgrades: { pendingLevel: 3, at: 1793268000000, status: 'pending' },
     interactions: { '7001': { at: 1793268000000, status: 'pending' } }, purchases: { '301': { goodsId: 301, seedId: 20525, count: 1, baselinePurchased: 0,
       spent: { '1001': '10000' }, rewards: { '20525': '1' }, day: '2026-10-29', at: 1793268000000, status: 'pending' } }, spend: {} };
@@ -65,5 +69,16 @@ test('actual old adapter and old store pass new policy to real business Workers,
     await next.prepare(); await next.activate([]); const restored = decode(await next.quiesce());
     assert.deepEqual(restored.state.domains['services/milk-tea-activity.js'].value.automaticState.actionState, pending);
   } finally { await next.terminate(); }
+  const extended = { ...pending,
+    crafts: { '4000': { itemId: 40525, count: '5', at: 1793268000000, status: 'pending' } },
+    hires: { '0:9102': { slotIndex: 0, targetGid: '9102', durationId: 1, cost: { '1041': '40' }, baselineShiftId: '0', at: 1793268000000, status: 'pending' } },
+    funds: { '1': { at: 1793268000000, status: 'pending' } },
+    schedule: { cursor: 3, cycleAt: 1793268000000, followupsLeft: 0, nextAt: deadline, policyIdentity: 'synthetic-policy' } };
+  after.state.domains['services/milk-tea-activity.js'].value.automaticState.actionState = extended;
+  const full = await createSessionBusinessRuntime({ ...options, epoch: 'synthetic-milk-full-pending', checkpoint: encode(after), facts: facts() });
+  try {
+    await full.prepare(); await full.activate([]); const restored = decode(await full.quiesce());
+    assert.deepEqual(restored.state.domains['services/milk-tea-activity.js'].value.automaticState.actionState, extended);
+  } finally { await full.terminate(); }
   assert.equal(connects, 1, 'warm replacement did not reconnect old host'); assert.equal(writes, 0); assert.equal(stops, 0);
 });

@@ -190,7 +190,13 @@ function invalidatePanelBagCache() {
   panelBagInFlight = null;
 }
 
-function toSellItem(raw) {
+function toSellItem(raw, exactMaterial = false) {
+  if (exactMaterial) {
+    const Long = require('long');
+    const item = { id: toLong(raw.id), count: Long.fromString(String(raw.count)) };
+    if (raw.uid != null && BigInt(String(raw.uid)) > 0n) item.uid = Long.fromString(String(raw.uid));
+    return item;
+  }
   const id = toNum(raw && raw.id);
   const count = toNum(raw && raw.count);
   const uid = toNum(raw && raw.uid);
@@ -200,8 +206,17 @@ function toSellItem(raw) {
 }
 
 async function sellItems(items) {
+  const materials = require('../gameConfig/MilkTeaActivity.json').recipes;
+  if (items.some(item => materials.some(row => row.fruitItemId > 0 && row.fruitItemId === toNum(item?.id)))) {
+    return require('./milk-tea-activity').withMilkTeaMaterialSale(items, () => sendSellItems(items, true));
+  }
+  return sendSellItems(items);
+}
+
+async function sendSellItems(items, exactMaterials = false) {
+  const materialIds = exactMaterials ? new Set(require('../gameConfig/MilkTeaActivity.json').recipes.map(row => row.fruitItemId).filter(id => id > 0)) : null;
   const request = types.SellRequest.encode(
-    types.SellRequest.create({ items: items.map(toSellItem) })
+    types.SellRequest.create({ items: items.map(item => toSellItem(item, materialIds?.has(toNum(item?.id)) === true)) })
   ).finish();
   const { body } = await sendMsgAsync('gamepb.itempb.ItemService', 'Sell', request);
   invalidatePanelBagCache();

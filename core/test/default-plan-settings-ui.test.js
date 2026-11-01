@@ -297,3 +297,21 @@ test('milk seed/work/upgrade preferences and exact budgets survive real default-
   await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '森野甜莓种子').checked, true);
   page.api.failure = 'response'; await save(page); assert.ok(page.notifications.some(row => row[1] === 'danger'));
 });
+
+test('full milk preset and separate hire budget survive default-plan reload and invalid hire policy makes zero PUT', async t => {
+  const config = completeConfig();
+  config.automation.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
+  config.automation.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' };
+  const page = await mountPage(t, config); await section(page, '自动控制');
+  click(button(page.root, '推荐全自动（保留目标与额度）')); await vue.nextTick();
+  const saved = await save(page);
+  assert.equal(saved.automation.milk_tea_auto_craft, true); assert.equal(saved.automation.milk_tea_auto_hire, true);
+  assert.equal(saved.automation.milk_tea_auto_open, true); assert.equal(saved.automation.milk_tea_auto_boost, false);
+  assert.equal(saved.automation.milk_tea_hire_policy.ticketDailyLimit, '80'); assert.equal(saved.automation.milk_tea_seed_policy.ticketDailyLimit, '0');
+  assert.deepEqual(saved.automation.milk_tea_seed_policy.targetSeedIds, [21435]);
+  await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '自动雇佣员工').checked, true);
+  click(button(page.root, '展开高级预算')); await vue.nextTick(); await setInput(page, '雇佣每日上限（奶茶券）', '-1');
+  const before = page.calls.filter(row => row.method === 'put').length;
+  click(button(page.root, '保存默认方案')); await flush();
+  assert.equal(page.calls.filter(row => row.method === 'put').length, before); assert.match(page.notifications.at(-1)[0], /雇佣/);
+});
