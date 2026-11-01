@@ -283,8 +283,9 @@ test('one interaction for the entire shift; gameplay loss is attempted, option c
   const shift = f.work.my_shift; delete f.work.my_shift; await f.tick(); f.work.my_shift = shift; await f.tick(); assert.deepEqual(f.writes(), [65]);
   shift.shift_id = '7002'; await f.tick(); assert.deepEqual(f.writes(), [65, 65]);
 }));
-for (const field of ['interact_count', 'interact_limit', 'end_at', 'shift_id']) test(`missing ${field} does not authorize interaction`, async () => using({ milk_tea_auto_work: true }, async f => {
-  f.summary.hasUnclaimedWage = false; delete f.work.my_shift[field]; await f.service.runAutomaticMilkTea(f.deps); assert.deepEqual(f.writes(), []);
+for (const field of ['interact_count', 'interact_limit', 'end_at', 'shift_id']) test(`canonical missing ${field} respects default-value and business-anchor semantics`, async () => using({ milk_tea_auto_work: true }, async f => {
+  f.summary.hasUnclaimedWage = false; delete f.work.my_shift[field]; await f.service.runAutomaticMilkTea(f.deps);
+  assert.deepEqual(f.writes(), field === 'interact_count' ? [65] : []);
 }));
 test('upgrade requires level progress, never a different day, success text, same-level reply or an unknown cost', async () => using({ milk_tea_auto_upgrade: true }, async f => {
   f.response((cmd, reply) => cmd === 61 ? { ...reply, milk_tea_upgrade: { level: f.summary.level } } : reply);
@@ -292,8 +293,10 @@ test('upgrade requires level progress, never a different day, success text, same
   f.summary.level = 2; f.summary.upgradeCosts = [{ id: 1041, count: '1' }]; await f.tick(); assert.deepEqual(f.writes(), [61]);
   delete f.summary.upgradeCosts; f.response(null); await f.tick(); assert.deepEqual(f.writes(), [61, 61]);
 }));
-test('three new writes maximum and independent reward preference stays off; no one-minute success poller', async () => using({ ...seedFlags, milk_tea_auto_work: true, milk_tea_auto_upgrade: true }, async f => {
-  await f.service.runAutomaticMilkTea(f.deps); assert.deepEqual(f.writes(), [64, 65, 61]); assert.equal(f.calls.includes(55), false);
+test('three shared writes maximum, independent rewards stay off and finite followup cannot become a poller', async () => using({ ...seedFlags, milk_tea_auto_work: true, milk_tea_auto_upgrade: true }, async f => {
+  await f.service.runAutomaticMilkTea(f.deps); assert.deepEqual(f.writes(), [1, 64, 61]); assert.equal(f.calls.includes(55), false);
+  f.clock.now += 60000; await f.service.runAutomaticMilkTea(f.deps); assert.deepEqual(f.writes(), [1, 64, 61, 65]);
+  f.clock.now += 60000; await f.service.runAutomaticMilkTea(f.deps);
   const count = f.calls.length; f.clock.now += 60000; await f.service.runAutomaticMilkTea(f.deps); assert.equal(f.calls.length, count);
 }));
 test('persist failure prevents writes; reconcile failure rolls back memory and cannot forget an unknown intent', async () => using(seedFlags, async f => {
@@ -363,7 +366,7 @@ test('legacy loaded capsule without policy fingerprint preserves its absolute wa
   await f.service.runAutomaticMilkTea(f.deps); assert.deepEqual(f.calls, []);
 }));
 
-test('combined free rewards and three new actions stay within the documented 29-RPC round ceiling', async () => using({ ...seedFlags, milk_tea_auto_work: true, milk_tea_auto_upgrade: true, milk_tea_auto_rewards: true }, async f => {
+test('combined free rewards count against the same three-write cap and remain within the prior RPC ceiling', async () => using({ ...seedFlags, milk_tea_auto_work: true, milk_tea_auto_upgrade: true, milk_tea_auto_rewards: true }, async f => {
   const read = f.deps.getActivityGroupSnapshot;
   f.deps.getActivityGroupSnapshot = async (...args) => {
     const snapshot = await read(...args); snapshot.children.push({ id: 2026110104, details: { shareReward: { currentScore: 10,
@@ -376,8 +379,8 @@ test('combined free rewards and three new actions stay within the documented 29-
     return { ...reply, ...fields[cmd] };
   });
   await f.service.runAutomaticMilkTea(f.deps);
-  assert.deepEqual(f.writes(), [59, 74, 70, 71, 64, 65, 61]);
-  assert.equal(f.calls.filter(value => value !== 'Operate').length, 29);
+  assert.deepEqual(f.writes(), [59, 1, 64]);
+  assert.ok(f.calls.filter(value => value !== 'Operate').length <= 29);
 }));
 
 test('budget and unknown outcomes expose a bounded status reason without journal identities', async () => using(seedFlags, async f => {

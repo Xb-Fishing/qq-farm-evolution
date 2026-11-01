@@ -638,6 +638,16 @@ export interface MilkTeaAutomationStatus {
   seedsEnabled?: boolean
   workEnabled?: boolean
   upgradeEnabled?: boolean
+  craftEnabled?: boolean
+  hireEnabled?: boolean
+  openEnabled?: boolean
+  boostEnabled?: boolean
+  hirePolicy?: { durationId: number, ticketDailyLimit: string, ticketReserve: string }
+  reservedFruitStacks?: number
+  pendingHires?: number
+  familyReasons?: Record<string, string>
+  seedReasons?: { name: string, reason: string }[]
+  nextCheckAt?: number
   pendingPurchases?: number
   pendingInteractions?: number
   wagesPending?: boolean

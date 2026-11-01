@@ -654,6 +654,7 @@ test('收银台/升级/喇叭/工坊加工：前置状态与官方向量', async
     await assert.rejects(run('craft', { fruitUids: ['23563', '23564'], recipeId: 2 }), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
     env.operateRequests.length = 0;
     env.scenario.bagItems = [{ id: 40525, count: '7', uid: '23563' }];
+    env.scenario.operateBodies[62].milk_tea_craft.used_fruits = env.scenario.bagItems;
     const crafted = await run('craft', { fruitUids: ['23563'], recipeId: 2 });
     assert.equal(crafted.ok, true);
     assert.deepEqual(crafted.craftedCups, { '2': 20 });
@@ -1007,6 +1008,11 @@ test('写后失败：传输/回显不匹配/缺结果体 = 结果未知；恰好
     assert.equal(outcome.command, 60);
     assert.equal(operateCount(env), 1, '不自动重试');
 
+    await assert.rejects(run(), business('SEASON_WISH_MILK_TEA_LIMIT'));
+    assert.equal(operateCount(env), 1, '同一未知喇叭声明不能重放');
+    // A normal fresh inventory observation proves the previous whole debit.
+    env.scenario.bagItems[0].count = '9';
+
     // 回显不匹配（写路径）：可能已执行 → 未知而非业务拒绝
     env.scenario.failOperate = 'echoMismatch';
     env.calls.length = 0;
@@ -1015,6 +1021,7 @@ test('写后失败：传输/回显不匹配/缺结果体 = 结果未知；恰好
     assert.equal(operateCount(env), 1);
 
     // 回复缺结果体：未知
+    env.scenario.bagItems[0].count = '8';
     env.scenario.failOperate = 'dropBody';
     env.calls.length = 0;
     outcome = await run();
@@ -1317,7 +1324,8 @@ test('写前追加边界：锁定/重复背包条目、重复成员槽位、未�
     env.scenario.exchangeShop.items[0].costs=[{id:99999999,count:'1'}];
     await assert.rejects(run('exchange',{goodsId:9001,count:1,confirmedCosts:[{itemId:99999999,count:'1'}]}),business('SEASON_WISH_MILK_TEA_UNKNOWN_COST'));
     await assert.rejects(run('interact',{interactionType:1,targetGid:'999'}),business('SEASON_WISH_MILK_TEA_INVALID_INPUT'));
-    assert.deepEqual(env.operateRequests.map(r=>r.cmd),[63]);
+    assert.deepEqual(env.operateRequests.map(r=>r.cmd),[58,58,63]);
+    assert.equal(env.operateRequests.some(r => ![58,63].includes(r.cmd)), false, 'fresh recipe reads never turn invalid inputs into writes');
   });
 });
 
@@ -1369,10 +1377,19 @@ test('批量制作整组果实：同配方多组与多配方均只发一次写�
     env.scenario.operateBodies[58].milk_tea_get_workshop.recipes.push({ recipe_id: 3, unlocked: true });
     const confirmedFruits = env.scenario.bagItems.map(item => ({ uid: item.uid, itemId: item.id, count: item.count }));
     const input = { fruitUids: ['23563', '23564'], recipeId: 2, confirmedFruits: confirmedFruits.slice(0, 2) };
+    env.scenario.operateBodies[62].milk_tea_craft.used_fruits = env.scenario.bagItems.slice(0, 2);
     await assert.doesNotReject(async () => { assert.equal((await run(input)).ok, true); });
     assert.deepEqual(env.operateRequests.map(req => req.cmd), [58, 62]);
     assert.deepEqual(types.MilkTeaOperateRequest.decode(env.operateRequests[1].buffer).milk_tea_craft.fruit_uids.map(String), input.fruitUids);
+    // Reuse of the same UID requires a consumed -> new-stock observation.
+    await assert.rejects(run(input), business('SEASON_WISH_MILK_TEA_LIMIT'));
+    const freshItems = env.scenario.bagItems;
+    env.scenario.bagItems = [];
+    await assert.rejects(run(input), business('SEASON_WISH_MILK_TEA_INVALID_STATE'));
+    env.scenario.bagItems = freshItems;
     env.operateRequests.length = 0;
+    env.scenario.operateBodies[62].milk_tea_craft.used_fruits = env.scenario.bagItems;
+    env.scenario.operateBodies[62].milk_tea_craft.crafted_cups = { 2: 16, 3: 11 };
     await assert.doesNotReject(async () => { assert.equal((await run({ fruitUids: confirmedFruits.map(row => row.uid), confirmedFruits })).ok, true); });
     assert.deepEqual(env.operateRequests.map(req => req.cmd), [58, 62]);
     assert.deepEqual(types.MilkTeaOperateRequest.decode(env.operateRequests[1].buffer).milk_tea_craft.fruit_uids.map(String), ['23563', '23564', '23565']);

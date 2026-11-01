@@ -100,17 +100,44 @@ test('invalid budgets block saving and unmount/account change invalidates a pend
 });
 test('backend account/default-plan persistence deeply clones policies and invalid values cannot enable spending', () => {
   const store = require('../src/models/store'); const automation = { milk_tea_auto_seeds: true, milk_tea_auto_work: true, milk_tea_auto_upgrade: true, milk_tea_work_interaction_type: 3,
+    milk_tea_auto_craft: true, milk_tea_auto_hire: true, milk_tea_auto_open: true, milk_tea_auto_boost: false,
+    milk_tea_hire_policy: { durationId: 1, ticketDailyLimit: '480', ticketReserve: '8000' },
     milk_tea_seed_policy: { targetSeedIds: [20525], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '240000', ticketReserve: '8000', ticketDailyLimit: '0' } };
   store.applyConfigSnapshot({ automation }, { accountId: 'synthetic-persistent' });
   store.setUserDefaultAccountPlan('synthetic-plan-user', { automation });
   const snapshot = store.getConfigSnapshot('synthetic-persistent'); snapshot.automation.milk_tea_seed_policy.targetSeedIds.push(20526);
+  snapshot.automation.milk_tea_hire_policy.ticketDailyLimit = '9999';
+  assert.equal(store.getAutomation('synthetic-persistent').milk_tea_hire_policy.ticketDailyLimit, '480');
   assert.deepEqual(store.getAutomation('synthetic-persistent').milk_tea_seed_policy.targetSeedIds, [20525]);
   const modulePath = require.resolve('../src/models/store'); delete require.cache[modulePath]; const reloaded = require(modulePath);
   assert.equal(reloaded.getAutomation('synthetic-persistent').milk_tea_auto_work, true);
   assert.equal(reloaded.getUserDefaultAccountPlan('synthetic-plan-user').config.automation.milk_tea_auto_upgrade, true);
+  assert.equal(reloaded.getAutomation('synthetic-persistent').milk_tea_auto_craft, true);
+  assert.equal(reloaded.getUserDefaultAccountPlan('synthetic-plan-user').config.automation.milk_tea_auto_hire, true);
+  assert.equal(reloaded.getUserDefaultAccountPlan('synthetic-plan-user').config.automation.milk_tea_hire_policy.ticketDailyLimit, '480');
   reloaded.applyConfigSnapshot({ automation: { milk_tea_auto_seeds: 'false', milk_tea_seed_policy: { ...automation.milk_tea_seed_policy, coinDailyLimit: 'bad' } } }, { persist: false, accountId: 'synthetic-persistent' });
   assert.equal(reloaded.getAutomation('synthetic-persistent').milk_tea_auto_seeds, false);
   assert.deepEqual(reloaded.getAutomation('synthetic-persistent').milk_tea_seed_policy.targetSeedIds, []);
+});
+
+test('recommended full automation preserves targets and independent custom budgets through real group save/reload', async t => {
+  const f = await fixture(t);
+  const auto = f.control.localAutomationSettings.value.automation;
+  auto.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
+  auto.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' };
+  await vue.nextTick(); click(button(f.root, '推荐全自动（保留目标与额度）')); await vue.nextTick();
+  assert.equal(f.calls.length, 0); assert.equal(auto.milk_tea_auto_boost, false);
+  await toggle(f, '自动使用现有宣传喇叭', true); assert.match(textOf(f.root), /每次最多 100 个/);
+  await toggle(f, '自动使用现有宣传喇叭', false);
+  click(button(f.root, '保存自动控制')); await flush();
+  const payload = f.calls.find(call => call.url === '/api/automation').body.milk_tea_control;
+  assert.equal(payload.milk_tea_auto_craft, true); assert.equal(payload.milk_tea_auto_hire, true); assert.equal(payload.milk_tea_auto_open, true);
+  assert.deepEqual(payload.milk_tea_seed_policy.targetSeedIds, [21435]); assert.equal(payload.milk_tea_seed_policy.ticketDailyLimit, '0');
+  assert.deepEqual(payload.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' });
+  f.reload(); await vue.nextTick(); assert.equal(f.control.localAutomationSettings.value.automation.milk_tea_auto_craft, true);
+  click(button(f.root, '展开高级预算')); await vue.nextTick();
+  input(f, '雇佣每日上限（奶茶券）', 'bad'); const before = f.calls.length;
+  click(button(f.root, '保存自动控制')); await flush(); assert.equal(f.calls.length, before); assert.match(f.alerts.at(-1)[0], /雇佣/);
 });
 
 test('old save finally cannot clear a new account read loading owner', async t => {
@@ -154,9 +181,11 @@ test('real settings payload, route and provider publish milk authorization as on
     await routes.get('post /api/automation')({ body }, res); return { data: res.value };
   };
   await toggle(f, '自动购买活动种子', true); await toggle(f, '自动班次工作（互动与工资）', true); await toggle(f, '自动升级店铺', true);
+  await toggle(f, '自动制作奶茶（整组果实）', true); await toggle(f, '自动雇佣员工', true);
   await toggle(f, '森野白桃种子', true);
   click(button(f.root, '展开高级预算')); await vue.nextTick();
   input(f, '每种种子库存目标（颗）', '12'); input(f, '金币每日上限', '120000');
+  input(f, '雇佣每日上限（奶茶券）', '80'); input(f, '雇佣保留量（奶茶券）', '9000');
   const selection = findAll(f.root, row => row.tag === 'select' && row.props['aria-label'] === '互动方式')[0];
   selection.props.onChange({ target: { value: '3' } });
   click(button(f.root, '保存自动控制')); await flush();
@@ -165,6 +194,8 @@ test('real settings payload, route and provider publish milk authorization as on
     assert.deepEqual(row.milk_tea_seed_policy.targetSeedIds, [20526], 'no broadcast may enable new automation against the old selected target');
     assert.equal(row.milk_tea_auto_seeds, true); assert.equal(row.milk_tea_auto_work, true); assert.equal(row.milk_tea_auto_upgrade, true);
     assert.equal(row.milk_tea_seed_policy.targetStock, 12); assert.equal(row.milk_tea_seed_policy.coinDailyLimit, '120000'); assert.equal(row.milk_tea_work_interaction_type, 3);
+    assert.equal(row.milk_tea_auto_craft, true); assert.equal(row.milk_tea_auto_hire, true);
+    assert.deepEqual(row.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' });
   }
   assert.deepEqual(backend.getAutomation(id).milk_tea_seed_policy.targetSeedIds, [20526]);
   assert.equal(snapshots.filter(row => row.milk_tea_auto_seeds).length, 1, 'milk policy is published once as a complete group');

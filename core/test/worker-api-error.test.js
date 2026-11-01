@@ -247,8 +247,11 @@ test('旧式仅含 error 字符串的响应仍正常拒绝为普通 Error', { ti
 
 
 // 服务→真实Worker入口→真实消息序列化→管理器→provider→真实路由。
+let milkWireCase = 0;
 for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structuredClone(value)]) {
   test('奶茶固定业务码跨完整消息链保持；普通读取错误无码；成功与结果未知失效缓存', async () => {
+    const previousAccount = process.env.FARM_ACCOUNT_ID;
+    process.env.FARM_ACCOUNT_ID = `synthetic-milk-wire-${++milkWireCase}`;
     await loadProto();
     const ws = { readyState: 1 }; const calls = []; let mode = 'ok'; let serverVersion = 0;
     const files = ['../src/utils/network','../src/services/activity','../src/services/milk-tea-activity'].map(require.resolve);
@@ -299,6 +302,9 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
       mode='ok';assert.equal((await invoke('/api/activity/milk-tea')).data.upstreamCached,false);
       calls.length=0;await assert.rejects(provider.queryMilkTeaActivity('acct-1','rank',{page:0}),err=>err.code==='SEASON_WISH_MILK_TEA_INVALID_INPUT');
       assert.deepEqual(calls,['List','GetGroup']);
-    } finally { cleanup(); for(const [file,entry] of previous) { if(entry)require.cache[file]=entry;else delete require.cache[file]; } }
+    } finally {
+      cleanup(); for(const [file,entry] of previous) { if(entry)require.cache[file]=entry;else delete require.cache[file]; }
+      if (previousAccount === undefined) delete process.env.FARM_ACCOUNT_ID; else process.env.FARM_ACCOUNT_ID = previousAccount;
+    }
   });
 }

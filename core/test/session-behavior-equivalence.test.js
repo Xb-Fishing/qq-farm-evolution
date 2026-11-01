@@ -13,7 +13,11 @@ assert.ok(entry.startsWith(temporary + path.sep)); fs.mkdirSync(path.dirname(ent
 // facade and the production session bridge. Only the upstream transport replies
 // are synthetic; no gateway, authorization or real game operation is performed.
 fs.writeFileSync(entry, `
-const path=require('node:path');const {parentPort,workerData}=require('node:worker_threads');const {EventEmitter}=require('node:events');
+const path=require('node:path');const fs=require('node:fs');const {parentPort,workerData}=require('node:worker_threads');const {EventEmitter}=require('node:events');
+const stateBase=path.resolve(process.env.FARM_DATA_DIR);const stateDir=path.resolve(stateBase,workerData.epoch);
+if(!/^[a-z0-9_-]+$/.test(workerData.epoch)||!stateDir.startsWith(stateBase+path.sep))throw new Error('fixture state boundary');
+fs.mkdirSync(stateDir,{recursive:true,mode:0o700});process.env.FARM_DATA_DIR=stateDir;
+process.env.FARM_ACCOUNT_ID='synthetic-packet-account';
 const root=${JSON.stringify(actualSource)};const {encode,decode}=require(path.join(root,'runtime/session-codec'));
 const config=decode(workerData.config);const local=config.mode==='local';process.env.FARM_SESSION_BUSINESS=local?'0':'1';
 let facts=decode(workerData.facts);let gate;let bridge;let sequence=0;const pending=new Map();const sockets=new Map();
@@ -93,7 +97,7 @@ for (const scenario of ['success', 'unknown_write', 'budget', 'connection_change
       assert.equal(bridged.outcome.ok, scenario === 'success');
     } else {
       assert.equal(operations.some(request => Number(request.operate_type) === 62), false);
-      assert.equal(bridged.packets.length, scenario === 'budget' ? 2 : 1, JSON.stringify(bridged.outcome));
+      assert.equal(bridged.packets.length, scenario === 'budget' ? 1 : 2, JSON.stringify(bridged.outcome));
       if (scenario === 'budget') assert.equal(bridged.outcome.isGovernedRejection, true);
       else assert.equal(bridged.outcome.code, 'SEASON_WISH_MILK_TEA_CONNECTION_CHANGED');
     }

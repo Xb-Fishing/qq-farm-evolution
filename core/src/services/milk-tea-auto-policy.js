@@ -38,6 +38,15 @@ const MAX_TARGET_STOCK = 9999;
 const MAX_TARGET_SEEDS = 8;
 const INTERACTION_TYPES = new Set(CONFIG.interactionTypes.map(row => row.id));
 
+// 工程推荐雇佣预算（非官方安全保证）：最短 4h 班（40 券/人），独立于购种预算；
+// 券保留 8000、日支 480。durationId 无效即整体关闭（不猜其他班次）。
+const HIRE_DURATION_IDS = Object.freeze((CONFIG.hireDurations || []).map(row => toNum(row.durationId)).filter(id => id > 0));
+const DEFAULT_HIRE_POLICY = Object.freeze({
+    durationId: 1,
+    ticketDailyLimit: '480',
+    ticketReserve: '8000',
+});
+
 /** 严格解析非负整数字符串；不合规返回 null（不猜、不补零）。 */
 function parseExactCount(value) {
     if (typeof value === 'number') {
@@ -118,13 +127,56 @@ function normalizeWorkInteractionType(raw, prev = 1) {
     return n;
 }
 
+/** failclosed 雇佣预算：任一字段无效即整体关闭（durationId=0），不部分采纳。 */
+function normalizeHirePolicy(raw, prev = DEFAULT_HIRE_POLICY) {
+    const base = prev && typeof prev === 'object' ? prev : DEFAULT_HIRE_POLICY;
+    if (raw === undefined) return cloneHirePolicy(base);
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return disabledHirePolicy();
+    const durationId = raw.durationId;
+    const ticketDailyLimit = parseExactCount(raw.ticketDailyLimit);
+    const ticketReserve = parseExactCount(raw.ticketReserve);
+    if (!Number.isSafeInteger(durationId) || !HIRE_DURATION_IDS.includes(durationId)
+        || ticketDailyLimit === null || ticketReserve === null) {
+        return disabledHirePolicy();
+    }
+    return { durationId, ticketDailyLimit, ticketReserve };
+}
+
+function disabledHirePolicy() {
+    return { durationId: 0, ticketDailyLimit: '0', ticketReserve: '8000' };
+}
+
+function cloneHirePolicy(policy) {
+    const base = policy && typeof policy === 'object' ? policy : DEFAULT_HIRE_POLICY;
+    return {
+        durationId: Number(base.durationId) || 0,
+        ticketDailyLimit: String(base.ticketDailyLimit ?? '0'),
+        ticketReserve: String(base.ticketReserve ?? '8000'),
+    };
+}
+
+/** 指定雇佣时长的单人费用（itemId/ count 字符串）；未知时长返回 null。 */
+function hireDurationCost(durationId) {
+    const row = (CONFIG.hireDurations || []).find(item => toNum(item.durationId) === toNum(durationId));
+    if (!row || !row.cost) return null;
+    const itemId = toNum(row.cost.itemId);
+    const count = parseExactCount(String(row.cost.count));
+    if (itemId <= 0 || count === null || BigInt(count) <= 0n) return null;
+    return { itemId, count };
+}
+
 /** 新增奶茶自动化键的默认值（automation 平面键之外的补充默认，见 store.js）。 */
 function defaultMilkTeaAutomation() {
     return {
         milk_tea_auto_seeds: false,
         milk_tea_auto_work: false,
         milk_tea_auto_upgrade: false,
+        milk_tea_auto_craft: false,
+        milk_tea_auto_hire: false,
+        milk_tea_auto_open: false,
+        milk_tea_auto_boost: false,
         milk_tea_seed_policy: cloneSeedPolicy(DEFAULT_SEED_POLICY),
+        milk_tea_hire_policy: cloneHirePolicy(DEFAULT_HIRE_POLICY),
         milk_tea_work_interaction_type: 1,
     };
 }
@@ -134,7 +186,11 @@ function anyMilkTeaAutoSwitchOn(automation) {
         && (automation.milk_tea_auto_rewards === true
             || automation.milk_tea_auto_seeds === true
             || automation.milk_tea_auto_work === true
-            || automation.milk_tea_auto_upgrade === true);
+            || automation.milk_tea_auto_upgrade === true
+            || automation.milk_tea_auto_craft === true
+            || automation.milk_tea_auto_hire === true
+            || automation.milk_tea_auto_open === true
+            || automation.milk_tea_auto_boost === true);
 }
 
 /**
@@ -226,10 +282,14 @@ module.exports = {
     COIN_ITEM_ID,
     TICKET_ITEM_ID,
     DEFAULT_SEED_POLICY,
+    DEFAULT_HIRE_POLICY,
     parseExactCount,
     normalizeTargetSeedIds,
     normalizeSeedPolicy,
     cloneSeedPolicy,
+    normalizeHirePolicy,
+    cloneHirePolicy,
+    hireDurationCost,
     normalizeWorkInteractionType,
     defaultMilkTeaAutomation,
     anyMilkTeaAutoSwitchOn,

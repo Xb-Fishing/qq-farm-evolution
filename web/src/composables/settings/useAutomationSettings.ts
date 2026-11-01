@@ -17,6 +17,11 @@ const defaultAutomation = {
   milk_tea_auto_seeds: false,
   milk_tea_auto_work: false,
   milk_tea_auto_upgrade: false,
+  milk_tea_auto_craft: false,
+  milk_tea_auto_hire: false,
+  milk_tea_auto_open: false,
+  milk_tea_auto_boost: false,
+  milk_tea_hire_policy: { durationId: 1, ticketDailyLimit: '480', ticketReserve: '8000' },
   milk_tea_work_interaction_type: 1,
   milk_tea_seed_policy: {
     targetSeedIds: [] as number[],
@@ -149,6 +154,10 @@ export function useAutomationSettings({
         ticketReserve: loadedPolicy.ticketReserve ?? policyDefaults.ticketReserve,
         ticketDailyLimit: loadedPolicy.ticketDailyLimit ?? policyDefaults.ticketDailyLimit,
       }
+      localAutomationSettings.value.automation.milk_tea_hire_policy = {
+        ...defaultAutomation.milk_tea_hire_policy,
+        ...settings.value.automation?.milk_tea_hire_policy,
+      }
       if (localAutomationSettings.value.automation.fertilizer_smart_seconds === undefined) {
         localAutomationSettings.value.automation.fertilizer_smart_seconds = 300
       }
@@ -188,6 +197,12 @@ export function useAutomationSettings({
     const epoch = ++saveEpoch
     const active = () => !disposed && epoch === saveEpoch && String(currentAccountId.value) === accountId
     const policy = localAutomationSettings.value.automation.milk_tea_seed_policy
+    const hirePolicy = localAutomationSettings.value.automation.milk_tea_hire_policy
+    if (localAutomationSettings.value.automation.milk_tea_auto_hire && (![1, 2, 3].includes(hirePolicy.durationId)
+      || [hirePolicy.ticketDailyLimit, hirePolicy.ticketReserve].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value))))) {
+      showAlert('请修正奶茶雇佣班次与预算后保存', 'danger')
+      return
+    }
     if (localAutomationSettings.value.automation.milk_tea_auto_seeds && (!Number.isSafeInteger(policy.targetStock) || policy.targetStock < 0 || policy.targetStock > 9999 || [policy.coinReserve, policy.coinDailyLimit, policy.ticketReserve, policy.ticketDailyLimit].some(value => !/^(?:0|[1-9]\d{0,19})$/.test(String(value))))) {
       showAlert('请修正奶茶购种库存目标与预算后保存', 'danger')
       return

@@ -257,11 +257,17 @@ const DEFAULT_AUTOMATION = {
     friend_golden_bug: false,
     task: true,
     milk_tea_auto_rewards: false,
-    // 奶茶自主动作（购种/班次工作/升级）独立开关，默认全关；策略见 milk_tea_seed_policy
+    // 奶茶自主动作（购种/班次工作/升级/制作/雇佣/开店/喇叭）独立开关，默认全关；
+    // 策略见 milk_tea_seed_policy / milk_tea_hire_policy
     milk_tea_auto_seeds: false,
     milk_tea_auto_work: false,
     milk_tea_auto_upgrade: false,
+    milk_tea_auto_craft: false,
+    milk_tea_auto_hire: false,
+    milk_tea_auto_open: false,
+    milk_tea_auto_boost: false,
     milk_tea_seed_policy: milkTeaPolicy.cloneSeedPolicy(milkTeaPolicy.DEFAULT_SEED_POLICY),
+    milk_tea_hire_policy: milkTeaPolicy.cloneHirePolicy(milkTeaPolicy.DEFAULT_HIRE_POLICY),
     milk_tea_work_interaction_type: 1,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
@@ -604,13 +610,17 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
             auto[key] = normalizeFertilizerLandTypes(srcAuto[key], DEFAULT_FERTILIZER_LAND_TYPES);
             continue;
         }
-        if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+        if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
             auto[key] = srcAuto[key] === true;
             continue;
         }
         if (key === 'milk_tea_seed_policy') {
             // 深拷贝+failclosed 规范化：多账号/多次克隆不得共享嵌套对象引用
             auto[key] = milkTeaPolicy.normalizeSeedPolicy(srcAuto[key]);
+            continue;
+        }
+        if (key === 'milk_tea_hire_policy') {
+            auto[key] = milkTeaPolicy.normalizeHirePolicy(srcAuto[key]);
             continue;
         }
         if (key === 'milk_tea_work_interaction_type') {
@@ -732,10 +742,12 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
         for (const [key, value] of Object.entries(input.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(key)) continue;
 
-            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
                 cfg.automation[key] = value === true;
             } else if (key === 'milk_tea_seed_policy') {
                 cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
+            } else if (key === 'milk_tea_hire_policy') {
+                cfg.automation[key] = milkTeaPolicy.normalizeHirePolicy(value, cfg.automation[key]);
             } else if (key === 'milk_tea_work_interaction_type') {
                 cfg.automation[key] = milkTeaPolicy.normalizeWorkInteractionType(value, cfg.automation[key]);
             } else if (key === 'fertilizer') {
@@ -892,6 +904,7 @@ function pickDefaultPlanConfig(raw) {
     const cfg = normalizeAccountConfig(raw, DEFAULT_ACCOUNT_CONFIG);
     const automation = { ...cfg.automation };
     automation.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(automation.milk_tea_seed_policy);
+    automation.milk_tea_hire_policy = milkTeaPolicy.cloneHirePolicy(automation.milk_tea_hire_policy);
     return {
         automation,
         autoCodeRefresh: { ...cfg.autoCodeRefresh },
@@ -1254,6 +1267,7 @@ function getAutomation(accountId) {
     const auto = { ...getAccountConfigSnapshot(accountId).automation };
     auto.fertilizer_land_types = normalizeFertilizerLandTypes(auto.fertilizer_land_types);
     auto.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(auto.milk_tea_seed_policy);
+    auto.milk_tea_hire_policy = milkTeaPolicy.cloneHirePolicy(auto.milk_tea_hire_policy);
     return auto;
 }
 
@@ -1261,6 +1275,7 @@ function getConfigSnapshot(accountId) {
     const cfg = getAccountConfigSnapshot(accountId);
     const auto = { ...cfg.automation };
     auto.milk_tea_seed_policy = milkTeaPolicy.cloneSeedPolicy(auto.milk_tea_seed_policy);
+    auto.milk_tea_hire_policy = milkTeaPolicy.cloneHirePolicy(auto.milk_tea_hire_policy);
     const ui = { ...globalConfig.ui };
     return {
         automation: auto,
@@ -1302,10 +1317,12 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     if (patch.automation && typeof patch.automation === 'object') {
         for (const [key, value] of Object.entries(patch.automation)) {
             if (cfg.automation[key] === undefined) continue;
-            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade'].includes(key)) {
+            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
                 cfg.automation[key] = value === true;
             } else if (key === 'milk_tea_seed_policy') {
                 cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
+            } else if (key === 'milk_tea_hire_policy') {
+                cfg.automation[key] = milkTeaPolicy.normalizeHirePolicy(value, cfg.automation[key]);
             } else if (key === 'milk_tea_work_interaction_type') {
                 cfg.automation[key] = milkTeaPolicy.normalizeWorkInteractionType(value, cfg.automation[key]);
             } else if (key === 'fertilizer') {
