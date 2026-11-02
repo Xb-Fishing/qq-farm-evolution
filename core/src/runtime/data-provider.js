@@ -208,6 +208,9 @@ function createDataProvider(deps) {
         // ========== Activity ==========
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),
+        // 只读双箱邮件快照与一次有界更新证据采集（Worker 侧 60s 缓存共享）
+        getEmailSnapshot: (ref, options) => callWorkerApi(resolveAccountId(ref), 'getEmailSnapshot', options || {}, { _timeoutMs: 30000 }),
+        getGameUpdateEvidence: (ref, options) => callWorkerApi(resolveAccountId(ref), 'getGameUpdateEvidence', options || {}, { _timeoutMs: 120000 }),
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
         // 奶茶热销中（S4）：默认只读快照 + 显式查询 + 面板手动操作
         getMilkTeaActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getMilkTeaActivity'),

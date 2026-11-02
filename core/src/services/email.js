@@ -1,57 +1,82 @@
-
-// Persistent-session async operation tracking.
-if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
-  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
-  getEmailList = require('./business-state').wrapBusinessFunction('services/email.js:getEmailList', getEmailList);
-  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
-  claimEmail = require('./business-state').wrapBusinessFunction('services/email.js:claimEmail', claimEmail);
-  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
-  batchClaimEmail = require('./business-state').wrapBusinessFunction('services/email.js:batchClaimEmail', batchClaimEmail);
-  // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
-  checkAndClaimEmails = require('./business-state').wrapBusinessFunction('services/email.js:checkAndClaimEmails', checkAndClaimEmails);
-}
-/**
- * 邮箱服务 - 自动领取邮件奖励
- * 
- * 功能：
- * - 获取邮箱列表（系统邮件 + 玩家邮件）
- * - 批量领取邮件附件
- * - 每日自动检查并领取邮箱奖励
- */
-const { sendMsgAsync } = require('../utils/network');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const network = require('../utils/network');
+const { sendMsgAsync } = network;
 const { types } = require('../utils/proto');
 const { log, toNum } = require('../utils/utils');
 const { getItemById } = require('../config/gameConfig');
-
+const { getDataDir } = require('../config/runtime-paths');
+const { strictBudgetRejection } = require('./operation-error-meta');
 const DAILY_KEY = 'email_rewards';
-
-// 每日状态追踪
-let doneDateKey = '';
-let lastCheckAt = 0;
-
-// 两次检查最小间隔：5分钟
-const CHECK_COOLDOWN_MS = 5 * 60 * 1000;
-
-// ---- 日期工具 ----
-
-function getDateKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+const CHECK_COOLDOWN_MS = 300000;
+const SNAPSHOT_CACHE_MS = 60000;
+const MAX_EMAILS = 2000;
+let doneDateKey = '', lastCheckAt = 0, stateOwner = '';
+let cachedSnapshot = null, cachedConnection = null, snapshotInFlight = null, claimInFlight = null;
+function getDateKey() { const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
+function accountKey() { return crypto.createHash('sha256').update(String(process.env.FARM_ACCOUNT_ID || 'default')).digest('hex').slice(0, 24); }
+function hash(box, id) { return crypto.createHash('sha256').update(`${box}:${id}`).digest('hex'); }
+function ownership() {
+  const account = accountKey(), connection = network.getWs();
+  return { account, connection, valid: () => accountKey() === account && network.isConnected() && network.getWs() === connection };
 }
-
-function markDoneToday() {
-  doneDateKey = getDateKey();
+function errorKind(error) { return strictBudgetRejection(error) ? 'budget' : error?.code === 'EMAIL_STATE' ? 'state' : 'read'; }
+function safeTarget(root, target) {
+  const base = path.resolve(root), resolved = path.resolve(target);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) throw new Error('邮箱路径越界');
+  for (let current = resolved;; current = path.dirname(current)) {
+    try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error('邮箱路径含符号链接'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (current === path.dirname(current)) break;
+  }
+  return resolved;
 }
-
-function isDoneToday() {
-  return doneDateKey === getDateKey();
+function fileFor(directory, owner) { const root = getDataDir(); return safeTarget(root, path.join(root, directory, `${owner}.json`)); }
+function atomicWrite(directory, owner, value) {
+  const file = fileFor(directory, owner), dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temp = safeTarget(getDataDir(), path.join(dir, `${owner}.${crypto.randomUUID()}.tmp`));
+  try { fs.writeFileSync(temp, JSON.stringify(value), { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, file); }
+  finally { fs.rmSync(temp, { force: true }); }
 }
-
-// ---- RPC 调用 ----
-
+function loadJournal(owner) {
+  try {
+    const file = fileFor('email-claim-declarations', owner), stat = fs.statSync(file);
+    if (stat.size > 1024 * 1024) throw new Error('invalid');
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (value.accountKey !== owner || !value.boxes || typeof value.boxes !== 'object' || Array.isArray(value.boxes)) throw new Error('invalid');
+    for (const [box, row] of Object.entries(value.boxes)) {
+      if (!['1', '2'].includes(box) || !Array.isArray(row.hashes) || row.hashes.length > MAX_EMAILS || new Set(row.hashes).size !== row.hashes.length
+        || !row.hashes.every(id => /^[a-f0-9]{64}$/.test(id))) throw new Error('invalid');
+    }
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return { accountKey: owner, boxes: {} };
+    throw Object.assign(new Error('邮箱防重记录不可读，暂停领取'), { code: 'EMAIL_STATE' });
+  }
+}
+function rows(reply) {
+  if (!reply || !Array.isArray(reply.emails) || reply.emails.length > MAX_EMAILS) throw new Error('邮箱列表不完整');
+  const unique = new Map();
+  for (const row of reply.emails) {
+    if (!row || typeof row.id !== 'string' || !row.id || row.id.length > 512) throw new Error('邮箱条目不完整');
+    if (unique.has(row.id)) throw new Error('邮箱条目重复');
+    unique.set(row.id, row);
+  }
+  return [...unique.values()];
+}
+function claimable(row) { return row.has_reward === true && row.claimed !== true; }
+function reconcile(journal, box, list) {
+  const declaration = journal.boxes[box];
+  if (!declaration) return 0;
+  // 消失/过期不能证明领取成功；只有显式 claimed 确认才结算封数。
+  const confirmed = new Set(list.filter(row => row.claimed === true).map(row => hash(box, row.id)));
+  const count = declaration.hashes.filter(id => confirmed.has(id)).length;
+  declaration.hashes = declaration.hashes.filter(id => !confirmed.has(id));
+  if (!declaration.hashes.length) delete journal.boxes[box];
+  return count;
+}
 async function getEmailList(boxType = 1) {
   const request = types.GetEmailListRequest.encode(
     types.GetEmailListRequest.create({ box_type: Number(boxType) || 1 })
@@ -82,30 +107,6 @@ async function batchClaimEmail(boxType = 0, emailId = '') {
   return types.BatchClaimEmailReply.decode(body);
 }
 
-// ---- 数据解析 ----
-
-/**
- * 筛选出有未领取奖励的邮件
- */
-function collectClaimableEmails(reply) {
-  const emails = reply && Array.isArray(reply.emails) ? reply.emails : [];
-  return emails.filter(
-    (e) => e && e.id && e.has_reward === true && e.claimed !== true
-  );
-}
-
-/**
- * 标准化邮箱类型：仅允许 1（系统）或 2（玩家），否则返回 0
- */
-function normalizeBoxType(value) {
-  const num = Number(value);
-  return (num === 1 || num === 2) ? num : 0;
-}
-
-/**
- * 生成奖励摘要字符串
- * 1001 → 金币, 1002 → 经验, 500 → 点券
- */
 function getRewardSummary(items) {
   const list = Array.isArray(items) ? items : [];
   const parts = [];
@@ -128,137 +129,121 @@ function getRewardSummary(items) {
   return parts.join('/');
 }
 
-// ---- 主逻辑 ----
 
-/**
- * 检查并领取所有邮箱奖励
- * @param {boolean} force - 强制检查（跳过每日完成和冷却检查）
- */
-async function checkAndClaimEmails(force = false) {
-  const now = Date.now();
-  const emptyResult = { claimed: 0, rewardItems: 0 };
-
-  if (!force && isDoneToday()) return emptyResult;
-
-  const result = { claimed: 0, rewardItems: 0 };
-
-  if (!force && now - lastCheckAt < CHECK_COOLDOWN_MS) return result;
-
-  lastCheckAt = now;
-
-  try {
-    // 同时获取两种邮箱类型的列表
-    const [boxType1Reply, boxType2Reply] = await Promise.all([
-      getEmailList(1).catch(() => ({ emails: [] })),
-      getEmailList(2).catch(() => ({ emails: [] })),
-    ]);
-
-    // 合并去重邮件
-    const merged = new Map();
-    const list1 = (boxType1Reply.emails || []).map((e) => ({ ...e, __boxType: 1 }));
-    const list2 = (boxType2Reply.emails || []).map((e) => ({ ...e, __boxType: 2 }));
-
-    for (const email of [...list1, ...list2]) {
-      if (!email || !email.id) continue;
-      if (!merged.has(email.id)) {
-        merged.set(email.id, email);
-        continue;
-      }
-      const existing = merged.get(email.id);
-      const existingClaimable = !!(existing && existing.has_reward === true && existing.claimed !== true);
-      const newClaimable = !!(email && email.has_reward === true && email.claimed !== true);
-      // 优先保留可领取的那个
-      if (!existingClaimable && newClaimable) {
-        merged.set(email.id, email);
-      }
-    }
-
-    const claimable = collectClaimableEmails({ emails: [...merged.values()] });
-
-    if (claimable.length === 0) {
-      markDoneToday();
-      log('邮箱', '今日暂无可领取邮箱奖励', { module: 'task', event: DAILY_KEY, result: 'none' });
-      return { claimed: 0, rewardItems: 0 };
-    }
-
-    const allItems = [];
-    let claimed = 0;
-
-    // 按邮箱类型分组
-    const groupedByBox = new Map();
-    for (const email of claimable) {
-      const box = normalizeBoxType(email && email.__boxType);
-      if (!groupedByBox.has(box)) groupedByBox.set(box, []);
-      groupedByBox.get(box).push(email);
-    }
-
-    // 先尝试批量领取
-    for (const [boxType, emails] of groupedByBox.entries()) {
-      try {
-        const firstId = String(emails[0] && emails[0].id || '');
-        if (firstId) {
-          const batchResult = await batchClaimEmail(boxType, firstId);
-          if (Array.isArray(batchResult.items) && batchResult.items.length > 0) {
-            allItems.push(...batchResult.items);
-          }
-          claimed += 1;
-        }
-      } catch {
-        // 批量领取失败，下面逐个重试
-      }
-    }
-
-    // 逐个领取（回退）
-    for (const email of claimable) {
-      const boxType = normalizeBoxType(email && email.__boxType);
-      try {
-        const result = await claimEmail(boxType, String(email.id || ''));
-        if (Array.isArray(result.items) && result.items.length > 0) {
-          allItems.push(...result.items);
-        }
-        claimed += 1;
-      } catch {
-        // 单个失败跳过
-      }
-    }
-
-    if (claimed > 0) {
-      const summary = getRewardSummary(allItems);
-      log('邮箱',
-        summary
-          ? `[邮箱领取] 领取成功 ${claimed} 封 → ${summary}`
-          : `[邮箱领取] 领取成功 ${claimed} 封`,
-        { module: 'task', event: DAILY_KEY, result: 'ok', count: claimed }
-      );
-      markDoneToday();
-    }
-
-    return { claimed, rewardItems: allItems.length };
-  } catch (err) {
-    log('邮箱', `领取邮箱奖励失败: ${err.message}`, {
-      module: 'task', event: DAILY_KEY, result: 'error',
-    });
-    return { claimed: 0, rewardItems: 0 };
+// 只读快照无正文/附件扩展，不持久化邮件标题或 opaque ID。
+async function getEmailSnapshot() {
+  const owner = ownership();
+  if (!owner.valid()) throw new Error('账号未连接，无法读取邮箱');
+  if (claimInFlight) { await claimInFlight; if (!owner.valid()) throw new Error('账号连接已变更'); }
+  if (cachedSnapshot?.accountKey === owner.account && cachedConnection === owner.connection
+      && Date.now() - cachedSnapshot.fetchedAt >= 0 && Date.now() - cachedSnapshot.fetchedAt < SNAPSHOT_CACHE_MS)
+    return structuredClone({ ...cachedSnapshot, cached: true });
+  if (snapshotInFlight) {
+    const value = await snapshotInFlight;
+    if (!owner.valid() || value.accountKey !== owner.account) throw new Error('账号连接已变更');
+    return structuredClone(value);
   }
+  const task = (async () => {
+    const value = { source: 'email-service', accountKey: owner.account, fetchedAt: Date.now(), partial: false, boxes: {} };
+    for (const box of [1, 2]) {
+      if (!owner.valid()) throw new Error('账号连接已变更');
+      try {
+        const list = rows(await getEmailList(box));
+        if (!owner.valid()) throw new Error('账号连接已变更');
+        value.boxes[box] = { ok: true, fetchedAt: Date.now(), total: list.length,
+          claimable: list.filter(claimable).length, idHashes: list.map(row => hash(box, row.id)).sort() };
+      } catch (error) {
+        if (!owner.valid()) throw new Error('账号连接已变更');
+        value.partial = true; value.boxes[box] = { ok: false, fetchedAt: Date.now(), errorClass: errorKind(error) };
+      }
+    }
+    if (!owner.valid()) throw new Error('账号连接已变更');
+    try { atomicWrite('email-snapshots', owner.account, value); } catch { value.persistenceFailed = true; }
+    cachedSnapshot = value; cachedConnection = owner.connection;
+    return structuredClone(value);
+  })();
+  snapshotInFlight = task;
+  try { return await task; } finally { if (snapshotInFlight === task) snapshotInFlight = null; }
 }
 
-module.exports = {
-  getEmailList,
-  claimEmail,
-  batchClaimEmail,
-  checkAndClaimEmails,
-  getEmailDailyState: () => ({
-    key: DAILY_KEY,
-    doneToday: isDoneToday(),
-    lastCheckAt,
-  }),
-};
-
-// Persistent-session data capsule. No handles, functions or in-flight work.
+async function checkAndClaimEmails(force = false) {
+  if (claimInFlight) return claimInFlight;
+  const owner = ownership();
+  const task = runCheck(force, owner);
+  claimInFlight = task;
+  try { return await task; } finally { if (claimInFlight === task) claimInFlight = null; }
+}
+async function runCheck(force, owner) {
+  const result = { claimed: 0, rewardItems: 0, partial: false, unknown: false, boxes: {} }, rewards = [];
+  if (!owner.valid()) return { ...result, skipped: 'offline' };
+  if (stateOwner !== owner.account) { stateOwner = owner.account; lastCheckAt = 0; doneDateKey = ''; }
+  if (!force && lastCheckAt && Date.now() - lastCheckAt < CHECK_COOLDOWN_MS) return { ...result, cooldown: true };
+  lastCheckAt = Date.now(); doneDateKey = '';
+  if (snapshotInFlight) { try { await snapshotInFlight; } catch { /* 领取仍需重新核对 */ } }
+  if (!owner.valid()) return { ...result, unknown: true };
+  let journal;
+  try { journal = loadJournal(owner.account); }
+  catch { return { ...result, partial: true, stateBlocked: true }; }
+  for (const box of [1, 2]) {
+    if (!owner.valid()) { result.unknown = true; break; }
+    let list;
+    try { list = rows(await getEmailList(box)); }
+    catch { result.boxes[box] = { ok: false }; result.partial = true; continue; }
+    if (!owner.valid()) { result.unknown = true; break; }
+    const work = structuredClone(journal);
+    const confirmed = reconcile(work, box, list);
+    try { atomicWrite('email-claim-declarations', owner.account, work); journal = work; result.claimed += confirmed; }
+    catch { result.partial = true; continue; }
+    // batch 的范围不缩为某个新 ID：任何未决声明都保留整箱，禁止新邮件覆盖旧声明。
+    if (journal.boxes[box]) { result.unknown = true; result.boxes[box] = { ok: true, pending: true }; continue; }
+    const candidates = list.filter(claimable);
+    if (!candidates.length) { result.boxes[box] = { ok: true, claimable: 0 }; continue; }
+    const declared = structuredClone(journal);
+    declared.boxes[box] = { hashes: candidates.map(row => hash(box, row.id)), declaredAt: Date.now() };
+    try { atomicWrite('email-claim-declarations', owner.account, declared); journal = declared; }
+    catch { result.partial = true; continue; }
+    if (!owner.valid()) { result.unknown = true; break; }
+    let reply;
+    try { reply = await batchClaimEmail(box, candidates[0].id); }
+    catch (error) {
+      if (!owner.valid()) { result.unknown = true; break; }
+      if (strictBudgetRejection(error)) {
+        const released = structuredClone(journal); delete released.boxes[box];
+        try { atomicWrite('email-claim-declarations', owner.account, released); journal = released; } catch { result.unknown = true; }
+        result.partial = true;
+      } else result.unknown = true;
+      result.boxes[box] = { ok: true, batch: 'unknown' }; continue;
+    }
+    if (!owner.valid()) { result.unknown = true; break; }
+    // 请求完成的奖励只计一次；封数独立由新鲜 claimed 标记确认。
+    if (!reply || !Array.isArray(reply.items)) { result.unknown = true; continue; }
+    rewards.push(...reply.items); result.rewardItems += reply.items.length;
+    try {
+      const fresh = rows(await getEmailList(box));
+      if (!owner.valid()) { result.unknown = true; break; }
+      const checked = structuredClone(journal), count = reconcile(checked, box, fresh);
+      atomicWrite('email-claim-declarations', owner.account, checked); journal = checked; result.claimed += count;
+      if (journal.boxes[box]) result.unknown = true;
+      result.boxes[box] = { ok: true, batch: 'ok', pending: !!journal.boxes[box] };
+    } catch { result.unknown = true; }
+  }
+  if (owner.valid()) {
+    cachedSnapshot = null; cachedConnection = null;
+    if (!result.partial && !result.unknown && result.boxes[1]?.ok && result.boxes[2]?.ok) doneDateKey = getDateKey();
+    if (rewards.length) log('邮箱', `[邮箱领取] 已确认 ${result.claimed} 封 → ${getRewardSummary(rewards)}`, { module: 'task', event: DAILY_KEY, result: 'ok', count: result.claimed });
+  }
+  return result;
+}
+function getEmailDailyState() {
+  return { key: DAILY_KEY, doneToday: stateOwner === accountKey() && doneDateKey === getDateKey(), lastCheckAt,
+    partial: cachedSnapshot?.partial };
+}
+module.exports = { getEmailList, claimEmail, batchClaimEmail, getEmailSnapshot, checkAndClaimEmails, getEmailDailyState };
 if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
-  const { registerDataState } = require('./business-state');
-  registerDataState('services/email.js', () => ({ doneDateKey, lastCheckAt }), value => {
-      doneDateKey = value.doneDateKey;
-      lastCheckAt = value.lastCheckAt;
-  }, { });
+  const business = require('./business-state');
+  for (const name of ['getEmailList','claimEmail','batchClaimEmail','getEmailSnapshot','checkAndClaimEmails'])
+    module.exports[name] = business.wrapBusinessFunction(`services/email.js:${name}`, module.exports[name]);
+  business.registerDataState('services/email.js', () => ({ doneDateKey, lastCheckAt, stateOwner }), value => {
+    doneDateKey = value.doneDateKey || ''; lastCheckAt = value.lastCheckAt || 0; stateOwner = value.stateOwner || '';
+  }, { idle: () => !claimInFlight && !snapshotInFlight });
 }

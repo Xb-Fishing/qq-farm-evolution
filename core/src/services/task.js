@@ -502,6 +502,8 @@ module.exports = {
   buildDailyTasksForDebug,
   buildGrowthTasks,
   summarizeDailyTaskProgress,
+  // 只读原始 TaskInfo：更新证据聚合用（真实一次读取，不经 catch 伪空的概览包装）。
+  getTaskInfo,
 
   getTaskClaimDailyState: () => ({
     key: 'task_claim',
