@@ -33,6 +33,11 @@
     {
       "repositoryAlias": "public-reference-2",
       "commit": "1f49191c2f1776abfa2b5930c468c8d64ad07108"
+    },
+    {
+      "repositoryAlias": "public-reference-2",
+      "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "evidence": "reviewed public client snapshot, current official item and plant metadata cross-check, exact Git blobs and visual inspection"
     }
   ],
   "entries": [
@@ -1353,6 +1358,534 @@
       "sha256": "e127af103b4ea7685f9ea1f96808d7463e0ac8926ea1f221dcf7244b72fb260a",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 20381,
+      "file": "20381_Crop_381_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20381.png",
+      "gitBlob": "a9ca63223cb059692baba11fecb8b0553223450a",
+      "sha256": "b97072ac623e1979d5d1a07578f60300bf95f64a41039ae49aa51741fb977fee",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 20397,
+      "file": "20397_Crop_397_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20397.png",
+      "gitBlob": "4148a82afda6bff623295c0ddae58fcd42861416",
+      "sha256": "d1e8e3c61f5e718be683a2201a1e0df8a66bbf50a302ca94b5f82ee561602ff0",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 20399,
+      "file": "20399_Crop_399_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20399.png",
+      "gitBlob": "2dc188ff8b4be8e47719452932f2747ff0f10ca1",
+      "sha256": "498368944a09ec3361821dfded20b93b9d4a70408e13b851d17b88a305508aa4",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21080,
+      "file": "21080_Crop_1080_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21080.png",
+      "gitBlob": "fdd1c490741dce450a0beb70bf5a94b7f1f9b089",
+      "sha256": "0fc645525bb00e5b7df4afd4c2c7c8bff3c91ace9e42e4f3b12ab592c74561f0",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21082,
+      "file": "21082_Crop_1082_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21082.png",
+      "gitBlob": "05eb100d8e14ab6f5b901428a04ecb93c62cf000",
+      "sha256": "407df14071afeadb69ab1065bc0f952b4e8fe12b535e354f1084c6f1562fba7e",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21096,
+      "file": "21096_Crop_1096_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21096.png",
+      "gitBlob": "9a9a1d7b41b7ee8ceadef964442c7ecf78fd8531",
+      "sha256": "aa6e0db60b5195677acc7e9f8897ec8c4a60cca218f57a7a244fb99c8ddcff6a",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21097,
+      "file": "21097_Crop_1097_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21097.png",
+      "gitBlob": "f35a92b9423bfeafa7da9bdad680006c531c1611",
+      "sha256": "9b8e28ef46b9a5e580ce3d5ca64a531a2d8caf06a8cc2e7c59c36c6e68492ddf",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21099,
+      "file": "21099_Crop_1099_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21099.png",
+      "gitBlob": "710bd05c9722d5def205096b9aa36faed89b7221",
+      "sha256": "129983b4002bacfb13a3552f75a8297154c4eaa62dc519542aa9eb01f0ef5192",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21100,
+      "file": "21100_Crop_1100_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21100.png",
+      "gitBlob": "d0afa395f3af35df4a31454702c2380f067a0b7b",
+      "sha256": "567617b25604d5c607e6ada0821e31327ec8ff3894490f19f6705017d1fc428b",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 20374,
+      "file": "20374_Crop_374_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20374.png",
+      "gitBlob": "dd5a0edcccb63d85ed5f1782888cb99295e2dfd1",
+      "sha256": "4f8a925dc4fbfc82364dfb303f59ed03b190f7a4809280368deb9063831e4f05",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 20398,
+      "file": "20398_Crop_398_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20398.png",
+      "gitBlob": "e3281d5e121ba04e860dda52c9e284df16729156",
+      "sha256": "a84db9d9e3f7c560b773f976badd01ac41bca0a3ec65a92d2b981a134a50f33a",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 20457,
+      "file": "20457_Crop_457_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20457.png",
+      "gitBlob": "81a226979b3d26f21d89b5692a1a24dfc4969f12",
+      "sha256": "cbb6abb8b5a8a5fbc9a4b7833f84059b299b7969360aab0c6f1ec2fdad078254",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21084,
+      "file": "21084_Crop_1084_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21084.png",
+      "gitBlob": "ba4a4a0fa8dca19865a5fb7258253d12f42f5997",
+      "sha256": "4a57d046d578e717971ccfef2d253999fa03d5a62dba36700d9efc457f4d7666",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 21111,
+      "file": "21111_Crop_1111_Seed.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/21111.png",
+      "gitBlob": "a5187ddfa4e216d74eaee2d50c2daca921580424",
+      "sha256": "7364d31c88caa0fad9d480e728505e5bcb9a09e32622f7d9daea6559c286a901",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710001,
+      "file": "710001_icon_collect_1_1.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710001.png",
+      "gitBlob": "eebecbc526646fa8de70f2158d8e2a74cc4294a7",
+      "sha256": "7223d62167d9273ea0205fbfaf075eb49a78742d358bd9c29210f36fb320753c",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710002,
+      "file": "710002_icon_collect_1_2.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710002.png",
+      "gitBlob": "74b9b620c4f89d3be787dc5c6f8365943e32101e",
+      "sha256": "c6d194e98a28753b10d09269dab9653d71947d0f6c3e722acafa7dcee68b6a5d",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710003,
+      "file": "710003_icon_collect_1_3.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710003.png",
+      "gitBlob": "0c3172d0202e98478d1ef768765e1c91e42676bd",
+      "sha256": "e9313493ae0354136416c21efd5f9a56fe384092d5be9b770619a693e5bee052",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710004,
+      "file": "710004_icon_collect_1_4.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710004.png",
+      "gitBlob": "7ffbc4baa49380762fec792c1532459fdd35ba55",
+      "sha256": "5b77f3fdc55851f16e7630ed2b7e3bf0d19cbbb3355855187fd9f4b1caa75e40",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710005,
+      "file": "710005_icon_collect_1_5.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710005.png",
+      "gitBlob": "1119f4de6d4c306a71d8fe143c226b66682743e0",
+      "sha256": "afc8bed2606c1edb2fb1144efd743d17192885fd294ea059e321064afb13afe3",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 710006,
+      "file": "710006_icon_collect_1_6.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/710006.png",
+      "gitBlob": "39efea0f84d6ab4cb8c1c904b89728b70fbfadec",
+      "sha256": "ccd7a533628858c43372a7cefe759dc82c18e93a2d1d52eba9ff58a668375097",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720001,
+      "file": "720001_icon_collect_2_1.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720001.png",
+      "gitBlob": "996ed4afb11a9af682f57460629e20a0f6b57324",
+      "sha256": "e90c5eef5971b2a3813e9f6d2cdd14cd79fbb9a4a37b0baef65159b5d402f7ca",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720002,
+      "file": "720002_icon_collect_2_2.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720002.png",
+      "gitBlob": "9fb8f19562ee87e2d07ad744e6acd73d0bcf0121",
+      "sha256": "835f921bd39c7f7c037c44af4fc789b7a40c46bd0b5fcca3845fea97bcf4c77c",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720003,
+      "file": "720003_icon_collect_2_3.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720003.png",
+      "gitBlob": "e651a13653efcb36fffeb36227ee107d976684dc",
+      "sha256": "2c3c8d91e314006704c428d4373821d1891d500c65f837749a2f7088d1180e63",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720004,
+      "file": "720004_icon_collect_2_4.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720004.png",
+      "gitBlob": "9c8d695925eb6108f642259b779a99cbc08a514e",
+      "sha256": "7ee5e8f03519a5385b991e835205df54f0360439a857f87cce43bc99b3dfd065",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720005,
+      "file": "720005_icon_collect_2_5.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720005.png",
+      "gitBlob": "fe13276a5d379a8effc563a1091a7d06989d9732",
+      "sha256": "b1bcce2c0194dcd657b3c9935f578e099ed8d0d7f0cb2f46328707d40725a27f",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 720006,
+      "file": "720006_icon_collect_2_6.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/720006.png",
+      "gitBlob": "184d946eb65fc3c92600ce84f668faf25910ecd3",
+      "sha256": "88df0b82efa853b5208db0998418650f7ebe7e33683ac9119384bd749a50c89d",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730001,
+      "file": "730001_icon_collect_3_1.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730001.png",
+      "gitBlob": "cc9e620bace849a7329115065e57b53385df5e48",
+      "sha256": "4604425313d7b2610a6141f92d7180577e33e4a781ad0d9440e2edd5c57de8c4",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730002,
+      "file": "730002_icon_collect_3_2.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730002.png",
+      "gitBlob": "a38879783d04f97da5bd7263f4aaf1977ffe4d99",
+      "sha256": "0c9d8eff3439dc7094590963c519cc3a9a8616518e2edbc41b80d56191aeef52",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730003,
+      "file": "730003_icon_collect_3_3.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730003.png",
+      "gitBlob": "a2152bcd0a2f11e0310be94f49342dadc946c48a",
+      "sha256": "56294264527bbc99ed45130a441a4a3ab42c329dc1bb48500df9f7437d9deffe",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730004,
+      "file": "730004_icon_collect_3_4.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730004.png",
+      "gitBlob": "bdcb17f58cb1ce9a871141f86379d2b6ce841539",
+      "sha256": "b8ebf9ed038e20a2e524bff0e81bbb4b16fd00fd7469c3a164fc2161d15f029a",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730005,
+      "file": "730005_icon_collect_3_5.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730005.png",
+      "gitBlob": "fef195d27e7f28ab7198011ed413734676b04ef9",
+      "sha256": "305d68e8d80d1648ec556414fda4abc2256c1ba334268e278bb9a06add039bce",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 730006,
+      "file": "730006_icon_collect_3_6.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/730006.png",
+      "gitBlob": "bde4343c4c2591b42a51528c9054380eda96fd20",
+      "sha256": "60875ddc0d83154cf22ec91c7d08704b6d34acb10e51d5d265aca6fda2727458",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740001,
+      "file": "740001_icon_collect_4_1.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740001.png",
+      "gitBlob": "00af3d7ce9aedaf0039b8e4f62af8d67c5429ba5",
+      "sha256": "b4281767fa4ad982cb0377f6faf39b7f2d1f28d8c6e5221f31bcaa652dc90aa7",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740002,
+      "file": "740002_icon_collect_4_2.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740002.png",
+      "gitBlob": "e4ae2ec8d1710ef76f13ebc8be901da64c325c6f",
+      "sha256": "7ec5a1817049703e480da6f673ffad0d8af2e1a956585c75571d8d52bc6e920f",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740003,
+      "file": "740003_icon_collect_4_3.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740003.png",
+      "gitBlob": "5bb286c567d145a001974f30580ba2dd538cc15e",
+      "sha256": "f62e947f26ece2338b0fc70e4120301e6e63e0c918d90d2cc0d8ed08d75bf988",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740004,
+      "file": "740004_icon_collect_4_4.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740004.png",
+      "gitBlob": "703a32800de1de4054ea0f34fe448ac81b3e594a",
+      "sha256": "942b9b37c7a8da315c7319a0bd6758350ca531f7f8f6ba4b9300a54ac3508160",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740005,
+      "file": "740005_icon_collect_4_5.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740005.png",
+      "gitBlob": "767be94a04558e1aabeb9a40b09cb5ca65b41e09",
+      "sha256": "6f350976340e2a7ca69b9ac0bbd9c65e37c694351c30683e92fd47b09fc27436",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 740006,
+      "file": "740006_icon_collect_4_6.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/740006.png",
+      "gitBlob": "32996d757cf1b5c1efc0487ae552e5f487b1cb12",
+      "sha256": "306a0d489870574d901d7956bcb16889b007211e39d5132b02d2e1714e07b76f",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700001,
+      "file": "700001_icon_collect_5_1.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700001.png",
+      "gitBlob": "81eab44416f0ae690c8c4dc9ccd8054ad8fa94ec",
+      "sha256": "6ef62436e10098cae392170441617362b42bdd8ce6c7f0d4c0dc67a2f8143cda",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700002,
+      "file": "700002_icon_collect_5_2.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700002.png",
+      "gitBlob": "33e77f166f049bc7cb2014ecdfd91a49b56550bc",
+      "sha256": "3a116d2fb5d8dc57192f39931af7222694b9bf5ab6f757d6f820c84409108533",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700003,
+      "file": "700003_icon_collect_5_3.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700003.png",
+      "gitBlob": "c69cd412fb8e04a3fef7cd6470190c7ca266c71e",
+      "sha256": "2f370a559f488ca24c6f06078b25d7f068135319c1172424bd29b7449438aac6",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700004,
+      "file": "700004_icon_collect_5_4.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700004.png",
+      "gitBlob": "4749b6e7093455fb0b609345449dd28e013c8fd8",
+      "sha256": "cbf409db86e0ad8daaa5366648270128380865c92d36040519d89458e9909450",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700005,
+      "file": "700005_icon_collect_5_5.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700005.png",
+      "gitBlob": "8add9631b0ecc7f680ca12a8dc4b0008ba5aa8a8",
+      "sha256": "c2e001cfe8d42d23a697bd2c0d8256a382b2cee58da1a672e4b7efbc2d0d8fbf",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 700006,
+      "file": "700006_icon_collect_5_6.png",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/700006.png",
+      "gitBlob": "b57fd6d7a9953b13b33badf810e1534e9c2afadf",
+      "sha256": "6105e6bba46d5548632177b3527554407fda6e0855ba27ef3af1376530059147",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
@@ -1383,14 +1916,62 @@
       21072
     ],
     "mappings": [
-      { "seedId": 20525, "plantId": 1020525, "fruitId": 40525, "size": 1, "sourceSize": null },
-      { "seedId": 20526, "plantId": 1020526, "fruitId": 40526, "size": 1, "sourceSize": null },
-      { "seedId": 20527, "plantId": 1020527, "fruitId": 40527, "size": 1, "sourceSize": null },
-      { "seedId": 20528, "plantId": 1020528, "fruitId": 40528, "size": 1, "sourceSize": null },
-      { "seedId": 20529, "plantId": 1020529, "fruitId": 40529, "size": 1, "sourceSize": null },
-      { "seedId": 21435, "plantId": 1021435, "fruitId": 41435, "size": 1, "sourceSize": null },
-      { "seedId": 20021, "plantId": 1020021, "fruitId": 40021, "size": 1, "sourceSize": null },
-      { "seedId": 22254, "plantId": 1022254, "fruitId": 42254, "size": 1, "sourceSize": null }
+      {
+        "seedId": 20525,
+        "plantId": 1020525,
+        "fruitId": 40525,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 20526,
+        "plantId": 1020526,
+        "fruitId": 40526,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 20527,
+        "plantId": 1020527,
+        "fruitId": 40527,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 20528,
+        "plantId": 1020528,
+        "fruitId": 40528,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 20529,
+        "plantId": 1020529,
+        "fruitId": 40529,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 21435,
+        "plantId": 1021435,
+        "fruitId": 41435,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 20021,
+        "plantId": 1020021,
+        "fruitId": 40021,
+        "size": 1,
+        "sourceSize": null
+      },
+      {
+        "seedId": 22254,
+        "plantId": 1022254,
+        "fruitId": 42254,
+        "size": 1,
+        "sourceSize": null
+      }
     ],
     "note": "EventPlants 七行逐字段取自该固定提交 Plant 快照（land_level_need 1、seasons 1、grow_phases 五段 8640 加成熟 0、exp 1440/1680、special_fruit null、mutant_effect_plant 5:1xxxxxx:1、fruit ×10），asset_name 取自同源 ItemInfo 种子行；EventItems 果实行（40525 纠错 official_type 18→6 并补条件售价、40526/40527/40528/40529/41435/40021 新登记）逐字取自同源 ItemInfo（type 6、sells null、sell_cond 活动区间外:2026110101、cond_sells 按行）；不登记黄金变体植物；sells null 不构成自动出售资格；来源为经审阅提取快照交叉，不宣称直接 CDN 观测或新的官方本地提取"
   },
@@ -1434,52 +2015,52 @@
     "note": "逐行复核同版Plant与ItemInfo；size null按已有同版缺省单格规则登记1，不外推未知种子。节日签到入口为独立节令日历服务，当前奖励以动态回包为准；普通果实官方sells为金币售价，不等同奶茶条件售价。"
   },
   "novemberUpdateConfiguration": {
-  "alias": "public-reference-2",
-  "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
-  "officialPlantSha256": "4e03a517903c01940e0a5b81b982d12592c5dd4352953c690b68cf429170b795",
-  "seedIds": [
-    20381,
-    20397,
-    20399,
-    21080,
-    21082,
-    21096,
-    21097,
-    21099,
-    21100,
-    20374,
-    20398,
-    20457,
-    20107,
-    21084,
-    21111,
-    20117,
-    20119,
-    20173,
-    20125,
-    20189
-  ],
-  "sizeRule": "同版本普通作物缺省单格，显式登记1；不外推未知种子",
-  "dedicatedImagesVerified": false,
-  "sourceFiles": [
-    {
-      "path": "core/src/gameConfig/ItemInfo.json",
-      "sha256": "7e6feb7ba909c1d5c6cb0ea53dfdb7fa575b2f353141ba609dd14e809e69d437",
-      "gitBlob": "0c66de410a8ef1da14bf34e84abd7ea04bf2d0d3",
-      "bytes": 843374
-    },
-    {
-      "path": "core/src/gameConfig/Plant.json",
-      "sha256": "92932bb5457a94f674f9e32d316a97ffdd50117fd63b6ec5d69aa30aead8082e",
-      "gitBlob": "3f4b23086b24c26cbd53632ba0ec6304ea327b55",
-      "bytes": 325033
-    },
-    {
-      "path": "core/src/gameConfig/RoleLevel.json",
-      "sha256": "153425ca26b20a0ab6313174a104dcf020ea934378261a2e81af49150e2dd076",
-      "gitBlob": "97887c928229a0a7cf24b73035b90c879ed76eb5",
-      "bytes": 11077
-    }
-  ]
-}
+    "alias": "public-reference-2",
+    "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+    "officialPlantSha256": "4e03a517903c01940e0a5b81b982d12592c5dd4352953c690b68cf429170b795",
+    "seedIds": [
+      20381,
+      20397,
+      20399,
+      21080,
+      21082,
+      21096,
+      21097,
+      21099,
+      21100,
+      20374,
+      20398,
+      20457,
+      20107,
+      21084,
+      21111,
+      20117,
+      20119,
+      20173,
+      20125,
+      20189
+    ],
+    "sizeRule": "同版本普通作物缺省单格，显式登记1；不外推未知种子",
+    "dedicatedImagesVerified": false,
+    "sourceFiles": [
+      {
+        "path": "core/src/gameConfig/ItemInfo.json",
+        "sha256": "7e6feb7ba909c1d5c6cb0ea53dfdb7fa575b2f353141ba609dd14e809e69d437",
+        "gitBlob": "0c66de410a8ef1da14bf34e84abd7ea04bf2d0d3",
+        "bytes": 843374
+      },
+      {
+        "path": "core/src/gameConfig/Plant.json",
+        "sha256": "92932bb5457a94f674f9e32d316a97ffdd50117fd63b6ec5d69aa30aead8082e",
+        "gitBlob": "3f4b23086b24c26cbd53632ba0ec6304ea327b55",
+        "bytes": 325033
+      },
+      {
+        "path": "core/src/gameConfig/RoleLevel.json",
+        "sha256": "153425ca26b20a0ab6313174a104dcf020ea934378261a2e81af49150e2dd076",
+        "gitBlob": "97887c928229a0a7cf24b73035b90c879ed76eb5",
+        "bytes": 11077
+      }
+    ]
+  }
 }

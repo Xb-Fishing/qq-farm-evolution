@@ -239,8 +239,8 @@ const DEFAULT_OFFLINE_REMINDER = {
     emailContent: ''
 };
 
-const DEFAULT_FERTILIZER_LAND_TYPES = ['purple', 'gold', 'black', 'red', 'normal'];
-const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
+const { DEFAULT_FERTILIZER_LAND_TYPES, SUPPORTED_FERTILIZER_LAND_TYPES } = require('../config/land-types');
+const FERTILIZER_LAND_TYPE_SET = new Set(SUPPORTED_FERTILIZER_LAND_TYPES);
 
 /** 默认自动化配置 */
 const DEFAULT_AUTOMATION = {

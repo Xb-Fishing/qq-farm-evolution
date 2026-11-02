@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { gameDateKey } = require('../config/game-date');
 const network = require('../utils/network');
 const { sendMsgAsync } = network;
 const { types } = require('../utils/proto');
@@ -12,18 +13,19 @@ const DAILY_KEY = 'email_rewards';
 const CHECK_COOLDOWN_MS = 300000;
 const SNAPSHOT_CACHE_MS = 60000;
 const MAX_EMAILS = 2000;
-let doneDateKey = '', lastCheckAt = 0, stateOwner = '';
-let cachedSnapshot = null, cachedConnection = null, snapshotInFlight = null, claimInFlight = null;
+let doneDateKey = ''; let lastCheckAt = 0; let stateOwner = '';
+let cachedSnapshot = null; let cachedConnection = null; let snapshotInFlight = null; let claimInFlight = null;
+let snapshotRevision = 0;
 function getDateKey() { const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
 function accountKey() { return crypto.createHash('sha256').update(String(process.env.FARM_ACCOUNT_ID || 'default')).digest('hex').slice(0, 24); }
 function hash(box, id) { return crypto.createHash('sha256').update(`${box}:${id}`).digest('hex'); }
 function ownership() {
-  const account = accountKey(), connection = network.getWs();
+  const account = accountKey(); const connection = network.getWs();
   return { account, connection, valid: () => accountKey() === account && network.isConnected() && network.getWs() === connection };
 }
 function errorKind(error) { return strictBudgetRejection(error) ? 'budget' : error?.code === 'EMAIL_STATE' ? 'state' : 'read'; }
 function safeTarget(root, target) {
-  const base = path.resolve(root), resolved = path.resolve(target);
+  const base = path.resolve(root); const resolved = path.resolve(target);
   if (resolved !== base && !resolved.startsWith(base + path.sep)) throw new Error('邮箱路径越界');
   for (let current = resolved;; current = path.dirname(current)) {
     try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error('邮箱路径含符号链接'); }
@@ -34,7 +36,7 @@ function safeTarget(root, target) {
 }
 function fileFor(directory, owner) { const root = getDataDir(); return safeTarget(root, path.join(root, directory, `${owner}.json`)); }
 function atomicWrite(directory, owner, value) {
-  const file = fileFor(directory, owner), dir = path.dirname(file);
+  const file = fileFor(directory, owner); const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const temp = safeTarget(getDataDir(), path.join(dir, `${owner}.${crypto.randomUUID()}.tmp`));
   try { fs.writeFileSync(temp, JSON.stringify(value), { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, file); }
@@ -42,7 +44,7 @@ function atomicWrite(directory, owner, value) {
 }
 function loadJournal(owner) {
   try {
-    const file = fileFor('email-claim-declarations', owner), stat = fs.statSync(file);
+    const file = fileFor('email-claim-declarations', owner); const stat = fs.statSync(file);
     if (stat.size > 1024 * 1024) throw new Error('invalid');
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (value.accountKey !== owner || !value.boxes || typeof value.boxes !== 'object' || Array.isArray(value.boxes)) throw new Error('invalid');
@@ -77,11 +79,12 @@ function reconcile(journal, box, list) {
   if (!declaration.hashes.length) delete journal.boxes[box];
   return count;
 }
-async function getEmailList(boxType = 1) {
+async function getEmailList(boxType = 1, options = {}) {
   const request = types.GetEmailListRequest.encode(
     types.GetEmailListRequest.create({ box_type: Number(boxType) || 1 })
   ).finish();
-  const { body } = await sendMsgAsync('gamepb.emailpb.EmailService', 'GetEmailList', request);
+  const timeoutMs = Number.isSafeInteger(options.timeoutMs) ? Math.max(1, Math.min(20000, options.timeoutMs)) : 20000;
+  const { body } = await sendMsgAsync('gamepb.emailpb.EmailService', 'GetEmailList', request, timeoutMs);
   return types.GetEmailListReply.decode(body);
 }
 
@@ -92,6 +95,7 @@ async function claimEmail(boxType = 1, emailId = '') {
       email_id: String(emailId || ''),
     })
   ).finish();
+  snapshotRevision++; cachedSnapshot = null; cachedConnection = null;
   const { body } = await sendMsgAsync('gamepb.emailpb.EmailService', 'ClaimEmail', request);
   return types.ClaimEmailReply.decode(body);
 }
@@ -103,6 +107,7 @@ async function batchClaimEmail(boxType = 0, emailId = '') {
       email_id: String(emailId || ''),
     })
   ).finish();
+  snapshotRevision++; cachedSnapshot = null; cachedConnection = null;
   const { body } = await sendMsgAsync('gamepb.emailpb.EmailService', 'BatchClaimEmail', request);
   return types.BatchClaimEmailReply.decode(body);
 }
@@ -114,17 +119,10 @@ function getRewardSummary(items) {
     const id = toNum(item.id);
     const count = toNum(item.count);
     if (count <= 0) continue;
-    if (id === 1001 || id === 500001) {
-      parts.push(`金币${count}`);
-    } else if (id === 1002 || id === 500002) {
-      parts.push(`经验${count}`);
-    } else if (id === 500) {
-      parts.push(`点券${count}`);
-    } else {
-      const info = getItemById(id);
-      const name = info && info.name ? String(info.name) : `物品#${id}`;
-      parts.push(`${name}x${count}`);
-    }
+    const configuredName = getItemById(id)?.name;
+    const legacyNames = { 500001: '金币', 500002: '经验', 500: '点券' };
+    const name = configuredName ? String(configuredName) : legacyNames[id] || `物品#${id}`;
+    parts.push([1001, 1002, 500001, 500002, 500].includes(id) ? `${name}${count}` : `${name}x${count}`);
   }
   return parts.join('/');
 }
@@ -134,8 +132,10 @@ function getRewardSummary(items) {
 async function getEmailSnapshot() {
   const owner = ownership();
   if (!owner.valid()) throw new Error('账号未连接，无法读取邮箱');
-  if (claimInFlight) { await claimInFlight; if (!owner.valid()) throw new Error('账号连接已变更'); }
+  if (claimInFlight) return { source: 'email-service', accountKey: owner.account, fetchedAt: Date.now(), partial: true, busy: true,
+    boxes: Object.fromEntries([1, 2].map(box => [box, { ok: false, errorClass: 'claim_busy', fetchedAt: Date.now() }])) };
   if (cachedSnapshot?.accountKey === owner.account && cachedConnection === owner.connection
+      && gameDateKey(cachedSnapshot.fetchedAt) === gameDateKey(Date.now())
       && Date.now() - cachedSnapshot.fetchedAt >= 0 && Date.now() - cachedSnapshot.fetchedAt < SNAPSHOT_CACHE_MS)
     return structuredClone({ ...cachedSnapshot, cached: true });
   if (snapshotInFlight) {
@@ -144,20 +144,24 @@ async function getEmailSnapshot() {
     return structuredClone(value);
   }
   const task = (async () => {
+    const revision = snapshotRevision;
     const value = { source: 'email-service', accountKey: owner.account, fetchedAt: Date.now(), partial: false, boxes: {} };
     for (const box of [1, 2]) {
       if (!owner.valid()) throw new Error('账号连接已变更');
       try {
-        const list = rows(await getEmailList(box));
+        const list = rows(await getEmailList(box, { timeoutMs: 10000 }));
         if (!owner.valid()) throw new Error('账号连接已变更');
+        if (snapshotRevision !== revision) throw Object.assign(new Error('邮箱状态正在变更，请稍后刷新'), { code: 'EMAIL_STATE_CHANGED' });
         value.boxes[box] = { ok: true, fetchedAt: Date.now(), total: list.length,
           claimable: list.filter(claimable).length, idHashes: list.map(row => hash(box, row.id)).sort() };
       } catch (error) {
         if (!owner.valid()) throw new Error('账号连接已变更');
+        if (snapshotRevision !== revision) throw new Error('邮箱状态正在变更，请稍后刷新');
         value.partial = true; value.boxes[box] = { ok: false, fetchedAt: Date.now(), errorClass: errorKind(error) };
       }
     }
     if (!owner.valid()) throw new Error('账号连接已变更');
+    if (snapshotRevision !== revision) throw new Error('邮箱状态正在变更，请稍后刷新');
     try { atomicWrite('email-snapshots', owner.account, value); } catch { value.persistenceFailed = true; }
     cachedSnapshot = value; cachedConnection = owner.connection;
     return structuredClone(value);
@@ -174,7 +178,7 @@ async function checkAndClaimEmails(force = false) {
   try { return await task; } finally { if (claimInFlight === task) claimInFlight = null; }
 }
 async function runCheck(force, owner) {
-  const result = { claimed: 0, rewardItems: 0, partial: false, unknown: false, boxes: {} }, rewards = [];
+  const result = { claimed: 0, rewardItems: 0, partial: false, unknown: false, boxes: {} }; const rewards = [];
   if (!owner.valid()) return { ...result, skipped: 'offline' };
   if (stateOwner !== owner.account) { stateOwner = owner.account; lastCheckAt = 0; doneDateKey = ''; }
   if (!force && lastCheckAt && Date.now() - lastCheckAt < CHECK_COOLDOWN_MS) return { ...result, cooldown: true };
@@ -221,7 +225,7 @@ async function runCheck(force, owner) {
     try {
       const fresh = rows(await getEmailList(box));
       if (!owner.valid()) { result.unknown = true; break; }
-      const checked = structuredClone(journal), count = reconcile(checked, box, fresh);
+      const checked = structuredClone(journal); const count = reconcile(checked, box, fresh);
       atomicWrite('email-claim-declarations', owner.account, checked); journal = checked; result.claimed += count;
       if (journal.boxes[box]) result.unknown = true;
       result.boxes[box] = { ok: true, batch: 'ok', pending: !!journal.boxes[box] };

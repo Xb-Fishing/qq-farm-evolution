@@ -142,17 +142,19 @@ const mutantEffects = computed(() => {
   const effects = Array.isArray(land.value?.mutantEffects) ? land.value.mutantEffects : []
   return effects
     .map((effect: any) => {
-      const icon = String(effect?.icon || '').trim()
+      const id = Number(effect?.id) || 0
+      const icon = id === 18 ? '' : String(effect?.icon || '').trim()
       return {
-        id: Number(effect?.id) || 0,
-        name: String(effect?.name || effect?.effect_name || icon || '变异').trim(),
+        id,
+        name: id === 18 ? '藏品' : String(effect?.name || effect?.effect_name || icon || '变异').trim(),
         icon,
         image: icon ? `/game-config/seed_images_named/mutant/${icon}.png` : '',
         tag: String(effect?.tag || '').trim(),
         description: String(effect?.description || effect?.desc || effect?.tips || '').trim(),
+        textOnly: effect?.display_kind === 'text',
       }
     })
-    .filter((effect: any) => effect.icon)
+    .filter((effect: any) => effect.icon || effect.textOnly)
 })
 
 const hasGoldenMutation = computed(() => mutantEffects.value.some((effect: any) =>
@@ -320,6 +322,7 @@ function getIsometricBubbleClass(targetLand: any) {
         'land-isometric': isometric,
         'land-isometric-size-2': isometric && Number(land.plantSize) > 1,
         'land-card-selected': selected,
+        'ring-1 ring-sky-500 dark:ring-sky-300': Number(land.level) === 6,
       },
     ]"
     :style="getFarmGridStyle(land)"
@@ -374,15 +377,14 @@ function getIsometricBubbleClass(targetLand: any) {
       v-if="mutantEffects.length > 0"
       class="land-mutant-effects absolute left-1 top-5 flex flex-col gap-1"
     >
-      <img
-        v-for="effect in mutantEffects"
-        :key="`${land.id}-${effect.id}-${effect.icon}`"
-        :src="effect.image"
-        :alt="effect.name"
-        :title="effect.tag && effect.tag !== '无' ? `${effect.name} · ${effect.tag}` : effect.name"
-        class="h-4 w-4 rounded-sm object-contain drop-shadow-sm"
-        loading="lazy"
-      >
+      <template v-for="effect in mutantEffects" :key="`${land.id}-${effect.id}-${effect.icon}`">
+        <img
+          v-if="effect.image" :src="effect.image" :alt="effect.name"
+          :title="effect.tag && effect.tag !== '无' ? `${effect.name} · ${effect.tag}` : effect.name"
+          class="h-4 w-4 rounded-sm object-contain drop-shadow-sm" loading="lazy"
+        >
+        <span v-else class="rounded bg-violet-100 px-1 text-[9px] text-violet-800 dark:bg-violet-950 dark:text-violet-200" :title="effect.description">{{ effect.name }}</span>
+      </template>
     </div>
 
     <div
@@ -562,7 +564,7 @@ function getIsometricBubbleClass(targetLand: any) {
               :key="`bubble-${land.id}-${effect.id}-${effect.icon}`"
               class="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 text-[11px] text-pink-700 shadow-sm dark:bg-gray-900 dark:text-pink-200"
             >
-              <img :src="effect.image" :alt="effect.name" class="h-4 w-4 object-contain">
+              <img v-if="effect.image" :src="effect.image" :alt="effect.name" class="h-4 w-4 object-contain">
               <span class="font-medium">{{ effect.name }}</span>
               <span v-if="effect.tag && effect.tag !== '无'" class="text-[10px] text-pink-400">· {{ effect.tag }}</span>
             </div>

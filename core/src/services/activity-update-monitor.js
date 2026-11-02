@@ -1,5 +1,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const path = require('node:path');
+const { readUpdateDigest, recordUpdateDigest } = require('./game-update-digest');
 const { getDataFile } = require('../config/runtime-paths');
 const { scanActivityUpdates } = require('./activity-update-scanner');
 
@@ -12,7 +14,6 @@ const UNAVAILABLE_RETRY_MIN_MS = 60 * 1000;
 const UNAVAILABLE_RETRY_JITTER_MS = 30 * 1000;
 const STATE_FILE = getDataFile('activity-update-report.json');
 const DIGEST_FILE = getDataFile('activity-update-digest.json');
-const DIGEST_MAX_UNREVIEWED = 50;
 // setTimeout 超过 2^31-1ms 会溢出为立即触发：超长到期只截断到上限，醒来后再续排。
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
@@ -22,6 +23,9 @@ let endTimeWakeGeneration = 0;
 let endTimeWakeAt = 0;
 let running = false;
 let scanPromise = null;
+let scanGeneration = -1;
+let monitorGeneration = 0;
+let monitorActive = false;
 let report = null;
 let knownActivityIds = [];
 let intervalMs = DEFAULT_INTERVAL_MS;
@@ -80,48 +84,13 @@ function computeReportDigest(value) {
 }
 
 function readSavedDigest() {
-  try {
-    const value = JSON.parse(fs.readFileSync(DIGEST_FILE, 'utf8'));
-    if (!value || !Array.isArray(value.unreviewed)) return null;
-    return value;
-  } catch {
-    return null;
-  }
+  try { return readUpdateDigest(path.dirname(DIGEST_FILE)); }
+  catch { return { unreviewed: [], incomplete: true, errorClass: 'invalid_update_digest' }; }
 }
 
-// 只在成功扫描后更新：新出现候选/结束活动追加进未审清单（去重、有界），
-// 扫描失败或无变化不清空既有未审项——清单由审查流程消费，不由扫描假销账。
 function persistUpdateDigest(scanned) {
-  try {
-    const digest = computeReportDigest(scanned);
-    const previous = readSavedDigest();
-    const unreviewed = previous ? [...previous.unreviewed] : [];
-    const pushChanges = (kind, ids) => {
-      for (const id of ids || []) {
-        const entry = { kind, id: Number(id), firstSeenAt: scanned.scannedAt, digest };
-        if (!unreviewed.some(item => item.kind === kind && item.id === entry.id)) unreviewed.push(entry);
-      }
-    };
-    pushChanges('unknown', scanned.online?.unknownActivityIds || []);
-    pushChanges('ended', scanned.endedActivityIds || []);
-    const facts = scanned.online?.gameUpdateEvidence;
-    if (facts?.factsComplete === true && /^[a-f0-9]{64}$/.test(facts.semanticHash)
-        && facts.semanticHash !== previous?.gameFacts && !unreviewed.some(item => item.kind === 'game_facts' && item.digest === facts.semanticHash))
-      unreviewed.push({ kind: 'game_facts', digest: facts.semanticHash, firstSeenAt: scanned.scannedAt });
-    const value = { updatedAt: scanned.scannedAt, digest, gameFacts: facts?.factsComplete === true ? facts.semanticHash : previous?.gameFacts || '',
-      unreviewed: unreviewed.slice(0, DIGEST_MAX_UNREVIEWED), overflow: unreviewed.length > DIGEST_MAX_UNREVIEWED || previous?.overflow === true };
-    const path = require('node:path');
-    for (let current = path.resolve(DIGEST_FILE);; current = path.dirname(current)) {
-      try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error('更新指纹路径含符号链接'); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (current === path.dirname(current)) break;
-    }
-    fs.mkdirSync(path.dirname(DIGEST_FILE), { recursive: true, mode: 0o700 });
-    const temp = `${DIGEST_FILE}.${crypto.randomUUID()}.tmp`;
-    try { fs.writeFileSync(temp, JSON.stringify(value), { mode: 0o600, flag: 'wx' }); fs.renameSync(temp, DIGEST_FILE); }
-    finally { fs.rmSync(temp, { force: true }); }
-    return value;
-  } catch (error) {
+  try { return recordUpdateDigest(path.dirname(DIGEST_FILE), scanned, computeReportDigest(scanned)); }
+  catch (error) {
     console.warn(`[活动更新] 保存更新指纹失败: ${error.message}`);
     return null;
   }
@@ -161,16 +130,17 @@ function armEndTimeReview(value, nowMs = Date.now()) {
   if (endTimeTimer && endTimeWakeAt === targetMs) return true;
   clearEndTimeWake();
   const generation = endTimeWakeGeneration;
+  const monitorOwner = monitorGeneration;
   endTimeWakeAt = targetMs;
   endTimeTimer = setTimeout(async () => {
-    if (generation !== endTimeWakeGeneration || endTimeTimer === null) return;
+    if (generation !== endTimeWakeGeneration || monitorOwner !== monitorGeneration || endTimeTimer === null) return;
     endTimeTimer = null;
     if (Date.now() < targetMs) { armEndTimeReview(value); return; }
     endTimeWakeAt = 0;
     let result;
     try { result = await runActivityUpdateScan({ maxAgeMs: 0 }); }
     catch { /* 原低频扫描继续恢复，不增加到期重试风暴。 */ }
-    scheduleNextScan(result?.status === 'unavailable' ? nextUnavailableRetryDelayMs() : nextScanDelayMs());
+    if (monitorActive && monitorOwner === monitorGeneration) scheduleNextScan(result?.status === 'unavailable' ? nextUnavailableRetryDelayMs() : nextScanDelayMs());
   }, Math.min(MAX_TIMER_DELAY_MS, Math.max(1, targetMs - nowMs)));
   endTimeTimer.unref?.();
   return true;
@@ -259,40 +229,40 @@ async function runActivityUpdateScan(options = {}) {
     report = current;
     return current;
   }
-  if (scanPromise) return scanPromise;
+  const generation = monitorGeneration;
+  if (scanPromise && scanGeneration === generation) return scanPromise;
   running = true;
-  scanPromise = (async () => {
+  const task = Promise.resolve().then(async () => {
     try {
+      if (generation !== monitorGeneration) throw Object.assign(new Error('活动更新扫描已取消'), { code: 'SCAN_CANCELLED' });
       const previous = report || readSavedReport();
       const scanned = localScanEnabled
         ? { ...scanActivityUpdates({ knownActivityIds }), localScanEnabled: true }
         : emptyLocalReport();
       let online = null;
       if (typeof onlineScanner === 'function') {
-        try {
-          online = await onlineScanner(knownActivityIds, scanned);
-        } catch (error) {
-          online = { available: false, error: error.message || String(error), activities: [], groups: [], unknownActivityIds: [] };
-        }
+        try { online = await onlineScanner(knownActivityIds, scanned); }
+        catch (error) { online = { available: false, error: error.message || String(error), activities: [], groups: [], unknownActivityIds: [] }; }
       }
+      if (generation !== monitorGeneration) throw Object.assign(new Error('活动更新扫描已取消'), { code: 'SCAN_CANCELLED' });
       report = analyzeReport(scanned, previous, online);
+      if (report.status !== 'unavailable' && !persistUpdateDigest(report)) report.digestPersistenceFailed = true;
       writeSavedReport(report);
-      if (report.status !== 'unavailable') persistUpdateDigest(report);
-      armEndTimeReview(report);
-      if (typeof onReport === 'function') {
-        try {
-          onReport(report);
-        } catch (error) {
-          console.warn(`[活动更新] 报告回调失败: ${error.message}`);
+      if (monitorActive) {
+        armEndTimeReview(report);
+        if (typeof onReport === 'function') {
+          try { onReport(report); }
+          catch (error) { console.warn(`[活动更新] 报告回调失败: ${error.message}`); }
         }
       }
       return report;
     } finally {
-      running = false;
-      scanPromise = null;
+      if (scanPromise === task) { running = false; scanPromise = null; }
     }
-  })();
-  return scanPromise;
+  });
+  scanPromise = task;
+  scanGeneration = generation;
+  return task;
 }
 
 // 固定 30 分钟扫描是机器指纹：均匀打散 ±20%，均值不变（防封巡检 2026-08-23）
@@ -310,25 +280,31 @@ function nextUnavailableRetryDelayMs(random = Math.random) {
 }
 
 function scheduleNextScan(delayMs = nextScanDelayMs()) {
+  if (!monitorActive) return;
+  const generation = monitorGeneration;
   if (timer) clearTimeout(timer);
   const delay = Math.max(0, Number(delayMs) || 0);
   nextScanAt = Date.now() + delay;
-  timer = setTimeout(async () => {
+  const handle = setTimeout(async () => {
+    if (!monitorActive || generation !== monitorGeneration || timer !== handle) return;
     let result = null;
     try {
       result = await runActivityUpdateScan();
     } catch (error) {
       console.warn(`[活动更新] 定时分析失败: ${error.message}`);
     } finally {
-      scheduleNextScan(result?.status === 'unavailable'
+      if (monitorActive && generation === monitorGeneration) scheduleNextScan(result?.status === 'unavailable'
         ? nextUnavailableRetryDelayMs()
         : nextScanDelayMs());
     }
   }, delay);
+  timer = handle;
   timer.unref?.();
 }
 
 function startActivityUpdateMonitor(options = {}) {
+  monitorGeneration++;
+  monitorActive = true;
   knownActivityIds = (options.knownActivityIds || []).map(Number);
   onlineScanner = typeof options.onlineScanner === 'function' ? options.onlineScanner : null;
   onReport = typeof options.onReport === 'function' ? options.onReport : null;
@@ -344,6 +320,8 @@ function startActivityUpdateMonitor(options = {}) {
 }
 
 function stopActivityUpdateMonitor() {
+  monitorGeneration++;
+  monitorActive = false;
   if (timer) clearTimeout(timer); timer = null; nextScanAt = 0; clearEndTimeWake();
 }
 
