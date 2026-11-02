@@ -1650,13 +1650,20 @@ async function handleApiCall(msg) {
                 break;
             }
             case 'sellItems': {
-                const { sellItems } = require('../services/warehouse');
-                const items = Array.isArray(args[0]) ? args[0] : [];
-                const totalCount = items.reduce((sum, it) => sum + (Number(it.count) || 0), 0);
-                result = await sellItems(items.map(it => ({
-                    id: it.id, count: it.count, uid: it.uid || 0
-                })));
-                if (totalCount > 0) recordOperation('sell', totalCount);
+                // 面板手动出售（对象载荷）走唯一写守护；旧数组载荷保持原行为
+                // （自动出售链路不经此 case）。
+                if (args[0] && !Array.isArray(args[0]) && typeof args[0] === 'object') {
+                    const { guardedBagSale } = require('../services/manual-commerce');
+                    result = await guardedBagSale(args[0]);
+                } else {
+                    const { sellItems } = require('../services/warehouse');
+                    const items = Array.isArray(args[0]) ? args[0] : [];
+                    const totalCount = items.reduce((sum, it) => sum + (Number(it.count) || 0), 0);
+                    result = await sellItems(items.map(it => ({
+                        id: it.id, count: it.count, uid: it.uid || 0
+                    })));
+                    if (totalCount > 0) recordOperation('sell', totalCount);
+                }
                 break;
             }
             case 'setAutomation': {
@@ -1691,13 +1698,20 @@ async function handleApiCall(msg) {
                 break;
             }
             case 'getShopInfo': {
-                const { getShopInfo } = require('../services/farm');
-                result = await getShopInfo(args[0]);
+                const { getRegularShopForPanel } = require('../services/mall');
+                result = await getRegularShopForPanel(args[0]);
                 break;
             }
             case 'buyGoods': {
-                const { buyGoods } = require('../services/farm');
-                result = await buyGoods(args[0], args[1], args[2]);
+                // 面板手动购买（对象载荷 {shopKind, goodsId, count, quoteFingerprint}）
+                // 走唯一写守护；旧三元组载荷（图鉴购买等既有链路）保持原行为。
+                if (args[0] && !Array.isArray(args[0]) && typeof args[0] === 'object') {
+                    const { guardedShopPurchase } = require('../services/manual-commerce');
+                    result = await guardedShopPurchase(args[0]);
+                } else {
+                    const { buyGoods } = require('../services/farm');
+                    result = await buyGoods(args[0], args[1], args[2]);
+                }
                 break;
             }
             case 'getMallGoods': {
@@ -1705,9 +1719,28 @@ async function handleApiCall(msg) {
                 result = await getMallGoodsList(0);
                 break;
             }
+            case 'getMallCatalog': {
+                // 面板商城目录：60s 缓存 + 在途合并 + 失败冷却（写成功后失效）。
+                const { getMallCatalogForPanel } = require('../services/mall');
+                result = await getMallCatalogForPanel();
+                break;
+            }
+            case 'getMonthCardPanel': {
+                // 面板月卡只读视图：首次选月卡分区才读，60s 缓存 + 合并，不轮询。
+                const { getMonthCardPanelInfos } = require('../services/monthcard');
+                result = await getMonthCardPanelInfos();
+                break;
+            }
             case 'buyMallGoods': {
-                const { purchaseMallGoods } = require('../services/mall');
-                result = await purchaseMallGoods(args[0], args[1]);
+                // 面板手动购买（对象载荷 {goodsId, count, quoteFingerprint}）走
+                // 唯一写守护；旧二元组载荷保持原直购行为。
+                if (args[0] && !Array.isArray(args[0]) && typeof args[0] === 'object') {
+                    const { guardedMallPurchase } = require('../services/manual-commerce');
+                    result = await guardedMallPurchase(args[0]);
+                } else {
+                    const { purchaseMallGoods } = require('../services/mall');
+                    result = await purchaseMallGoods(args[0], args[1]);
+                }
                 break;
             }
             case 'getMysteryShop': {

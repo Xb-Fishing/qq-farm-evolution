@@ -1,26 +1,28 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import PurchaseQuantityModal from '@/components/shop/PurchaseQuantityModal.vue'
 import { useAccountStore } from '@/stores/account'
 import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
-import { formatCurrencyAmountByLabel, formatGoldAmount, formatGoldBeanAmount } from '@/utils/number-format'
+import { allocateSale, exactDecimal, exactText, newOperationId } from '@/utils/commerce-quantity'
 
 const accountStore = useAccountStore()
 const bagStore = useBagStore()
 const statusStore = useStatusStore()
 const toastStore = useToastStore()
-
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { items, loading: bagLoading, originalItems } = storeToRefs(bagStore)
 const { status, loading: statusLoading, error: statusError, realtimeConnected, currentStatusReady } = storeToRefs(statusStore)
-
 const imageErrors = ref<Record<string | number, boolean>>({})
 const bagLoaded = ref(false)
-
+const saleSelection = ref<any>(null)
+const saleBusy = ref(false)
+let generation = 0
+let mounted = true
 const CATEGORY_OPTIONS = [
   { label: '全部', value: 'all' },
   { label: '果实', value: 'fruit' },
@@ -28,11 +30,8 @@ const CATEGORY_OPTIONS = [
   { label: '道具', value: 'tool' },
   { label: '其他', value: 'other' },
 ] as const
-
 type CategoryValue = typeof CATEGORY_OPTIONS[number]['value']
-
 const selectedCategory = ref<CategoryValue>('fruit')
-
 function getItemCategory(item: any): CategoryValue {
   const itemType = Number(item?.itemType || 0)
   if (itemType === 17 || itemType === 6)
@@ -43,13 +42,11 @@ function getItemCategory(item: any): CategoryValue {
     return 'tool'
   return 'other'
 }
-
 const filteredItems = computed(() => {
   if (selectedCategory.value === 'all')
     return items.value
   return items.value.filter((item: any) => getItemCategory(item) === selectedCategory.value)
 })
-
 const categoryCounts = computed(() => {
   const counts: Record<CategoryValue, number> = { all: items.value.length, fruit: 0, seed: 0, tool: 0, other: 0 }
   for (const item of items.value) {
@@ -58,7 +55,6 @@ const categoryCounts = computed(() => {
   }
   return counts
 })
-
 const confirmModal = ref({
   show: false,
   title: '',
@@ -69,15 +65,24 @@ const confirmModal = ref({
   item: null as any,
   selectedItems: [] as any[],
 })
-
+function invalidateConfirmations() {
+  generation++
+  saleSelection.value = null
+  confirmModal.value.show = false
+}
+onUnmounted(() => {
+  mounted = false
+  invalidateConfirmations()
+})
 const batchMode = ref(false)
 const selectedForBatch = ref<Set<number>>(new Set())
-const batchSellResult = ref<{ gold: number, goldBean: number } | null>(null)
-
+const batchSellResult = ref<{
+  gold: number
+  goldBean: number
+} | null>(null)
 const selectedSellableCount = computed(() => {
   return selectedForBatch.value.size
 })
-
 function getPriceClass(item: any) {
   const priceId = Number(item?.priceId || 0)
   if (priceId === 1005)
@@ -86,20 +91,15 @@ function getPriceClass(item: any) {
     return 'text-sky-400 dark:text-sky-300'
   return 'text-gray-400'
 }
-
 function canSell(item: any) {
-  const itemType = Number(item?.itemType || 0)
-  return Boolean(item?.sellable) || itemType === 17 || itemType === 6
+  return Boolean(item?.sellable) && Boolean(item?.saleQuoteFingerprint)
 }
-
 function canBatchSell(item: any) {
   return canSell(item) && Number(item.count || 0) > 0
 }
-
 function canUse(item: any) {
   return Boolean(item?.usable) || Number(item?.itemType || 0) === 11
 }
-
 function handleSellClick(item: any) {
   if (batchMode.value) {
     const isSelected = selectedForBatch.value.has(Number(item.id))
@@ -111,27 +111,42 @@ function handleSellClick(item: any) {
     }
     return
   }
-  const totalPrice = (Number(item.count) || 0) * (Number(item.price) || 0)
-  const priceUnit = item.priceUnit || '金'
-  const messages = [
-    `确定要出售全部${item.name || `物品${item.id}`}吗?`,
-    `数量：${item.count || 0}`,
-  ]
-  if (totalPrice > 0) {
-    messages.push(`售出总金币：${formatCurrencyAmountByLabel(totalPrice, priceUnit)}${priceUnit}`)
+  if (!canSell(item) || saleBusy.value)
+    return
+  const stock = originalItems.value.filter(row => Number(row.id) === Number(item.id) && row.locked !== true)
+    .reduce((sum, row) => sum + BigInt(exactDecimal(row.countDec ?? row.count) || '0'), 0n)
+    .toString()
+  saleSelection.value = { item: { ...item }, account: String(currentAccountId.value), generation, stock, operationId: newOperationId() }
+}
+async function confirmSale(count: string) {
+  const saved = saleSelection.value
+  if (!saved || saleBusy.value || saved.generation !== generation || saved.account !== String(currentAccountId.value))
+    return
+  saleBusy.value = true
+  try {
+    const payload = allocateSale(originalItems.value, Number(saved.item.id), count)
+    const result = await bagStore.sellItems(saved.account, payload, { operationId: saved.operationId, quotes: { [saved.item.id]: saved.item.saleQuoteFingerprint }, explicitBatch: payload.length > 1 })
+    if (!mounted || saved.generation !== generation || saved.account !== String(currentAccountId.value))
+      return
+    saleSelection.value = null
+    if (result?.ok === true) {
+      toastStore.success(`已确认出售 ${saved.item.name} × ${count}`)
+      await loadBag()
+    }
+    else {
+      toastStore.error(result?.error || '出售未确认，请刷新核对，不会自动重试')
+    }
   }
-  confirmModal.value = {
-    show: true,
-    title: '确认出售',
-    message: messages.join('\n'),
-    type: 'danger',
-    loading: false,
-    action: 'sell',
-    item,
-    selectedItems: [],
+  catch (error: any) {
+    if (mounted && saved.generation === generation) {
+      saleSelection.value = null
+      toastStore.error(error.message || '出售未确认')
+    }
+  }
+  finally {
+    saleBusy.value = false
   }
 }
-
 function handleUseClick(item: any) {
   confirmModal.value = {
     show: true,
@@ -144,101 +159,50 @@ function handleUseClick(item: any) {
     selectedItems: [],
   }
 }
-
 async function handleConfirm() {
-  const { action, item, selectedItems } = confirmModal.value
-  if (!currentAccountId.value)
+  const modal = confirmModal.value
+  const account = String(currentAccountId.value)
+  const seq = generation
+  if (!account || modal.loading || !modal.show)
     return
-
-  confirmModal.value.loading = true
+  modal.loading = true
   try {
-    if (action === 'sell' && item) {
-      const sellItems = originalItems.value
-        .filter((it: any) => Number(it.id) === Number(item.id))
-        .map((it: any) => ({ id: it.id, count: it.count, uid: it.uid || 0 }))
-
-      if (sellItems.length === 0) {
-        toastStore.error('未找到可出售的物品')
-        return
-      }
-
-      const res = await bagStore.sellItems(currentAccountId.value, sellItems)
-      if (res.ok) {
-        toastStore.success(`已出售 ${item.name || `物品${item.id}`}`)
-        await loadBag()
-      }
-      else {
-        toastStore.error(`出售失败: ${res.error || '未知错误'}`)
-      }
+    let result
+    if (modal.action === 'batchSell') {
+      const quotes = Object.fromEntries(items.value.filter(item => selectedForBatch.value.has(Number(item.id))).map(item => [item.id, item.saleQuoteFingerprint]))
+      result = await bagStore.sellItems(account, modal.selectedItems, { quotes, explicitBatch: true, operationId: newOperationId() })
     }
-    else if (action === 'batchSell' && selectedItems) {
-      const itemsToSell = originalItems.value
-        .filter((it: any) => selectedItems.some((si: any) => Number(si.id) === Number(it.id)))
-        .map((it: any) => ({ id: it.id, count: it.count, uid: it.uid || 0 }))
-
-      if (itemsToSell.length === 0) {
-        toastStore.error('未找到可出售的物品')
-        return
-      }
-
-      const res = await bagStore.sellItems(currentAccountId.value, itemsToSell)
-      if (res.ok) {
-        let totalGold = 0
-        let totalGoldBean = 0
-        for (const si of selectedItems) {
-          const fi = filteredItems.value.find((f: any) => Number(f.id) === Number(si.id))
-          if (fi) {
-            const price = Number(fi.price) || 0
-            const count = Number(fi.count) || 0
-            const priceId = Number(fi.priceId) || 0
-            if (priceId === 1005) {
-              totalGoldBean += price * count
-            }
-            else {
-              totalGold += price * count
-            }
-          }
-        }
-        batchSellResult.value = { gold: totalGold, goldBean: totalGoldBean }
-        toastStore.success(`已批量出售 ${selectedItems.length} 种物品，获得 ${formatGoldAmount(totalGold)} 金币, ${formatGoldBeanAmount(totalGoldBean)} 金豆豆`)
-        selectedForBatch.value.clear()
-        batchMode.value = false
-        await loadBag()
-      }
-      else {
-        toastStore.error(`批量出售失败: ${res.error || '未知错误'}`)
-      }
+    else if (modal.action === 'use' && modal.item) {
+      const source = originalItems.value.find(row => Number(row.id) === Number(modal.item.id))
+      result = await bagStore.useItem(account, Number(modal.item.id), Number(modal.item.count || 1), Number(source?.uid || 0))
     }
-    else if (action === 'use' && item) {
-      const sourceItem = originalItems.value.find((it: any) => Number(it.id) === Number(item.id))
-      const res = await bagStore.useItem(
-        currentAccountId.value,
-        Number(item.id),
-        Number(item.count || 1),
-        Number(sourceItem?.uid || 0),
-      )
-      if (res.ok) {
-        toastStore.success(`已使用 ${item.name || `物品${item.id}`}`)
-        await loadBag()
-      }
-      else {
-        toastStore.error(`使用失败: ${res.error || '未知错误'}`)
-      }
+    else {
+      return
+    }
+    if (!mounted || seq !== generation || account !== String(currentAccountId.value) || confirmModal.value !== modal)
+      return
+    if (result?.ok === true) {
+      toastStore.success(modal.action === 'use' ? '物品使用已确认' : '所选物品出售已确认')
+      selectedForBatch.value.clear()
+      batchMode.value = false
+      await loadBag()
+    }
+    else {
+      toastStore.error(result?.error || '操作未确认，请刷新核对')
     }
   }
-  catch (e: any) {
-    toastStore.error(`操作失败: ${e.message || '未知错误'}`)
+  catch (error: any) {
+    if (mounted && seq === generation)
+      toastStore.error(error.message || '操作未确认')
   }
   finally {
-    confirmModal.value.loading = false
-    confirmModal.value.show = false
+    modal.loading = false
+    modal.show = false
   }
 }
-
 function handleCancel() {
   confirmModal.value.show = false
 }
-
 function toggleBatchMode() {
   batchMode.value = !batchMode.value
   if (!batchMode.value) {
@@ -246,7 +210,6 @@ function toggleBatchMode() {
     batchSellResult.value = null
   }
 }
-
 function selectAllSellable() {
   selectedForBatch.value.clear()
   for (const item of filteredItems.value) {
@@ -255,7 +218,6 @@ function selectAllSellable() {
     }
   }
 }
-
 function handleBatchSellClick() {
   const sellableItems = filteredItems.value.filter((item: any) => canBatchSell(item))
   if (sellableItems.length === 0) {
@@ -267,38 +229,17 @@ function handleBatchSellClick() {
     toastStore.warning('请先选择要出售的物品')
     return
   }
-
   const itemsToSell = originalItems.value
     .filter((it: any) => selectedList.includes(Number(it.id)))
-    .map((it: any) => ({ id: it.id, count: it.count, uid: it.uid || 0 }))
-
-  let totalGold = 0
-  let totalGoldBean = 0
-  for (const it of itemsToSell) {
-    const item = filteredItems.value.find((f: any) => Number(f.id) === Number(it.id))
-    if (item) {
-      const price = Number(item.price) || 0
-      const count = Number(item.count) || 0
-      const priceId = Number(item.priceId) || 0
-      if (priceId === 1005) {
-        totalGoldBean += price * count
-      }
-      else {
-        totalGold += price * count
-      }
-    }
+    .map((it: any) => ({ id: it.id, count: it.countDec || String(it.count), uid: it.uidDec || String(it.uid || 0) }))
+  const totals = new Map<string, bigint>()
+  for (const row of itemsToSell) {
+    const item = items.value.find(item => Number(item.id) === Number(row.id))
+    const amount = BigInt(exactDecimal(item?.priceDec ?? item?.price) || '0') * BigInt(row.count)
+    const currency = String(item?.priceUnit || '金币')
+    totals.set(currency, (totals.get(currency) || 0n) + amount)
   }
-
-  const messages = [
-    `确定要批量出售选中的 ${selectedList.length} 种物品吗?`,
-  ]
-  if (totalGold > 0) {
-    messages.push(`金币：${formatGoldAmount(totalGold)}`)
-  }
-  if (totalGoldBean > 0) {
-    messages.push(`金豆豆：${formatGoldBeanAmount(totalGoldBean)}`)
-  }
-
+  const messages = [`确定出售所选 ${selectedList.length} 种物品？`, ...Array.from(totals, ([currency, value]) => `预计收入：${value.toLocaleString('zh-CN')} ${currency}`)]
   confirmModal.value = {
     show: true,
     title: '批量出售',
@@ -310,34 +251,30 @@ function handleBatchSellClick() {
     selectedItems: itemsToSell,
   }
 }
-
 async function loadBag() {
   if (!currentAccountId.value)
     return
-
+  const account = String(currentAccountId.value)
+  const seq = generation
   const acc = currentAccount.value
   if (!acc)
     return
-
   try {
     if (!realtimeConnected.value)
-      await statusStore.fetchStatus(currentAccountId.value)
-
-    if (acc.running)
-      await bagStore.fetchBag(currentAccountId.value)
+      await statusStore.fetchStatus(account)
+    if (mounted && seq === generation && account === String(currentAccountId.value) && acc.running)
+      await bagStore.fetchBag(account)
   }
   finally {
-    bagLoaded.value = true
+    if (mounted && seq === generation && account === String(currentAccountId.value))
+      bagLoaded.value = true
   }
-
   imageErrors.value = {}
 }
-
-const showInitialLoading = computed(() =>
-  !bagLoaded.value && (bagLoading.value || statusLoading.value),
-)
-
+const showInitialLoading = computed(() => !bagLoaded.value && (bagLoading.value || statusLoading.value))
 watch(currentAccountId, (newId, oldId) => {
+  invalidateConfirmations()
+  selectedForBatch.value.clear()
   if (oldId !== undefined && newId !== oldId) {
     bagLoaded.value = false
     bagStore.clearBag()
@@ -345,11 +282,13 @@ watch(currentAccountId, (newId, oldId) => {
   }
   loadBag()
 }, { immediate: true })
-
 watch(() => currentAccount.value?.running, () => {
   loadBag()
 })
-
+watch(() => items.value.map(item => item.saleQuoteFingerprint).join('|'), () => {
+  if (!saleBusy.value && !confirmModal.value.loading)
+    invalidateConfirmations()
+})
 useIntervalFn(loadBag, 60000)
 </script>
 
@@ -467,7 +406,8 @@ useIntervalFn(loadBag, 60000)
               <button
                 v-if="canSell(item)"
                 class="rounded bg-red-500 px-1.5 py-0.5 text-[10px] text-white opacity-70 transition dark:bg-red-600 hover:opacity-100"
-                title="出售全部"
+                title="选择出售数量"
+                :aria-label="`出售 ${item.name}`"
                 @click.stop="handleSellClick(item)"
               >
                 售
@@ -530,12 +470,16 @@ useIntervalFn(loadBag, 60000)
           </div>
 
           <div class="mt-auto font-medium" :class="item.hoursText ? 'text-blue-500' : 'text-gray-600 dark:text-gray-300'">
-            {{ item.hoursText || `x${item.count || 0}` }}
+            {{ item.hoursText || `x${exactText(item.countDec ?? item.count)}` }}
           </div>
         </div>
       </div>
     </div>
 
+    <p v-if="bagStore.error" role="alert" class="text-sm text-red-600 dark:text-red-300">
+      {{ bagStore.error }}
+    </p>
+    <PurchaseQuantityModal :show="!!saleSelection" mode="sell" title="确认出售" :item-name="saleSelection?.item.name || ''" :unit-price="saleSelection?.item.priceDec ?? null" :currency-label="saleSelection?.item.priceUnit || '金币'" :max-quantity="saleSelection?.stock || '0'" :loading="saleBusy" @confirm="confirmSale" @close="!saleBusy && (saleSelection = null)" @cancel="!saleBusy && (saleSelection = null)" />
     <ConfirmModal
       :show="confirmModal.show"
       :title="confirmModal.title"

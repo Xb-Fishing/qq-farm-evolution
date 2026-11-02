@@ -1,3 +1,4 @@
+const { shopPanelFields } = require("../services/manual-commerce");
 const { getItemById, getSeedImageBySeedId } = require("../config/gameConfig");
 
 const DECORATION_ITEM_IDS = [2130, 2131];
@@ -26,6 +27,7 @@ function buildDecorationItem(itemId, userGoldBean) {
 
   const price = Number(itemConfig.price) || 0;
   return {
+    ...shopPanelFields({ id: itemId, item_id: itemId, item_count: 1, price: itemConfig.price, limit_count: 0, bought_num: 0, unlocked: true, conds: [] }, "decoration"),
     id: itemId,
     itemId,
     itemCount: 1,

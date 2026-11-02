@@ -4,6 +4,8 @@ const {
     getSeedImageBySeedId,
   } = require("../config/gameConfig");
   const { toNum } = require("../utils/utils");
+  // 与 Worker 守护同一实现：条目携带 confirmed 报价指纹，购买前 fresh 复核比对。
+  const { shopPanelFields } = require("../services/manual-commerce");
 
 function getAuthorizedAccountId({
   req,
@@ -138,6 +140,7 @@ function registerAdminSeedShopRoutes({
         const harvestInfo = getSeedHarvestInfo(itemId);
 
         seeds.push({
+          ...shopPanelFields(unlocked, "seed", requiredLevel),
           id: toNum(unlocked.id) || 0,
           itemId,
           itemCount: toNum(unlocked.item_count) || 1,

@@ -37,6 +37,18 @@ const ownQuietPriority = require('./own-quiet-priority');
 const sendMsgAsync = ownQuietPriority.wrapSend(nativeSendMsgAsync);
 const { types, waitForProtoReady } = require('../utils/proto');
 const { toLong, sleep } = require('../utils/utils');
+const Long = require('long');
+
+/**
+ * 精确 64 位编码：面板手动购买可能携带十进制字符串价格/数量，
+ * Long.fromString 全精度保留；小整数沿用 toLong 语义。畸形值就地失败。
+ */
+function exactLong(value) {
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return Long.fromString(value);
+  if (typeof value === 'number' && Number.isInteger(value)) return Long.fromNumber(value);
+  if (Long.isLong(value)) return value;
+  return toLong(value); // 旧自动化路径兜底（沿用既有 fromNumber 语义）
+}
 
 /** 普通化肥 ID */
 const NORMAL_FERTILIZER_ID = 1011;
@@ -196,18 +208,19 @@ async function getShopInfo(shopId) {
 
 /**
  * 购买商品
- * @param {number} goodsId - 商品 ID
- * @param {number} num - 购买数量
- * @param {number} price - 单价
+ * @param {number|string} goodsId - 商品 ID（十进制字符串可保留 64 位精度）
+ * @param {number|string} num - 购买数量（同上）
+ * @param {number|string} price - 单价（同上）
  */
 async function buyGoods(goodsId, num, price) {
   await waitForProtoReady();
   const payload = types.BuyGoodsRequest.encode(types.BuyGoodsRequest.create({
-    goods_id: toLong(goodsId),
-    num: toLong(num),
-    price: toLong(price)
+    goods_id: exactLong(goodsId),
+    num: exactLong(num),
+    price: exactLong(price)
   })).finish();
   const { body } = await sendMsgAsync('gamepb.shoppb.ShopService', 'BuyGoods', payload);
+  require('./mall').invalidateRegularShopPanels();
   return types.BuyGoodsReply.decode(body);
 }
 

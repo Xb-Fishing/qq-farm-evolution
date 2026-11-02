@@ -164,3 +164,39 @@ test('warm restore clears old readiness when a newer socket is OPEN but has not 
     assert.equal(requests, 0); assert.equal(commands.length, before);
   } finally { await warmed.terminate(); }
 });
+
+test('commerce panel caches migrate only their optional fields, retaining 32 strict domains and original deadlines', { timeout: 30000 }, async () => {
+  let checkpoint; let requests = 0;
+  const facts = () => ({ sequence: 1, host: { accountId: 'synthetic-commerce-migration' }, game: {
+    platform: 'wx', connectionEpoch: 1, connected: true, readyState: 1, socketPresent: true,
+    userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
+  const options = { target: { runtimeRoot }, epoch: 'synthetic-commerce-old', facts: facts(), config: { platform: 'wx' }, read: facts,
+    command: () => { requests++; return { value: undefined, facts: facts() }; }, query: () => ({ value: 0, facts: facts() }),
+    request: () => { requests++; throw new Error('No game writes during migration'); }, onMaster: () => {} };
+  const cold = await createSessionBusinessRuntime(options);
+  try { await cold.prepare(); await cold.activate([]); checkpoint = decode(await cold.quiesce()); }
+  finally { await cold.terminate(); }
+  assert.equal(Object.keys(checkpoint.state.domains).length, 32);
+  const mall = checkpoint.state.domains['services/mall.js'].value;
+  const month = checkpoint.state.domains['services/monthcard.js'].value;
+  for (const key of ['panelCatalogCache', 'panelCatalogCacheAt', 'panelCatalogRetryAfter', 'regularPanelCache']) delete mall[key];
+  for (const key of ['panelMonthCardCache', 'panelMonthCardCacheAt', 'panelMonthCardRetryAfter']) delete month[key];
+  const before = requests;
+  const warm = await createSessionBusinessRuntime({ ...options, epoch: 'synthetic-commerce-new', config: { ...checkpoint.config }, checkpoint: encode(checkpoint) });
+  try {
+    await warm.prepare(); await warm.activate([]);
+    const restored = decode(await warm.quiesce());
+    assert.equal(Object.keys(restored.state.domains).length, 32);
+    assert.deepEqual(restored.state.domains['services/mall.js'].value.regularPanelCache, {});
+    assert.equal(restored.state.domains['services/monthcard.js'].value.panelMonthCardCache, null);
+    assert.deepEqual(restored.timers, checkpoint.timers); assert.equal(requests, before);
+  } finally { await warm.terminate(); }
+  for (const mutation of ['missing-required', 'unexpected-field']) {
+    const bad = decode(encode(checkpoint)); const value = bad.state.domains['services/mall.js'].value;
+    if (mutation === 'missing-required') delete value.lastBuyAt;
+    else value.unreviewedFutureCache = {};
+    const next = await createSessionBusinessRuntime({ ...options, epoch: `synthetic-commerce-${mutation}`, checkpoint: encode(bad) });
+    try { await assert.rejects(next.prepare(), /Business state fields changed/); }
+    finally { await next.terminate(); }
+  }
+});

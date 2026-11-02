@@ -1,16 +1,12 @@
 const { getItemById, getItemImageById } = require("../config/gameConfig");
-const { parseMallPriceInfo, parseMallLimitInfo, parseMallItemIds } = require("../services/mall");
-  const { toNum } = require("../utils/utils");
+const { toNum } = require("../utils/utils");
+// 官方静态分类目录（本轮 CDN 已解表生成；只作分类/佐证，不制造可买库存）
+const mallCatalog = require("../gameConfig/MallCatalog.json");
 
-const FEATURED_MALL_GOODS_ORDER = [1002, 1003, 1006];
-const MALL_GOODS_PRICE_OVERRIDES = {
-  1002: 42,
-  1003: 34,
-  1006: 33,
-};
+// 展示用既有商品图（原 MALL_GOODS_META；价格硬编码覆盖已移除——
+// 面板一律展示服务端当前价格/免费/限购/已购，购买前由守护 fresh 复核）。
 const MALL_GOODS_META = {
   1002: {
-    name: "10小时有机化肥",
     images: [
       "/game-config/seed_images_named/80011_organic_1.png",
       "/game-config/seed_images_named/80013_organic_8.png",
@@ -18,7 +14,6 @@ const MALL_GOODS_META = {
     layout: "horizontal",
   },
   1003: {
-    name: "10小时化肥",
     images: [
       "/game-config/seed_images_named/80001_ordinary_1.png",
       "/game-config/seed_images_named/80003_ordinary_8.png",
@@ -26,7 +21,6 @@ const MALL_GOODS_META = {
     layout: "horizontal",
   },
   1006: {
-    name: "狗粮礼包",
     images: [
       "/game-config/seed_images_named/90004_dog_food_1.png",
       "/game-config/seed_images_named/90005_dog_food_3.png",
@@ -36,37 +30,44 @@ const MALL_GOODS_META = {
   },
 };
 
-function isActivityMallGoods(discount) {
-  return discount?.is_activity === true || toNum(discount?.end_time) > 0;
-}
-
-function shouldExposeMallGoods(discount) {
-  const id = toNum(discount?.goods_id) || 0;
-  return id > 0 && (FEATURED_MALL_GOODS_ORDER.includes(id) || isActivityMallGoods(discount));
-}
-
-function compareMallGoods(left, right) {
-  if (left.isActivity !== right.isActivity) return left.isActivity ? -1 : 1;
-  if (left.isActivity) return left.sourceOrder - right.sourceOrder;
-  return FEATURED_MALL_GOODS_ORDER.indexOf(left.goodsId)
-    - FEATURED_MALL_GOODS_ORDER.indexOf(right.goodsId);
-}
-
-function getCurrencyMeta(currencyId, status) {
-  const id = toNum(currencyId) || 0;
-  const balances = {
-    1001: status?.status?.gold,
-    1002: status?.status?.coupon,
-    1004: status?.status?.diamond,
-    1005: status?.status?.goldBean,
-  };
-  const rawBalance = balances[id];
-  const balanceKnown = rawBalance !== undefined && rawBalance !== null;
-  const item = getItemById(id);
+// 静态目录分类（goods_id → 官方 slot_type/zone）；仅用于展示分区与限购佐证。
+function classifyMallGoods(goodsId) {
+  const id = toNum(goodsId) || 0;
+  const entry = (mallCatalog.goods || []).find((row) => row.id === id) || null;
   return {
-    currencyName: item?.name || (id > 0 ? `道具 #${id}` : ""),
-    currencyBalance: balanceKnown ? Math.max(0, toNum(rawBalance)) : 0,
+    catalogMapped: !!entry,
+    zone: entry ? entry.zone : null,
+    slotType: entry ? entry.slotType : "",
+  };
+}
+
+// 服务端条目 → 面板展示条目（附加图/余额可见性；不改价格语义）。
+function decorateMallEntry(entry, status) {
+  const meta = MALL_GOODS_META[toNum(entry.goodsId)] || {};
+  const itemIds = (entry.items || []).map((item) => item.id);
+  const dynamicImages = itemIds.map(getItemImageById).filter(Boolean);
+  const currencyId = toNum(entry.price && entry.price.currencyId);
+  const { walletBalance } = require('../services/manual-commerce');
+  const wallet = walletBalance(currencyId, status?.status);
+  const balanceKnown = wallet.known;
+  const currencyBalance = wallet.amount;
+  const currencyName = entry.price?.currencyName || getItemById(currencyId)?.name || '';
+  const amountDec = entry.price?.amountDec || '';
+  const affordable = entry.isFree || balanceKnown && amountDec !== '' && BigInt(currencyBalance) >= BigInt(amountDec);
+  const unlimited = !entry.limit?.present && entry.catalogRestricted === null;
+  const limitKnown = unlimited || entry.limit?.present && entry.limit?.remainingDec !== null;
+  const canBuy = !entry.expired && !entry.soldOut && entry.enabled && !entry.invalidReason && entry.catalogMapped && limitKnown && affordable;
+
+  return {
+    ...entry,
+    images: meta.images || dynamicImages,
+    layout: meta.layout || "single",
+    currencyName,
+    currencyBalance,
     balanceKnown,
+    affordable,
+    canBuy,
+    purchaseBlockedReason: entry.invalidReason || (!limitKnown ? "限购余量未知" : !affordable ? "余额不足或未知" : !entry.enabled || entry.expired ? "未开放或已过期" : null),
   };
 }
 
@@ -86,6 +87,29 @@ function getAuthorizedAccountId({
     return null;
   }
   return accountId;
+}
+
+// 充值区：官方 PayDiamond 八档静态展示。首充资格未知、无假跳转 URL、
+// 不代付；真实支付只能在游戏内「充值商店」完成。
+function buildRechargeZone() {
+  const tiers = (mallCatalog.payDiamond?.tiers || []).map((tier) => ({
+    id: tier.id,
+    priceYuan: (Number(tier.price) / 100).toFixed(Number(tier.price) % 100 === 0 ? 0 : 2),
+    priceFen: tier.price,
+    gainDiamond: tier.gain,
+    firstChargeBonusDiamond: tier.bonus,
+    firstChargeEligibility: "unknown",
+  }));
+  return {
+    key: "recharge",
+    title: "充值",
+    tiers,
+    notes: mallCatalog.payDiamond?.notes || [],
+    guidance: [
+      "充值需在游戏内打开「充值商店」选择档位完成支付。",
+      "面板不代付、不跳转；每个档位首次充值按档位赠送钻石，首充资格以游戏内展示为准。",
+    ],
+  };
 }
 
 function registerAdminMallRoutes({
@@ -114,73 +138,26 @@ function registerAdminMallRoutes({
         });
       }
 
-      const userTicket = status?.status?.coupon || 0;
-      const userDiamond = status?.status?.diamond || 0;
-      const discounts = await provider.getMallGoods(accountId);
-      const goods = [];
-
-      for (const [sourceOrder, discount] of discounts.entries()) {
-        const id = toNum(discount.goods_id) || 0;
-        if (!shouldExposeMallGoods(discount)) continue;
-
-        const meta = MALL_GOODS_META[id] || {};
-
-        const isFree = discount.is_free === true;
-        const limitBytes = discount.limit;
-        const isLimited = !!(limitBytes && (limitBytes.length === undefined || limitBytes.length > 0));
-        const endTime = toNum(discount.end_time) || 0;
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        if (endTime > 0 && nowSeconds > endTime) continue;
-        const priceInfo = parseMallPriceInfo(discount.price);
-        const currencyId = priceInfo.currencyId || (isFree ? 0 : 1002);
-        const currencyMeta = getCurrencyMeta(currencyId, status);
-        const price = MALL_GOODS_PRICE_OVERRIDES[id] || priceInfo.price;
-        let limitCount = 0;
-        let boughtNum = 0;
-        let limitType = 0;
-        if (isLimited) {
-          try {
-            const limitInfo = parseMallLimitInfo(limitBytes);
-            if (limitInfo) {
-              limitCount = limitInfo.limitCount || 0;
-              boughtNum = limitInfo.boughtNum || 0;
-              limitType = limitInfo.limitType || 0;
-            }
-          } catch {}
-        }
-
-        const isSoldOut = limitCount > 0 && boughtNum >= limitCount;
-        const itemIds = (Array.isArray(discount.item_ids) ? discount.item_ids : [discount.item_ids])
-          .flatMap(parseMallItemIds);
-        const dynamicImages = itemIds.map(getItemImageById).filter(Boolean);
-        goods.push({
-          id,
-          goodsId: id,
-          name: meta.name || String(discount.name || `活动商品 #${id}`),
-          type: toNum(discount.type) || 0,
-          itemIds,
-          price,
-          currencyId,
-          ...currencyMeta,
-          isFree,
-          isLimited,
-          limitCount,
-          boughtNum,
-          limitType,
-          isSoldOut,
-          isActivity: discount.is_activity === true || endTime > 0,
-          sourceOrder,
-          endTime,
-          discount: discount.discount || "",
-          images: meta.images || dynamicImages,
-          layout: meta.layout || "single",
-          canBuy: !isSoldOut && (isFree || !currencyMeta.balanceKnown || currencyMeta.currencyBalance >= price),
-        });
-      }
-
-      goods.sort(compareMallGoods);
-      for (const item of goods) delete item.sourceOrder;
-      res.json({ ok: true, data: goods, userTicket, userDiamond });
+      const catalog = await provider.getMallCatalog(accountId);
+      const decorate = (entry) => decorateMallEntry(entry, status);
+      const zones = {
+        featured: (catalog.zones.featured || []).map(decorate),
+        packages: (catalog.zones.packages || []).map(decorate),
+        // 未映射进官方目录的商品：独立分区展示「未知，禁止购买」。
+        unknown: (catalog.zones.unknown || []).map(decorate),
+      };
+      res.json({
+        ok: true,
+        data: {
+          zones,
+          malformedCount: catalog.malformedCount || 0,
+          unmappedCount: catalog.unmappedCount || 0,
+          fetchedAt: catalog.fetchedAt,
+          rpcSlotRead: catalog.rpcSlotRead || 1,
+        },
+        userTicket: status?.status?.coupon || 0,
+        userDiamond: status?.status?.diamond || 0,
+      });
     } catch (error) {
       adminLogger.error("获取道具商城失败", {
         error: error.message,
@@ -188,6 +165,35 @@ function registerAdminMallRoutes({
       });
       const message = error.message || "未知错误";
       res.json({ ok: false, error: `获取道具商城失败:\x20${  message}` });
+    }
+  });
+
+  app.get("/api/shop/mall/recharge", async (req, res) => {
+    // 静态只读：无需账号连接，不受账号授权外的任何写。
+    const accountId = getAuthorizedAccountId({
+      req,
+      res,
+      getAccountIdFromRequest,
+      canAccessAccount,
+    });
+    if (!accountId) return;
+    res.json({ ok: true, data: buildRechargeZone() });
+  });
+
+  app.get("/api/shop/mall/monthcard", async (req, res) => {
+    const accountId = getAuthorizedAccountId({
+      req,
+      res,
+      getAccountIdFromRequest,
+      canAccessAccount,
+    });
+    if (!accountId) return;
+
+    try {
+      const data = await provider.getMonthCardPanel(accountId);
+      res.json({ ok: true, data });
+    } catch (error) {
+      sendProviderError(res, error);
     }
   });
 
@@ -201,12 +207,12 @@ function registerAdminMallRoutes({
     if (!accountId) return;
 
     try {
-      const { goodsId, count } = req.body || {};
-      if (!goodsId || !count) {
+      const { goodsId, count, quoteFingerprint, operationId } = req.body || {};
+      if (!goodsId || !count || !quoteFingerprint) {
         return res.status(400).json({ ok: false, error: "参数不完整" });
       }
 
-      const data = await provider.buyMallGoods(accountId, goodsId, count);
+      const data = await provider.buyMallGoods(accountId, { goodsId, count, quoteFingerprint, operationId });
       res.json({ ok: true, data });
     } catch (error) {
       sendProviderError(res, error);
@@ -215,8 +221,8 @@ function registerAdminMallRoutes({
 }
 
 module.exports = {
-  compareMallGoods,
-  isActivityMallGoods,
+  classifyMallGoods,
+  decorateMallEntry,
+  buildRechargeZone,
   registerAdminMallRoutes,
-  shouldExposeMallGoods,
 };
