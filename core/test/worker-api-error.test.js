@@ -89,8 +89,42 @@ function buildManagerHarness() {
   });
   assert.equal(manager.startWorker({ id: 'acct-1', name: 'A', code: 'x', platform: 'qq' }), true);
   const cleanup = () => createScheduler('worker_manager').clearAll();
-  return { manager, proc, cleanup };
+  return { manager, proc, workers, cleanup };
 }
+
+test('legacy Worker relogin reads fresh local socket state without network calls or refresh while online/unknown', async () => {
+  const h = buildManagerHarness(); const responses = []; let refreshes = 0; let localReads = 0;
+  const sandbox = { isRunning: true, loginReady: true, socket: { readyState: 1 }, friendSyncPaused: false,
+    getWs: () => { localReads++; return sandbox.socket; }, sendToMaster: message => responses.push(message), log() {},
+    require: name => { throw new Error(`Unexpected dependency in local connection read: ${name}`); } };
+  const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));
+  h.proc.send = message => { if (message.type === 'api_call') Promise.resolve().then(async () => {
+    await entry.handleApiCall(message); h.proc.emitMessage(responses.at(-1));
+  }); };
+  const provider = createDataProvider({ workers: h.workers, getAccounts: () => ({ accounts: [{ id: 'acct-1', platform: 'wx' }] }),
+    callWorkerApi: h.manager.callWorkerApi, tryAdoptAccountSession: h.manager.tryAdoptAccountSession,
+    refreshAccountCode: async () => { refreshes++; return true; } });
+  const routes = new Map();
+  require('../src/controllers/admin-account-runtime-routes').registerAdminAccountRuntimeRoutes({
+    app: { post: (url, fn) => routes.set(url, fn) }, provider, resolveAccountReference: id => id, canAccessAccount: () => true });
+  const invoke = async () => {
+    const response = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+    await routes.get('/api/accounts/:id/relogin')({ params: { id: 'acct-1' } }, response); return response;
+  };
+  try {
+    const online = await invoke(); assert.equal(online.body.mode, 'existing_connection'); assert.equal(refreshes, 0);
+    for (const [socket, running, ready] of [[{ readyState: 1 }, true, false], [{ readyState: 0 }, true, false],
+      [{ readyState: 2 }, true, false], [null, true, false]]) {
+      sandbox.socket = socket; sandbox.isRunning = running; sandbox.loginReady = ready;
+      const pending = await invoke(); assert.equal(pending.statusCode, 409); assert.equal(pending.body.needScan, false); assert.equal(refreshes, 0);
+    }
+    for (const [socket, running, ready] of [[{ readyState: 3 }, true, false], [null, false, false]]) {
+      sandbox.socket = socket; sandbox.isRunning = running; sandbox.loginReady = ready;
+      const before = refreshes; assert.equal((await invoke()).body.ok, true); assert.equal(refreshes, before + 1);
+    }
+    assert.equal(localReads, 7);
+  } finally { h.cleanup(); }
+});
 
 test('元数据两种传输形态保留；畸形/超长/非标量不当业务拒绝；额外属性不透传', { timeout: 5000 }, async () => {
   const { manager, proc, cleanup } = buildManagerHarness();

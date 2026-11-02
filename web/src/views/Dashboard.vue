@@ -42,7 +42,7 @@ async function reloginFromHome() {
   const flow = loginFlowSeq
   const requestedAccountId = account.id
   try {
-    // 先试直接登录（refreshtoken 刷凭据，无需扫码）；失败自动弹扫码。
+    // 优先恢复现有连接，只有后端明确需要扫码时才打开扫码页。
     // await 期间用户可能已切换账号或已主动重新扫码：迟到结果既不能给
     // 别的账号弹扫码、不能误提示旧成功，也不能重新弹已被扫码取代的 QR。
     const result = await accountStore.reloginAccount(account.id)
@@ -51,14 +51,22 @@ async function reloginFromHome() {
     if (superseded)
       return
     if (result.ok) {
-      toast.success('直接登录成功（免扫码）')
+      toast.success(result.mode === 'existing_connection' ? '已恢复现有连接（未重新登录游戏）' : '直接登录成功（免扫码）')
+      void Promise.allSettled([statusStore.fetchStatus(requestedAccountId), accountStore.fetchAccounts()])
       return
     }
-    showReloginModal.value = true
-  }
-  catch {
-    if (loginFlowSeq === flow && accountStore.currentAccount?.id === requestedAccountId)
+    if (result.needScan === true)
       showReloginModal.value = true
+    else
+      toast.error(result.error || '连接恢复尚未完成，请稍后重试')
+  }
+  catch (error: any) {
+    if (loginFlowSeq === flow && accountStore.currentAccount?.id === requestedAccountId) {
+      if (error?.response?.data?.needScan === true)
+        showReloginModal.value = true
+      else
+        toast.error(error?.response?.data?.error || '暂时无法恢复连接，请稍后重试')
+    }
   }
   finally {
     if (loginFlowSeq === flow)
@@ -891,7 +899,7 @@ useIntervalFn(updateCountdowns, 1000)
               v-if="currentAccount?.platform === 'wx'"
               class="rounded bg-emerald-500 px-2 py-1 text-xs text-white transition hover:bg-emerald-600 disabled:opacity-50"
               :disabled="reloginBusy"
-              title="先走免扫码直接登录，失败自动弹扫码"
+              title="优先恢复现有连接，确认离线后再尝试登录"
               @click="reloginFromHome"
             >
               {{ reloginBusy ? '登录中…' : '重新登录' }}

@@ -107,26 +107,27 @@ export function useAccountSettings(showAlert: (message: string, type?: AlertType
       await accountStore.stopAccount(account.id)
       return
     }
-    // 微信账号：先试直接登录（refreshtoken 刷凭据+重启，免扫码），
-    // 凭据死了回退普通启动（用存量 code），由既有错误链路提示扫码
+    // 微信账号优先恢复原连接；不确定或需要扫码时停止，不回退旧 Code。
     if (account.platform === 'wx') {
       try {
         const result = await accountStore.reloginAccount(account.id)
         if (result.ok) {
           await accountStore.fetchAccounts()
-          showAlert(`直接登录成功：${account.name || account.nick || account.id}（免扫码）`, 'primary')
+          showAlert(result.mode === 'existing_connection'
+            ? `已恢复现有连接：${account.name || account.nick || account.id}`
+            : `直接登录成功：${account.name || account.nick || account.id}（免扫码）`, 'primary')
           return
         }
         if (result.needScan) {
-          await accountStore.startAccount(account.id)
           showAlert('账号刷新凭证已失效，请到「账号管理 → 添加账号 → 微信扫码」重新扫码授权', 'danger')
           return
         }
-        showAlert(result.error || '直接登录失败，已按原方式启动', 'danger')
+        showAlert(result.error || '连接恢复尚未完成，请稍后重试', 'danger')
+        return
       }
       catch (e: any) {
-        // 直接登录接口异常（网络/超时）不挡路，回退普通启动
-        console.error('直接登录失败', e)
+        showAlert(e?.response?.data?.error || '暂时无法恢复连接，请稍后重试', 'danger')
+        return
       }
     }
     await accountStore.startAccount(account.id)

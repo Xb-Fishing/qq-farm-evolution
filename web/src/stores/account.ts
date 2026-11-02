@@ -115,10 +115,10 @@ export const useAccountStore = defineStore('account', () => {
     await fetchAccounts()
   }
 
-  // 直接登录：refreshtoken 活着就免扫码刷凭据+重启；死了返回 needScan 提示扫码
+  // 先恢复现有游戏连接；确认离线后才刷新凭据，需要扫码时返回明确标记。
   async function reloginAccount(id: string) {
-    const res = await api.post(`/api/accounts/${id}/relogin`, {}, { timeout: 120000 })
-    return res.data as { ok: boolean, needScan?: boolean, error?: string }
+    const res = await api.post(`/api/accounts/${id}/relogin`, {}, { timeout: 660000 })
+    return res.data as { ok: boolean, mode?: string, connected?: boolean, recoveryPending?: boolean, needScan?: boolean, error?: string }
   }
 
   async function stopAccount(id: string) {
