@@ -291,11 +291,11 @@ async function guardedBagSale(request) {
       const reply = await guardedWrite(owner, group.map(row => `bag:${row.id}:${row.uid}`), { items: group, quotes }, `${request.operationId}_${index}`,
         () => warehouse.sellItems(group), result => Array.isArray(result?.sell_items) && group.every(row => result.sell_items.some(sold =>
           decimalOf(sold.id) === row.id && decimalOf(sold.count) === row.count && (!decimalOf(sold.uid) || decimalOf(sold.uid) === '0' || decimalOf(sold.uid) === row.uid))),
-        () => {
-          warehouse.invalidatePanelBagCache();
-          const total = group.reduce((sum, item) => sum + BigInt(item.count), 0n);
-          if (total <= BigInt(Number.MAX_SAFE_INTEGER)) require('./stats').recordOperation('sell', Number(total));
-        });
+        () => warehouse.invalidatePanelBagCache());
+      if (owner.valid() && reply?.replayed !== true) {
+        const total = group.reduce((sum, item) => sum + BigInt(item.count), 0n);
+        if (total <= BigInt(Number.MAX_SAFE_INTEGER)) require('./stats').recordOperation('sell', Number(total));
+      }
       replies.push(reply);
     }
     return replies.length === 1 ? replies[0] : replies;
