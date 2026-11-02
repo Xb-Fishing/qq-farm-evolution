@@ -1,24 +1,34 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-
-const {
-  compareMallGoods,
-  shouldExposeMallGoods,
-} = require('../src/controllers/admin-mall-routes');
-
-test('automatically exposes activity goods while keeping unrelated regular goods hidden', () => {
-  assert.equal(shouldExposeMallGoods({ goods_id: 1042, is_activity: true }), true);
-  assert.equal(shouldExposeMallGoods({ goods_id: 1043, end_time: 1893456000 }), true);
-  assert.equal(shouldExposeMallGoods({ goods_id: 1015 }), false);
-  assert.equal(shouldExposeMallGoods({ goods_id: 1002 }), true);
+const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+const prefix = path.resolve(fs.realpathSync(os.tmpdir()), 'mall-route-test-');
+assert.equal(path.dirname(prefix), fs.realpathSync(os.tmpdir()));
+const temporary = fs.mkdtempSync(prefix); process.env.FARM_DATA_DIR = temporary;
+test.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+const { classifyMallGoods, decorateMallEntry, buildRechargeZone, registerAdminMallRoutes } = require('../src/controllers/admin-mall-routes');
+test('official per-ID page membership replaces the three-product display allowlist without inventing RPC slots', () => {
+  assert.equal(classifyMallGoods(1006).zone, 'packages');
+  assert.equal(classifyMallGoods(1047).zone, 'featured');
+  assert.equal(classifyMallGoods(1015).zone, 'packages');
+  assert.equal(classifyMallGoods(999999).catalogMapped, false);
+  const tiers = buildRechargeZone().tiers;
+  assert.equal(tiers.length, 8); assert.equal(tiers[0].priceYuan, '1'); assert.equal(tiers.at(-1).priceYuan, '648');
+  assert.equal(tiers.every(row => row.firstChargeEligibility === 'unknown'), true);
 });
-
-test('keeps server order for discovered activities and fixed order for featured goods', () => {
-  const goods = [
-    { goodsId: 1006, isActivity: false, sourceOrder: 9 },
-    { goodsId: 1043, isActivity: true, sourceOrder: 2 },
-    { goodsId: 1002, isActivity: false, sourceOrder: 8 },
-    { goodsId: 1042, isActivity: true, sourceOrder: 1 },
-  ].sort(compareMallGoods);
-  assert.deepEqual(goods.map(item => item.goodsId), [1042, 1043, 1002, 1006]);
+test('unknown or insufficient balances never become buyable; exact balances do not round', () => {
+  const row = { goodsId: 1006, price: { amountDec: '9007199254740993', currencyId: 1002 }, limit: { present: false },
+    enabled: true, catalogMapped: true, catalogRestricted: null, items: [] };
+  assert.equal(decorateMallEntry(row, {}).canBuy, false);
+  assert.equal(decorateMallEntry(row, { status: { coupon: '9007199254740992' } }).canBuy, false);
+  assert.equal(decorateMallEntry(row, { status: { coupon: '9007199254740993' } }).canBuy, true);
+});
+test('real mall routes reject an inaccessible account before provider reads or writes', async () => {
+  const handlers = new Map(); let calls = 0;
+  registerAdminMallRoutes({ app: { get: (key, value) => handlers.set(key, value), post: (key, value) => handlers.set(key, value) },
+    provider: new Proxy({}, { get: () => () => { calls++; } }), getAccountIdFromRequest: () => 'synthetic', canAccessAccount: () => false });
+  for (const handler of handlers.values()) {
+    const response = { status(code) { assert.equal(code, 403); return this; }, json(value) { assert.equal(value.ok, false); } };
+    await handler({}, response);
+  }
+  assert.equal(calls, 0);
 });

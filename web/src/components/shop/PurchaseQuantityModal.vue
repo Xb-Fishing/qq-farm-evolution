@@ -1,315 +1,162 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
-import { formatCurrencyAmountByLabel } from '@/utils/number-format'
+import { exactDecimal, exactText } from '@/utils/commerce-quantity'
 
 const props = withDefaults(defineProps<{
   show: boolean
   title?: string
   itemName: string
-  unitPrice: number
+  unitPrice: string | number | null
   currencyLabel: string
-  balance: number
+  balance?: string | number | null
+  maxQuantity?: string | number
   loading?: boolean
-  maxQuantity?: number
   isFree?: boolean
-}>(), {
-  title: '\u786E\u8BA4\u8D2D\u4E70',
-  loading: false,
-  maxQuantity: 99,
-  isFree: false,
-})
-
+  mode?: 'buy' | 'sell'
+  itemCount?: string | number
+}>(), { title: '确认购买', maxQuantity: 99, loading: false, isFree: false, mode: 'buy', itemCount: 1, balance: null })
 const emit = defineEmits<{
-  (e: 'confirm', quantity: number): void
+  (e: 'confirm', quantity: string): void
   (e: 'close'): void
   (e: 'cancel'): void
 }>()
-
-const quantity = ref(1)
-
-const L = {
-  unitPrice: '\u5355\u4EF7',
-  quantity: '\u6570\u91CF',
-  total: '\u5408\u8BA1',
-  balance: '\u4F59\u989D',
-  max: '\u6700\u5927',
-  cancel: '\u53D6\u6D88',
-  confirm: '\u786E\u5B9A\u8D2D\u4E70',
-  free: '\u514D\u8D39',
-}
-
-const normalizedUnitPrice = computed(() => Math.max(0, Number(props.unitPrice) || 0))
-const normalizedBalance = computed(() => Math.max(0, Number(props.balance) || 0))
-const configuredMax = computed(() => Math.max(1, Math.min(99, Math.floor(Number(props.maxQuantity) || 99))))
-const affordableMax = computed(() => {
-  if (props.isFree)
-    return configuredMax.value
-  if (normalizedUnitPrice.value <= 0)
-    return 1
-  return Math.floor(normalizedBalance.value / normalizedUnitPrice.value)
+const quantity = ref('1')
+const input = ref<HTMLInputElement | null>(null)
+let previousFocus: HTMLElement | null = null
+const max = computed(() => {
+  const cap = exactDecimal(props.maxQuantity)
+  const price = exactDecimal(props.unitPrice)
+  if (cap === null || price === null)
+    return '0'
+  if (props.mode === 'sell' || props.isFree || price === '0')
+    return cap
+  const balance = exactDecimal(props.balance)
+  if (balance === null)
+    return '0'
+  const affordable = BigInt(balance) / BigInt(price)
+  return (affordable < BigInt(cap) ? affordable : BigInt(cap)).toString()
 })
-const maxBuyCount = computed(() => Math.max(1, Math.min(99, configuredMax.value, affordableMax.value)))
-const normalizedQuantity = computed(() => {
-  const value = Math.floor(Number(quantity.value) || 1)
-  return Math.max(1, Math.min(maxBuyCount.value, value))
+const valid = computed(() => {
+  const count = exactDecimal(quantity.value)
+  return !props.loading && count !== null && BigInt(count) > 0n && BigInt(count) <= BigInt(max.value)
 })
-const totalCost = computed(() => normalizedUnitPrice.value * normalizedQuantity.value)
-const confirmDisabled = computed(() => props.loading || normalizedQuantity.value < 1 || normalizedQuantity.value > maxBuyCount.value)
-
-watch(() => props.show, (show) => {
-  if (show)
-    quantity.value = 1
+const total = computed(() => {
+  const count = exactDecimal(quantity.value)
+  const price = exactDecimal(props.unitPrice)
+  return count === null || price === null ? '未知' : (BigInt(count) * BigInt(price)).toLocaleString('zh-CN')
 })
-
-watch(maxBuyCount, () => {
-  quantity.value = normalizedQuantity.value
+const pieces = computed(() => {
+  const count = exactDecimal(quantity.value)
+  const each = exactDecimal(props.itemCount)
+  return count && each ? (BigInt(count) * BigInt(each)).toLocaleString('zh-CN') : '未知'
 })
-
-function setQuantity(value: number) {
-  quantity.value = Math.max(1, Math.min(maxBuyCount.value, Math.floor(Number(value) || 1)))
-}
-
-function closeModal() {
+function close(cancel = false) {
   if (props.loading)
     return
-  emit('close')
+  if (cancel)
+    emit('cancel')
+  else
+    emit('close')
 }
-
-function cancel() {
-  if (props.loading)
+function keydown(event: KeyboardEvent) {
+  if (!props.show)
     return
-  emit('cancel')
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    close(true)
+  }
+  if (event.key === 'Tab' && typeof document !== 'undefined') {
+    const controls = Array.from(document.querySelectorAll<HTMLElement>('[data-quantity-dialog] input, [data-quantity-dialog] button:not(:disabled)'))
+    const first = controls[0]
+    const last = controls[controls.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last?.focus()
+    }
+    else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first?.focus()
+    }
+  }
 }
-
-function confirm() {
-  if (confirmDisabled.value)
-    return
-  emit('confirm', normalizedQuantity.value)
-}
+watch(() => props.show, async (show) => {
+  if (show) {
+    quantity.value = '1'
+    previousFocus = typeof document !== 'undefined' ? document.activeElement as HTMLElement : null
+    if (typeof window !== 'undefined')
+      window.addEventListener?.('keydown', keydown)
+    await nextTick()
+    input.value?.focus?.()
+  }
+  else {
+    if (typeof window !== 'undefined')
+      window.removeEventListener?.('keydown', keydown)
+    previousFocus?.focus?.()
+  }
+}, { immediate: true })
+onUnmounted(() => {
+  if (typeof window !== 'undefined')
+    window.removeEventListener?.('keydown', keydown)
+})
 </script>
 
 <template>
-  <Transition name="purchase-modal">
-    <div
-      v-if="show"
-      class="purchase-modal-overlay"
-      @click="closeModal"
-    >
-      <div class="purchase-modal" @click.stop>
-        <div class="purchase-modal-icon">
-          <div class="i-carbon-shopping-cart" />
-        </div>
-
-        <div class="mt-4">
-          <h3 class="text-xl text-emerald-700 font-bold dark:text-emerald-300">
-            {{ title }}
-          </h3>
-          <div class="mt-2 text-sm text-gray-600 dark:text-gray-300">
-            {{ itemName }}
-          </div>
-        </div>
-
-        <div class="mt-5 space-y-4 text-left">
-          <div class="grid grid-cols-2 gap-3 text-sm">
-            <div class="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
-              <div class="text-xs text-gray-500 dark:text-gray-400">
-                {{ L.unitPrice }}
-              </div>
-              <div class="mt-1 font-semibold">
-                {{ isFree ? L.free : `${formatCurrencyAmountByLabel(unitPrice, currencyLabel)} ${currencyLabel}` }}
-              </div>
-            </div>
-            <div class="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
-              <div class="text-xs text-gray-500 dark:text-gray-400">
-                {{ L.balance }}
-              </div>
-              <div class="mt-1 font-semibold">
-                {{ formatCurrencyAmountByLabel(balance, currencyLabel) }} {{ currencyLabel }}
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="mb-2 flex items-center justify-between">
-              <label class="text-sm text-gray-700 font-medium dark:text-gray-300">
-                {{ L.quantity }}
-              </label>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ L.max }} {{ maxBuyCount }}</span>
-            </div>
-            <div class="qty-control-row">
-              <button
-                type="button"
-                class="qty-icon-button"
-                :disabled="loading || normalizedQuantity <= 1"
-                @click="setQuantity(normalizedQuantity - 1)"
-              >
-                <div class="i-carbon-subtract" />
-              </button>
-              <input
-                :value="normalizedQuantity"
-                type="number"
-                min="1"
-                :max="maxBuyCount"
-                class="qty-input"
-                :disabled="loading"
-                @input="setQuantity(Number(($event.target as HTMLInputElement).value))"
-              >
-              <button
-                type="button"
-                class="qty-icon-button"
-                :disabled="loading || normalizedQuantity >= maxBuyCount"
-                @click="setQuantity(normalizedQuantity + 1)"
-              >
-                <div class="i-carbon-add" />
-              </button>
-              <button
-                type="button"
-                class="qty-max-button"
-                :disabled="loading"
-                @click="setQuantity(maxBuyCount)"
-              >
-                {{ L.max }}
-              </button>
-            </div>
-          </div>
-
-          <div class="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300">
-            {{ L.total }} {{ isFree ? L.free : `${formatCurrencyAmountByLabel(totalCost, currencyLabel)} ${currencyLabel}` }}
-          </div>
-        </div>
-
-        <div class="mt-6 grid grid-cols-2 gap-3">
-          <BaseButton variant="secondary" :disabled="loading" @click="cancel">
-            {{ L.cancel }}
-          </BaseButton>
-          <BaseButton variant="primary" :loading="loading" :disabled="confirmDisabled" @click="confirm">
-            {{ L.confirm }}
-          </BaseButton>
-        </div>
+  <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-3" @click.self="close()">
+    <section data-quantity-dialog role="dialog" aria-modal="true" aria-labelledby="quantity-title" class="commerce-quantity-dialog my-auto max-w-md min-w-0 w-full rounded-xl bg-white p-5 text-gray-900 shadow-xl space-y-4 dark:bg-gray-800 dark:text-gray-100">
+      <h2 id="quantity-title" class="text-lg font-semibold">
+        {{ title }}
+      </h2>
+      <p class="break-words font-medium">
+        {{ itemName }}
+      </p>
+      <p class="text-sm">
+        {{ mode === 'sell' ? '预计单件收入' : '每份单价' }}：{{ isFree ? '免费' : `${exactText(unitPrice)} ${currencyLabel}` }}
+      </p>
+      <p v-if="mode === 'buy'" class="text-sm">
+        每份 {{ exactText(itemCount) }} 件 · 本次共 {{ pieces }} 件
+      </p>
+      <label class="block text-sm" for="purchase-quantity">数量（{{ mode === 'sell' ? '件' : '份' }}）</label>
+      <div class="flex gap-2">
+        <input id="purchase-quantity" ref="input" v-model="quantity" aria-label="数量" inputmode="numeric" autocomplete="off" class="min-h-11 min-w-0 w-full border border-gray-300 rounded-lg bg-white px-3 text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-white" :disabled="loading">
+        <BaseButton class="min-h-11 shrink-0 whitespace-nowrap" variant="outline" :disabled="loading || max === '0'" @click="quantity = max">
+          最大
+        </BaseButton>
       </div>
-    </div>
-  </Transition>
+      <p class="text-sm text-gray-600 dark:text-gray-300">
+        当前最多 {{ exactText(max) }} {{ mode === 'sell' ? '件' : '份' }}<span v-if="mode === 'buy'">（本地单次上限 99 份）</span>
+      </p>
+      <p v-if="max === '0'" role="alert" class="text-sm text-red-600 dark:text-red-300">
+        当前无可用额度，或余额、价格、资格尚未确认。
+      </p>
+      <p v-else-if="!valid && !loading" role="alert" class="text-sm text-red-600 dark:text-red-300">
+        请输入不超过当前上限的正整数。
+      </p>
+      <p class="break-words text-base font-semibold">
+        {{ mode === 'sell' ? '预计收入' : '总消耗' }}：{{ isFree ? '免费' : `${total} ${currencyLabel}` }}
+      </p>
+      <p v-if="mode === 'buy'" class="text-sm text-gray-600 dark:text-gray-300">
+        余额：{{ exactText(balance) }} {{ currencyLabel }}
+      </p>
+      <div class="flex flex-wrap justify-end gap-2">
+        <BaseButton variant="outline" :disabled="loading" @click="close(true)">
+          取消
+        </BaseButton>
+        <BaseButton variant="primary" :loading="loading" :disabled="!valid" @click="valid && emit('confirm', quantity)">
+          {{ mode === 'sell' ? '确认出售' : '确认购买' }}
+        </BaseButton>
+      </div>
+    </section>
+  </div>
 </template>
 
 <style scoped>
-.purchase-modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: rgba(15, 23, 42, 0.34);
-  backdrop-filter: blur(4px);
+.commerce-quantity-dialog {
+  background-color: #fff !important;
+  color: #111827;
 }
-
-.purchase-modal {
-  width: min(100%, 460px);
-  border: 1px solid rgba(102, 187, 106, 0.22);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow:
-    0 18px 56px rgba(46, 125, 50, 0.14),
-    0 8px 28px rgba(15, 23, 42, 0.14);
-  padding: 28px;
-  text-align: center;
-}
-
-.purchase-modal-icon {
-  display: inline-flex;
-  width: 56px;
-  height: 56px;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid #66bb6a;
-  border-radius: 50%;
-  background: #e8f5e9;
-  color: #43a047;
-  font-size: 1.6rem;
-  box-shadow: 0 6px 18px rgba(102, 187, 106, 0.16);
-}
-
-.qty-control-row {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px 72px;
-  gap: 8px;
-}
-
-.qty-icon-button,
-.qty-max-button,
-.qty-input {
-  min-height: 40px;
-  border: 1px solid rgba(148, 163, 184, 0.42);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #334155;
-  font-size: 0.92rem;
-  font-weight: 700;
-  outline: none;
-  transition: all 0.18s ease;
-}
-
-.qty-icon-button,
-.qty-max-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.qty-input {
-  width: 100%;
-  padding: 0 12px;
-  text-align: center;
-}
-
-.qty-icon-button:hover:not(:disabled),
-.qty-max-button:hover:not(:disabled),
-.qty-input:focus {
-  border-color: var(--theme-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 14%, transparent);
-}
-
-.qty-icon-button:disabled,
-.qty-max-button:disabled,
-.qty-input:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.purchase-modal-enter-active,
-.purchase-modal-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.purchase-modal-enter-from,
-.purchase-modal-leave-to {
-  opacity: 0;
-}
-
-.purchase-modal-enter-active .purchase-modal,
-.purchase-modal-leave-active .purchase-modal {
-  transition: transform 0.2s ease;
-}
-
-.purchase-modal-enter-from .purchase-modal,
-.purchase-modal-leave-to .purchase-modal {
-  transform: translateY(8px) scale(0.97);
-}
-
-@media (max-width: 480px) {
-  .purchase-modal-overlay {
-    align-items: flex-end;
-  }
-
-  .purchase-modal {
-    padding: 24px 22px 22px;
-  }
-
-  .qty-control-row {
-    grid-template-columns: 38px minmax(0, 1fr) 38px 64px;
-    gap: 6px;
-  }
+:global(html.dark .commerce-quantity-dialog) {
+  background-color: #1f2937 !important;
+  color: #f3f4f6;
 }
 </style>

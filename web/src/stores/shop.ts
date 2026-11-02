@@ -19,7 +19,6 @@ export interface ShopSeedItem {
   limitCount?: number
   boughtNum?: number
 }
-
 export interface ShopPetItem {
   id: number
   itemId: number
@@ -32,7 +31,6 @@ export interface ShopPetItem {
   isSoldOut?: boolean
   isGoldenBean?: boolean
 }
-
 export interface ShopDecorationItem {
   id: number
   itemId: number
@@ -43,27 +41,12 @@ export interface ShopDecorationItem {
   price: number
   canBuy?: boolean
 }
-
 export interface ShopMallItem {
   goodsId: number
   name: string
-  images?: string[]
-  price: number
-  currencyId?: number
-  currencyName?: string
-  currencyBalance?: number
-  balanceKnown?: boolean
-  isFree?: boolean
-  canBuy?: boolean
-  isSoldOut?: boolean
-  discount?: string
-  limitType?: number
-  limitCount?: number
-  boughtNum?: number
-  isActivity?: boolean
-  endTime?: number
+  price: any
+  [key: string]: any
 }
-
 export interface MysteryShopOffer {
   active: boolean
   npcId: number
@@ -80,39 +63,48 @@ export interface MysteryShopOffer {
   startTime: number
   endTime: number
 }
-
 export const useShopStore = defineStore('shop', () => {
   const seeds = ref<ShopSeedItem[]>([])
   const pets = ref<ShopPetItem[]>([])
   const decorations = ref<ShopDecorationItem[]>([])
   const mallGoods = ref<ShopMallItem[]>([])
+  const monthCard = ref<any>(null)
+  const recharge = ref<any>(null)
+  const extraError = ref('')
+  const extraLoading = ref(false)
+  let extraRequestId = 0
   const mysteryOffer = ref<MysteryShopOffer | null>(null)
   const mysteryOfferAccountId = ref('')
-
   const loading = ref(false)
   const petLoading = ref(false)
   const decorationLoading = ref(false)
   const mallLoading = ref(false)
   const mysteryLoading = ref(false)
-
   const error = ref('')
   const petError = ref('')
   const decorationError = ref('')
   const mallError = ref('')
   const mysteryError = ref('')
-
   const userGold = ref(0)
   const userGoldBean = ref(0)
   const userTicket = ref(0)
   const userDiamond = ref(0)
-
   let seedRequestId = 0
   let petRequestId = 0
   let decorationRequestId = 0
   let mallRequestId = 0
   let mysteryRequestId = 0
-
   function clearShopData() {
+    seedRequestId++
+    petRequestId++
+    decorationRequestId++
+    mallRequestId++
+    mysteryRequestId++
+    extraRequestId++
+    monthCard.value = null
+    recharge.value = null
+    extraError.value = ''
+    extraLoading.value = false
     seeds.value = []
     pets.value = []
     decorations.value = []
@@ -134,12 +126,14 @@ export const useShopStore = defineStore('shop', () => {
     userTicket.value = 0
     userDiamond.value = 0
   }
-
   function isCurrentAccount(accountId: string) {
     const accountStore = useAccountStore()
-    const currentId = String((accountStore.currentAccountId as { value?: string })?.value ?? accountStore.currentAccountId ?? '')
+    const currentId = String((accountStore.currentAccountId as {
+      value?: string
+    })?.value ?? accountStore.currentAccountId ?? '')
     return currentId === String(accountId)
   }
+  const validRows = (rows: any) => Array.isArray(rows) && rows.every(row => row && typeof row === 'object' && Number.isFinite(row.id) && row.id > 0 && typeof row.name === 'string')
 
   async function fetchSeeds(accountId: string) {
     if (!accountId)
@@ -154,8 +148,8 @@ export const useShopStore = defineStore('shop', () => {
       })
       if (requestId !== seedRequestId || !isCurrentAccount(requestedId))
         return
-      if (data.ok)
-        seeds.value = data.data || []
+      if (data.ok === true && validRows(data.data))
+        seeds.value = data.data
       else
         error.value = data.error || '获取种子商店失败'
     }
@@ -168,7 +162,6 @@ export const useShopStore = defineStore('shop', () => {
         loading.value = false
     }
   }
-
   async function fetchPets(accountId: string) {
     if (!accountId)
       return
@@ -182,8 +175,8 @@ export const useShopStore = defineStore('shop', () => {
       })
       if (requestId !== petRequestId || !isCurrentAccount(requestedId))
         return
-      if (data.ok) {
-        pets.value = data.data || []
+      if (data.ok === true && validRows(data.data)) {
+        pets.value = data.data
         userGold.value = data.userGold || 0
         userGoldBean.value = data.userGoldBean || 0
       }
@@ -200,7 +193,6 @@ export const useShopStore = defineStore('shop', () => {
         petLoading.value = false
     }
   }
-
   async function fetchDecorations(accountId: string) {
     if (!accountId)
       return
@@ -214,8 +206,8 @@ export const useShopStore = defineStore('shop', () => {
       })
       if (requestId !== decorationRequestId || !isCurrentAccount(requestedId))
         return
-      if (data.ok) {
-        decorations.value = data.data || []
+      if (data.ok === true && validRows(data.data)) {
+        decorations.value = data.data
         userGoldBean.value = data.userGoldBean || 0
       }
       else {
@@ -231,7 +223,6 @@ export const useShopStore = defineStore('shop', () => {
         decorationLoading.value = false
     }
   }
-
   async function fetchMall(accountId: string) {
     if (!accountId)
       return
@@ -246,7 +237,11 @@ export const useShopStore = defineStore('shop', () => {
       if (requestId !== mallRequestId || !isCurrentAccount(requestedId))
         return
       if (data.ok) {
-        mallGoods.value = data.data || []
+        if (!data.data?.zones || !['featured', 'packages', 'unknown'].every(key => Array.isArray(data.data.zones[key]) && data.data.zones[key].every((row: any) => row && typeof row.name === 'string' && Number.isInteger(row.goodsId) && row.goodsId > 0 && row.price && Array.isArray(row.items) && row.items.every((item: any) => item && typeof item.name === 'string' && /^(?:0|[1-9]\d*)$/.test(String(item.countDec)))))) {
+          mallError.value = '商城目录结构不完整，保留上次数据'
+          return
+        }
+        mallGoods.value = [...data.data.zones.featured, ...data.data.zones.packages, ...data.data.zones.unknown]
         userTicket.value = data.userTicket || 0
         userDiamond.value = data.userDiamond || 0
       }
@@ -263,7 +258,6 @@ export const useShopStore = defineStore('shop', () => {
         mallLoading.value = false
     }
   }
-
   async function fetchMysteryShop(accountId: string) {
     if (!accountId)
       return
@@ -294,28 +288,41 @@ export const useShopStore = defineStore('shop', () => {
         mysteryLoading.value = false
     }
   }
-
-  async function buyGoods(accountId: string, goodsId: number, num: number, price: number) {
-    const { data } = await api.post('/api/shop/buy', {
-      goodsId,
-      num,
-      price,
-    }, {
-      headers: { 'x-account-id': accountId },
-    })
+  async function fetchMallExtra(accountId: string, kind: 'monthcard' | 'recharge') {
+    const id = ++extraRequestId
+    extraLoading.value = true
+    extraError.value = ''
+    try {
+      const { data } = await api.get(`/api/shop/mall/${kind}`, { headers: { 'x-account-id': accountId } })
+      if (id !== extraRequestId || !isCurrentAccount(accountId))
+        return
+      const valid = kind === 'monthcard' ? Array.isArray(data.data?.cards) : Array.isArray(data.data?.tiers)
+      if (data.ok !== true || !valid) {
+        extraError.value = data.error || '读取失败，保留上次数据'
+        return
+      }
+      if (kind === 'monthcard')
+        monthCard.value = data.data
+      else
+        recharge.value = data.data
+    }
+    catch (error: any) {
+      if (id === extraRequestId && isCurrentAccount(accountId))
+        extraError.value = error.message || '读取失败'
+    }
+    finally {
+      if (id === extraRequestId)
+        extraLoading.value = false
+    }
+  }
+  async function buyGoods(accountId: string, request: Record<string, any>) {
+    const { data } = await api.post('/api/shop/buy', request, { headers: { 'x-account-id': accountId } })
     return data
   }
-
-  async function buyMallGoods(accountId: string, goodsId: number, count: number) {
-    const { data } = await api.post('/api/shop/mall/buy', {
-      goodsId,
-      count,
-    }, {
-      headers: { 'x-account-id': accountId },
-    })
+  async function buyMallGoods(accountId: string, request: Record<string, any>) {
+    const { data } = await api.post('/api/shop/mall/buy', request, { headers: { 'x-account-id': accountId } })
     return data
   }
-
   async function buyMysteryShopGoods(accountId: string, npcId: number) {
     const { data } = await api.post('/api/shop/mystery/buy', {
       npcId,
@@ -324,14 +331,12 @@ export const useShopStore = defineStore('shop', () => {
     })
     return data
   }
-
   async function abandonMysteryShop(accountId: string) {
     const { data } = await api.post('/api/shop/mystery/abandon', {}, {
       headers: { 'x-account-id': accountId },
     })
     return data
   }
-
   async function refreshAll(accountId: string) {
     await Promise.all([
       fetchSeeds(accountId),
@@ -341,8 +346,12 @@ export const useShopStore = defineStore('shop', () => {
       fetchMysteryShop(accountId),
     ])
   }
-
   return {
+    monthCard,
+    recharge,
+    extraError,
+    extraLoading,
+    fetchMallExtra,
     seeds,
     pets,
     decorations,

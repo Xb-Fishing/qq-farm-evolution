@@ -204,7 +204,7 @@ function registerAdminBagRoutes({
       if (!Array.isArray(items) || items.length === 0)
         return res.status(400).json({ ok: false, error: "缺少出售物品列表" });
 
-      const result = await sellMergedBagItems(provider, accountId, items);
+      const result = await provider.sellItems(accountId, { items, quotes: req.body.quotes, operationId: req.body.operationId, explicitBatch: req.body.explicitBatch === true });
       res.json({ ok: true, data: result });
     }
     catch (error) {

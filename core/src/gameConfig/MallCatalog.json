@@ -1,0 +1,2341 @@
+{
+  "version": 1,
+  "source": {
+    "Mall": {
+      "importSha256": "0b07771e44ad1dff740c843446dafd5807266ad96fcd5723ccf12d5f483a0528",
+      "decodedFileSha256": "d61e9fa1c108fb972b5803d43c0bf20ea5ae8e351a21880c4a241f47e5651a60"
+    },
+    "MallPage": {
+      "importSha256": "5ac7cd53214e45904f25e69904a47b2023f92bdd048777ac094bd65a4e990040",
+      "decodedFileSha256": "3ea4cbd64ea1ed04389462dc530706b036f8ab473bf43330bd7f4bb927dcca04"
+    },
+    "PayDiamond": {
+      "importSha256": "60ec2764aaaa0f7969ad7f160d49b1e232575b55796f47c53da9fbfe67feeb40",
+      "decodedFileSha256": "d10da705cc5dc3d94db1bffc2189a31bb9e5d522462250012b9bface420ac514"
+    }
+  },
+  "zones": [
+    {
+      "key": "featured",
+      "title": "特惠",
+      "sourceSlotType": "限时商店"
+    },
+    {
+      "key": "packages",
+      "title": "礼包",
+      "sourceSlotType": "礼包商店"
+    },
+    {
+      "key": "monthcard",
+      "title": "月卡",
+      "sourceSlotType": "月卡商店",
+      "readOnly": true
+    },
+    {
+      "key": "recharge",
+      "title": "充值",
+      "sourceSlotType": "充值商店",
+      "readOnly": true
+    }
+  ],
+  "pages": [
+    {
+      "id": 4,
+      "name": "限时商店",
+      "showName": "限时商店",
+      "order": 1,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 3,
+      "name": "礼包商店",
+      "showName": "礼包商店",
+      "order": 2,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 2,
+      "name": "月卡商店",
+      "showName": "月卡商店",
+      "order": 3,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 1,
+      "name": "充值商店",
+      "showName": "充值商店",
+      "order": 4,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 6,
+      "name": "牧场礼包商店",
+      "showName": "礼包商店",
+      "order": 5,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 7,
+      "name": "牧场限时商店",
+      "showName": "限时商店",
+      "order": 6,
+      "type": 1,
+      "isDisplay": true
+    },
+    {
+      "id": 5,
+      "name": "QQ会员商城",
+      "showName": "QQ会员商城",
+      "order": 10,
+      "type": 2,
+      "isDisplay": true
+    }
+  ],
+  "goods": [
+    {
+      "id": 1001,
+      "name": "每日福利",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 0,
+        "amount": "0"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1002,
+      "name": "10小时有机化肥",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80013,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "42"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.1折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1003,
+      "name": "10小时化肥",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "2"
+        },
+        {
+          "id": 80003,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "34"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.4折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1004,
+      "name": "20小时有机化肥",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80013,
+          "count": "1"
+        },
+        {
+          "id": 80014,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "80"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2025-01-02 00:00:00",
+      "discountLabel": "9.1折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 1735747200,
+      "priceKnown": true
+    },
+    {
+      "id": 1005,
+      "name": "20小时化肥",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80003,
+          "count": "1"
+        },
+        {
+          "id": 80004,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "64"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2025-01-02 00:00:00",
+      "discountLabel": "9.4折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 1735747200,
+      "priceKnown": true
+    },
+    {
+      "id": 1006,
+      "name": "狗粮礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 90004,
+          "count": "1"
+        },
+        {
+          "id": 90005,
+          "count": "1"
+        },
+        {
+          "id": 90006,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "33"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1007,
+      "name": "有机化肥(1小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80011,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "5"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1008,
+      "name": "有机化肥(4小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80012,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "19"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1009,
+      "name": "有机化肥(8小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80013,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "36"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1010,
+      "name": "有机化肥(12小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80014,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "52"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1011,
+      "name": "化肥(1小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "4"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1012,
+      "name": "化肥(4小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80002,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "15"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1013,
+      "name": "化肥(8小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80003,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "28"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1014,
+      "name": "化肥(12小时)",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80004,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "40"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1015,
+      "name": "1天狗粮",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 90004,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "4"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1016,
+      "name": "3天狗粮",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 90005,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "11"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1017,
+      "name": "5天狗粮",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 90006,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "18"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1018,
+      "name": "柯基活动礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 20046,
+          "count": "1"
+        },
+        {
+          "id": 20224,
+          "count": "1"
+        },
+        {
+          "id": 20249,
+          "count": "1"
+        },
+        {
+          "id": 100014,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 500
+      },
+      "startTime": "2026-03-09 10:00:00",
+      "endTime": "2026-03-29 23:59:59",
+      "startTimeSec": 1773021600,
+      "endTimeSec": 1774799999,
+      "priceKnown": true
+    },
+    {
+      "id": 1019,
+      "name": "柯基活动礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 20046,
+          "count": "1"
+        },
+        {
+          "id": 20224,
+          "count": "1"
+        },
+        {
+          "id": 20249,
+          "count": "1"
+        },
+        {
+          "id": 100014,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-03-09 10:00:00",
+      "endTime": "2026-03-29 23:59:59",
+      "startTimeSec": 1773021600,
+      "endTimeSec": 1774799999,
+      "priceKnown": true
+    },
+    {
+      "id": 1020,
+      "name": "护主犬礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 90021,
+          "count": "1"
+        },
+        {
+          "id": 2141,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "580"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-03-31 18:00:00",
+      "endTime": "2026-04-15 23:59:59",
+      "startTimeSec": 1774951200,
+      "endTimeSec": 1776268799,
+      "priceKnown": true
+    },
+    {
+      "id": 1021,
+      "name": "南瓜乐翻天礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 20416,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 10
+      },
+      "startTime": "2026-04-30 10:00:00",
+      "endTime": "2026-05-27 23:59:59",
+      "discountLabel": "9.6折",
+      "startTimeSec": 1777514400,
+      "endTimeSec": 1779897599,
+      "priceKnown": true
+    },
+    {
+      "id": 1022,
+      "name": "南瓜乐翻天礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 20416,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-04-30 10:00:00",
+      "endTime": "2026-05-27 23:59:59",
+      "discountLabel": "9.6折",
+      "startTimeSec": 1777514400,
+      "endTimeSec": 1779897599,
+      "priceKnown": true
+    },
+    {
+      "id": 1023,
+      "name": "南瓜每日礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 20416,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-04-30 10:00:00",
+      "endTime": "2026-05-27 23:59:59",
+      "discountLabel": "9.6折",
+      "startTimeSec": 1777514400,
+      "endTimeSec": 1779897599,
+      "priceKnown": true
+    },
+    {
+      "id": 1024,
+      "name": "荷风每日礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 21032,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-06-11 10:00:00",
+      "endTime": "2026-07-20 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1781143200,
+      "endTimeSec": 1784563199,
+      "priceKnown": true
+    },
+    {
+      "id": 1025,
+      "name": "荷风礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 21032,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 10
+      },
+      "startTime": "2026-06-11 10:00:00",
+      "endTime": "2026-07-20 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1781143200,
+      "endTimeSec": 1784563199,
+      "priceKnown": true
+    },
+    {
+      "id": 1026,
+      "name": "荷风礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 21032,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-06-11 10:00:00",
+      "endTime": "2026-07-20 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1781143200,
+      "endTimeSec": 1784563199,
+      "priceKnown": true
+    },
+    {
+      "id": 1027,
+      "name": "千星每日礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29003,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-07-29 10:00:00",
+      "endTime": "2026-08-27 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1785290400,
+      "endTimeSec": 1787846399,
+      "priceKnown": true
+    },
+    {
+      "id": 1028,
+      "name": "千星礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29003,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 10
+      },
+      "startTime": "2026-07-29 10:00:00",
+      "endTime": "2026-08-27 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1785290400,
+      "endTimeSec": 1787846399,
+      "priceKnown": true
+    },
+    {
+      "id": 1029,
+      "name": "千星礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29003,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-07-29 10:00:00",
+      "endTime": "2026-08-27 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1785290400,
+      "endTimeSec": 1787846399,
+      "priceKnown": true
+    },
+    {
+      "id": 1030,
+      "name": "鹊桥寄情礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 301103,
+          "count": "5"
+        },
+        {
+          "id": 1025,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 0,
+        "amount": "0"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-08-18 10:00:00",
+      "endTime": "2026-08-22 23:59:59",
+      "startTimeSec": 1787018400,
+      "endTimeSec": 1787414399,
+      "priceKnown": true
+    },
+    {
+      "id": 1031,
+      "name": "雷雨每日礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 5002,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "36"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-08-26 10:00:00",
+      "endTime": "2026-09-08 23:59:59",
+      "discountLabel": "5折",
+      "startTimeSec": 1787709600,
+      "endTimeSec": 1788883199,
+      "priceKnown": true
+    },
+    {
+      "id": 1032,
+      "name": "雷雨礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 5002,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "36"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 5
+      },
+      "startTime": "2026-08-26 10:00:00",
+      "endTime": "2026-09-08 23:59:59",
+      "discountLabel": "5折",
+      "startTimeSec": 1787709600,
+      "endTimeSec": 1788883199,
+      "priceKnown": true
+    },
+    {
+      "id": 1033,
+      "name": "烟花·花好月圆",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 6002,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "6"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 50
+      },
+      "startTime": "2026-09-24 00:00:00",
+      "endTime": "2026-10-07 23:59:59",
+      "startTimeSec": 1790179200,
+      "endTimeSec": 1791388799,
+      "priceKnown": true
+    },
+    {
+      "id": 1041,
+      "name": "绅士时装礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 90033,
+          "count": "1"
+        },
+        {
+          "id": 80102,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "88"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1042,
+      "name": "甜心时装礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 90032,
+          "count": "1"
+        },
+        {
+          "id": 80102,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "88"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1043,
+      "name": "恐龙时装礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 90034,
+          "count": "1"
+        },
+        {
+          "id": 80103,
+          "count": "2"
+        },
+        {
+          "id": 2162,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "488"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discount": {
+        "amount": "428",
+        "startTime": "2026-09-10 10:00:00",
+        "endTime": "2026-09-16 23:59:59"
+      },
+      "discountLabel": "8.8折",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1044,
+      "name": "比熊点券礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29004,
+          "count": "1"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1045,
+      "name": "比熊钻石礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29004,
+          "count": "1"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1046,
+      "name": "比熊棉花糖礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29004,
+          "count": "1"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 15
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1047,
+      "name": "金豆豆藏品礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 101619,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1005,
+        "amount": "300"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 50
+      },
+      "startTime": "2026-11-02 10:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "7.8折",
+      "startTimeSec": 1793584800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1048,
+      "name": "钻石藏品礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 101618,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "40"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 50
+      },
+      "startTime": "2026-11-02 10:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "7.6折",
+      "startTimeSec": 1793584800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1050,
+      "name": "中级挑战书",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80102,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1005,
+        "amount": "150"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1051,
+      "name": "高级挑战书",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80103,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "12"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discountLabel": "7.8折",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1052,
+      "name": "看广告礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "5"
+        }
+      ],
+      "price": null,
+      "restriction": {
+        "type": 1,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": false
+    },
+    {
+      "id": 1053,
+      "name": "SVIP商城每日免费",
+      "slotType": "QQ会员商城",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 0,
+        "amount": "0"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1054,
+      "name": "SVIP钻石礼包",
+      "slotType": "QQ会员商城",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80014,
+          "count": "2"
+        },
+        {
+          "id": 80004,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "110"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 5
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "8.6折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1055,
+      "name": "SVIP专属头像框",
+      "slotType": "QQ会员商城",
+      "zone": null,
+      "goodsType": "装扮商品",
+      "items": [
+        {
+          "id": 2121,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1901,
+        "amount": "30"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1056,
+      "name": "SVIP专属铭牌",
+      "slotType": "QQ会员商城",
+      "zone": null,
+      "goodsType": "装扮商品",
+      "items": [
+        {
+          "id": 401006,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1902,
+        "amount": "30"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 1057,
+      "name": "分享有礼",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29004,
+          "count": "1"
+        }
+      ],
+      "price": null,
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-10 10:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "startTimeSec": 1789005600,
+      "endTimeSec": 1791820799,
+      "priceKnown": false
+    },
+    {
+      "id": 1058,
+      "name": "田园精灵礼包",
+      "slotType": "QQ会员商城",
+      "zone": null,
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 90035,
+          "count": "1"
+        },
+        {
+          "id": 80014,
+          "count": "2"
+        },
+        {
+          "id": 80004,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "488"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-29 00:00:00",
+      "endTime": "2026-10-12 23:59:59",
+      "discount": {
+        "amount": "428",
+        "startTime": "2026-09-29 00:00:00",
+        "endTime": "2026-10-05 23:59:59"
+      },
+      "discountLabel": "8.8折",
+      "startTimeSec": 1790611200,
+      "endTimeSec": 1791820799,
+      "priceKnown": true
+    },
+    {
+      "id": 1060,
+      "name": "桂月华庭礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "宠物商品",
+      "items": [
+        {
+          "id": 101613,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "880"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-09-22 10:00:00",
+      "endTime": "2026-10-07 23:59:59",
+      "discount": {
+        "amount": "780",
+        "startTime": "2026-09-24 00:00:00",
+        "endTime": "2026-09-30 23:59:59"
+      },
+      "discountLabel": "8.8折",
+      "startTimeSec": 1790042400,
+      "endTimeSec": 1791388799,
+      "priceKnown": true
+    },
+    {
+      "id": 1061,
+      "name": "奶茶点券礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29005,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 3
+      },
+      "startTime": "2026-10-15 10:00:00",
+      "endTime": "2026-11-16 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1792029600,
+      "endTimeSec": 1794844799,
+      "priceKnown": true
+    },
+    {
+      "id": 1062,
+      "name": "奶茶每日礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29005,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 2
+      },
+      "startTime": "2026-10-15 10:00:00",
+      "endTime": "2026-11-16 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1792029600,
+      "endTimeSec": 1794844799,
+      "priceKnown": true
+    },
+    {
+      "id": 1063,
+      "name": "奶茶加速礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29005,
+          "count": "1"
+        },
+        {
+          "id": 80011,
+          "count": "2"
+        },
+        {
+          "id": 80001,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "25"
+      },
+      "restriction": {
+        "type": 4,
+        "times": 15
+      },
+      "startTime": "2026-10-15 10:00:00",
+      "endTime": "2026-11-16 23:59:59",
+      "discountLabel": "7.4折",
+      "startTimeSec": 1792029600,
+      "endTimeSec": 1794844799,
+      "priceKnown": true
+    },
+    {
+      "id": 1064,
+      "name": "奶茶分享礼包",
+      "slotType": "礼包商店",
+      "zone": "packages",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 29005,
+          "count": "1"
+        }
+      ],
+      "price": null,
+      "restriction": {
+        "type": 4,
+        "times": 1
+      },
+      "startTime": "2026-10-15 10:00:00",
+      "endTime": "2026-11-16 23:59:59",
+      "startTimeSec": 1792029600,
+      "endTimeSec": 1794844799,
+      "priceKnown": false
+    },
+    {
+      "id": 2001,
+      "name": "每日福利",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80021,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 0,
+        "amount": "0"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 1
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2002,
+      "name": "10小时罐头礼包",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80021,
+          "count": "2"
+        },
+        {
+          "id": 80023,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "34"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.4折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2003,
+      "name": "10小时有机罐头礼包",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80031,
+          "count": "2"
+        },
+        {
+          "id": 80033,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1002,
+        "amount": "42"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.1折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2004,
+      "name": "有机罐头(1小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80031,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "5"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2005,
+      "name": "有机罐头(4小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80032,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "19"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2006,
+      "name": "有机罐头(8小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80033,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "36"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2007,
+      "name": "有机罐头(12小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80034,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "52"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2008,
+      "name": "罐头(1小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80021,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "4"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2009,
+      "name": "罐头(4小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80022,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "15"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2010,
+      "name": "罐头(8小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80023,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "28"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2011,
+      "name": "罐头(12小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80024,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "40"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 2012,
+      "name": "沙漏(1小时)",
+      "slotType": "牧场礼包商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 1006,
+          "count": "3600"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "12"
+      },
+      "restriction": null,
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 10001,
+      "name": "20小时有机化肥",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80013,
+          "count": "1"
+        },
+        {
+          "id": 80014,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "80"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.1折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 10002,
+      "name": "20小时化肥",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80003,
+          "count": "1"
+        },
+        {
+          "id": 80004,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "64"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.4折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 10003,
+      "name": "40小时有机化肥",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80013,
+          "count": "2"
+        },
+        {
+          "id": 80014,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "152"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "8.6折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 10004,
+      "name": "40小时化肥",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80003,
+          "count": "2"
+        },
+        {
+          "id": 80004,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "120"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "8.8折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 10005,
+      "name": "新手限时礼包",
+      "slotType": "限时商店",
+      "zone": "featured",
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80001,
+          "count": "4"
+        },
+        {
+          "id": 80011,
+          "count": "4"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "18"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2026-11-02 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "5折",
+      "startTimeSec": 1793548800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 20001,
+      "name": "20小时有机罐头",
+      "slotType": "牧场限时商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80033,
+          "count": "1"
+        },
+        {
+          "id": 80034,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "80"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.1折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 20002,
+      "name": "20小时罐头",
+      "slotType": "牧场限时商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80023,
+          "count": "1"
+        },
+        {
+          "id": 80024,
+          "count": "1"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "64"
+      },
+      "restriction": {
+        "type": 1,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "9.4折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 20003,
+      "name": "40小时有机罐头",
+      "slotType": "牧场限时商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80033,
+          "count": "2"
+        },
+        {
+          "id": 80034,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "152"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "8.6折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    },
+    {
+      "id": 20004,
+      "name": "40小时罐头",
+      "slotType": "牧场限时商店",
+      "zone": null,
+      "goodsType": "普通商品",
+      "items": [
+        {
+          "id": 80023,
+          "count": "2"
+        },
+        {
+          "id": 80024,
+          "count": "2"
+        }
+      ],
+      "price": {
+        "currencyId": 1004,
+        "amount": "120"
+      },
+      "restriction": {
+        "type": 2,
+        "times": 10
+      },
+      "startTime": "2025-01-01 00:00:00",
+      "endTime": "2036-12-31 23:59:59",
+      "discountLabel": "8.8折",
+      "startTimeSec": 1735660800,
+      "endTimeSec": 2114351999,
+      "priceKnown": true
+    }
+  ],
+  "payDiamond": {
+    "tiers": [
+      {
+        "id": 3001,
+        "price": "100",
+        "gain": "10",
+        "bonus": "10"
+      },
+      {
+        "id": 3002,
+        "price": "600",
+        "gain": "60",
+        "bonus": "60"
+      },
+      {
+        "id": 3003,
+        "price": "3000",
+        "gain": "300",
+        "bonus": "90"
+      },
+      {
+        "id": 3004,
+        "price": "6800",
+        "gain": "680",
+        "bonus": "200"
+      },
+      {
+        "id": 3005,
+        "price": "12800",
+        "gain": "1280",
+        "bonus": "400"
+      },
+      {
+        "id": 3006,
+        "price": "19800",
+        "gain": "1980",
+        "bonus": "600"
+      },
+      {
+        "id": 3007,
+        "price": "32800",
+        "gain": "3280",
+        "bonus": "1000"
+      },
+      {
+        "id": 3008,
+        "price": "64800",
+        "gain": "6480",
+        "bonus": "2000"
+      }
+    ],
+    "notes": [
+      "每个充值档位首次充值时按档位赠送一定数量的钻石",
+      "部分地区（中国香港）可能不支持1元档位充值"
+    ],
+    "firstChargeEligibility": "unknown"
+  },
+  "rpcSlotRead": 1
+}

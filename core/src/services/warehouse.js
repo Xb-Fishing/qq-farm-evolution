@@ -191,17 +191,24 @@ function invalidatePanelBagCache() {
 }
 
 function toSellItem(raw, exactMaterial = false) {
+  // 2026-11-02：手动出售统一按 64 位精确编码（Long.fromString），不再经
+  // toNumber 往返（>2^53 的 UID/数量/单价会失真）。小整数语义不变。
+  const Long = require('long');
+  const exactCount = (value) => {
+    if (Long.isLong(value)) return value;
+    if (typeof value === 'string' && /^-?\d+$/.test(value)) return Long.fromString(value);
+    return Long.fromNumber(toNum(value));
+  };
   if (exactMaterial) {
-    const Long = require('long');
-    const item = { id: toLong(raw.id), count: Long.fromString(String(raw.count)) };
+    const item = { id: toLong(raw.id), count: exactCount(raw.count) };
     if (raw.uid != null && BigInt(String(raw.uid)) > 0n) item.uid = Long.fromString(String(raw.uid));
     return item;
   }
   const id = toNum(raw && raw.id);
-  const count = toNum(raw && raw.count);
+  const item = { id: toLong(id), count: exactCount(raw && raw.count) };
   const uid = toNum(raw && raw.uid);
-  const item = { id: toLong(id), count: toLong(count) };
-  if (uid > 0) item.uid = toLong(uid);
+  const uidText = raw && raw.uid != null ? String(raw.uid) : '';
+  if (uid > 0 || /^\d+$/.test(uidText) && BigInt(uidText) > 0n) item.uid = exactCount(raw.uid);
   return item;
 }
 
@@ -514,14 +521,16 @@ async function getBagDetail() {
   const bag = await getBagForPanel();
   const items = getBagItems(bag);
 
-  // 原始物品列表
+  // 原始物品列表（countDec/uidDec 为精确十进制；小整数 count/uid 保持旧字段兼容）
   const originalItems = [];
   for (const item of items || []) {
     const id = toNum(item.id);
     const count = toNum(item.count);
     const uid = toNum(item.uid);
+    const countDec = String(item.count ?? '');
+    const uidDec = String(item.uid ?? '');
     if (id <= 0 || count <= 0) continue;
-    originalItems.push({ id, count, uid });
+    originalItems.push({ id, count, uid, countDec, uidDec, mutantTypes: (item.mutant_types || []).map(String), locked: item.locked === true || item.is_locked === true });
   }
 
   // 按 ID 去重合并
@@ -559,6 +568,7 @@ async function getBagDetail() {
     const directSell = String(info && info.sells || '').match(/^(\d+):(\d+)$/);
     const effectivePriceId = directSell ? Number(directSell[1]) : priceId;
     const effectivePrice = directSell ? Number(directSell[2]) : (info ? Number(info.price) || 0 : 0);
+    const priceDec = directSell ? directSell[2] : (info && info.price != null ? String(info.price) : '0');
     const priceUnit =
       effectivePriceId === 1005 ? '金豆豆' :
       effectivePriceId === 200 ? '点券' : '金';
@@ -567,6 +577,7 @@ async function getBagDetail() {
       merged.set(id, {
         id,
         count: 0,
+        countDec: '0',
         name,
         image: getItemImageById(id)
           || (category === 'seed' ? getSeedImageByName(name) || getPlantImageByPhase(0, 1) : ''),
@@ -574,6 +585,7 @@ async function getBagDetail() {
         itemType: info ? Number(info.type) || 0 : 0,
         priceId: effectivePriceId,
         price: effectivePrice,
+        priceDec,
         priceUnit,
         sellable: Boolean(directSell || getPlantByFruitId(id)),
         usable: Number(info && info.can_use) === 1 || interactionType === 'use',
@@ -584,6 +596,17 @@ async function getBagDetail() {
       });
     }
     merged.get(id).count += count;
+    const rawCountDec = String(item.count ?? '0');
+    if (/^\d+$/.test(rawCountDec)) {
+      merged.get(id).countDec = (BigInt(merged.get(id).countDec) + BigInt(rawCountDec)).toString();
+    }
+  }
+
+  const { bagItemQuote, quoteFingerprint } = require('./manual-commerce');
+  for (const item of merged.values()) {
+    const quote = bagItemQuote(item.id, originalItems);
+    item.saleQuoteFingerprint = quoteFingerprint(quote);
+    item.sellable = quote.sellable && quote.price !== '' && quote.priceId > 0 && BigInt(quote.price) > 0n;
   }
 
   // 计算容器时间显示

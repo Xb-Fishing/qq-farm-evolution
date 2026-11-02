@@ -1,3 +1,4 @@
+const { shopPanelFields } = require("../services/manual-commerce");
 const { getItemById, getSeedImageBySeedId } = require("../config/gameConfig");
   const { toNum } = require("../utils/utils");
 
@@ -86,6 +87,7 @@ function registerAdminPetShopRoutes({
         const isGoldenBean = itemId === 90011;
 
         goods.push({
+          ...shopPanelFields(canBuy, "pet", requiredLevel),
           id: toNum(canBuy.id) || 0,
           itemId,
           itemCount: toNum(canBuy.item_count) || 1,

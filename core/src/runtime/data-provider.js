@@ -171,7 +171,14 @@ function createDataProvider(deps) {
         removePlant: (ref, landId) => callWorkerApi(resolveAccountId(ref), 'removePlant', landId),
         removeAllPlants: (ref) => callWorkerApi(resolveAccountId(ref), 'removeAllPlants'),
         getShopInfo: (ref, shopId) => callWorkerApi(resolveAccountId(ref), 'getShopInfo', shopId),
-        buyGoods: (ref, shopId, goodsId, count) => callWorkerApi(resolveAccountId(ref), 'buyGoods', shopId, goodsId, count),
+        // 面板手动购买：携带 confirmed 报价快照走唯一写守护（对象载荷）；
+        // 旧图鉴链路的 (goodsId, num, price) 三元组继续原样透传。
+        buyGoods: (ref, shopId, goodsId, count) => {
+            if (shopId && typeof shopId === 'object' && !Array.isArray(shopId)) {
+                return callWorkerApi(resolveAccountId(ref), 'buyGoods', shopId);
+            }
+            return callWorkerApi(resolveAccountId(ref), 'buyGoods', shopId, goodsId, count);
+        },
         doAnalytics: (ref, days) => callWorkerApi(resolveAccountId(ref), 'getAnalytics', days),
 
         // ========== Friend API ==========
@@ -193,14 +200,28 @@ function createDataProvider(deps) {
 
         // ========== 仓库 ==========
         useItem: (ref, itemId, count, uid) => callWorkerApi(resolveAccountId(ref), 'useItem', itemId, count, uid),
-        sellItems: (ref, items) => callWorkerApi(resolveAccountId(ref), 'sellItems', items),
+        // 面板手动出售（对象载荷 {items, prices, quoteFingerprint, explicitBatch}）
+        // 走唯一写守护；旧数组载荷继续原样透传。
+        sellItems: (ref, items) => {
+            if (items && !Array.isArray(items) && typeof items === 'object') {
+                return callWorkerApi(resolveAccountId(ref), 'sellItems', items);
+            }
+            return callWorkerApi(resolveAccountId(ref), 'sellItems', items);
+        },
 
         // ========== 每日礼包 ==========
         getDailyGifts: (ref) => callWorkerApi(resolveAccountId(ref), 'getDailyGiftOverview'),
 
         // ========== Mall ==========
         getMallGoods: (ref) => callWorkerApi(resolveAccountId(ref), 'getMallGoods'),
-        buyMallGoods: (ref, goodsId, count) => callWorkerApi(resolveAccountId(ref), 'buyMallGoods', goodsId, count),
+        getMallCatalog: (ref) => callWorkerApi(resolveAccountId(ref), 'getMallCatalog'),
+        getMonthCardPanel: (ref) => callWorkerApi(resolveAccountId(ref), 'getMonthCardPanel'),
+        buyMallGoods: (ref, goodsId, count) => {
+            if (goodsId && typeof goodsId === 'object' && !Array.isArray(goodsId)) {
+                return callWorkerApi(resolveAccountId(ref), 'buyMallGoods', goodsId);
+            }
+            return callWorkerApi(resolveAccountId(ref), 'buyMallGoods', goodsId, count);
+        },
         getMysteryShop: (ref) => callWorkerApi(resolveAccountId(ref), 'getMysteryShop'),
         buyMysteryShopGoods: (ref, npcId) => callWorkerApi(resolveAccountId(ref), 'buyMysteryShopGoods', npcId),
         abandonMysteryShop: (ref) => callWorkerApi(resolveAccountId(ref), 'abandonMysteryShop'),
