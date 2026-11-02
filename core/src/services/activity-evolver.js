@@ -36,6 +36,8 @@ const evolutionPublish = require('./evolution-publish');
 const { inspectDeploymentImpact } = require('./evolution-deployment-impact');
 const { PREFLIGHT_REASONS } = require('./wx-update-preflight');
 const { buildOfficialAnnouncementCacheContext } = require('./evolution-announcement-context');
+const { captureUpdateBatch, validateUpdateBatch, updateTriggerFingerprint, readUpdateDigest,
+  markUpdateBatchDispatched, acknowledgeUpdateBatch } = require('./game-update-digest');
 const {
   normalizeAutonomy, normalizeActivityPlan, computeReworkDelayMs, autonomyTargetKey, shouldNotify, planAutonomy, continuationCheckpoint,
   NO_PROGRESS_DIAGNOSIS_ATTEMPTS,
@@ -150,6 +152,9 @@ function resolveTmuxPaneForProcess(processPid = process.pid) {
 const scheduler = createScheduler('activity_evolver');
 let deps = {};
 let running = false;
+let preparationGeneration = 0;
+let eventPreparationGeneration = 0;
+let dailyPreparation = null;
 let lastTask = '';
 let runningCommit = '';
 let runningSourceFingerprint = '';
@@ -1768,9 +1773,10 @@ function launchEvolution(task, payload = {}) {
   const nextFeedbackBatch = preserveBatch ? (current.feedbackBatch || null) : getDailyFeedback().captureBatch();
   const nextGithubSummary = preserveBatch ? (current.githubFeedbackBatch || null)
     : githubFeedback.summarizeBatch(githubBatch);
+  const gameUpdateBatch = captureReviewBatch(current, preserveBatch);
   const incrementalContext = buildIncrementalReviewContext(
     { ...current, feedbackBatch: nextFeedbackBatch }, task, payload.report, githubBatch);
-  const prompt = task === 'safety'
+  let prompt = task === 'safety'
     ? buildSafetyPrompt(
         current.userInstruction,
         current.revisionContext,
@@ -1793,7 +1799,15 @@ function launchEvolution(task, payload = {}) {
         payload.reviewIds,
         incrementalContext,
       );
+  if (payload.gameUpdatePreparation) {
+    prompt += `\n\n【本轮启动前更新证据准备】\n${  JSON.stringify(payload.gameUpdatePreparation)
+       }\n准备失败或缺证仍须明确保留，不能据此启用未知接口。`;
+  }
+  if (gameUpdateBatch && !preserveBatch) gameUpdateBatch.promptFingerprint = crypto.createHash('sha256').update(prompt).digest('hex');
   const state = current;
+  state.gameUpdateBatch = gameUpdateBatch;
+  state.gameUpdateEventFingerprint = payload.gameUpdateEvent?.fingerprint
+    || (preserveBatch ? current.gameUpdateEventFingerprint || '' : '');
   state.status = 'running';
   state.lastRunAt = Date.now();
   state.lastTask = task;
@@ -1928,6 +1942,11 @@ function launchEvolution(task, payload = {}) {
   });
   state.activeRun = activeRun;
   writeState(state);
+  if (activeRun && gameUpdateBatch?.entries.length) {
+    try { markUpdateBatchDispatched(path.dirname(STATE_FILE), gameUpdateBatch, activeRun.runId); }
+    catch { /* The native task and its honest result retain ownership; never claim acknowledgment. */ }
+  }
+
 
   let finalized = false;
   const finalize = async (code, signal = '', launchError = '') => {
@@ -2272,6 +2291,87 @@ function schedulePendingActivityEvent(state) {
   });
 }
 
+function captureReviewBatch(current, preserveBatch) {
+  try {
+    if (preserveBatch) return current.gameUpdateBatch ? validateUpdateBatch(current.gameUpdateBatch) : null;
+    return captureUpdateBatch(path.dirname(STATE_FILE));
+  } catch { return null; } // Unreadable or legacy evidence cannot authorize acknowledgment.
+}
+
+function capturedCombinedDaily(state, task) {
+  if (Object.hasOwn(state, 'combinedDaily')) return state.combinedDaily === true;
+  const recorded = state.collaboration?.checkpoint?.taskIdentity;
+  if (typeof recorded?.combinedDaily === 'boolean') return recorded.combinedDaily;
+  if (typeof state.activeRun?.combinedDaily === 'boolean') return state.activeRun.combinedDaily;
+  return task === 'safety'; // Historical safety-only records predate this explicit bit.
+}
+
+function pendingGameUpdateEvent(state) {
+  if (typeof deps.prepareGameUpdateReview !== 'function') return null;
+  if (state.autonomousEvolutionEnabled !== true || state.evolutionEnabled === false || running || state.activeRun
+      || !['idle', 'no_change', 'applied', 'applied_no_restart'].includes(state.status)
+      || (state.commit && !APPLIED_STATUSES.has(state.status)) || state.privacyBlockedCommit) return null;
+  if (planAutonomy(state, autonomyDeps()).action !== 'none') return null;
+  try {
+    const batch = (deps.captureGameUpdateBatch || (() => captureUpdateBatch(path.dirname(STATE_FILE))))();
+    const ledger = (deps.readGameUpdateDigest || (() => readUpdateDigest(path.dirname(STATE_FILE))))();
+    const triggerFingerprint = updateTriggerFingerprint(batch);
+    if (!triggerFingerprint || ledger?.lastDispatched?.eventFingerprint === triggerFingerprint) return null;
+    return { ...batch, triggerFingerprint };
+  } catch { return null; }
+}
+
+function checkGameUpdateEvidence() {
+  scheduleAutonomyFromState((deps.readState || readState)());
+}
+
+function schedulePendingGameUpdateEvent(state) {
+  if (!pendingGameUpdateEvent(state)) return;
+  const generation = preparationGeneration;
+  const eventGeneration = ++eventPreparationGeneration;
+  scheduler.setTimeoutTask('game_update_evolution_event', 0, async () => {
+    if (generation !== preparationGeneration || eventGeneration !== eventPreparationGeneration
+        || !pendingGameUpdateEvent((deps.readState || readState)())) return;
+    let receipt;
+    try { receipt = await deps.prepareGameUpdateReview?.(); }
+    catch { return; } // The persisted pending facts remain; no task or quota was invented.
+    const live = (deps.readState || readState)();
+    if (generation !== preparationGeneration || eventGeneration !== eventPreparationGeneration) return;
+    const batch = pendingGameUpdateEvent(live);
+    if (!batch) return;
+    // Establish a genuine automatic chain, exactly as existing activity events do.
+    // No synthetic activity IDs, manual-run masquerade or daily quota mutation.
+    live.lastTask = 'safety';
+    live.lastRunAutomatic = true;
+    live.combinedDaily = false;
+    live.collaboration = null;
+    live.commit = '';
+    live.candidateTaskRoot = '';
+    live.status = 'interrupted';
+    live.lastRunAt = (deps.now || Date.now)();
+    live.gameUpdateEventFingerprint = batch.triggerFingerprint;
+    live.summary = '游戏更新证据准备完成，正在启动对应自动进化';
+    live.autonomy = normalizeAutonomy({ quotaDate: getLocalDateKey(live.lastRunAt) });
+    if (!(deps.writeState || writeState)(live)) return;
+    let result;
+    try {
+      result = (deps.launchEvolution || launchEvolution)('safety', { automatic: true, combinedDaily: false,
+        gameUpdateEvent: { fingerprint: batch.triggerFingerprint },
+        gameUpdatePreparation: { status: receipt?.status || 'unknown', finishedAt: (deps.now || Date.now)() } });
+    } catch { result = { ok: false, reason: 'launch_exception' }; }
+    if (result?.ok === false) {
+      const failed = (deps.readState || readState)();
+      if (failed.gameUpdateEventFingerprint === batch.triggerFingerprint && failed.lastRunAutomatic === true
+          && !failed.activeRun && !failed.commit && !failed.privacyBlockedCommit) {
+        running = false;
+        failed.status = 'failed';
+        autonomyDefer(failed, `game-update-launch:${result.reason || 'failed'}`,
+          '游戏更新进化启动未完成，保留原待审事实和自动任务身份，沿原链退避恢复');
+      } else scheduleAutonomyFromState(failed);
+    }
+  });
+}
+
 /** 手动触发（面板按钮/验证用），跳过每日闸门。task: 'activity' | 'safety' */
 function runEvolutionNow(task = 'activity', options = {}) {
   if (task !== 'safety') task = 'activity';
@@ -2423,10 +2523,12 @@ function retryReviewBlockedEvolution(opts = {}) {
     manualReviewRetry: true,
     ...(autonomous ? {
       automatic: true,
-      preserveFeedbackBatch: retryTask !== 'activity' || !!state.autonomy?.originalPrompt,
+      preserveFeedbackBatch: (retryTask !== 'activity' || !!state.autonomy?.originalPrompt)
+        && !(state.gameUpdateEventFingerprint && !state.autonomy?.originalPrompt),
       ...(legacyFailure ? { legacyInitialFailure: legacyFailure } : {}),
     } : {}),
-    combinedDaily: retryTask === 'safety',
+    combinedDaily: autonomous && state.gameUpdateEventFingerprint
+      ? capturedCombinedDaily(state, retryTask) : retryTask === 'safety',
     report: reportUsable ? report : null,
     activityPlan,
     ...(retryTask === 'activity' ? {
@@ -2713,14 +2815,48 @@ function nextSafetyRunAt(from = new Date()) {
  * 一起交给同一个 Agent 团队。真正准备 spawn 时才写 lastAutomaticEvolveDate
  * （失败不清，重启不重跑）；无可用活动报告也照做安全巡检，不为等报告重试。
  */
-function attemptDailyEvolution(dateKey, allowBusyRetry = true) {
+async function prepareDailyEvolution(dateKey, allowBusyRetry = true) {
+  const now = deps.now || Date.now;
+  const state = (deps.readState || readState)();
+  if (getLocalDateKey(now()) !== dateKey || state.evolutionEnabled === false) return { ok: false, reason: 'disabled_or_expired' };
+  if (running) return attemptDailyEvolution(dateKey, allowBusyRetry);
+  if (isAutomaticQuotaUsed(state, dateKey, now()) || BLOCKING_STATUSES.has(state.status)) return { ok: false, reason: 'not_due' };
+  if (state.autonomousEvolutionEnabled === true && ['apply', 'launch', 'wait'].includes(planAutonomy(state, { now: now() }).action)) return { ok: false, reason: 'prior_chain' };
+  if (typeof deps.prepareGameUpdateReview !== 'function') return attemptDailyEvolution(dateKey, allowBusyRetry);
+  const generation = preparationGeneration;
+  if (dailyPreparation?.generation === generation) {
+    if (dailyPreparation.dateKey === dateKey) return dailyPreparation.promise;
+    await dailyPreparation.promise;
+    return prepareDailyEvolution(dateKey, allowBusyRetry);
+  }
+  const owner = { generation, dateKey, promise: null };
+  const task = Promise.resolve().then(async () => {
+    const startedAt = now();
+    let receipt;
+    try { receipt = await deps.prepareGameUpdateReview(); }
+    catch {
+      if (allowBusyRetry && generation === preparationGeneration && (deps.readState || readState)().evolutionEnabled !== false) {
+        scheduler.setTimeoutTask('daily_evolution_retry', DAILY_RETRY_MS, () => prepareDailyEvolution(dateKey, false));
+      }
+      return { ok: false, reason: 'game_update_preparation_failed' };
+    }
+    const live = (deps.readState || readState)();
+    if (generation !== preparationGeneration || live.evolutionEnabled === false || getLocalDateKey(now()) !== dateKey) return { ok: false, reason: 'preparation_cancelled' };
+    return attemptDailyEvolution(dateKey, allowBusyRetry, { startedAt, finishedAt: now(), status: receipt?.status || 'unknown' });
+  }).finally(() => { if (dailyPreparation === owner) dailyPreparation = null; });
+  owner.promise = task;
+  dailyPreparation = owner;
+  return task;
+}
+
+function attemptDailyEvolution(dateKey, allowBusyRetry = true, gameUpdatePreparation = null) {
   const nowFn = deps.now || Date.now;
   if (getLocalDateKey(nowFn()) !== dateKey) return;
   if (running) {
     // busy 只补一次下次调度，禁止循环拉模型。
     if (allowBusyRetry) {
       scheduler.setTimeoutTask('daily_evolution_retry', DAILY_RETRY_MS,
-        () => attemptDailyEvolution(dateKey, false));
+        () => prepareDailyEvolution(dateKey, false));
     }
     return;
   }
@@ -2743,6 +2879,7 @@ function attemptDailyEvolution(dateKey, allowBusyRetry = true) {
   const result = launch('safety', {
     automatic: true,
     combinedDaily: true,
+    ...(gameUpdatePreparation ? { gameUpdatePreparation } : {}),
     report: reportUsable ? report : null,
     activityPlan,
   });
@@ -2756,7 +2893,7 @@ function attemptDailyEvolution(dateKey, allowBusyRetry = true) {
 function scheduleAutomaticCatchup(dateKey) {
   scheduler.setTimeoutTask('daily_automatic_catchup',
     FAILED_RUN_RETRY_MIN_MS + Math.floor(Math.random() * FAILED_RUN_RETRY_JITTER_MS),
-    () => attemptDailyEvolution(dateKey));
+    () => prepareDailyEvolution(dateKey));
 }
 
 /** 短暂网络故障不应要求人工改状态；只重推当前 HEAD 对应的那一个进化提交。 */
@@ -2842,6 +2979,8 @@ function autonomyDeps() {
  * 比对什么键——reason 文本/失败类别/复核意见措辞变化不换目标、不重置退避；新
  * 提交/新任务才立即执行一次。返回本次安排的延迟毫秒（0=未安排或立即）。 */
 function scheduleAutonomyFromState(source = readState()) {
+  eventPreparationGeneration++;
+  scheduler.clear('game_update_evolution_event');
   scheduler.clear('autonomy_rework');
   scheduler.clear('activity_evolution_event');
   const state = source;
@@ -2849,6 +2988,7 @@ function scheduleAutonomyFromState(source = readState()) {
   const plan = planAutonomy(state, autonomyDeps());
   if (plan.action !== 'apply' && plan.action !== 'launch' && plan.action !== 'wait') {
     schedulePendingActivityEvent(state);
+    schedulePendingGameUpdateEvent(state);
     return 0;
   }
   const autonomy = normalizeAutonomy(state.autonomy);
@@ -3014,8 +3154,9 @@ async function runAutonomyStep() {
     const usableReport = cachedReport && cachedReport.status !== 'unavailable' && cachedReport.online?.available !== false;
     const automaticPayload = {
       automatic: true,
-      combinedDaily: originalTask === 'activity' ? state.combinedDaily === true : true,
-      preserveFeedbackBatch: originalTask !== 'activity' || !!autonomy.originalPrompt,
+      combinedDaily: capturedCombinedDaily(state, originalTask),
+      preserveFeedbackBatch: (originalTask !== 'activity' || !!autonomy.originalPrompt)
+        && !(state.gameUpdateEventFingerprint && !autonomy.originalPrompt),
       preferDiagnosis: autonomy.preferDiagnosis,
       ...(originalTask === 'activity' ? { report: usableReport ? cachedReport : null } : {}),
       ...(originalTask === 'activity' && capturedPlan ? {
@@ -3062,6 +3203,7 @@ async function runAutonomyStep() {
     logger.warn(`自主进化步骤异常：${error.message}`);
     scheduler.clear('autonomy_rework');
     scheduler.clear('activity_evolution_event');
+    scheduler.clear('game_update_evolution_event');
     const latest = readState();
     latest.autonomy = { ...normalizeAutonomy(latest.autonomy),
       reworkAttempts: normalizeAutonomy(latest.autonomy).reworkAttempts + 1 };
@@ -3112,6 +3254,7 @@ function autonomyDefer(state, key, message) {
  * 不强杀有实际写入的运行；两个方向都只在原摘要后追加一行开关说明，绝不覆盖
  * 真实失败/诊断摘要（enable 擦掉失败原因 = 丢失诊断上下文）。 */
 function setAutonomousEvolution(enabled) {
+  if (enabled !== true) eventPreparationGeneration++;
   const state = readState();
   state.autonomousEvolutionEnabled = enabled === true;
   const toggleNote = state.autonomousEvolutionEnabled
@@ -3131,7 +3274,7 @@ function setAutonomousEvolution(enabled) {
 /** 每日窗口调度：每天窗口内最多自动启动一轮综合巡检。 */
 function scheduleDailyEvolution() {
   const delay = nextSafetyRunAt() - Date.now();
-  scheduler.setTimeoutTask('daily_evolution', delay, () => {
+  scheduler.setTimeoutTask('daily_evolution', delay, async () => {
     const dateKey = getLocalDateKey();
     try {
       // 总开关（用户 2026-09-24 需求）：关闭后跳过自动进化；面板手动触发不受限。
@@ -3142,7 +3285,7 @@ function scheduleDailyEvolution() {
         writeState(state);
         return;
       }
-      attemptDailyEvolution(dateKey);
+      await prepareDailyEvolution(dateKey);
     } finally {
       scheduleDailyEvolution();
     }
@@ -3151,6 +3294,7 @@ function scheduleDailyEvolution() {
 
 /** 面板总开关：每日综合巡检及新/结束活动的即时事件；手动按钮独立。 */
 function setEvolutionEnabled(enabled) {
+  if (enabled === false) preparationGeneration++;
   const state = readState();
   state.evolutionEnabled = enabled !== false;
   state.summary = state.evolutionEnabled
@@ -3158,7 +3302,7 @@ function setEvolutionEnabled(enabled) {
     : '自进化已关闭：跳过自动进化，面板手动触发仍可用';
   writeState(state);
   if (state.evolutionEnabled) scheduleAutonomyFromState(state);
-  else scheduler.clear('activity_evolution_event');
+  else { scheduler.clear('activity_evolution_event'); scheduler.clear('game_update_evolution_event'); }
   return { ok: true, enabled: state.evolutionEnabled };
 }
 
@@ -3534,6 +3678,8 @@ function resumePublishedFeedback(state) {
 }
 
 function startActivityEvolver(options = {}) {
+  preparationGeneration++;
+  eventPreparationGeneration++;
   deps = options;
   if (!runningCommit) runningCommit = gitHead();
   if (!runningSourceFingerprint) {
@@ -3601,6 +3747,14 @@ function settleDailyReview(state, options = {}) {
       state.feedbackCleanupPending = !feedback.acknowledgeBatch(state.feedbackBatch);
       if (!state.feedbackCleanupPending) state.feedbackBatch = null;
     } else state.feedbackCleanupPending = false;
+    if (journal.feedbackReviewed === true && state.gameUpdateBatch
+        && ['no_change', 'applied', 'applied_no_restart'].includes(state.status)) {
+      const expected = crypto.createHash('sha256').update(state.autonomy?.originalPrompt || '').digest('hex');
+      if (state.gameUpdateBatch.promptFingerprint === expected) {
+        acknowledgeUpdateBatch(path.dirname(STATE_FILE), state.gameUpdateBatch);
+        state.gameUpdateBatch = null;
+      }
+    }
     return !state.feedbackCleanupPending;
   } catch {
     // Keep the feedback until knowledge persistence and batch cleanup can both finish.
@@ -3621,6 +3775,7 @@ function getEvolveState() {
   // 计划/退避内部键）、原始反馈批次、运行问题明细只留在 0600 状态文件供内部
   // launch/apply 使用；面板/客户端只拿产品级计数字段。
   const {
+    gameUpdateBatch: _gameUpdateBatch, gameUpdateEventFingerprint: _gameUpdateEventFingerprint,
     autonomy: _autonomy, feedbackBatch: _batch, githubFeedbackBatch: _githubBatch,
     runtimeIssueBatch: _issues, agentSessionId: _agentSessionId,
     candidateTaskRoot: _candidateTaskRoot, activeRun: _activeRun,
@@ -3860,6 +4015,8 @@ module.exports = {
   getLocalDateKey,
   isAutomaticQuotaUsed,
   attemptDailyEvolution,
+  prepareDailyEvolution,
+  checkGameUpdateEvidence,
   buildCachedActivityContext,
   settleCombinedActivityMemory,
   classifyEvolutionExit,

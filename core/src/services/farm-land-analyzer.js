@@ -436,26 +436,18 @@ async function resolveRemovableHarvestedLands(harvestedLandIds, harvestResult) {
 
 // ─── 地块详情（供前端展示）──
 
-function getLandTypeByLevel(level) {
-  const lv = toNum(level);
-  if (lv === 5) return 'purple';
-  if (lv === 4) return 'gold';
-  if (lv === 3) return 'black';
-  if (lv === 2) return 'red';
-  return 'normal';
-}
+const { getLandTypeByLevel } = require('../config/land-types');
 
 function getLandTypeNameByLevel(level) {
-  if (toNum(level) > 5) return `${toNum(level)}级土地`;
-  // 只修展示名称；既有施肥分类和账号偏好保持原样。
   const typeMap = {
+    blue: '蓝晶土地',
     purple: '紫土地',
     gold: '金土地',
     black: '黑土地',
     red: '红土地',
     normal: '普通地'
   };
-  return typeMap[getLandTypeByLevel(level)] || '';
+  return typeMap[getLandTypeByLevel(level)] || (toNum(level) > 0 ? `${toNum(level)}级土地` : '未知土地');
 }
 
 function getQixiDewStatus(plant) {

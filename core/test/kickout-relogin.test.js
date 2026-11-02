@@ -131,6 +131,9 @@ test('保活临时失败使用受控短重试，不等下一个常规到期窗�
     };
     const reasons = [];
     let calls = 0;
+    let secondAttempt;
+    const retried = new Promise(resolve => { secondAttempt = resolve; });
+    let deadline;
     const svc = createAutoCodeRefreshService({
         store: { isAccountAutoLogin: () => true },
         getAccounts: () => ({ accounts: [account] }),
@@ -138,6 +141,7 @@ test('保活临时失败使用受控短重试，不等下一个常规到期窗�
         resolveWorkerControls: () => ({}),
         keepWxCredentialAlive: async () => {
             calls += 1;
+            if (calls >= 2) secondAttempt();
             return calls === 1
                 ? { Success: false, Message: 'temporary fixture', definitive: false }
                 : { Success: true };
@@ -152,14 +156,15 @@ test('保活临时失败使用受控短重试，不等下一个常规到期窗�
 
     try {
         svc.scheduleAccount(account.id);
-        // 全量并行跑测时事件循环可能被挤压，30ms 真实定时器窗口会饿死（2026-09-27
-        // 维护会话两次复现，--test-concurrency=1 全绿）。放宽到 200ms 只防假失败，
-        // 断言本身（先 normal 后 retry，不等到期窗口）不变。
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Wait for the actual retry, rather than assuming two timer turns fit a wall-clock sleep.
+        await Promise.race([retried, new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error('expected controlled credential retry')), 2000);
+        })]);
         assert.ok(calls >= 2);
         assert.equal(reasons[0], 'normal');
         assert.equal(reasons[1], 'retry');
     } finally {
+        clearTimeout(deadline);
         svc.stopAccount(account.id);
     }
 });

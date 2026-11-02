@@ -127,13 +127,13 @@ test('204011 金露云酪 keeps its direct coin price 1001:1000000 and stays out
   assert.equal(config.getPlantByFruitId(204011), undefined, 'no Plant mapping may backdoor it into selling');
 });
 
-function fixture(t, bagError) {
+function fixture(t, bagError, additionalBagItems = []) {
   const paths = ['../src/utils/network', '../src/services/warehouse', '../src/services/activity', '../src/services/milk-tea-activity']
     .map(name => require.resolve(name));
   const saved = paths.map(file => [file, require.cache[file]]);
   const calls = [];
   const bag = types.BagReply.encode(types.BagReply.create({ item_bag: { items:
-    [...specs.map(([id]) => ({ id, count: 2 })), { id: 799993, count: 1 }],
+    [...specs.map(([id]) => ({ id, count: 2 })), ...additionalBagItems, { id: 799993, count: 1 }],
   } })).finish();
   const snapshot = types.MilkTeaGetGroupReply.encode(types.MilkTeaGetGroupReply.create({ group: {
     head: { activity_id: 2026110100, begin_time: 1, end_time: 4102444800 }, children: [
@@ -235,4 +235,19 @@ test('ordinary inventory failure preserves the existing panel cooldown without r
   await assert.rejects(f.warehouse.getBagDetail(), /synthetic inventory/);
   await assert.rejects(f.warehouse.getBagDetail(), /背包读取冷却中/);
   assert.deepEqual(f.calls, ['Bag']);
+});
+
+test('official collection metadata resolves every icon but the real bag/sell/seed entries keep it out of automatic economic actions', async t => {
+  const catalog = require('../src/gameConfig/UpdateCatalog.json'); const collectionItems = catalog.series.flatMap(group => group.items);
+  const f = fixture(t, undefined, collectionItems.map(item => ({ id: item.id, count: 2 })));
+  const detail = await f.warehouse.getBagDetail();
+  for (const expected of collectionItems) {
+    const row = detail.items.find(item => item.id === expected.id); assert.ok(row);
+    assert.equal(row.name, expected.name); assert.ok(row.image); assert.equal(config.getItemById(expected.id).type, 35);
+    assert.notEqual(row.category, 'fruit'); assert.notEqual(row.category, 'seed');
+    assert.equal(config.getPlantByFruitId(expected.id), undefined); assert.equal(config.getPlantBySeedId(expected.id), undefined);
+  }
+  assert.equal(f.warehouse.getBagSeedsFromItems(collectionItems.map(item => ({ id: item.id, count: 2 }))).length, 0);
+  const store = require('../src/models/store'); store.applyConfigSnapshot({ automation: { sell: true } }, { persist: false, accountId: process.env.FARM_ACCOUNT_ID });
+  await f.warehouse.sellAllFruits(); assert.deepEqual(f.calls, ['Bag', 'Bag'], 'a verified picture/type35 must not create Sell requests');
 });

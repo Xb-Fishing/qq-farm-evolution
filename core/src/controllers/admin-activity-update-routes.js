@@ -6,6 +6,9 @@ const {
   startActivityUpdateMonitor,
 } = require('../services/activity-update-monitor');
 const activityEvolver = require('../services/activity-evolver');
+const { getDataDir } = require('../config/runtime-paths');
+const { recordUpdateDigest } = require('../services/game-update-digest');
+const crypto = require('node:crypto');
 
 const NON_FAILURE_EVOLUTION_START_REASONS = new Set([
   'busy',
@@ -95,7 +98,13 @@ function anonymizeGameUpdateEvidence(evidence) {
   const sources = {};
   for (const [name, value] of Object.entries(evidence.sources || {})) {
     sources[name] = value?.status === 'ok' || value?.status === 'partial'
-      ? { status: value.status, fetchedAt: value.fetchedAt }
+      ? { status: value.status, fetchedAt: value.fetchedAt,
+        factsHash: /^[a-f0-9]{64}$/.test(value.factsHash) ? value.factsHash : '',
+        ...(name === 'announcements' ? { entries: value.entries, listComplete: value.listComplete === true } : {}),
+        ...(name === 'emails' ? { boxes: Object.fromEntries([1, 2].map(box => [box, {
+          status: value.boxes?.[box]?.status || 'unknown',
+          factsHash: /^[a-f0-9]{64}$/.test(value.boxes?.[box]?.factsHash) ? value.boxes[box].factsHash : '',
+        }])) } : {}) }
       : { status: 'unknown', errorClass: value?.errorClass || '' };
   }
   return {
@@ -138,7 +147,7 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
       try {
         collectedGameUpdateEvidence = await provider.getGameUpdateEvidence(account.id, {});
         gameUpdateEvidence = anonymizeGameUpdateEvidence(collectedGameUpdateEvidence);
-      } catch (error) {
+      } catch {
         gameUpdateEvidence = { status: 'unknown', errorClass: 'read_failed' };
       }
     }
@@ -211,14 +220,29 @@ function registerAdminActivityUpdateRoutes({ app, provider, store, requireAdminT
       unknownActivityIds: unknown.map(item => Number(item.id)),
     };
   };
+  const prepareGameUpdateReview = async () => {
+    const accounts = provider.getAccounts()?.accounts || [];
+    const account = accounts.find(item => item.running && provider.isAccountRunning(item.id)
+      && provider.getStatus(item.id)?.connection?.connected === true);
+    if (!account || typeof provider.getGameUpdateEvidence !== 'function') return { status: 'unavailable' };
+    const evidence = anonymizeGameUpdateEvidence(await provider.getGameUpdateEvidence(account.id, {}));
+    const scannedAt = Date.now();
+    const digest = crypto.createHash('sha256').update(JSON.stringify(evidence.sources)).digest('hex');
+    recordUpdateDigest(getDataDir(), { scannedAt, online: { gameUpdateEvidence: evidence } }, digest);
+    return { status: evidence.status, collectedAt: evidence.collectedAt };
+  };
   startActivityUpdateMonitor({
     knownActivityIds,
     onlineScanner: scanOnlineActivities,
     localScanEnabled: String(process.env.ACTIVITY_LOCAL_SCAN_ENABLED || '').toLowerCase() === 'true',
     // 每次扫描登记新/结束活动；自主开启时空闲后立即进化，同批去重，不占每日名额。
-    onReport: report => activityEvolver.checkAndMaybeEvolve(report),
+    onReport: report => {
+      activityEvolver.checkAndMaybeEvolve(report);
+      activityEvolver.checkGameUpdateEvidence();
+    },
   });
   activityEvolver.startActivityEvolver({ store,
+    prepareGameUpdateReview,
     prepareWxRestart: input => provider?.prepareWxRestart?.(input),
     validateWxRestart: async handoff => await provider?.validateWxRestart?.(handoff) === true,
     cancelWxRestart: input => provider?.cancelWxRestart?.(input),

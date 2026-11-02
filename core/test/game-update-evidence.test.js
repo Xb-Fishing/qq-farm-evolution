@@ -16,13 +16,13 @@ test.after(() => { assert.deepEqual(fingerprint(), initial); fs.rmSync(root, { r
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function dataDir() { const dir = path.resolve(root, crypto.randomUUID()); assert.ok(dir.startsWith(root + path.sep)); fs.mkdirSync(dir, { mode: 0o700 }); return dir; }
 function load(file, mocks, extra = {}) {
-  const req = createRequire(file), module = { exports: {} };
+  const req = createRequire(file); const module = { exports: {} };
   const context = { module, exports: module.exports, require: name => Object.hasOwn(mocks, name) ? mocks[name] : req(name),
     Buffer, structuredClone, process: { env: { FARM_ACCOUNT_ID: 'synthetic-update' } }, console, ...extra };
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), context, { filename: file }); return { service: module.exports, context };
 }
 function evidenceHarness() {
-  const dir = dataDir(), calls = []; let now = 1800000000000, connected = true, conn = {};
+  const dir = dataDir(); const calls = []; let now = 1800000000000; let connected = true; let conn = {};
   const rows = {
     announcements: { fetchedAt: now, announcements: [{ id: '71001', title: '合成公告', content: '合成正文', detailLoaded: true }] },
     emails: { fetchedAt: now, boxes: { 1: { ok: true, fetchedAt: now, total: 1, claimable: 1, idHashes: ['a'.repeat(64)] }, 2: { ok: true, fetchedAt: now, total: 0, claimable: 0, idHashes: [] } } },
@@ -54,12 +54,12 @@ test('ordinary failure is not empty success; volatile progress does not change f
   assert.doesNotMatch(JSON.stringify(partial), /private-input/);
 });
 test('connection replacement stops remaining entries and prevents persistence or cache reuse of late results', async () => {
-  const h = evidenceHarness(), gate = defer(); h.deps.announcements = async () => { h.calls.push('announcements'); await gate.promise; return h.rows.announcements; };
+  const h = evidenceHarness(); const gate = defer(); h.deps.announcements = async () => { h.calls.push('announcements'); await gate.promise; return h.rows.announcements; };
   const read = h.read(); h.replace(); gate.resolve(); await assert.rejects(read);
   assert.equal(h.calls.length, 1); assert.equal(fs.existsSync(path.join(h.dir, 'game-update-evidence')), false);
 });
 test('default collector uses actual module exports and declared existing strict readers instead of swallowed-error wrappers', async () => {
-  const dir = dataDir(), file = path.resolve(__dirname, '../src/services/game-update-evidence.js'), calls = [], conn = {};
+  const dir = dataDir(); const file = path.resolve(__dirname, '../src/services/game-update-evidence.js'); const calls = []; const conn = {};
   const codec = { create: x => x, encode: () => ({ finish: () => Buffer.from([0]) }), decode: () => ({ items: [], goods_list: [] }) };
   const types = Object.fromEntries(['GetIllustratedListV2Request','GetIllustratedListV2Reply','GetMallListBySlotTypeRequest','GetMallListBySlotTypeResponse','MallGoods'].map(name => [name, codec]));
   const h = load(file, {
@@ -73,7 +73,7 @@ test('default collector uses actual module exports and declared existing strict 
   assert.deepEqual(calls, ['GetIllustratedListV2', 'GetMallListBySlotType']);
 });
 function monitorHarness() {
-  const dir = dataDir(), callbacks = []; let now = 1800000000000, reads = 0;
+  const dir = dataDir(); const callbacks = []; let now = 1800000000000; let reads = 0;
   class Clock extends Date { static now() { return now; } }
   const file = path.resolve(__dirname, '../src/services/activity-update-monitor.js');
   const h = load(file, { '../config/runtime-paths': { getDataFile: name => path.join(dir, name) } }, {
@@ -103,7 +103,7 @@ test('stable game changes persist unreviewed across ordinary scans, failures and
   h.service.stopActivityUpdateMonitor();
 });
 test('authorized routes and real provider/Worker switch keep snapshots read-only, gate disconnected accounts and pass sufficient IPC timeout', async () => {
-  const handlers = new Map(), calls = []; let allowed = true, connected = true;
+  const handlers = new Map(); const calls = []; let allowed = true; let connected = true;
   const provider = { getStatus: () => ({ connection: { connected } }), getEmailSnapshot: async id => { calls.push(id); return { boxes: {} }; }, getGameUpdateEvidence: async () => ({ sources: {} }) };
   require('../src/controllers/admin-game-update-routes').registerAdminGameUpdateRoutes({ app: { get: (p, f) => handlers.set(p, f) }, provider,
     getAccountIdFromRequest: req => req.account, canAccessAccount: () => allowed, sendProviderError: (_res, e) => { throw e; } });
@@ -115,11 +115,11 @@ test('authorized routes and real provider/Worker switch keep snapshots read-only
   const adapter = createDataProvider({ getAccounts: () => ({ accounts: [{ id: 'fixture' }] }), callWorkerApi: (...args) => { ipc.push(args); return {}; } });
   adapter.getGameUpdateEvidence('fixture'); adapter.getEmailSnapshot('fixture');
   assert.equal(ipc[0].at(-1)._timeoutMs, 120000); assert.equal(ipc[1].at(-1)._timeoutMs, 30000);
-  const worker = fs.readFileSync(path.resolve(__dirname, '../src/core/worker.js'), 'utf8'), start = worker.indexOf('async function handleApiCall(msg)'), end = worker.indexOf('// ==================== 每日礼包总览', start);
-  const replies = [], context = vm.createContext({ FRIEND_PANEL_ENTRY_METHODS: new Set(), BAG_PANEL_ENTRY_METHODS: new Set(), isRunning: true, loginReady: true, getWs: () => ({ readyState: 1 }),
+  const worker = fs.readFileSync(path.resolve(__dirname, '../src/core/worker.js'), 'utf8'); const start = worker.indexOf('async function handleApiCall(msg)'); const end = worker.indexOf('// ==================== 每日礼包总览', start);
+  const replies = []; const context = vm.createContext({ FRIEND_PANEL_ENTRY_METHODS: new Set(), BAG_PANEL_ENTRY_METHODS: new Set(), isRunning: true, loginReady: true, getWs: () => ({ readyState: 1 }),
     require: name => name === '../services/email' ? { getEmailSnapshot: async () => ({ source: 'fixture-mail' }) } : { collectGameUpdateEvidence: async () => ({ source: 'fixture-update' }) },
     sendToMaster: value => replies.push(value), collectPetDiaryErrorMeta: () => null });
-  const handle = vm.runInContext(worker.slice(start, end) + '\n;handleApiCall', context);
+  const handle = vm.runInContext(`${worker.slice(start, end)  }\n;handleApiCall`, context);
   await handle({ id: 'one', method: 'getEmailSnapshot', args: [] }); assert.equal(replies.at(-1).result.source, 'fixture-mail');
   await handle({ id: 'two', method: 'getGameUpdateEvidence', args: [] }); assert.equal(replies.at(-1).result.source, 'fixture-update');
   context.loginReady = false; await handle({ id: 'three', method: 'getEmailSnapshot', args: [] }); assert.ok(replies.at(-1).error);
@@ -130,7 +130,7 @@ test('actual business gate drains a pending evidence read without adding a persi
   const { createBusinessGate } = require('../src/runtime/business-gate');
   const gate = createBusinessGate('synthetic-evidence-epoch'); gate.activate(); business.setBusinessGate(gate);
   const before = Object.keys(business.snapshotBusinessState().domains).length;
-  const h = evidenceHarness(), pause = defer();
+  const h = evidenceHarness(); const pause = defer();
   h.deps.announcements = async () => { await pause.promise; return h.rows.announcements; };
   const file = path.resolve(__dirname, '../src/services/game-update-evidence.js');
   const loaded = load(file, { '../utils/network': {}, '../config/runtime-paths': { getDataDir: () => h.dir } },
@@ -143,4 +143,25 @@ test('actual business gate drains a pending evidence read without adding a persi
     pause.resolve(); await read; await drain; assert.equal(gate.active, 0);
     assert.equal(Object.keys(business.snapshotBusinessState().domains).length, before);
   } finally { pause.resolve(); gate.retire(); business.setBusinessGate(null); }
+});
+
+test('reward opportunities include task-active milestones, illustrated level rewards and calendar seasons', async () => {
+  const h = evidenceHarness(); h.rows.tasks = { task_info: { actives: [{ type: 1, rewards: [{ point_id: 99001, status: 2 }] }] } };
+  h.rows.illustrated = { items: [], has_level_reward: true }; h.rows.solarCalendar = { events: [], seasons: [{ id: 9001, canClaim: true }] };
+  const value = await h.read(); assert.equal(value.sources.tasks.activeClaimable, 1); assert.equal(value.sources.tasks.claimable, 1);
+  assert.equal(value.sources.illustrated.levelClaimable, 1); assert.equal(value.sources.illustrated.claimable, 1);
+  assert.equal(value.sources.solarCalendar.seasonClaimable, 1); assert.equal(value.sources.solarCalendar.claimable, 1);
+});
+test('aggregate read budget stops starting later RPC chains instead of timing out an orphan sequence', async () => {
+  const h = evidenceHarness();
+  for (const name of Object.keys(h.rows)) h.deps[name] = async () => { h.calls.push(name); h.advance(20000); return h.rows[name]; };
+  const value = await h.read(); assert.equal(h.calls.length, 4); assert.equal(value.sources.illustrated.errorClass, 'read_budget_exhausted');
+  assert.equal(value.sources.mall.errorClass, 'read_budget_exhausted'); assert.equal(value.factsComplete, false);
+});
+test('stop or replacement while scanner is pending cannot publish old results or resurrect timers', async () => {
+  const h = monitorHarness(); const gate = defer(); let published = 0;
+  h.service.startActivityUpdateMonitor({ knownActivityIds: [91001], onlineScanner: async () => { await gate.promise; return h.online; }, onReport: () => published++ });
+  const pending = h.service.runActivityUpdateScan(); await Promise.resolve(); h.service.stopActivityUpdateMonitor(); gate.resolve();
+  await assert.rejects(pending, error => error.code === 'SCAN_CANCELLED'); assert.equal(published, 0);
+  assert.equal(h.service.getActivityUpdateState().nextScanAt, 0); assert.equal(h.service.getActivityUpdateState().nextEndTimeReviewAt, 0);
 });

@@ -6,7 +6,8 @@ import { useSettingStore } from '@/stores/setting'
 
 type AlertType = 'primary' | 'danger'
 
-const allFertilizerLandTypes = ['purple', 'gold', 'black', 'red', 'normal']
+const defaultFertilizerLandTypes = ['purple', 'gold', 'black', 'red', 'normal']
+const allFertilizerLandTypes = ['blue', ...defaultFertilizerLandTypes]
 
 const defaultAutomation = {
   farm: false,
@@ -51,7 +52,7 @@ const defaultAutomation = {
   fertilizer: 'none',
   skip_own_weed_bug: false,
   fertilizer_multi_season: false,
-  fertilizer_land_types: [...allFertilizerLandTypes],
+  fertilizer_land_types: [...defaultFertilizerLandTypes],
   fertilizer_smart_seconds: 300,
 }
 
@@ -68,6 +69,7 @@ export function useAutomationSettings({
   const localAutomationSettings = ref({
     automation: {
       ...defaultAutomation,
+      fertilizer_land_types: [...defaultFertilizerLandTypes],
       fertilizer: 'normal',
     },
     autoAcceptFriendMinLevel: 0,
@@ -100,6 +102,7 @@ export function useAutomationSettings({
   const autoCodeRefreshing = ref(false)
 
   const fertilizerLandTypeOptions = [
+    { label: '蓝晶土地', value: 'blue' },
     { label: '紫土地', value: 'purple' },
     { label: '金土地', value: 'gold' },
     { label: '黑土地', value: 'black' },
@@ -120,7 +123,7 @@ export function useAutomationSettings({
   ]
 
   function normalizeFertilizerLandTypes(input: unknown) {
-    const source = Array.isArray(input) ? input : allFertilizerLandTypes
+    const source = Array.isArray(input) ? input : defaultFertilizerLandTypes
     const normalized: string[] = []
     for (const item of source) {
       const value = String(item || '').trim().toLowerCase()

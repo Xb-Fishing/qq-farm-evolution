@@ -12,7 +12,7 @@ test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 function write(value) {
   const dir = path.resolve(root, 'game-update-evidence'); assert.ok(dir.startsWith(root + path.sep));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = path.resolve(dir, 'a'.repeat(24) + '.json'); assert.equal(path.dirname(file), dir);
+  const file = path.resolve(dir, `${'a'.repeat(24)  }.json`); assert.equal(path.dirname(file), dir);
   fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
 }
 const fact = () => ({ source: 'game-update-evidence', collectedAt: Date.now(), status: 'partial_coverage', semanticHash: 'b'.repeat(64),
@@ -28,7 +28,7 @@ test('both actual Main prompt builders receive the dynamic evidence through thei
   write(fact()); const evolver = require('../src/services/activity-evolver');
   for (const text of [evolver.buildSafetyPrompt(), evolver.buildPrompt({ online: { activities: [], groups: [] } }, [], [])]) {
     assert.match(text, /游戏更新证据快照/); assert.match(text, /"box1":3/);
-    assert.match(text, /原目标未完成/); assert.doesNotMatch(text, /never-print-private/);
+    assert.match(text, /准备收据/); assert.match(text, /尚未核实完成/); assert.doesNotMatch(text, /never-print-private/);
   }
 });
 test('a previous-day snapshot cannot be presented as current, and wrong source cannot appear as valid facts', () => {

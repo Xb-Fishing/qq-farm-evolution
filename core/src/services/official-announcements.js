@@ -117,7 +117,8 @@ async function fetchAnnouncements() {
 
 async function getOfficialAnnouncements() {
     if (!isConnected()) throw new Error('账号未连接，无法读取官方公告');
-    if (cached && Date.now() < cachedUntil) return { ...cached, upstreamCached: true };
+    if (cached && Date.now() < cachedUntil
+        && require('../config/game-date').gameDateKey(cached.fetchedAt) === require('../config/game-date').gameDateKey(Date.now())) return { ...cached, upstreamCached: true };
     if (inFlight) return inFlight;
     if (Date.now() < failedUntil) throw lastError;
     inFlight = (async () => {

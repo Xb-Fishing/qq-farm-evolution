@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { captureUpdateBatch } = require('./game-update-digest');
 
 // Local evidence only: this builder never logs in, polls or requests game data.
 function readOfficialAnnouncementCacheSummary(dataDir) {
@@ -81,10 +82,12 @@ function readGameUpdateEvidenceSummary(dataDir, now = Date.now()) {
         const sources = names.map(name => {
           const value = snapshot.sources[name];
           const status = ['ok', 'partial', 'error'].includes(value?.status) ? value.status : 'unknown';
-          const counts = Object.fromEntries(['count', 'details', 'daily', 'growth', 'main', 'free', 'open', 'claimable'].filter(key => Number.isSafeInteger(value?.[key]) && value[key] >= 0).map(key => [key, value[key]]));
+          const counts = Object.fromEntries(['count', 'details', 'daily', 'growth', 'main', 'free', 'open', 'claimable',
+            'taskClaimable', 'activeClaimable', 'itemClaimable', 'levelClaimable', 'eventClaimable', 'seasonClaimable']
+            .filter(key => Number.isSafeInteger(value?.[key]) && value[key] >= 0).map(key => [key, value[key]]));
           if (name === 'emails') for (const key of ['1', '2']) {
             const box = value?.boxes?.[key];
-            if (box?.status === 'ok') { counts['box' + key] = Number(box.total) || 0; counts['claimable' + key] = Number(box.claimable) || 0; }
+            if (box?.status === 'ok') { counts[`box${  key}`] = Number(box.total) || 0; counts[`claimable${  key}`] = Number(box.claimable) || 0; }
           }
           return { name, status, fetchedAt: Number(value?.fetchedAt) || 0, counts, errorClass: status === 'error' ? 'read_failed' : '' };
         });
@@ -115,7 +118,7 @@ function buildGameUpdateEvidenceContext(dataDir, now = Date.now()) {
   if (!summary.snapshots.length) {
     if (summary.incomplete) lines.push('证据不完整：存在非法或不可读快照，不能称已完成检查。');
     lines.push('尚无任何更新证据快照：公告正文、两箱邮件、任务、图鉴、商城均未采集。不得据此推断没有更新。');
-    return lines.join('\n');
+    return `${lines.join('\n')}\n${buildPendingGameUpdateContext(dataDir)}`;
   }
   for (const item of summary.snapshots) {
     const errors = item.sources.filter(source => source.status === 'error' || source.status === 'partial');
@@ -125,9 +128,24 @@ function buildGameUpdateEvidenceContext(dataDir, now = Date.now()) {
   const latest = summary.snapshots[0];
   if (!latest.sameDay) lines.push('最新证据快照不是当日采集：同日新邮件/新任务/新公告不能从旧快照推断，需先一次有界采集再下结论。');
   if (latest.gaps.length) lines.push(`未覆盖入口（明确缺证，不是“已核对无更新”）：${latest.gaps.join('、')}。`);
-  lines.push('当前快照由既有活动扫描或显式只读获取，不代表每日启动前已强制等待新采集；该发布器接缝仍受保护，原目标未完成。');
+  lines.push('快照来源和时间须与本轮启动前准备收据一起核对；失败或未覆盖入口不得视作完成检查。');
   lines.push('证据快照只含数量/时间/哈希/已知状态；判断更新必须再读对应正文或原始入口，禁止按哈希变化臆测内容。');
   if (summary.incomplete) lines.push('证据快照有不可读、非法或超出读取上限的项，证据不完整。');
+  return `${lines.join('\n')}\n${buildPendingGameUpdateContext(dataDir)}`;
+}
+
+function buildPendingGameUpdateContext(dataDir) {
+  const lines = ['【已捕获但尚未核实完成的游戏变化】'];
+  try {
+    const batch = captureUpdateBatch(dataDir);
+    lines.push(`本轮可审批次指纹 ${batch.fingerprint}，捕获 ${batch.entries.length} 条，待审总计 ${batch.totalPending} 条。`);
+    for (const entry of batch.entries) {
+      lines.push(`- ${entry.key}：${entry.kind} / ${entry.source || entry.id || '旧聚合事实'}，事实指纹 ${entry.digest}，首次发现 ${new Date(entry.firstSeenAt).toISOString()}。`);
+      if (entry.historyRefs?.length) lines.push(`  当时取得的公告正文留证：${entry.historyRefs.slice(0, 3).map(ref => path.join(dataDir, 'game-update-history', ref)).join('、')}${entry.historyRefs.length > 3 ? '（其余原文索引在activity-update-digest.json对应条目中）' : ''}。按需读该批原文，不用最新快照冒充历史事实。`);
+    }
+    if (batch.totalPending > batch.entries.length || batch.overflow) lines.push('仍有本批次之外或历史超限的线索；不得将未提供的条目标记为已核实。');
+    lines.push('保留原批次继续核实，不能因最新快照覆盖而遗忘旧变化；本批有未完成项时feedbackReviewed必须为false。只有对应真实验收完成且运行生效后才能确认精确批次，失败与更新的条目必须保留。');
+  } catch { lines.push('待审变化记录不可读或格式无效；原文件保留，不能把它当作空记录或已完成。'); }
   return lines.join('\n');
 }
 
@@ -136,4 +154,5 @@ module.exports = {
   buildOfficialAnnouncementCacheContext,
   readGameUpdateEvidenceSummary,
   buildGameUpdateEvidenceContext,
+  buildPendingGameUpdateContext,
 };

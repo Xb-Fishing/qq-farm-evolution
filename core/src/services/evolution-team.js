@@ -19,6 +19,7 @@ const PRIVATE_CONTROLS = new Set([
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',
   'core/src/services/private-config.js', 'core/src/services/feishu-notify.js', 'scripts/evolution-hooks/pre-push',
   'core/src/services/activity-evolver.js',
+  'core/src/services/game-update-digest.js',
     'core/src/services/evolution-countercheck.js', 'core/scripts/countercheck-reporter.cjs',
     'core/src/services/evolution-learning.js', 'core/src/services/evolution-validation.js', 'core/src/services/evolution-references.js',
     'core/src/services/daily-feedback.js', 'core/src/controllers/admin-feedback-routes.js',

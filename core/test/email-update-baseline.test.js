@@ -24,9 +24,9 @@ function harness(t, options = {}) {
   const state = { now: 1800000000000, boxes: { 1: [], 2: [] }, calls: [], fail: new Set(), connection: {}, connected: true, hook: null, logs: [] };
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [state.now])); } static now() { return state.now; } }
   const net = { isConnected: () => state.connected, getWs: () => state.connection,
-    sendMsgAsync: async (service, method, bytes) => {
+    sendMsgAsync: async (service, method, bytes, timeoutMs) => {
       const request = types[`${method}Request`].decode(bytes); const box = Number(request.box_type);
-      state.calls.push({ method, box });
+      state.calls.push({ method, box, timeoutMs });
       if (state.hook) { const response = await state.hook(method, box, request); if (response) return response; }
       if (method === 'GetEmailList') {
         if (state.fail.has(box)) throw new Error('synthetic read failure');
@@ -38,12 +38,12 @@ function harness(t, options = {}) {
       }
       throw new Error('unexpected method');
     } };
-  const req = createRequire(source), module = { exports: {} };
+  const req = createRequire(source); const module = { exports: {} };
   const env = { FARM_DATA_DIR: dir, FARM_ACCOUNT_ID: 'fixture-mail' };
   const context = { module, exports: module.exports, Buffer, structuredClone, Date: Clock, process: { env }, console,
     require: name => name === '../utils/network' ? net : name === '../utils/proto' ? { types }
       : name === '../utils/utils' ? { toNum: Number, log: (...x) => state.logs.push(x) }
-        : name === '../config/gameConfig' ? { getItemById: () => ({ name: '示例奖励' }) }
+        : name === '../config/gameConfig' ? { getItemById: options.getItemById || (() => ({ name: '示例奖励' })) }
           : name === '../config/runtime-paths' ? { getDataDir: () => dir } : req(name) };
   vm.runInNewContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
   return { service: module.exports, state, dir, env, count: method => state.calls.filter(row => row.method === method).length,
