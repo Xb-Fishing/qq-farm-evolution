@@ -48,7 +48,92 @@ function buildOfficialAnnouncementCacheContext(dataDir) {
   if (!summary.snapshots.some(item => item.details > 0)) lines.push('官方公告正文未取得；不得据此推断没有活动更新。');
   if (summary.incomplete) lines.push('公告缓存有不可读、非法或超出读取上限的项，证据不完整。');
   lines.push('缺少当前正文时，仅由有现成授权上下文的主 Agent/协调进程通过既有只读入口一次有界读取；不向实施工具传递管理员凭据，不新增轮询、编号枚举或游戏写操作。没有已连接账号或授权上下文时保留具体缺口，继续解决已有证据的问题。');
+  return `${lines.join('\n')}\n\n${buildGameUpdateEvidenceContext(dataDir)}`;
+}
+
+// 只读本地更新证据快照（services/game-update-evidence.js 落盘）：脱敏摘要，
+// 只有 counts/时间/稳定语义哈希/已知状态与缺证项，不含原始标题正文或昵称。
+function readGameUpdateEvidenceSummary(dataDir, now = Date.now()) {
+  const directory = path.resolve(dataDir, 'game-update-evidence');
+  const result = { directory, snapshots: [], incomplete: false };
+  let listing;
+  try {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return { ...result, incomplete: true };
+    listing = fs.opendirSync(directory);
+    for (let count = 0; count < 16; count++) {
+      const entry = listing.readSync();
+      if (!entry) break;
+      if (count === 15) result.incomplete = true;
+      if (!/^[a-f0-9]{24}\.json$/.test(entry.name) || !entry.isFile()) continue;
+      const file = path.resolve(directory, entry.name);
+      if (path.dirname(file) !== directory) continue;
+      try {
+        const fileStat = fs.lstatSync(file);
+        if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > 256 * 1024) { result.incomplete = true; continue; }
+        const snapshot = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const collectedAt = Number(snapshot.collectedAt);
+        if (snapshot.source !== 'game-update-evidence' || !Number.isFinite(collectedAt)
+          || collectedAt <= 0 || collectedAt > now + 300000 || !snapshot.sources) {
+          result.incomplete = true; continue;
+        }
+        const names = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall'];
+        const sources = names.map(name => {
+          const value = snapshot.sources[name];
+          const status = ['ok', 'partial', 'error'].includes(value?.status) ? value.status : 'unknown';
+          const counts = Object.fromEntries(['count', 'details', 'daily', 'growth', 'main', 'free', 'open', 'claimable'].filter(key => Number.isSafeInteger(value?.[key]) && value[key] >= 0).map(key => [key, value[key]]));
+          if (name === 'emails') for (const key of ['1', '2']) {
+            const box = value?.boxes?.[key];
+            if (box?.status === 'ok') { counts['box' + key] = Number(box.total) || 0; counts['claimable' + key] = Number(box.claimable) || 0; }
+          }
+          return { name, status, fetchedAt: Number(value?.fetchedAt) || 0, counts, errorClass: status === 'error' ? 'read_failed' : '' };
+        });
+        const day = value => new Date(value + 8 * 3600000).toISOString().slice(0, 10);
+        const sameDay = day(collectedAt) === day(now);
+        result.snapshots.push({
+          file: entry.name,
+          collectedAt,
+          sameDay,
+          ageMinutes: Math.max(0, Math.round((now - collectedAt) / 60000)),
+          status: ['partial_coverage', 'partial'].includes(snapshot.status) ? snapshot.status : 'unknown',
+          semanticHash: /^[a-f0-9]{64}$/.test(snapshot.semanticHash) ? snapshot.semanticHash : '',
+          sources,
+          gaps: ['settings', 'collections', 'official-all-red-dots'],
+        });
+      } catch { result.incomplete = true; }
+    }
+  } catch (error) { if (error.code !== 'ENOENT') result.incomplete = true; }
+  finally { listing?.closeSync(); }
+  result.snapshots.sort((a, b) => b.collectedAt - a.collectedAt);
+  result.snapshots = result.snapshots.slice(0, 4);
+  return result;
+}
+
+function buildGameUpdateEvidenceContext(dataDir, now = Date.now()) {
+  const summary = readGameUpdateEvidenceSummary(dataDir, now);
+  const lines = ['【游戏更新证据快照（脱敏）】'];
+  if (!summary.snapshots.length) {
+    if (summary.incomplete) lines.push('证据不完整：存在非法或不可读快照，不能称已完成检查。');
+    lines.push('尚无任何更新证据快照：公告正文、两箱邮件、任务、图鉴、商城均未采集。不得据此推断没有更新。');
+    return lines.join('\n');
+  }
+  for (const item of summary.snapshots) {
+    const errors = item.sources.filter(source => source.status === 'error' || source.status === 'partial');
+    for (const source of item.sources) lines.push(`  ${source.name}: ${source.status}，采集 ${source.fetchedAt > 0 ? new Date(source.fetchedAt).toISOString() : '未知'}，数量 ${JSON.stringify(source.counts)}`);
+    lines.push(`- ${item.file}：采集 ${new Date(item.collectedAt).toISOString()}（${item.ageMinutes} 分钟前${item.sameDay ? '，当日' : '，非当日，不可当新鲜'}），整体 ${item.status}，语义哈希 ${item.semanticHash || '无'}${errors.length ? `，失败入口 ${errors.map(source => `${source.name}(${source.errorClass || source.status})`).join('/')}` : ''}`);
+  }
+  const latest = summary.snapshots[0];
+  if (!latest.sameDay) lines.push('最新证据快照不是当日采集：同日新邮件/新任务/新公告不能从旧快照推断，需先一次有界采集再下结论。');
+  if (latest.gaps.length) lines.push(`未覆盖入口（明确缺证，不是“已核对无更新”）：${latest.gaps.join('、')}。`);
+  lines.push('当前快照由既有活动扫描或显式只读获取，不代表每日启动前已强制等待新采集；该发布器接缝仍受保护，原目标未完成。');
+  lines.push('证据快照只含数量/时间/哈希/已知状态；判断更新必须再读对应正文或原始入口，禁止按哈希变化臆测内容。');
+  if (summary.incomplete) lines.push('证据快照有不可读、非法或超出读取上限的项，证据不完整。');
   return lines.join('\n');
 }
 
-module.exports = { readOfficialAnnouncementCacheSummary, buildOfficialAnnouncementCacheContext };
+module.exports = {
+  readOfficialAnnouncementCacheSummary,
+  buildOfficialAnnouncementCacheContext,
+  readGameUpdateEvidenceSummary,
+  buildGameUpdateEvidenceContext,
+};

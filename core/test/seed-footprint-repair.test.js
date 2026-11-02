@@ -76,9 +76,12 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const plants = JSON.parse(fs.readFileSync(path.join(base, 'EventPlants.json'))); const items = JSON.parse(fs.readFileSync(path.join(base, 'EventItems.json')));
   const hash = x => crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
   const selectedPlants = new Set([...cases.map(x => x[1]), 1020165, 1022254]); const selectedFruits = new Set(cases.map(x => x[2]));
+  // Separately covered by game-update-panel's actual catalog/plant/item behavior checks.
+  const novemberPlants = new Set([1020381, 1020397, 1020399, 1021080, 1021082, 1021096, 1021097, 1021099, 1021100, 1020374, 1020398, 1020457, 1020107, 1021084, 1021111, 1020117, 1020119, 1020173, 1020125, 1020189]);
+  const novemberItems = new Set([20381, 40381, 20397, 40397, 20399, 40399, 21080, 41080, 21082, 41082, 21096, 41096, 21097, 41097, 21099, 41099, 21100, 41100, 20374, 40374, 20398, 40398, 20457, 40457, 21084, 41084, 21111, 41111, 20117, 40117, 20119, 40119, 20173, 40173, 20125, 40125, 20189, 40189]);
   assert.equal(plants.filter(row => row.id === 1020165).length, 1);
   assert.deepEqual([config.getPlantBySeedId(20165)?.id, config.getPlantBySeedId(20165)?.size, config.getPlantBySeedId(20165)?.fruit.id], [1020165, 1, 40165]);
-  assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
+  assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id) && !novemberPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,
   // and the separately verified golden-fruit rows asserted independently below.
@@ -90,7 +93,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   // verified milk-tea tower-skin decoration, asserted independently as type 18 below.
   const decorationAdditions = new Set([204011]);
   const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
-    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id))
+    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',

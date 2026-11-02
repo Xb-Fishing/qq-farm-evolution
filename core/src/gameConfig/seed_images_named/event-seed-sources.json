@@ -1432,5 +1432,54 @@
       }
     ],
     "note": "逐行复核同版Plant与ItemInfo；size null按已有同版缺省单格规则登记1，不外推未知种子。节日签到入口为独立节令日历服务，当前奖励以动态回包为准；普通果实官方sells为金币售价，不等同奶茶条件售价。"
-  }
+  },
+  "novemberUpdateConfiguration": {
+  "alias": "public-reference-2",
+  "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+  "officialPlantSha256": "4e03a517903c01940e0a5b81b982d12592c5dd4352953c690b68cf429170b795",
+  "seedIds": [
+    20381,
+    20397,
+    20399,
+    21080,
+    21082,
+    21096,
+    21097,
+    21099,
+    21100,
+    20374,
+    20398,
+    20457,
+    20107,
+    21084,
+    21111,
+    20117,
+    20119,
+    20173,
+    20125,
+    20189
+  ],
+  "sizeRule": "同版本普通作物缺省单格，显式登记1；不外推未知种子",
+  "dedicatedImagesVerified": false,
+  "sourceFiles": [
+    {
+      "path": "core/src/gameConfig/ItemInfo.json",
+      "sha256": "7e6feb7ba909c1d5c6cb0ea53dfdb7fa575b2f353141ba609dd14e809e69d437",
+      "gitBlob": "0c66de410a8ef1da14bf34e84abd7ea04bf2d0d3",
+      "bytes": 843374
+    },
+    {
+      "path": "core/src/gameConfig/Plant.json",
+      "sha256": "92932bb5457a94f674f9e32d316a97ffdd50117fd63b6ec5d69aa30aead8082e",
+      "gitBlob": "3f4b23086b24c26cbd53632ba0ec6304ea327b55",
+      "bytes": 325033
+    },
+    {
+      "path": "core/src/gameConfig/RoleLevel.json",
+      "sha256": "153425ca26b20a0ab6313174a104dcf020ea934378261a2e81af49150e2dd076",
+      "gitBlob": "97887c928229a0a7cf24b73035b90c879ed76eb5",
+      "bytes": 11077
+    }
+  ]
+}
 }

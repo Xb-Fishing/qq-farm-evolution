@@ -2,6 +2,7 @@
 import type { MilkTeaQueryKind } from '@/stores/activity'
 import { storeToRefs } from 'pinia'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import GameUpdatePanel from '@/components/activity/GameUpdatePanel.vue'
 import FestivalSignInPanel from '@/components/activity/FestivalSignInPanel.vue'
 // 上一期 BearActivityPanel 已退役；只保留历史迁移定位，默认页面仅挂载当前奶茶面板。
 import MilkTeaActivityPanel from '@/components/activity/MilkTeaActivityPanel.vue'
@@ -264,6 +265,7 @@ onMounted(() => {
         </div>
       </section>
       <MilkTeaActivityPanel v-if="!milkTeaRetired" :key="String(currentAccountId)" :activity="milkTeaActivity" :loading="milkTeaLoading" :operating="milkTeaOperating || (claimAllRunning ? 'claimAll' : '')" :queries="milkTeaQueries" @refresh="refreshMilkTea" @query="queryMilkTea" @operate="operateMilkTea" />
+      <GameUpdatePanel :key="`update-${currentAccountId}`" :account-id="String(currentAccountId || '')" />
       <FestivalSignInPanel :key="`festival-${currentAccountId}`" :account-id="String(currentAccountId)" />
       <p v-if="!hasVisibleActivity" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
         当前奶茶活动已结束；节日签到仍可在上方独立查询。

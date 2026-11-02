@@ -1523,7 +1523,8 @@ async function handleApiCall(msg) {
     let error = null;
     let errorMeta = null;
 
-    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements') {
+    if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
+        || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence') {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({
@@ -1726,6 +1727,18 @@ async function handleApiCall(msg) {
             case 'getOfficialAnnouncements': {
                 const { getOfficialAnnouncements } = require('../services/official-announcements');
                 result = await getOfficialAnnouncements();
+                break;
+            }
+            case 'getEmailSnapshot': {
+                // 只读双箱快照：60s 缓存 + 在途合并，面板刷新不穿透腾讯；无领取动作。
+                const { getEmailSnapshot } = require('../services/email');
+                result = await getEmailSnapshot(args[0] || {});
+                break;
+            }
+            case 'getGameUpdateEvidence': {
+                // 一次有界更新证据采集：公告/邮件/节日/任务/图鉴/商城各一次，只读。
+                const { collectGameUpdateEvidence } = require('../services/game-update-evidence');
+                result = await collectGameUpdateEvidence(args[0] || {});
                 break;
             }
             case 'getActivityGroupSnapshot': {

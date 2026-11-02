@@ -446,6 +446,8 @@ function getLandTypeByLevel(level) {
 }
 
 function getLandTypeNameByLevel(level) {
+  if (toNum(level) > 5) return `${toNum(level)}级土地`;
+  // 只修展示名称；既有施肥分类和账号偏好保持原样。
   const typeMap = {
     purple: '紫土地',
     gold: '金土地',

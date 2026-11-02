@@ -1,0 +1,869 @@
+{
+  "version": "26110101",
+  "source": {
+    "grade": "reviewed_public_client_snapshot",
+    "alias": "public-reference-2",
+    "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+    "officialPlantSha256": "4e03a517903c01940e0a5b81b982d12592c5dd4352953c690b68cf429170b795"
+  },
+  "unlockLevel": 125,
+  "maxStarLevel": 5,
+  "ownership": "unknown",
+  "activation": "unknown",
+  "series": [
+    {
+      "id": 1001,
+      "name": "氧气精灵",
+      "description": "种植28品及以上普通作物有概率得本系列",
+      "rarity": 1,
+      "items": [
+        {
+          "id": 710001,
+          "name": "菇菇氧",
+          "description": "喜欢穿梭林间、寻觅蘑菇的氧气小精灵，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 710002,
+          "name": "冒险氧",
+          "description": "向往远方、酷爱山野冒险的氧气小精灵，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 710003,
+          "name": "轻松氧",
+          "description": "贪恋暖阳，贪睡慵懒的氧气小精灵，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 710004,
+          "name": "阳光氧",
+          "description": "偏爱晴空，追着阳光小憩的氧气小精灵，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 710005,
+          "name": "元气氧",
+          "description": "元气满满，精力充沛的氧气小精灵，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 710006,
+          "name": "屁屁氧",
+          "description": "软乎乎圆滚滚的氧气小精灵屁屁氧，蹦蹦跳跳，好奇打量农场万物，可收进珍藏室陈列展示。",
+          "rarity": 1,
+          "imageStatus": "专属图片待核验"
+        }
+      ],
+      "stars": [
+        {
+          "level": 1,
+          "materials": "0:1"
+        },
+        {
+          "level": 2,
+          "materials": "0:2;1001:2000000"
+        },
+        {
+          "level": 3,
+          "materials": "0:4;1001:4000000"
+        },
+        {
+          "level": 4,
+          "materials": "0:8;1001:8000000"
+        },
+        {
+          "level": 5,
+          "materials": "0:16;1001:16000000"
+        }
+      ]
+    },
+    {
+      "id": 2001,
+      "name": "萌混过关",
+      "description": "种植稀有作物有概率得本系列",
+      "rarity": 2,
+      "items": [
+        {
+          "id": 720001,
+          "name": "牛牛捏捏",
+          "description": "戴着花环金饰，爱臭美打扮的田园小牛灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 720002,
+          "name": "浣然一新",
+          "description": "偷偷藏在木丛，馋嘴偷瞄瓜果的浣熊灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 720003,
+          "name": "羊装乖巧",
+          "description": "挂着小摇铃，爱凑热闹的软绵小羊灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 720004,
+          "name": "鹿过看看",
+          "description": "伸长脖颈，四处巡望田野的长颈鹿灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 720005,
+          "name": "奇思妙象",
+          "description": "长鼻轻扬，勤快汲水劳作的小象灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 720006,
+          "name": "鸵鸵贴贴",
+          "description": "脖颈柔粉、头顶嫩芽，披着草木羽衣，俏皮回眸的田园鸵鸟灵偶，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        }
+      ],
+      "stars": [
+        {
+          "level": 1,
+          "materials": "0:1"
+        },
+        {
+          "level": 2,
+          "materials": "0:2;1001:3000000"
+        },
+        {
+          "level": 3,
+          "materials": "0:4;1001:6000000"
+        },
+        {
+          "level": 4,
+          "materials": "0:8;1001:12000000"
+        },
+        {
+          "level": 5,
+          "materials": "0:16;1001:24000000"
+        }
+      ]
+    },
+    {
+      "id": 3001,
+      "name": "云途漫客",
+      "description": "种植珍品作物有概率得本系列",
+      "rarity": 3,
+      "items": [
+        {
+          "id": 730001,
+          "name": "风信灯",
+          "description": "提着流光风灯，替清风捎话的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 730002,
+          "name": "青萍渡",
+          "description": "乘着浮萍小舟，随波自在漂泊的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 730003,
+          "name": "枕月舟",
+          "description": "卧于月牙船舷，夜夜入梦的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 730004,
+          "name": "橙花舆",
+          "description": "乘着橙花小车，四处巡游采风的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 730005,
+          "name": "莲铃悠",
+          "description": "静立莲畔，静静等候一阵晚风的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 730006,
+          "name": "幸风摇",
+          "description": "栖于四叶草上，捎来好运的漫游客，可收进珍藏室陈列展示。",
+          "rarity": 3,
+          "imageStatus": "专属图片待核验"
+        }
+      ],
+      "stars": [
+        {
+          "level": 1,
+          "materials": "0:1"
+        },
+        {
+          "level": 2,
+          "materials": "0:2;1001:5000000"
+        },
+        {
+          "level": 3,
+          "materials": "0:4;1001:10000000"
+        },
+        {
+          "level": 4,
+          "materials": "0:8;1001:20000000"
+        },
+        {
+          "level": 5,
+          "materials": "0:16;1001:40000000"
+        }
+      ]
+    },
+    {
+      "id": 4001,
+      "name": "山野风灵",
+      "description": "种植天工作物有概率得本系列",
+      "rarity": 4,
+      "items": [
+        {
+          "id": 740001,
+          "name": "清风叶语",
+          "description": "穿梭林间，清爽爱闹的青叶风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 740002,
+          "name": "晴葵逐光",
+          "description": "追随着向阳花，不停奔赴暖阳的风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 740003,
+          "name": "枫叶知秋",
+          "description": "掠过红枫，最先感知秋意到来的风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 740004,
+          "name": "樱舞春歌",
+          "description": "樱瓣随身，逢春便随风起舞的风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 740005,
+          "name": "荷塘清梦",
+          "description": "流连荷塘，总在莲叶间打盹做梦的风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 740006,
+          "name": "暖灯雪夜",
+          "description": "守着一盏暖光，静看落雪的冬日风灵，可收进珍藏室陈列展示。",
+          "rarity": 4,
+          "imageStatus": "专属图片待核验"
+        }
+      ],
+      "stars": [
+        {
+          "level": 1,
+          "materials": "0:1"
+        },
+        {
+          "level": 2,
+          "materials": "0:2;1001:25000000"
+        },
+        {
+          "level": 3,
+          "materials": "0:4;1001:50000000"
+        },
+        {
+          "level": 4,
+          "materials": "0:8;1001:100000000"
+        },
+        {
+          "level": 5,
+          "materials": "0:16;1001:200000000"
+        }
+      ]
+    },
+    {
+      "id": 2002,
+      "name": "果冻花园",
+      "description": "",
+      "rarity": 2,
+      "items": [
+        {
+          "id": 700001,
+          "name": "棉芽",
+          "description": "顶着嫩芽白花的小狗果冻，可收进珍藏室陈列。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 700002,
+          "name": "布丁",
+          "description": "裹着奶油甜饰、爱打扮的布丁果冻，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 700003,
+          "name": "星露",
+          "description": "缀着星光，总爱犯困打盹的果冻精灵，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 700004,
+          "name": "夜莓",
+          "description": "伴着夜色，又酷又安静的黑莓果冻小家伙，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 700005,
+          "name": "桃米",
+          "description": "粉扑扑，害羞爱笑的蜜桃果冻，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        },
+        {
+          "id": 700006,
+          "name": "青团",
+          "description": "一身青绿，整日乐呵呵的青团果冻，可收进珍藏室陈列展示。",
+          "rarity": 2,
+          "imageStatus": "专属图片待核验"
+        }
+      ],
+      "stars": [
+        {
+          "level": 1,
+          "materials": "0:1"
+        },
+        {
+          "level": 2,
+          "materials": "0:2;1001:3000000"
+        },
+        {
+          "level": 3,
+          "materials": "0:4;1001:6000000"
+        },
+        {
+          "level": 4,
+          "materials": "0:8;1001:12000000"
+        },
+        {
+          "level": 5,
+          "materials": "0:16;1001:24000000"
+        }
+      ]
+    }
+  ],
+  "scores": [
+    {
+      "star": 1,
+      "scores": [
+        "400",
+        "600",
+        "1000",
+        "5000"
+      ]
+    },
+    {
+      "star": 2,
+      "scores": [
+        "720",
+        "1080",
+        "1800",
+        "9000"
+      ]
+    },
+    {
+      "star": 3,
+      "scores": [
+        "1280",
+        "1920",
+        "3200",
+        "16000"
+      ]
+    },
+    {
+      "star": 4,
+      "scores": [
+        "2240",
+        "3360",
+        "5600",
+        "28000"
+      ]
+    },
+    {
+      "star": 5,
+      "scores": [
+        "3200",
+        "4800",
+        "8000",
+        "40000"
+      ]
+    }
+  ],
+  "milestones": [
+    {
+      "level": 1,
+      "score": 400,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 100
+        }
+      ]
+    },
+    {
+      "level": 2,
+      "score": 1000,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "level": 3,
+      "score": 2000,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 100
+        }
+      ]
+    },
+    {
+      "level": 4,
+      "score": 3100,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 150
+        }
+      ]
+    },
+    {
+      "level": 5,
+      "score": 4300,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 400
+        }
+      ]
+    },
+    {
+      "level": 6,
+      "score": 5800,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 150
+        }
+      ]
+    },
+    {
+      "level": 7,
+      "score": 7800,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "level": 8,
+      "score": 10500,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 600
+        }
+      ]
+    },
+    {
+      "level": 9,
+      "score": 14200,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "level": 10,
+      "score": 19300,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地经验提升",
+          "value": 100
+        }
+      ]
+    },
+    {
+      "level": 11,
+      "score": 26100,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 250
+        }
+      ]
+    },
+    {
+      "level": 12,
+      "score": 35100,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 800
+        }
+      ]
+    },
+    {
+      "level": 13,
+      "score": 46700,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 250
+        }
+      ]
+    },
+    {
+      "level": 14,
+      "score": 61500,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地经验提升",
+          "value": 150
+        }
+      ]
+    },
+    {
+      "level": 15,
+      "score": 80100,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 300
+        }
+      ]
+    },
+    {
+      "level": 16,
+      "score": 103100,
+      "rewards": "5013:1;5014:1",
+      "buffs": []
+    },
+    {
+      "level": 17,
+      "score": 131100,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "level": 18,
+      "score": 164900,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 300
+        }
+      ]
+    },
+    {
+      "level": 19,
+      "score": 205200,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地经验提升",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "level": 20,
+      "score": 252900,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "节省10%肥料",
+          "value": 350
+        }
+      ]
+    },
+    {
+      "level": 21,
+      "score": 308800,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品变异概率提升",
+          "value": 1200
+        }
+      ]
+    },
+    {
+      "level": 22,
+      "score": 373800,
+      "rewards": null,
+      "buffs": [
+        {
+          "name": "蓝晶土地藏品额外产出概率提升",
+          "value": 350
+        }
+      ]
+    }
+  ],
+  "crops": [
+    {
+      "seedId": 20381,
+      "plantId": 1020381,
+      "fruitId": 40381,
+      "name": "鸡蛋花",
+      "level": 166,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20397,
+      "plantId": 1020397,
+      "fruitId": 40397,
+      "name": "仙客来",
+      "level": 168,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20399,
+      "plantId": 1020399,
+      "fruitId": 40399,
+      "name": "含笑花",
+      "level": 170,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21080,
+      "plantId": 1021080,
+      "fruitId": 41080,
+      "name": "蛇床",
+      "level": 172,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21082,
+      "plantId": 1021082,
+      "fruitId": 41082,
+      "name": "夏枯草",
+      "level": 175,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21096,
+      "plantId": 1021096,
+      "fruitId": 41096,
+      "name": "三角梅",
+      "level": 178,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21097,
+      "plantId": 1021097,
+      "fruitId": 41097,
+      "name": "滨紫草",
+      "level": 181,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21099,
+      "plantId": 1021099,
+      "fruitId": 41099,
+      "name": "松叶菊",
+      "level": 184,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21100,
+      "plantId": 1021100,
+      "fruitId": 41100,
+      "name": "香水草",
+      "level": 187,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20374,
+      "plantId": 1020374,
+      "fruitId": 40374,
+      "name": "飞燕草",
+      "level": 190,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20398,
+      "plantId": 1020398,
+      "fruitId": 40398,
+      "name": "金雀花",
+      "level": 193,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20457,
+      "plantId": 1020457,
+      "fruitId": 40457,
+      "name": "火鹤花",
+      "level": 196,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20107,
+      "plantId": 1020107,
+      "fruitId": 40107,
+      "name": "仙人掌",
+      "level": 199,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21084,
+      "plantId": 1021084,
+      "fruitId": 41084,
+      "name": "五味子",
+      "level": 202,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 21111,
+      "plantId": 1021111,
+      "fruitId": 41111,
+      "name": "蓝花楹",
+      "level": 205,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20117,
+      "plantId": 1020117,
+      "fruitId": 40117,
+      "name": "康乃馨",
+      "level": 208,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20119,
+      "plantId": 1020119,
+      "fruitId": 40119,
+      "name": "紫罗兰",
+      "level": 211,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20173,
+      "plantId": 1020173,
+      "fruitId": 40173,
+      "name": "夜来香",
+      "level": 214,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20125,
+      "plantId": 1020125,
+      "fruitId": 40125,
+      "name": "太阳花",
+      "level": 217,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    },
+    {
+      "seedId": 20189,
+      "plantId": 1020189,
+      "fruitId": 40189,
+      "name": "鸡冠花",
+      "level": 220,
+      "landLevelNeed": 1,
+      "size": 1,
+      "imageStatus": "专属种子、果实与土地阶段图待核验"
+    }
+  ],
+  "evidenceGaps": [
+    "当前藏品持有、激活、展示与药水使用缺独立官方调用路径和自然响应，未接入游戏接口。",
+    "新作物及藏品专属图片缺精准资源证明，未将提取快照中的成熟图冒充种果图片。",
+    "蓝晶已公告开放；成本和可执行资格以当前官方状态为准，未新增自动升级或施肥选择。",
+    "每日启动前等待及非活动编号变化自动进化的发布器接缝受保护，尚未完成。"
+  ]
+}
