@@ -219,3 +219,15 @@ test('confirmed manual sales retain existing operation statistics without counti
   await f.manual.guardedBagSale(request); assert.equal(f.state.soldStats, 3);
   await f.manual.guardedBagSale(request); assert.equal(f.state.soldStats, 3); assert.equal(f.writes().length, 1);
 });
+
+test('manual sale statistics exclude unsent budgets, unknown results, server refusals and unconfirmed replies', async () => {
+  for (const kind of ['budget', 'timeout', 'server-rejection', 'empty-reply']) {
+    const f = fixture();
+    if (kind === 'empty-reply') f.state.badReply = true;
+    else f.state.error = Object.assign(new Error('synthetic sale failure'),
+      kind === 'budget' ? { isGovernedRejection: true, governedReason: 'budget_total' }
+        : kind === 'server-rejection' ? { isServerBusinessError: true, serverErrorCode: 71 } : {});
+    await assert.rejects(f.manual.guardedBagSale(f.saleRequest()));
+    assert.equal(f.state.soldStats || 0, 0, kind);
+  }
+});
