@@ -1551,6 +1551,14 @@ async function handleApiCall(msg) {
 
     try {
         switch (method) {
+            case 'getLocalConnectionState': {
+                const socket = getWs();
+                const state = socket?.readyState === 1 ? 'online'
+                    : socket?.readyState === 3 || (!socket && isRunning === false && loginReady === false) ? 'offline' : 'unknown';
+                result = { state, connected: state === 'online' ? true : state === 'offline' ? false : undefined,
+                    businessReady: state === 'online' && isRunning === true && loginReady === true };
+                break;
+            }
             case 'getLands':
                 result = await require('../services/farm-land-analyzer').getLandsDetailForPanel();
                 break;

@@ -13,6 +13,20 @@ function registerAdminAccountRuntimeRoutes({
         return res.status(403).json({ ok: false, error: "无权访问此账号" });
       }
 
+      // A live physical session takes priority over credential refresh. Unknown
+      // or failed adoption must never fall through into a new game login.
+      const recovery = typeof provider.recoverAccountConnection === "function"
+        ? await provider.recoverAccountConnection(accountId) : { state: "unknown" };
+      if (recovery?.state === "restored" && recovery.connected === true && recovery.businessReady === true) {
+        return res.json({ ok: true, mode: "existing_connection", connected: true, businessReady: true });
+      }
+      if (recovery?.state !== "offline") {
+        return res.status(409).json({ ok: false, needScan: false,
+          connected: recovery?.connected === true, recoveryPending: true,
+          error: recovery?.connected === true
+            ? "原游戏连接仍在线，业务接管暂未完成；已保留连接，请稍后重试"
+            : "暂时无法确认原连接状态，已停止本次登录，请稍后重试" });
+      }
       const refreshed = await provider.refreshAccountCode(accountId, "manual_relogin");
       // provider 返回 { ok }，旧代码按对象真值判断导致失败也报"直接登录成功"，
       // 用户永远等不到扫码入口。必须按 ok 字段判断。
@@ -21,7 +35,7 @@ function registerAdminAccountRuntimeRoutes({
         const data = typeof store.getAccounts === "function" ? store.getAccounts() : {};
         const account = (Array.isArray(data.accounts) ? data.accounts : [])
           .find(item => String(item.id) === String(accountId));
-        const needScan = !account || !account.refreshtoken;
+        const needScan = refreshed?.needScan === true || !account || !account.refreshtoken;
         return res.status(409).json({
           ok: false,
           needScan,

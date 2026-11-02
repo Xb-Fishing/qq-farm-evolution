@@ -423,7 +423,7 @@ async function invokeRelogin(provider) {
   load('controllers/admin-account-runtime-routes.js', {
     '../models/store': { getAccounts: () => ({ accounts: [] }) },
   }).registerAdminAccountRuntimeRoutes({
-    app, provider,
+    app, provider: { recoverAccountConnection: async () => ({ state: 'offline' }), ...provider },
     resolveAccountReference: value => value,
     canAccessAccount: () => true,
   });

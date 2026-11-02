@@ -956,15 +956,22 @@ function createWorkerManager(deps) {
             account = deps.store.ensureAccountSessionMetadata(id) || account;
             const existing = workers[id];
             if (existing?.process?.persistentSession) {
+                const sessionProcess = existing.process;
+                const ownsExisting = () => workers[id] === existing && existing.process === sessionProcess
+                    && !existing.stopping && (!options.isCurrent || options.isCurrent());
                 let verified;
-                try { await existing.process.ready; let actual = await existing.process.refreshSession(); verified = actual;
-                    if (options.isCurrent && !options.isCurrent()) return { state: 'cancelled' };
+                try { await sessionProcess.ready;
+                    if (!ownsExisting()) return { state: 'cancelled' };
+                    let actual = await sessionProcess.refreshSession(); verified = actual;
+                    if (!ownsExisting()) return { state: 'cancelled' };
                     if (options.connectedOnly && (actual.facts.game.connected !== true || actual.facts.game.terminal === true)) return { state: 'offline', facts: actual.facts };
                     if (actual.facts.game.terminal === true) { await stopPersistentSession(id); return { state: 'absent', recoveredOffline: true }; }
-                    if (actual.facts.business?.ready !== true) actual = await existing.process.reloadBusiness();
+                    if (actual.facts.business?.ready !== true) actual = await sessionProcess.reloadBusiness();
+                    if (!ownsExisting()) return { state: 'cancelled' };
                     existing.sessionFacts = actual.facts;
                     return { state: 'adopted', facts: actual.facts };
                 } catch {
+                    if (!ownsExisting()) return { state: 'cancelled' };
                     // A failed business replacement is not a broken manager
                     // socket. Retain the verified record for a bounded retry.
                     if (verified?.facts.game.connected === true && verified.facts.game.terminal !== true)

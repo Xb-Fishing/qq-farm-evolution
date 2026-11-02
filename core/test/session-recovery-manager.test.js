@@ -154,6 +154,41 @@ test('local diagnostic with legacy ready=true remains visibly pending until a re
   await f.manager.detachAll();
 });
 
+test('manual adoption recovers the existing business without creating a host or refreshing credentials', async () => {
+  const f = fixture(); await f.manager.startWorker(f.account);
+  const result = await f.manager.tryAdoptAccountSession(f.account, { connectedOnly: true, isCurrent: () => true });
+  assert.equal(result.state, 'adopted'); assert.equal(result.facts.game.connected, true); assert.equal(result.facts.business.ready, true);
+  assert.equal(result.facts.game.connectionEpoch, 7); assert.equal(result.facts.game.loginEpoch, 1);
+  assert.equal(f.counts().stops, 0); assert.equal(f.counts().forks, 0);
+  await f.manager.detachAll();
+});
+
+test('manual adoption discards old proxy results after ready, status or reload awaits', async () => {
+  for (const stage of ['ready', 'status', 'reload']) {
+    for (const change of ['record', 'process', 'stopping']) {
+      const f = fixture(); await f.manager.startWorker(f.account);
+      let release; let enter;
+      const entered = new Promise(resolve => { enter = resolve; });
+      const wait = new Promise(resolve => { release = resolve; });
+      const oldFacts = structuredClone(f.proc.sessionFacts); oldFacts.business.ready = true;
+      if (stage === 'ready') f.proc.ready = wait;
+      if (stage === 'status') f.proc.refreshSession = async () => { enter(); await wait; return { facts: oldFacts }; };
+      if (stage === 'reload') f.proc.reloadBusiness = async () => { enter(); await wait; return { facts: oldFacts }; };
+      const pending = f.manager.tryAdoptAccountSession(f.account, { connectedOnly: true, isCurrent: () => true });
+      if (stage === 'ready') await Promise.resolve();
+      else await entered;
+      const replacement = { persistentSession: true, detach: async () => {} };
+      if (change === 'record') f.workers[f.account.id] = { process: replacement };
+      if (change === 'process') f.workers[f.account.id].process = replacement;
+      if (change === 'stopping') f.workers[f.account.id].stopping = true;
+      release();
+      assert.equal((await pending).state, 'cancelled', `${stage}:${change}`);
+      assert.equal(f.counts().stops, 0); assert.equal(f.counts().forks, 0);
+      await f.manager.detachAll();
+    }
+  }
+});
+
 test('a known local fault survives simultaneous control loss without a false healthy attach', async () => {
   const f = fixture({ controlDrop: true }); await f.manager.startWorker(f.account);
   f.proc.sessionFacts.business.ready = true; f.proc.businessFaultEpoch = f.proc.sessionFacts.business.epoch;

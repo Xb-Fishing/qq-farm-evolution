@@ -102,6 +102,42 @@ test('all real gameplay domains, pending payloads and absolute timers survive a 
   } finally { await warmed.terminate(); }
 });
 
+test('legacy email checkpoint upgrades through real Workers without login or economic actions and retains strict required fields', { timeout: 30000 }, async () => {
+  let sequence = 1; const commands = []; let requests = 0; let checkpoint;
+  const facts = () => ({ sequence: sequence++, host: { accountId: 'synthetic-legacy-mail' }, game: {
+    platform: 'wx', connectionEpoch: 1, connected: true, readyState: 1, socketPresent: true,
+    userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
+  const options = { target: { runtimeRoot }, epoch: 'synthetic-mail-capture', facts: facts(),
+    config: { platform: 'wx', __revision: 1 }, read: facts,
+    command: method => { commands.push(method); return { value: undefined, facts: facts() }; },
+    query: () => ({ value: 0, facts: facts() }),
+    request: () => { requests++; throw new Error('No economic operation is allowed during restore'); }, onMaster: () => {} };
+  const cold = await createSessionBusinessRuntime(options);
+  try { await cold.prepare(); await cold.activate([]); checkpoint = decode(await cold.quiesce()); }
+  finally { await cold.terminate(); }
+  const domain = checkpoint.state.domains['services/email.js'].value;
+  domain.doneDateKey = '2099-01-01'; domain.lastCheckAt = 123456;
+  delete domain.stateOwner;
+  assert.deepEqual(Object.keys(domain).sort(), ['doneDateKey', 'lastCheckAt']);
+  const beforeCommands = commands.length; const beforeRequests = requests;
+  const warm = await createSessionBusinessRuntime({ ...options, epoch: 'synthetic-mail-legacy', facts: facts(), checkpoint: encode(checkpoint), config: { ...checkpoint.config } });
+  try {
+    await warm.prepare(); await warm.activate([]);
+    const restored = decode(await warm.quiesce()).state.domains['services/email.js'].value;
+    assert.deepEqual(restored, { doneDateKey: '2099-01-01', lastCheckAt: 123456, stateOwner: '' });
+    assert.equal(commands.length, beforeCommands); assert.equal(requests, beforeRequests);
+  } finally { await warm.terminate(); }
+  for (const kind of ['missing-required', 'unexpected-field']) {
+    const malformed = decode(encode(checkpoint)); const value = malformed.state.domains['services/email.js'].value;
+    if (kind === 'missing-required') delete value.lastCheckAt;
+    else value.unexpectedFutureState = true;
+    const rejected = await createSessionBusinessRuntime({ ...options, epoch: `synthetic-mail-${kind}`, facts: facts(), checkpoint: encode(malformed), config: { ...checkpoint.config } });
+    try { await assert.rejects(rejected.prepare(), /Business state fields changed: services\/email.js/); }
+    finally { await rejected.terminate(); }
+  }
+  assert.equal(commands.length, beforeCommands); assert.equal(requests, beforeRequests);
+});
+
 test('warm restore clears old readiness when a newer socket is OPEN but has not logged in', { timeout: 30000 }, async () => {
   let sequence = 1; let epoch = 1; let connected = true; const commands = []; let requests = 0; let checkpoint;
   const facts = () => ({ sequence: sequence++, host: { accountId: 'synthetic-readiness' }, game: {

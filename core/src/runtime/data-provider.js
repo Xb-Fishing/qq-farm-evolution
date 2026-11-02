@@ -311,12 +311,64 @@ function createDataProvider(deps) {
             return { autoCodeRefresh: data };
         },
 
+        recoverAccountConnection: async (ref) => {
+            const id = resolveAccountId(ref);
+            const account = findAccount(id || ref);
+            if (!account) return { state: 'missing' };
+            const stamp = value => JSON.stringify([value ? require('./session-registry').bindingIdentity(value) : '',
+                value?.ownerId, value?.userId, value?.uin, value?.openId, value?.credentialGeneration, value?.autoLogin]);
+            const captured = stamp(account);
+            const isCurrent = () => stamp(findAccount(id || ref)) === captured;
+            const legacy = workers[id];
+            if (legacy && !legacy.process?.persistentSession) {
+                const legacyProcess = legacy.process;
+                if (legacy.stopping || !legacyProcess || typeof callWorkerApi !== 'function') return { state: 'unknown' };
+                let local;
+                try { local = await callWorkerApi(id, 'getLocalConnectionState'); }
+                catch { return { state: 'unknown' }; }
+                if (!isCurrent() || workers[id] !== legacy || legacy.process !== legacyProcess || legacy.stopping)
+                    return { state: 'cancelled' };
+                if (local?.state === 'online' && local.connected === true)
+                    return local.businessReady === true ? { state: 'restored', connected: true, businessReady: true }
+                        : { state: 'unhealthy', connected: true };
+                if (local?.state === 'offline' && local.connected === false) return { state: 'offline', connected: false };
+                return { state: 'unknown' };
+            }
+            if (typeof deps.tryAdoptAccountSession !== 'function') return { state: 'unknown' };
+            let result;
+            try { result = await deps.tryAdoptAccountSession(account, { connectedOnly: true, isCurrent }); }
+            catch { return { state: 'unknown' }; }
+            if (!isCurrent()) return { state: 'cancelled' };
+            if (result?.state === 'adopted') {
+                const facts = result.facts;
+                const current = workers[id];
+                const live = current?.process?.sessionFacts;
+                if (!current || current.stopping || !current.process?.persistentSession
+                    || current.process.businessInitialized !== true || !live?.host || !facts?.host)
+                    return { state: 'cancelled' };
+                const knownFault = current.process.businessFaultEpoch;
+                if (live.game?.connected !== true || live.game.terminal === true || live.business?.ready !== true
+                    || (knownFault && knownFault === live.business.epoch))
+                    return { state: 'unhealthy', connected: live.game?.connected === true };
+                const identity = value => JSON.stringify([value.host.hostId, value.host.pid, value.host.starttime,
+                    value.game?.connectionEpoch, value.game?.loginEpoch,
+                    value.business?.epoch, value.business?.commit, value.business?.sourceFingerprint]);
+                if (identity(live) !== identity(facts)) return { state: 'cancelled' };
+                if (facts.game?.connected === true && facts.game.terminal !== true && facts.business?.ready === true)
+                    return { state: 'restored', connected: true, businessReady: true };
+                return { state: 'unhealthy', connected: live.game?.connected === true };
+            }
+            if (['absent', 'offline'].includes(result?.state)) return { state: 'offline', connected: false };
+            return { state: ['disabled', 'cancelled', 'unhealthy'].includes(result?.state) ? result.state : 'unknown',
+                ...(result?.facts?.game?.connected === true ? { connected: true } : {}) };
+        },
+
         refreshAccountCode: async (ref, reason) => {
             const id = resolveAccountId(ref);
             if (!id) throw new Error('Missing x-account-id');
             if (typeof refreshAccountCode !== 'function') throw new Error('自动刷新服务不可用');
             const ok = await refreshAccountCode(id, reason || 'manual');
-            return { ok };
+            return { ok, ...(!ok && typeof needsWxRescan === 'function' && needsWxRescan(id) === true ? { needScan: true } : {}) };
         },
 
         // 自助扫码「授权已保存但换码/启动未收口」时的自动恢复排程：沿既有

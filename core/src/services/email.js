@@ -249,5 +249,5 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
     module.exports[name] = business.wrapBusinessFunction(`services/email.js:${name}`, module.exports[name]);
   business.registerDataState('services/email.js', () => ({ doneDateKey, lastCheckAt, stateOwner }), value => {
     doneDateKey = value.doneDateKey || ''; lastCheckAt = value.lastCheckAt || 0; stateOwner = value.stateOwner || '';
-  }, { idle: () => !claimInFlight && !snapshotInFlight });
+  }, { optionalKeys: ['stateOwner'], idle: () => !claimInFlight && !snapshotInFlight });
 }

@@ -283,6 +283,33 @@ function dashboardHarness() {
     return { app, instance: () => instance, accountStore, statusStore: undefined, switchAccount, reloginCalls, toasts, fetchAccountCalls: h.fetchAccountCalls, clearCalls: h.clearCalls, setResponder: fn => { responder = fn; }, setFetchAccountsError: err => { h.fetchAccountsError = err; } };
 }
 
+test('重新登录保留在线连接：真实 Dashboard 区分接管成功、待恢复与明确需要扫码', async () => {
+    const h = dashboardHarness();
+    try {
+        await vue.nextTick(); await vue.nextTick();
+        const dash = h.instance();
+        h.setResponder(async () => ({ ok: true, mode: 'existing_connection', connected: true }));
+        await dash.reloginFromHome();
+        assert.equal(dash.showReloginModal, false);
+        assert.match(h.toasts.at(-1)[1], /已恢复现有连接/);
+        h.setFetchAccountsError(new Error('synthetic account-list refresh failure'));
+        await dash.reloginFromHome(); await Promise.resolve(); await Promise.resolve();
+        assert.equal(dash.showReloginModal, false); assert.equal(h.toasts.at(-1)[0], 'success');
+        h.setFetchAccountsError(null);
+        for (const responder of [async () => ({ ok: false, needScan: false, recoveryPending: true, error: '原连接在线，等待接管' }),
+            async () => { throw Object.assign(new Error('synthetic pending'), { response: { data: { needScan: false, error: '原连接在线，等待接管' } } }); },
+            async () => { throw new Error('synthetic network error'); }]) {
+            h.setResponder(responder); await dash.reloginFromHome();
+            assert.equal(dash.showReloginModal, false); assert.equal(h.toasts.at(-1)[0], 'error');
+        }
+        h.setResponder(async () => ({ ok: false, needScan: true }));
+        await dash.reloginFromHome(); assert.equal(dash.showReloginModal, true);
+        dash.showReloginModal = false;
+        h.setResponder(async () => { throw Object.assign(new Error('synthetic rescan required'), { response: { data: { needScan: true } } }); });
+        await dash.reloginFromHome(); assert.equal(dash.showReloginModal, true);
+    } finally { h.app.unmount(); }
+});
+
 test('显式重新扫码入口：零直接重登请求，直接为当前账号打开扫码弹窗（在线 wx 可达）', async () => {
     const h = dashboardHarness();
     await vue.nextTick(); await vue.nextTick();
