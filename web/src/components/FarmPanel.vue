@@ -7,6 +7,7 @@ import LandCard from '@/components/LandCard.vue'
 import { useAccountStore } from '@/stores/account'
 import { useFarmStore } from '@/stores/farm'
 import { useStatusStore } from '@/stores/status'
+import { getLandPresentation } from '@/utils/land-presentation'
 
 const farmStore = useFarmStore()
 const accountStore = useAccountStore()
@@ -255,19 +256,8 @@ function updateFarmStageSize() {
   farmStageWidth.value = Math.min(availableWidth, FARM_CANVAS_WIDTH, availableHeight * FARM_CANVAS_WIDTH / FARM_CANVAS_HEIGHT)
 }
 
-function getLandTextureUrl(land: any) {
-  const level = Math.min(5, Math.max(1, Number(land?.level) || 1))
-  if (Number(land?.plantSize) > 1)
-    return `/game-config/land_images/land_valid${level}_2x2.png`
-  if (land?.status === 'locked')
-    return '/game-config/land_images/land_locked.png'
-  return `/game-config/land_images/${land?.needWater ? `land_dry${level}` : `land_valid${level}`}.png`
-}
-
-function shouldRotateLandTexture(land: any) {
-  const level = Number(land?.level) || 1
-  return level === 5
-}
+function getLandTextureUrl(land: any) { return getLandPresentation(land).textureUrl }
+function shouldRotateLandTexture(land: any) { return getLandPresentation(land).rotate }
 
 function loadCanvasImage(src: string) {
   const cached = imageCache.get(src)
@@ -284,13 +274,17 @@ function loadCanvasImage(src: string) {
   })
 }
 
+let canvasDrawRevision = 0
 async function drawFarmCanvas() {
+  const revision = ++canvasDrawRevision
   await nextTick()
+  if (revision !== canvasDrawRevision) return
   const context = farmCanvas.value?.getContext('2d')
   if (!context)
     return
   context.clearRect(0, 0, FARM_CANVAS_WIDTH, FARM_CANVAS_HEIGHT)
   const field = await loadCanvasImage('/game-config/scene_images/farm-field-base.png').catch(() => null)
+  if (revision !== canvasDrawRevision || !farmCanvas.value) return
   if (field) {
     const fieldWidth = FARM_CANVAS_WIDTH * FIELD_BACKGROUND_SCALE
     const fieldHeight = FARM_CANVAS_HEIGHT * FIELD_BACKGROUND_SCALE
@@ -306,6 +300,7 @@ async function drawFarmCanvas() {
   const visibleLands = displayLands.value
     .sort((a, b) => getCanvasPosition(a).y - getCanvasPosition(b).y)
   const textures = await Promise.all(visibleLands.map(land => loadCanvasImage(getLandTextureUrl(land)).catch(() => null)))
+  if (revision !== canvasDrawRevision || !farmCanvas.value) return
   visibleLands.forEach((land, index) => {
     if (selectedLandId.value === Number(land?.id))
       return
@@ -316,6 +311,8 @@ async function drawFarmCanvas() {
     const large = Number(land?.plantSize) > 1
     const width = large ? MERGED_LAND_WIDTH : SINGLE_LAND_WIDTH
     const height = large ? MERGED_LAND_HEIGHT : SINGLE_LAND_HEIGHT
+    context.save()
+    context.filter = getLandPresentation(land).filter
     if (shouldRotateLandTexture(land)) {
       context.save()
       context.translate(x, y)
@@ -326,6 +323,7 @@ async function drawFarmCanvas() {
     else {
       context.drawImage(texture, x - width / 2, y - height / 2, width, height)
     }
+    context.restore()
   })
 }
 

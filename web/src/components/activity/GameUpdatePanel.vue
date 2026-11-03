@@ -13,6 +13,9 @@ const selectedId = ref<number | null>(null)
 const number = (value: unknown) => value == null || !Number.isFinite(Number(value)) ? '未知' : Number(value).toLocaleString()
 const time = (value: unknown) => value == null || !(Number(value) > 0) ? '未读取' : new Date(Number(value)).toLocaleString()
 const catalog = computed(() => store.updateReads.catalog.data)
+const dog = computed(() => store.updateReads.dog.data)
+const collections = computed(() => store.updateReads.collections.data)
+const exactCount = (value: unknown) => typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value).toLocaleString() : '未知'
 const entries = computed(() => (catalog.value?.series || []).flatMap((group: any) => (group.items || []).map((item: any) => ({ ...item, group }))))
 const filtered = computed(() => entries.value.filter((item: any) => (!seriesId.value || String(item.group.id) === seriesId.value) && item.name.includes(query.value.trim())))
 const selected = computed(() => entries.value.find((item: any) => item.id === selectedId.value))
@@ -39,7 +42,7 @@ onBeforeUnmount(() => store.cancelUpdateReads())
 <template>
   <section class="update-card" aria-label="游戏更新与邮箱">
     <div class="update-heading">
-      <div><h2>游戏更新与邮箱</h2><p>查看采集时间、两类邮件和本地藏品目录。</p></div>
+      <div><h2>游戏更新与邮箱</h2><p>查看采集时间、邮件、守卫犬与珍藏室。</p></div>
       <BaseButton variant="secondary" :disabled="!accountId" :aria-expanded="expanded" @click="open">
         {{ expanded ? '收起更新与邮箱' : '查看更新与邮箱' }}
       </BaseButton>
@@ -60,7 +63,7 @@ onBeforeUnmount(() => store.cancelUpdateReads())
           </li>
         </ul>
         <p class="update-muted">
-          设置、珍藏室持有状态和官方全部红点界面尚未取得当前证据。
+          设置和官方全部红点界面尚未取得当前证据；下方可手动读取当前账号的守卫犬与珍藏室状态。
         </p>
       </section>
       <section aria-label="只读邮箱">
@@ -78,9 +81,38 @@ onBeforeUnmount(() => store.cancelUpdateReads())
           <span v-else>{{ store.updateReads.emails.data?.boxes?.[box]?.errorClass === 'claim_busy' ? '自动领奖进行中，请稍后刷新；本次数量未知' : store.updateReads.emails.data ? '本箱读取失败，数量未知' : '尚未读取' }}</span>
         </div>
       </section>
+      <section aria-label="守卫犬只读状态">
+        <h3>守卫犬</h3>
+        <BaseButton variant="secondary" :loading="store.updateReads.dog.loading" @click="store.loadUpdate('dog', accountId)">
+          读取守卫犬状态
+        </BaseButton>
+        <p v-if="store.updateReads.dog.error" role="alert">{{ store.updateReads.dog.error }}（上次成功结果不会清空）</p>
+        <template v-if="dog">
+          <p>{{ dog.currentDogName }} · 采集：{{ time(dog.fetchedAt) }} · 待领技能礼包 {{ exactCount(dog.pendingGiftCountDec) }} 份</p>
+          <ul v-if="dog.foodInventoryKnown"><li v-for="food in dog.foods" :key="food.id">{{ food.name }}：{{ exactCount(food.countDec) }}</li></ul>
+          <p v-else>{{ dog.inventoryError || '狗粮库存未知' }}</p>
+          <p class="update-muted">{{ dog.feedingReason }}</p>
+        </template>
+        <p v-else>手动读取当前所选账号；不会自动投喂或领取奖励。</p>
+      </section>
+      <section aria-label="珍藏室只读状态">
+        <h3>珍藏室持有状态</h3>
+        <BaseButton variant="secondary" :loading="store.updateReads.collections.loading" @click="store.loadUpdate('collections', accountId)">
+          读取珍藏室状态
+        </BaseButton>
+        <p v-if="store.updateReads.collections.error" role="alert">{{ store.updateReads.collections.error }}（上次成功结果不会清空）</p>
+        <template v-if="collections">
+          <p>采集：{{ time(collections.fetchedAt) }} · 当前评分 {{ number(collections.currentScore) }} · 已领奖励评分 {{ number(collections.claimedScore) }}</p>
+          <p v-if="!collections.items.length">当前返回的珍藏室没有藏品条目。</p>
+          <ul><li v-for="item in collections.items" :key="item.id">{{ item.name }} · {{ item.star > 0 ? `${item.star} 星` : '未激活' }} · 持有 {{ exactCount(item.ownedCountDec) }}</li></ul>
+          <ul><li v-for="slot in collections.displays" :key="slot.slotType">展台 {{ slot.slotType }}：{{ slot.name }}</li></ul>
+        </template>
+        <p v-else>尚未读取当前账号的持有、星级与展台状态。</p>
+        <p class="update-muted">仅手动查询；激活、升星、评分领奖与摆放请在游戏内完成。</p>
+      </section>
       <section aria-label="本地藏品目录">
         <h3>本地藏品目录</h3>
-        <p>125 级解锁，最多 5 星。当前持有、激活、展台与已领评分奖励未知；本区只查阅配置。</p>
+        <p>125 级解锁，最多 5 星。本区只查阅配置；当前账号的持有、星级和展台请在上方手动读取。</p>
         <BaseButton variant="secondary" :loading="store.updateReads.catalog.loading" @click="store.loadUpdate('catalog', accountId)">
           刷新本地目录
         </BaseButton>

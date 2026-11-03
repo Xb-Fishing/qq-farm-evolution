@@ -675,13 +675,14 @@ export type MilkTeaQueryKind = 'shop' | 'hireList' | 'workshop' | 'work' | 'rank
 export interface MilkTeaQueryState { data: Record<string, any> | null, loading: boolean, error: string }
 
 export const useActivityStore = defineStore('activity', () => {
-  type UpdateKind = 'evidence' | 'emails' | 'catalog'
+  type UpdateKind = 'evidence' | 'emails' | 'catalog' | 'dog' | 'collections'
   const updateReads = ref<Record<UpdateKind, { data: any, loading: boolean, error: string }>>({
     evidence: { data: null, loading: false, error: '' }, emails: { data: null, loading: false, error: '' }, catalog: { data: null, loading: false, error: '' },
+    dog: { data: null, loading: false, error: '' }, collections: { data: null, loading: false, error: '' },
   })
-  const updateSeq: Record<UpdateKind, number> = { evidence: 0, emails: 0, catalog: 0 }
+  const updateSeq: Record<UpdateKind, number> = { evidence: 0, emails: 0, catalog: 0, dog: 0, collections: 0 }
   function cancelUpdateReads(clear = false) {
-    for (const key of ['evidence', 'emails', 'catalog'] as UpdateKind[]) {
+    for (const key of ['evidence', 'emails', 'catalog', 'dog', 'collections'] as UpdateKind[]) {
       ++updateSeq[key]
       updateReads.value[key].loading = false
       if (clear)
@@ -695,14 +696,14 @@ export const useActivityStore = defineStore('activity', () => {
     const current = () => seq === updateSeq[kind] && isCurrentAccount(accountId)
     updateReads.value[kind].loading = true
     updateReads.value[kind].error = ''
-    const endpoint = { evidence: 'game-update-evidence', emails: 'emails', catalog: 'game-update-catalog' }[kind]
+    const endpoint = { evidence: 'game-update-evidence', emails: 'emails', catalog: 'game-update-catalog', dog: 'dog-state', collections: 'collection-state' }[kind]
     try {
       const { data } = await api.get(`/api/activity/${endpoint}`, { headers: { 'x-account-id': accountId }, timeout: 120000 })
       if (!current())
         return { ok: false, cancelled: true }
       if (data?.ok !== true)
         throw new Error(data?.error || '读取失败，请稍后刷新')
-      const value = data[{ evidence: 'evidence', emails: 'snapshot', catalog: 'catalog' }[kind]]
+      const value = data[{ evidence: 'evidence', emails: 'snapshot', catalog: 'catalog', dog: 'state', collections: 'state' }[kind]]
       if (!value || typeof value !== 'object')
         throw new Error('状态不完整，请稍后刷新')
       if (kind === 'catalog' && (!Array.isArray(value.series) || !Array.isArray(value.scores) || !Array.isArray(value.milestones)
@@ -716,6 +717,16 @@ export const useActivityStore = defineStore('activity', () => {
       if (kind === 'evidence' && (!value.sources || typeof value.sources !== 'object' || Array.isArray(value.sources)
         || Object.values(value.sources).some(source => !source || typeof source !== 'object')))
         throw new Error('动态状态不完整，请稍后刷新')
+      const isCount = (count: unknown) => typeof count === 'string' && /^(?:0|[1-9][0-9]*)$/.test(count)
+      if (kind === 'dog' && (!Array.isArray(value.dogs) || !Array.isArray(value.foods) || typeof value.currentDogName !== 'string'
+        || typeof value.foodInventoryKnown !== 'boolean' || !isCount(value.pendingGiftCountDec) || value.feedingEnabled !== false
+        || value.foods.some((food: any) => !food || typeof food.name !== 'string' || !isCount(food.countDec))))
+        throw new Error('守卫犬状态不完整，请稍后刷新')
+      if (kind === 'collections' && (!Array.isArray(value.items) || !Array.isArray(value.displays) || !Number.isInteger(value.currentScore)
+        || !Number.isInteger(value.claimedScore) || value.writesEnabled !== false
+        || value.items.some((item: any) => !item || typeof item.name !== 'string' || !Number.isInteger(item.star) || item.star < 0 || item.star > 5 || !isCount(item.ownedCountDec))
+        || value.displays.some((slot: any) => !slot || !Number.isInteger(slot.slotType) || typeof slot.name !== 'string')))
+        throw new Error('珍藏室状态不完整，请稍后刷新')
       updateReads.value[kind].data = value
       return { ok: true }
     }

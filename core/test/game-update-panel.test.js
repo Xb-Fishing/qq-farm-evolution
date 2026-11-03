@@ -63,3 +63,21 @@ test('fulfilled malformed catalog data preserves the previous usable catalog and
   assert.ok(buttonsOf(page.root).some(node => textOf(node).includes('棉芽 ·')));
   assert.equal(api.calls.post.length, 0); render(null, page.root);
 });
+
+test('dog and collections require explicit clicks and render selected-account state with exact counts and zero writes', async () => {
+  const { api, page } = fixture(); await flush(); click(button(page.root, '查看更新与邮箱')); await flush();
+  assert.equal(api.calls.get.some(row => /dog-state|collection-state/.test(row.url)), false);
+  api.setGet(async url => ({ data: { ok: true, state: url.endsWith('dog-state')
+    ? { fetchedAt: 1, dogs: [], currentDogName: '合成守卫犬', pendingGiftCountDec: '0', foods: [{ id: 90004, name: '狗粮', countDec: '9007199254740993' }], foodInventoryKnown: true, feedingEnabled: false, feedingReason: '请在游戏内喂食' }
+    : { fetchedAt: 1, currentScore: 400, claimedScore: 0, items: [{ id: 710001, name: '菇菇氧', star: 2, ownedCountDec: '3' }], displays: [{ slotType: 1, name: '菇菇氧' }], writesEnabled: false } } }));
+  click(button(page.root, '读取守卫犬状态')); await flush(); assert.match(textOf(page.root), /合成守卫犬/); assert.match(textOf(page.root), /9,007,199,254,740,993/);
+  click(button(page.root, '读取珍藏室状态')); await flush(); assert.match(textOf(page.root), /当前评分 400/); assert.match(textOf(page.root), /2 星/); assert.match(textOf(page.root), /展台 1：菇菇氧/);
+  assert.equal(api.calls.post.length, 0); render(null, page.root);
+});
+test('read-only panel errors retain success and an account switch drops late ownership results', async () => {
+  const { api, page } = fixture(); await flush(); click(button(page.root, '查看更新与邮箱')); await flush();
+  const state = { fetchedAt: 1, currentScore: 400, claimedScore: 0, items: [{ id: 710001, name: '合成持有藏品', star: 2, ownedCountDec: '3' }], displays: [], writesEnabled: false };
+  api.setGet(async () => ({ data: { ok: true, state } })); click(button(page.root, '读取珍藏室状态')); await flush(); assert.match(textOf(page.root), /合成持有藏品/);
+  api.setGet(async () => ({ data: { ok: true, state: { ...state, items: [null] } } })); click(button(page.root, '读取珍藏室状态')); await flush(); assert.match(textOf(page.root), /珍藏室状态不完整/); assert.match(textOf(page.root), /合成持有藏品/);
+  const gate = deferred(); api.setGet(async () => { await gate.promise; return { data: { ok: true, state } }; }); click(button(page.root, '读取珍藏室状态')); await flush(); page.accountRef.value = 'synthetic-second'; await flush(); gate.resolve(); await flush(); assert.doesNotMatch(textOf(page.root), /合成持有藏品/); assert.equal(api.calls.post.length, 0); render(null, page.root);
+});
