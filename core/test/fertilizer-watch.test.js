@@ -29,52 +29,6 @@ test('ripe wall-clock jumping earlier counts as fertilizer', () => {
   assert.equal(ripeJumpedEarly(1_700_000_000_000 + 6 * 3600 * 1000, 1_700_000_000_000 + 6 * 3600 * 1000 - 10_000), false);
 });
 
-test('one summary jump enters HOT immediately and schedules realtime monitoring', () => {
-  const now = 1_700_000_000_000;
-  noteFriendSummaries([
-    { gid: 9, name: '肥佬', plant: { steal_plant_num: 0, ripe_time_sec: 21600 } },
-  ], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 9, name: '肥佬', plant: { steal_plant_num: 0, ripe_time_sec: 600 } },
-  ], { now: now + 30_000, myGid: 1 });
-
-  assert.equal(getDueWatchFriends(now + 30_000).length, 0);
-  const dueAt = getNextWatchDueAt(now + 30_000);
-  assert.equal(getWatchStateForTests(9, now + 30_000).status, WATCH_STATUS.HOT);
-  assert.equal(isFertilizerHot(9, now + 30_000), true);
-  assert.equal(governor.getRequestProfile(now + 30_000).watchModeActive, true);
-  assert.ok(dueAt >= now + 30_000 + 400);
-  assert.ok(dueAt <= now + 30_000 + 800);
-  assert.equal(getDueWatchFriends(dueAt).length, 1);
-  assert.equal(getDueWatchFriends(dueAt)[0].gid, 9);
-});
-
-test('nudged without a baseline enters HOT immediately; no growing lands drop it', () => {
-  const now = Date.now();
-  inspectFriendLands(8, '催熟党', [
-    { id: 1, plant: { id: 100, is_nudged: true, phases: [{ begin_time: Math.floor(now / 1000) + 3600 }] } },
-  ], now);
-  assert.equal(getWatchStateForTests(8, now).status, WATCH_STATUS.HOT);
-  assert.ok(getNextWatchDueAt(now) > now);
-  inspectFriendLands(8, '催熟党', [], now);
-  assert.equal(getNextWatchDueAt(now), 0);
-});
-
-test('fertilizer decrease is compared per land instead of using the farm minimum', () => {
-  const now = Date.now();
-  const phaseAt = Math.floor(now / 1000) + 3600;
-  inspectFriendLands(18, '分地施肥', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 0, phases: [{ begin_time: phaseAt }] } },
-    { id: 2, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: phaseAt }] } },
-  ], now);
-  inspectFriendLands(18, '分地施肥', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 0, phases: [{ begin_time: phaseAt }] } },
-    { id: 2, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: phaseAt }] } },
-  ], now + 1000);
-  assert.equal(getWatchStateForTests(18, now + 1000).status, WATCH_STATUS.HOT);
-  assert.ok(getNextWatchDueAt(now + 1000) > now + 1000);
-});
-
 test('maturity transition with a fertilizer counter reset does not trigger HOT', () => {
   const now = Date.now();
   const sec = Math.floor(now / 1000);
@@ -87,21 +41,6 @@ test('maturity transition with a fertilizer counter reset does not trigger HOT',
     { id: 1, plant: { id: 100, left_inorc_fert_times: 0, phases: [{ begin_time: sec - 1 }] } },
   ], now);
   assert.equal(getWatchStateForTests(181, now), null);
-});
-
-test('maturity advance is compared per land even when another land remains earliest', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  inspectFriendLands(19, '后排催熟', [
-    { id: 1, plant: { id: 100, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
-    { id: 2, plant: { id: 101, phases: [{ begin_time: sec }, { begin_time: sec + 7200 }] } },
-  ], now);
-  inspectFriendLands(19, '后排催熟', [
-    { id: 1, plant: { id: 100, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
-    { id: 2, plant: { id: 101, phases: [{ begin_time: sec }, { begin_time: sec + 5400 }] } },
-  ], now + 1000);
-  assert.equal(getWatchStateForTests(19, now + 1000).status, WATCH_STATUS.HOT);
-  assert.ok(getNextWatchDueAt(now + 1000) > now + 1000);
 });
 
 test('crop replacement does not look like fertilizer use', () => {
@@ -126,41 +65,6 @@ test('replanting the same crop with a later maturity is not fertilizer use', () 
     { id: 1, plant: { id: 100, left_inorc_fert_times: 0, phases: [{ begin_time: sec + 70 }, { begin_time: sec + 7200 }] } },
   ], now + 70_000);
   assert.equal(getNextWatchDueAt(now + 70_000), 0);
-});
-
-test('phase history pruning still compares the same crop per land', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  inspectFriendLands(25, '阶段裁剪', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [
-      { begin_time: sec - 100 },
-      { begin_time: sec + 100 },
-      { begin_time: sec + 3600 },
-    ] } },
-  ], now);
-  inspectFriendLands(25, '阶段裁剪', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [
-      { begin_time: sec + 100 },
-      { begin_time: sec + 3000 },
-    ] } },
-  ], now + 1000);
-  assert.ok(getNextWatchDueAt(now + 1000) > now + 1000);
-});
-
-test('partial LandsNotify keeps untouched growing lands and does not drop the watch', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  inspectFriendLands(21, '增量通知', [
-    { id: 1, plant: { id: 100, is_nudged: true, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
-    { id: 2, plant: { id: 101, phases: [{ begin_time: sec }, { begin_time: sec + 7200 }] } },
-  ], now);
-  assert.ok(getNextWatchDueAt(now) > now);
-
-  inspectFriendLands(21, '', [
-    { id: 1, plant: { id: 100, phases: [{ begin_time: sec }, { begin_time: sec - 1 }] } },
-  ], now + 1000, { partial: true });
-  assert.equal(getWatchStateForTests(21, now + 1000).status, WATCH_STATUS.HOT);
-  assert.ok(getNextWatchDueAt(now + 1000) > 0);
 });
 
 test('existing friend-land snapshots feed the nearest steal clock without another request', () => {
@@ -197,23 +101,6 @@ test('known friend-land clock ignores blacklist and expires after retry grace', 
   );
 });
 
-test('a first partial mature-land notify cannot prove the whole farm stopped growing', () => {
-  const now = 1_700_000_000_000;
-  noteFriendSummaries([
-    { gid: 23, name: '只有增量', plant: { ripe_time_sec: 600 } },
-  ], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 23, name: '只有增量', plant: { ripe_time_sec: 500 } },
-  ], { now: now + 1000, myGid: 1 });
-  assert.ok(getNextWatchDueAt(now + 1000) > now + 1000);
-
-  inspectFriendLands(23, '', [
-    { id: 1, plant: { id: 100, phases: [{ begin_time: 1 }] } },
-  ], now + 2000, { partial: true });
-  assert.equal(getWatchStateForTests(23, now + 2000).status, WATCH_STATUS.HOT);
-  assert.ok(getNextWatchDueAt(now + 2000) > 0);
-});
-
 test('缺少 ripe_time_sec 的好友摘要不会覆盖已经读取的精确地块墙钟', () => {
   const now = 1_700_000_000_000;
   noteFriendSummaries([
@@ -227,111 +114,6 @@ test('缺少 ripe_time_sec 的好友摘要不会覆盖已经读取的精确地�
   ], { now: now + 30_000, myGid: 1 });
   const after = getFriendRipeSnapshot(24, now + 30_000);
   assert.equal(after?.dueAt, first.dueAt);
-});
-
-test('summary jump within eight seconds still creates a close watch', () => {
-  const now = 1_700_000_000_000;
-  noteFriendSummaries([
-    { gid: 22, name: '瞬熟', plant: { ripe_time_sec: 600 } },
-  ], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 22, name: '瞬熟', plant: { ripe_time_sec: 5 } },
-  ], { now: now + 1000, myGid: 1 });
-  const dueAt = getNextWatchDueAt(now + 1000);
-  assert.equal(getWatchStateForTests(22, now + 1000).status, WATCH_STATUS.HOT);
-  assert.ok(dueAt > now + 1000);
-  assert.ok(dueAt < now + 5000);
-});
-
-test('a thirty-minute summary shock is cached per friend and enters HOT immediately', () => {
-  const now = 1_700_000_000_000;
-  noteFriendSummaries([
-    { gid: 30, name: '剧烈催熟', plant: { ripe_time_sec: 7200 } },
-  ], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 30, name: '剧烈催熟', plant: { ripe_time_sec: 3600 } },
-  ], { now: now + 1000, myGid: 1 });
-  const state = getWatchStateForTests(30, now + 1000);
-  const cache = getMaturityCacheForTests(30);
-  assert.equal(state.status, WATCH_STATUS.HOT);
-  assert.equal(cache.shock, true);
-  assert.ok(cache.advanceMs >= 30 * 60 * 1000);
-  assert.equal(state.transitionReason, 'summary_ripe_shock_30m');
-});
-
-test('an unchanged cached maturity does not renew HOT', () => {
-  const now = 1_700_000_000_000;
-  noteFriendSummaries([
-    { gid: 31, name: '稳定', plant: { ripe_time_sec: 600 } },
-  ], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 31, name: '稳定', plant: { ripe_time_sec: 500 } },
-  ], { now: now + 1000, myGid: 1 });
-  const first = getWatchStateForTests(31, now + 1000);
-  noteFriendSummaries([
-    { gid: 31, name: '稳定', plant: { ripe_time_sec: 499 } },
-  ], { now: now + 2000, myGid: 1 });
-  const stable = getWatchStateForTests(31, now + 2000);
-  assert.equal(stable.status, WATCH_STATUS.HOT);
-  assert.equal(stable.hotUntil, first.hotUntil);
-});
-
-test('HOT does not renew on an unchanged snapshot and cools after idle window', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  inspectFriendLands(32, '不续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
-  ], now);
-  inspectFriendLands(32, '不续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 3000 }] } },
-  ], now + 1000);
-  const hot = getWatchStateForTests(32, now + 1000);
-  assert.equal(hot.status, WATCH_STATUS.HOT);
-
-  inspectFriendLands(32, '不续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 3000 }] } },
-  ], hot.nextVisitAt);
-  const unchanged = getWatchStateForTests(32, hot.nextVisitAt);
-  assert.equal(unchanged.hotUntil, hot.hotUntil);
-  assert.equal(getWatchStateForTests(32, hot.hotUntil + 1).status, WATCH_STATUS.COOLDOWN);
-});
-
-test('new strong evidence renews HOT but never extends its hard cap', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  inspectFriendLands(33, '续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 3, phases: [{ begin_time: sec }, { begin_time: sec + 3600 }] } },
-  ], now);
-  inspectFriendLands(33, '续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: sec }, { begin_time: sec + 3300 }] } },
-  ], now + 1000);
-  const first = getWatchStateForTests(33, now + 1000);
-
-  inspectFriendLands(33, '续热', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 3000 }] } },
-  ], now + 6000, { partial: true });
-  const renewed = getWatchStateForTests(33, now + 6000);
-  assert.equal(renewed.status, WATCH_STATUS.HOT);
-  assert.ok(renewed.hotUntil > first.hotUntil);
-  assert.ok(renewed.hotUntil <= first.hardUntil);
-  assert.equal(renewed.lastVisitAt, first.lastVisitAt);
-});
-
-test('global budget yields one due trend target and enforces a minimum gap', () => {
-  const now = Date.now();
-  watchFriend(40, '热点A', { now, reason: 'test_strong' });
-  watchFriend(41, '热点B', { now, reason: 'test_strong' });
-  const dueAt = Math.max(
-    getWatchStateForTests(40, now).nextVisitAt,
-    getWatchStateForTests(41, now).nextVisitAt
-  );
-  const firstDue = getDueWatchFriends(dueAt);
-  assert.equal(firstDue.length, 1);
-  noteWatchVisit(firstDue[0].gid, dueAt);
-  assert.equal(getDueWatchFriends(dueAt).length, 0);
-  const secondDue = getDueWatchFriends(dueAt + 400);
-  assert.equal(secondDue.length, 1);
-  assert.notEqual(secondDue[0].gid, firstDue[0].gid);
 });
 
 test('PREARM is isolated from fertilizer trend and fires only at ripeAt once', () => {
@@ -368,79 +150,50 @@ test('failed PREARM remains retryable briefly, then expires instead of staying d
   assert.equal(getNextWatchDueAt(ripeAt + 90_001), 0);
 });
 
-test('an expiring HOT close to maturity becomes PREARM instead of polling forever', () => {
-  const now = Date.now();
-  const ripeAt = now + 13_000;
-  watchFriend(51, '临近成熟', { now, ripeAt, reason: 'test_strong' });
-  const hot = getWatchStateForTests(51, now);
-  assert.equal(hot.status, WATCH_STATUS.HOT);
-  const prearm = getWatchStateForTests(51, hot.hotUntil + 1);
-  assert.equal(prearm.status, WATCH_STATUS.PREARM);
-  // 60s 空闲窗下 ripeAt 已是过去时：PREARM 必须立即到期（1s 内）而不是等墙钟
-  assert.ok(prearm.nextVisitAt <= hot.hotUntil + 2_000, `nextVisitAt=${prearm.nextVisitAt}`);
+
+for (const priority of [false, true]) {
+  test(`maturity advances update the wall clock without fertilizer HOT or extra visits (priority=${priority})`, () => {
+    const now = Date.now(); setPriorityGids(priority ? [71] : []);
+    noteFriendSummaries([{ gid: 71, name: '时钟', plant: { ripe_time_sec: 600 } }], { now });
+    noteFriendSummaries([{ gid: 71, name: '时钟', plant: { ripe_time_sec: 300 } }], { now: now + 1000 });
+    assert.ok(getFriendRipeSnapshot(71, now + 1000).dueAt < now + 400000);
+    assert.equal(getWatchStateForTests(71), null); assert.equal(getNextWatchDueAt(now), 0); assert.equal(isFertilizerHot(71), false);
+    assert.equal(governor.getRequestProfile(now).watchModeActive, false);
+  });
+  test(`fertilizer counts and nudge flags never create a separate watch (priority=${priority})`, () => {
+    const now = Date.now(), sec = Math.floor(now / 1000); setPriorityGids(priority ? [72] : []);
+    const land = (at, count, nudged) => ({ id: 1, plant: { id: 100, left_inorc_fert_times: count, is_nudged: nudged, phases: [{ begin_time: sec }, { begin_time: at }] } });
+    inspectFriendLands(72, '时钟', [land(sec + 600, 5, false)], now);
+    inspectFriendLands(72, '时钟', [land(sec + 300, 4, true)], now + 1000);
+    assert.equal(getWatchStateForTests(72), null); assert.equal(getNextWatchDueAt(now), 0);
+    const nearest = getNextKnownFriendRipeEntry(now); assert.equal(nearest.gid, 72); assert.ok(nearest.ripeAt < now + 400000);
+    assert.equal(watchFriend(72, '时钟', { now, reason: 'fertilizer_count_decreased' }), false);
+  });
+}
+test('partial updates preserve untouched natural maturity without adding visits', () => {
+  const now = Date.now(), sec = Math.floor(now / 1000);
+  const land = (id, at) => ({ id, plant: { id: 100 + id, phases: [{ begin_time: sec - 10 }, { begin_time: at }] } });
+  inspectFriendLands(73, '增量', [land(1, sec + 300), land(2, sec + 600)], now);
+  inspectFriendLands(73, '', [land(1, sec - 1)], now + 1000, { partial: true });
+  assert.equal(getWatchStateForTests(73), null); assert.ok(getNextKnownFriendRipeEntry(now + 1000).ripeAt >= now + 599000);
 });
 
-test('rolling global budget caps ten trend visits per ten seconds', () => {
-  const now = Date.now();
-  watchFriend(52, '预算测试', { now, reason: 'test_strong' });
-  for (let i = 0; i < 10; i++) noteWatchVisit(52, now + i * 400);
-  const scheduled = getNextWatchDueAt(now + 4000);
-  assert.ok(scheduled >= now + 10_000);
+test('newly observed maturity replaces a previously armed deadline without a HOT visit', () => {
+  const now = Date.now(), sec = Math.floor(now / 1000);
+  const land = at => ({ id: 1, plant: { id: 101, phases: [{ begin_time: sec - 60 }, { begin_time: at }] } });
+  inspectFriendLands(74, '时钟', [land(sec + 60)], now);
+  watchFriend(74, '时钟', { now, ripeAt: now + 60000, mode: 'prearm' });
+  inspectFriendLands(74, '', [land(sec + 30)], now, { partial: true });
+  const state = getWatchStateForTests(74, now); assert.equal(state.status, WATCH_STATUS.PREARM); assert.equal(state.nextVisitAt, now + 30000);
+  assert.equal(getDueWatchFriends(now + 29999).length, 0); assert.equal(getDueWatchFriends(now + 30000).length, 1); assert.equal(governor.getRequestProfile(now).watchModeActive, false);
 });
 
-test('one friend trend does not promote another friend', () => {
-  const now = 1_700_000_000_000;
-  const baseline = (gid, name) => ({ gid, name, plant: { ripe_time_sec: 600 } });
-  noteFriendSummaries([baseline(60, '甲'), baseline(61, '乙')], { now, myGid: 1 });
-  noteFriendSummaries([
-    { gid: 60, name: '甲', plant: { ripe_time_sec: 500 } },
-    { gid: 61, name: '乙', plant: { ripe_time_sec: 599 } },
-  ], { now: now + 1000, myGid: 1 });
-  assert.equal(getWatchStateForTests(60, now + 1000).status, WATCH_STATUS.HOT);
-  assert.equal(getWatchStateForTests(61, now + 1000), null);
-  assert.equal(getMaturityCacheForTests(61).shock, false);
-});
-
-test('priority friend triggers HOT on small summary advance, normal friend does not', () => {
-  const now = 1_700_000_000_000;
-  setPriorityGids([70]);
-  const baseline = (gid, name) => ({ gid, name, plant: { ripe_time_sec: 600 } });
-  noteFriendSummaries([baseline(70, '重点'), baseline(71, '路人')], { now, myGid: 1 });
-  // 1 秒后倒计时从 600 变 590：成熟墙钟提前约 9 秒（>5s 重点阈值，<25s 普通阈值）
-  noteFriendSummaries([
-    { gid: 70, name: '重点', plant: { ripe_time_sec: 590 } },
-    { gid: 71, name: '路人', plant: { ripe_time_sec: 590 } },
-  ], { now: now + 1000, myGid: 1 });
-  assert.equal(getWatchStateForTests(70, now + 1000).status, WATCH_STATUS.HOT);
-  assert.equal(getWatchStateForTests(71, now + 1000), null);
-});
-
-// 2026-09-22 线上事故回归：好友把成熟点催熟到只剩几秒，HOT 12 秒窗口到期时
-// ripeAt 已成过去时。旧代码直接冷却导致 6-8 分钟不回访、菜被主人收走。
-test('HOT expiry with just-past ripeAt re-arms PREARM instead of cooling down', () => {
-  const now = Date.now();
-  const sec = Math.floor(now / 1000);
-  // 第一次进门建立基线，第二次进门看到同一茬成熟点前移 + 施肥次数下降 → HOT
-  inspectFriendLands(80, '催熟抢收', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 2, phases: [{ begin_time: sec }, { begin_time: sec + 120 }] } },
-  ], now);
-  inspectFriendLands(80, '催熟抢收', [
-    { id: 1, plant: { id: 100, left_inorc_fert_times: 1, phases: [{ begin_time: sec }, { begin_time: sec + 8 }] } },
-  ], now + 1000);
-  const hot = getWatchStateForTests(80, now + 1000);
-  assert.equal(hot.status, WATCH_STATUS.HOT);
-  // HOT 到期（~now+13s）时 ripeAt（~now+8s）刚过去 5 秒，仍在 90 秒宽限内
-  const bridged = getWatchStateForTests(80, hot.hotUntil + 1);
-  assert.equal(bridged.status, WATCH_STATUS.PREARM, '刚熟未收必须桥接 PREARM 重访');
-  assert.ok(bridged.nextVisitAt <= hot.hotUntil + 2_000, 'PREARM 必须立即到期');
-});
-
-test('HOT expiry with long-past or unknown ripeAt still cools down', () => {
-  const now = Date.now();
-  watchFriend(81, '远期', { now, ripeAt: now + 3600_000, reason: 'test_strong' });
-  const hot81 = getWatchStateForTests(81, now);
-  assert.equal(getWatchStateForTests(81, hot81.hotUntil + 1).status, WATCH_STATUS.COOLDOWN);
-  watchFriend(82, '未知', { now, reason: 'test_strong' });
-  const hot82 = getWatchStateForTests(82, now);
-  assert.equal(getWatchStateForTests(82, hot82.hotUntil + 1).status, WATCH_STATUS.COOLDOWN);
+test('old HOT state is discarded on restore while shared clocks and PREARM survive', () => {
+  const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+  const file = path.resolve(__dirname, '../src/services/fertilizer-watch.js'); let capsule, watchMode;
+  const module = { exports: {} };
+  const mocks = { '../utils/utils': { toNum: Number, toTimeSec: Number, getServerTimeSec: () => 1800000000, log() {} }, './steal-schedule': require('../src/services/steal-schedule'), './friend-activity': { noteSocialItems() {} }, './request-governor': { setWatchMode: value => { watchMode = value; } }, './business-state': { registerDataState: (_name, capture, restore, options) => { capsule = { capture, restore, ...options }; }, restoreContainer: (target, source) => { target.clear?.(); if (target instanceof Map) for (const entry of source) target.set(...entry); else if (target instanceof Set) for (const entry of source) target.add(entry); else { target.splice(0, target.length, ...source); } } } };
+  vm.compileFunction(fs.readFileSync(file, 'utf8'), ['require', 'module', 'exports', 'globalThis', 'Map', 'Set'])(name => { assert.ok(Object.hasOwn(mocks, name), name); return mocks[name]; }, module, module.exports, { process: { env: { FARM_SESSION_BUSINESS: '1' } } }, Map, Set);
+  const value = capsule.capture(); assert.equal(Object.keys(value).length, 8); value.watches.set(1, { status: 'HOT', nextVisitAt: 1800000000100 }); value.watches.set(2, { status: 'PREARM', nextVisitAt: 1800000001000, hardUntil: 1800000091000 }); value.ripeSnapshots.set(2, { dueAt: 1800000001000 }); value.priorityGids.add(2);
+  capsule.restore(structuredClone(value)); assert.equal(watchMode, undefined, 'preparation must not issue governor commands'); module.exports.retireFertilizerWatchMode(); assert.equal(module.exports.getWatchStateForTests(1, 1800000000000), null); assert.equal(module.exports.getWatchStateForTests(2, 1800000000000).status, 'PREARM'); assert.equal(module.exports.isPriorityGid(2), true); assert.equal(watchMode, false);
 });

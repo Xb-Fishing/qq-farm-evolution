@@ -216,7 +216,7 @@ test('快照回退放行观察窗豁免：实际发 Enter；快照过期后仍�
     const gid = 9101;
     store.setWatchlistFriendGids('baseline-account', [gid]);
     orchestrator.applyStealScheduleFromFriends(
-        [{ gid, name: 'snapshot-friend', plant: { ripe_time_sec: 35 * 60 } }],
+        [{ gid, name: 'snapshot-friend', plant: { ripe_time_sec: 30 * 60 + 30 } }],
         { myGid: 1, blacklist: new Set() },
     );
 
@@ -229,18 +229,18 @@ test('快照回退放行观察窗豁免：实际发 Enter；快照过期后仍�
     assert.equal(enterLog.length, 3);
     assert.equal(pauseEvents().length, 1);
 
-    // 第 4 轮（剩余 5 分钟，观察窗内）：快照回退补齐证据 → 放行并实际发 Enter
+    // 第 4 轮（剩余30秒，自然成熟布控窗内）：快照回退补齐证据 → 放行并实际发 Enter
     orchestrator.pullWatchlistPollToNow(gid, 0);
     await pumpWatchlistPoll();
     assert.equal(enterLog.length, 4, '观察窗豁免必须经快照回退实际进门，不得以日志代替执行');
     const health = healthRows();
     assert.equal(health[3].mode, 'observation', '观察窗内实际尝试按 observation 档记录');
     assert.equal(health[3].result, 'failed');
-    assert.ok(health[3].nextDelayMs >= 45_000 && health[3].nextDelayMs <= 75_000,
-        `观察窗内重排必须是 45-75s 档（实际 ${health[3].nextDelayMs}ms）`);
+    assert.ok(health[3].nextDelayMs >= 300_000,
+        `自然到点布控独立，普通基线保持慢档（实际 ${health[3].nextDelayMs}ms）`);
 
     // 反例：快照过期（dueAt 落在 90s 宽限之外）→ 按未知处理，暂停照常拦
-    clock.now = 1_800_000_000_000 + 35 * 60_000 + 100_000;
+    clock.now = 1_800_000_000_000 + (30 * 60 + 30) * 1000 + 100_000;
     orchestrator.pullWatchlistPollToNow(gid, 0);
     await pumpWatchlistPoll();
     assert.equal(enterLog.length, 4, '过期快照不得继续放行');
@@ -256,7 +256,7 @@ test('目标隔离：他目标的观察窗快照不释放本目标暂停', async
     store.setWatchlistFriendGids('baseline-account', [far, near]);
     orchestrator.applyStealScheduleFromFriends([
         { gid: far, name: 'far-friend', plant: { ripe_time_sec: 6 * 3600 } },
-        { gid: near, name: 'near-friend', plant: { ripe_time_sec: 40 * 60 } },
+        { gid: near, name: 'near-friend', plant: { ripe_time_sec: 30 * 60 + 30 } },
     ], { myGid: 1, blacklist: new Set() });
 
     // 三轮：两目标都被拒满 3 次，双双暂停
@@ -269,7 +269,7 @@ test('目标隔离：他目标的观察窗快照不释放本目标暂停', async
     assert.equal(enterLog.filter(row => row.gid === far).length, 3);
     assert.equal(enterLog.filter(row => row.gid === near).length, 3);
 
-    // 第 4 轮：near 自身剩余 10 分钟（窗口内）→ 快照回退放行；far 自身 6 小时
+    // 第 4 轮：near 自身剩余30秒（自然成熟布控窗内）→ 快照回退放行；far 自身 6 小时
     // → 窗口外照常拦下（near 的窗口证据不得外溢释放 far）
     orchestrator.pullWatchlistPollToNow(far, 0);
     orchestrator.pullWatchlistPollToNow(near, 0);

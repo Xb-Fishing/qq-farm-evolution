@@ -131,15 +131,15 @@ test('priority baseline polling tightens only inside the observation window with
   // 2026-09-23：常态档降为 10-15 分钟（推送承担发现），在线/活跃档先于窗口判断
   assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MIN_MS = 10 \* 60_000/);
   assert.match(friendSrc, /WATCHLIST_POLL_IDLE_MAX_MS = 15 \* 60_000/);
-  assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MIN_MS = 45_000/);
-  assert.match(friendSrc, /WATCHLIST_POLL_WINDOW_MAX_MS = 75_000/);
+  assert.doesNotMatch(friendSrc, /const WATCHLIST_POLL_WINDOW_MIN_MS/);
+  assert.doesNotMatch(friendSrc, /const WATCHLIST_POLL_WINDOW_MAX_MS/);
   assert.doesNotMatch(friendSrc, /setWatchMode\(/);
-  assert.match(friendSrc, /slowdown\.active && !isFertilizerHot\(gid, now\) && !inObservationWindow/);
+  assert.match(friendSrc, /slowdown\.active && !onlineNow && !inObservationWindow/);
   assert.match(friendSrc, /baselineDelay \+ gaussianInt\(floorMs/);
 });
 
 test('priority polling wakes at the observation boundary and stays within the tighter jitter range', () => {
-  const wakeBeforeMs = 122 * 60_000;
+  const wakeBeforeMs = 60_000;
   const chooseMax = (_min, max) => max;
 
   assert.equal(nextWatchlistPollDelayMs(0, { wakeBeforeMs, randomDelay: chooseMax }), 15 * 60_000);
@@ -150,7 +150,7 @@ test('priority polling wakes at the observation boundary and stays within the ti
   );
   assert.equal(
     nextWatchlistPollDelayMs(90 * 60_000, { wakeBeforeMs, randomDelay: chooseMax }),
-    75_000
+    15 * 60_000
   );
   assert.equal(
     nextWatchlistPollDelayMs(90_000, { wakeBeforeMs, randomDelay: chooseMax }),
@@ -204,17 +204,17 @@ test('friend due stealing retains the 80-300ms wake cap and onlySteal path', () 
   assert.match(src.slice(start, end), /await checkFriends\(\{ onlySteal: true \}\)/);
 });
 
-test('known ordinary steal maturity waits for due while HOT and PREARM keep independent visits', () => {
+test('known steal maturity waits for its deadline while PREARM remains independent', () => {
   const start = src.indexOf('function armStealWake');
   const end = src.indexOf('async function runStealTick', start);
   const body = src.slice(start, end);
   assert.match(body, /getNextWatchDueAt\(now\)/);
   // 2026-09-22 催熟兜底：重点好友挂未来墙钟时，真实到期与 60-120s 摘要
   // 刷新下限取 min；无重点墙钟时保持按真实到期一次性唤醒。
-  assert.match(body, /nextStealRunAt = Math\.min\(/);
+  assert.match(body, /nextStealRunAt = dueAt \+ randInt/);
   assert.match(body, /dueAt \+ randInt\(30, 120\)/);
-  assert.match(body, /gaussianInt\(PRIORITY_SUMMARY_FLOOR_MIN_MS, PRIORITY_SUMMARY_FLOOR_MAX_MS\)/);
-  assert.match(body, /watchlistDue > now/);
+  assert.doesNotMatch(body, /PRIORITY_SUMMARY_FLOOR/);
+  assert.match(body, /getNextWatchlistStealDueAtMs/);
   assert.doesNotMatch(body, /ripeRecheckDelayMs/);
   assert.doesNotMatch(body, /nextPreRipeScanAt/);
 
@@ -223,9 +223,8 @@ test('known ordinary steal maturity waits for due while HOT and PREARM keep inde
   assert.doesNotMatch(src.slice(farmStart, farmEnd), /refreshFriendRipeSchedule/);
 });
 
-test('催熟兜底摘要下限常量保持高斯抖动且不低于一分钟', () => {
-  assert.match(src, /PRIORITY_SUMMARY_FLOOR_MIN_MS = 60_000/);
-  assert.match(src, /PRIORITY_SUMMARY_FLOOR_MAX_MS = 120_000/);
+test('no dedicated fertilizer summary floor remains', () => {
+  assert.doesNotMatch(src, /const PRIORITY_SUMMARY_FLOOR/);
 });
 
 test('unknown friend maturity uses only a five-to-eight-minute rediscovery fallback', () => {
@@ -279,7 +278,7 @@ test('existing manual and detail friend entries feed clocks and immediately re-a
 });
 
 test('ordinary slowdown still cannot block priority HOT or PREARM entry', () => {
-  assert.match(friendSrc, /slowdown\.active && !isFertilizerHot\(gid, now\)/);
+  assert.match(friendSrc, /slowdown\.active && !onlineNow && !inObservationWindow/);
   assert.match(friendSrc, /mode: 'prearm'/);
   const start = friendSrc.indexOf('async function checkFriends');
   const end = friendSrc.indexOf('// ===== Friend check loop', start);

@@ -1,14 +1,10 @@
 /**
- * 好友施肥趋势状态机。
- *
- * NORMAL   无状态：只靠好友摘要/推送维护基线，不主动进门。
- * HOT      任一可信可疑信号直接触发；短时秒级追踪，只有新变化才能续热。
- * COOLDOWN 热追踪结束：停止进门，强证据可重新触发。
- * PREARM   自然成熟预布控：与化肥趋势隔离，只在成熟点进门一次。
+ * Shared friend maturity cache and natural-deadline PREARM.
+ * Priority online/push monitoring lives in friend-activity and friend-orchestrator.
+ * Fertilizer-specific HOT inference and extra visits are retired.
  */
 
 const { toNum, toTimeSec, getServerTimeSec, log } = require('../utils/utils');
-const { gaussianInt } = require('../utils/behavior');
 const { ripeDueAtMs } = require('./steal-schedule');
 const friendActivity = require('./friend-activity');
 
@@ -20,26 +16,15 @@ const WATCH_STATUS = Object.freeze({
 
 const MAX_ACTIVE_WATCH = 6;
 const JUMP_SLACK_MS = 25_000;
-const SUMMARY_SHOCK_MS = 30 * 60 * 1000;
 const LAND_JUMP_SLACK_SEC = 20;
 
 // 重点监控好友：更敏感的趋势触发阈值。摘要提前阈值按次随机 1-5s
-const PRIORITY_JUMP_SLACK_MIN_MS = 1_000;
-const PRIORITY_JUMP_SLACK_MAX_MS = 5_000;
-const PRIORITY_SUMMARY_SHOCK_MS = 10 * 60 * 1000;
 const PRIORITY_LAND_JUMP_SLACK_SEC = 10;
 
 // 触发后对目标好友秒级追踪。趋势停止的确认门槛（2026-09-22 用户定标）：
 // 连续 60 秒成熟时刻不再前移才算施肥结束——好友在线时常分多次施肥，
 // 12 秒的窗口会把"施肥中"误判成"已停止"而提前降频丢菜。单次 HOT 硬上限
 // 10 分钟（持续有新证据可续到上限）；持久 is_nudged=true 不会续热。
-const HOT_FIRST_MIN_MS = 400;
-const HOT_FIRST_MAX_MS = 800;
-const HOT_RECHECK_MIN_MS = 700;
-const HOT_RECHECK_MAX_MS = 1_200;
-const HOT_IDLE_MS = 60_000;
-const HOT_MAX_MS = 10 * 60_000;
-const COOLDOWN_MS = 30_000;
 
 // 自然成熟到点后保留 90 秒受控重试；成功进门即删除。这样预算瞬时拥塞不会让
 // PREARM 5 秒后消失并退化成全好友 GetAll 重试。
@@ -47,9 +32,7 @@ const PREARM_GRACE_MS = 90_000;
 
 // 盯梢进门的全局预算：最多 10 次/10 秒，且相邻至少 400ms。
 // PREARM 到点可优先一次，但该次访问仍计入后续预算。
-const GLOBAL_MIN_VISIT_GAP_MS = 400;
 const GLOBAL_BUDGET_WINDOW_MS = 10_000;
-const GLOBAL_BUDGET_VISITS = 10;
 
 const watches = new Map();
 const ripeSnapshots = new Map();
@@ -77,18 +60,6 @@ function isPriorityGid(gid) {
   return priorityGids.has(toNum(gid));
 }
 
-function randomBetween(min, max) {
-  return gaussianInt(min, max);
-}
-
-function hotFirstDelayMs() {
-  return randomBetween(HOT_FIRST_MIN_MS, HOT_FIRST_MAX_MS);
-}
-
-function hotRecheckDelayMs() {
-  return randomBetween(HOT_RECHECK_MIN_MS, HOT_RECHECK_MAX_MS);
-}
-
 function ripeJumpedEarly(prevDueAt, nextDueAt, slackMs = JUMP_SLACK_MS) {
   const prev = Number(prevDueAt) || 0;
   const next = Number(nextDueAt) || 0;
@@ -101,7 +72,7 @@ function displayNameFor(gid, name) {
 }
 
 function isActiveWatch(watch) {
-  return watch && watch.status !== WATCH_STATUS.COOLDOWN;
+  return watch && watch.status === WATCH_STATUS.PREARM;
 }
 
 function activeWatchCount() {
@@ -137,25 +108,7 @@ function ensureActiveCapacity() {
   while (activeWatchCount() >= MAX_ACTIVE_WATCH) dropLowestPriorityWatch();
 }
 
-function startCooldown(watch, now, reason) {
-  if (!watch) return;
-  const wasHot = watch.status === WATCH_STATUS.HOT;
-  watch.status = WATCH_STATUS.COOLDOWN;
-  watch.nextVisitAt = 0;
-  watch.cooldownUntil = now + COOLDOWN_MS;
-  watch.transitionReason = reason || '';
-  if (wasHot) {
-    const priority = isPriorityGid(watch.gid);
-    log('好友', `${priority ? '[重点] ' : ''}${watch.name} 施肥趋势停止，盯梢降频冷却`, {
-      module: 'friend',
-      event: '化肥盯梢冷却',
-      friendGid: watch.gid,
-      friendName: watch.name,
-      reason: reason || '',
-      ...(priority ? { priority: true } : {}),
-    });
-  }
-}
+
 
 function armPreRipe(gid, name, options = {}) {
   const id = toNum(gid);
@@ -166,11 +119,6 @@ function armPreRipe(gid, name, options = {}) {
   // 不放宽 Enter/AllLands 门限。门限放宽只属于确认施肥后的 HOT。
   require('./request-governor').setContentionMode(true, Math.max(now, ripeAt) + 60_000);
   const existing = watches.get(id);
-  if (!options.force && existing && existing.status === WATCH_STATUS.HOT) {
-    existing.name = displayNameFor(id, name || existing.name);
-    existing.ripeAt = ripeAt;
-    return false;
-  }
   if (!existing || !isActiveWatch(existing)) ensureActiveCapacity();
   const isNewPrearm = !existing || existing.status !== WATCH_STATUS.PREARM;
   const resolvedName = displayNameFor(id, name);
@@ -199,79 +147,24 @@ function armPreRipe(gid, name, options = {}) {
   return true;
 }
 
-function activateHot(gid, name, options = {}) {
-  const id = toNum(gid);
-  if (!id) return false;
-  const now = Number(options.now) || Date.now();
-  const reason = options.reason || 'strong_evidence';
-  const advanceMs = Math.max(0, Number(options.advanceMs) || 0);
-  const existing = watches.get(id);
-  const resolvedName = displayNameFor(id, name || existing?.name);
-  const ripeAt = Number(options.ripeAt) || Number(existing?.ripeAt) || 0;
 
-  if (existing && existing.status === WATCH_STATUS.HOT) {
-    existing.name = resolvedName;
-    existing.ripeAt = ripeAt;
-    existing.lastEvidenceAt = now;
-    existing.evidenceCount = (Number(existing.evidenceCount) || 0) + 1;
-    existing.hotUntil = Math.min(existing.hardUntil, now + HOT_IDLE_MS);
-    existing.nextVisitAt = Math.min(
-      Number(existing.nextVisitAt) || Number.POSITIVE_INFINITY,
-      now + hotFirstDelayMs()
-    );
-    existing.transitionReason = reason;
-    if (advanceMs > 0) existing.lastAdvanceMs = advanceMs;
-    return false;
-  }
 
-  if (!existing || !isActiveWatch(existing)) ensureActiveCapacity();
-  const hardUntil = now + HOT_MAX_MS;
-  // 只有确认进入施肥 HOT 后才临时放宽进门/读地块门限。
-  require('./request-governor').setWatchMode(true, hardUntil);
-  watches.set(id, {
-    gid: id,
-    name: resolvedName,
-    status: WATCH_STATUS.HOT,
-    createdAt: existing?.createdAt || now,
-    hotStartedAt: now,
-    lastEvidenceAt: now,
-    evidenceCount: (Number(existing?.evidenceCount) || 0) + 1,
-    nextVisitAt: now + hotFirstDelayMs(),
-    hotUntil: Math.min(hardUntil, now + HOT_IDLE_MS),
-    hardUntil,
-    ripeAt,
-    lastVisitAt: Number(existing?.lastVisitAt) || 0,
-    visitCount: 0,
-    transitionReason: reason,
-    lastAdvanceMs: advanceMs,
-  });
-  const priority = isPriorityGid(id);
-  log('好友', `${priority ? '[重点] ' : ''}${resolvedName} 确认有施肥趋势，进入秒级盯梢`, {
-    module: 'friend',
-    event: '化肥趋势触发',
-    friendGid: id,
-    friendName: resolvedName,
-    reason,
-    advanceMs,
-    ...(priority ? { priority: true } : {}),
-  });
-  return true;
-}
 
-function noteWeakSignal(gid, name, options = {}) {
-  return activateHot(gid, name, {
-    ...options,
-    reason: `suspicious:${options.reason || 'weak_signal'}`,
-  });
-}
 
-/** 兼容原调用入口：自然成熟必须显式 mode=prearm，其他直接调用视为强证据。 */
 function watchFriend(gid, name, options = {}) {
-  if (options.mode === 'prearm' || options.reason === 'ripe_prearm') {
-    return armPreRipe(gid, name, options);
-  }
-  if (options.weak) return noteWeakSignal(gid, name, options);
-  return activateHot(gid, name, options);
+  if (options.mode === 'prearm' || options.reason === 'ripe_prearm') return armPreRipe(gid, name, options);
+  return false;
+}
+
+function updateArmedMaturity(gid, ripeAt, now) {
+  const watch = watches.get(toNum(gid));
+  if (!watch || watch.status !== WATCH_STATUS.PREARM || !(ripeAt > now)) return;
+  // Server times have second precision; don't turn local subsecond rounding
+  // into a fresh grace period. A changed future maturity replaces the deadline.
+  if (Math.abs(Number(watch.ripeAt) - ripeAt) < 1000) return;
+  watch.ripeAt = ripeAt;
+  watch.nextVisitAt = ripeAt;
+  watch.hardUntil = ripeAt + PREARM_GRACE_MS;
 }
 
 function unwatchFriend(gid) {
@@ -289,56 +182,17 @@ function recordWatchVisit(now) {
   visitHistory.push(now);
 }
 
-function nextGlobalPermitAt(now) {
-  trimVisitHistory(now);
-  let permitAt = now;
-  if (visitHistory.length > 0) {
-    permitAt = Math.max(permitAt, visitHistory[visitHistory.length - 1] + GLOBAL_MIN_VISIT_GAP_MS);
-  }
-  if (visitHistory.length >= GLOBAL_BUDGET_VISITS) {
-    const budgetIndex = visitHistory.length - GLOBAL_BUDGET_VISITS;
-    permitAt = Math.max(permitAt, visitHistory[budgetIndex] + GLOBAL_BUDGET_WINDOW_MS);
-  }
-  return permitAt;
-}
-
 function noteWatchVisit(gid, now = Date.now()) {
   const id = toNum(gid);
   const watch = watches.get(id);
   if (!watch) return;
   recordWatchVisit(now);
-  watch.lastVisitAt = now;
-
-  if (watch.status === WATCH_STATUS.PREARM) {
-    watches.delete(id);
-    return;
-  }
-  if (watch.status === WATCH_STATUS.HOT) {
-    if (now >= Number(watch.hotUntil) || now >= Number(watch.hardUntil)) {
-      startCooldown(watch, now, 'hot_window_elapsed');
-      return;
-    }
-    watch.visitCount = (Number(watch.visitCount) || 0) + 1;
-    watch.nextVisitAt = now + hotRecheckDelayMs();
-  }
+  watches.delete(id);
 }
 
 function advanceWatch(gid, watch, now) {
-  if (watch.status === WATCH_STATUS.HOT &&
-      (now >= Number(watch.hotUntil) || now >= Number(watch.hardUntil))) {
-    const ripeAt = Number(watch.ripeAt) || 0;
-    // 催熟常把成熟点压进 HOT 12 秒窗口内：到期时 ripeAt 可能刚成过去时。
-    // 90 秒宽限内"刚熟未收"仍要一次 PREARM 重访，只有远期/未知才冷却。
-    if (ripeAt > now - PREARM_GRACE_MS && ripeAt <= now + PREARM_GRACE_MS * 2) {
-      armPreRipe(gid, watch.name, { now, ripeAt: ripeAt > now ? ripeAt : now + 1_000, mode: 'prearm', force: true });
-    } else {
-      startCooldown(watch, now, 'no_new_fertilizer_change');
-    }
-  } else if (watch.status === WATCH_STATUS.COOLDOWN && now >= Number(watch.cooldownUntil)) {
-    watches.delete(gid);
-  } else if (watch.status === WATCH_STATUS.PREARM && now > Number(watch.hardUntil)) {
-    watches.delete(gid);
-  }
+  // Drop pre-update fertilizer watches instead of resuming retired producers.
+  if (watch.status !== WATCH_STATUS.PREARM || now > Number(watch.hardUntil)) watches.delete(gid);
 }
 
 function advanceWatches(now) {
@@ -364,33 +218,18 @@ function watchTarget(gid, watch) {
 
 function getDueWatchFriends(now = Date.now()) {
   advanceWatches(now);
-
-  // 成熟到点是一次性动作，优先于化肥确认预算。
   const prearm = dueEntries(now, WATCH_STATUS.PREARM);
-  if (prearm.length > 0) return [watchTarget(prearm[0][0], prearm[0][1])];
-
-  if (nextGlobalPermitAt(now) > now) return [];
-  const hot = dueEntries(now, WATCH_STATUS.HOT);
-  if (hot.length > 0) return [watchTarget(hot[0][0], hot[0][1])];
-  return [];
+  return prearm.length ? [watchTarget(prearm[0][0], prearm[0][1])] : [];
 }
 
 function getNextWatchDueAt(now = Date.now()) {
   advanceWatches(now);
-  let prearmAt = 0;
-  let trendAt = 0;
+  let dueAt = 0;
   for (const watch of watches.values()) {
-    const t = Number(watch.nextVisitAt) || 0;
-    if (!t) continue;
-    if (watch.status === WATCH_STATUS.PREARM) {
-      prearmAt = prearmAt ? Math.min(prearmAt, t) : t;
-    } else if (watch.status === WATCH_STATUS.HOT) {
-      trendAt = trendAt ? Math.min(trendAt, t) : t;
-    }
+    const at = Number(watch.nextVisitAt) || 0;
+    if (watch.status === WATCH_STATUS.PREARM && at) dueAt = dueAt ? Math.min(dueAt, at) : at;
   }
-  if (trendAt > 0) trendAt = Math.max(trendAt, nextGlobalPermitAt(now));
-  if (prearmAt > 0 && trendAt > 0) return Math.min(prearmAt, trendAt);
-  return prearmAt || trendAt;
+  return dueAt;
 }
 
 function noteFriendSummaries(friends, options = {}) {
@@ -414,13 +253,7 @@ function noteFriendSummaries(friends, options = {}) {
     const advanceMs = prev && prev.dueAt && effectiveDueAt
       ? Math.max(0, Number(prev.dueAt) - Number(effectiveDueAt))
       : 0;
-    const jumped = !!prev && ripeJumpedEarly(
-      prev.dueAt,
-      effectiveDueAt,
-      isPriorityGid(gid) ? randomBetween(PRIORITY_JUMP_SLACK_MIN_MS, PRIORITY_JUMP_SLACK_MAX_MS) : JUMP_SLACK_MS
-    );
-    const shockMs = isPriorityGid(gid) ? PRIORITY_SUMMARY_SHOCK_MS : SUMMARY_SHOCK_MS;
-    const shock = jumped && advanceMs >= shockMs;
+    const shock = false;
     ripeSnapshots.set(gid, {
       dueAt: effectiveDueAt,
       at: now,
@@ -430,13 +263,8 @@ function noteFriendSummaries(friends, options = {}) {
       shock,
       source: dueAt ? 'summary' : (prev?.source || 'unknown'),
     });
-    if (!jumped) continue;
-    activateHot(gid, name, {
-      now,
-      ripeAt: effectiveDueAt,
-      advanceMs,
-      reason: shock ? 'summary_ripe_shock_30m' : 'summary_ripe_advanced',
-    });
+    updateArmedMaturity(gid, effectiveDueAt, now);
+
   }
 }
 
@@ -485,7 +313,6 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
   const previous = landSnapshots.get(id) || new Map();
   const next = partial ? new Map(previous) : new Map();
   if (!partial) completeLandSnapshotGids.add(id);
-  const strongReasons = new Set();
   const weakReasons = new Set();
   const landJumpSlackSec = isPriorityGid(id) ? PRIORITY_LAND_JUMP_SLACK_SEC : LAND_JUMP_SLACK_SEC;
 
@@ -500,21 +327,6 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
     }
 
     if (sameCrop(prev, snapshot, landJumpSlackSec)) {
-      if (prev.growing && snapshot.growing && prev.matureAt * 1000 > now && snapshot.matureAt * 1000 > now
-          && prev.matureAt > 0 && snapshot.matureAt > 0 &&
-          snapshot.matureAt < prev.matureAt - landJumpSlackSec) {
-        strongReasons.add('land_ripe_advanced');
-      }
-      // 成熟/收获切换时服务端可能把剩余施肥次数重置或省略；那是
-      // PREARM/抢收生命周期变化，不是好友施肥。只有同一茬仍在生长、
-      // 且两次都有未来成熟墙钟时，次数下降才是可靠施肥证据。
-      if (prev.growing && snapshot.growing
-        && prev.matureAt > server && snapshot.matureAt > server
-        && prev.fertLeft != null && snapshot.fertLeft != null
-        && snapshot.fertLeft < prev.fertLeft) {
-        strongReasons.add('fertilizer_count_decreased');
-      }
-      if (snapshot.nudged && !prev.nudged) strongReasons.add('nudged_rising');
       // 状态隐时钟（2026-09-22 好友活跃证据）：同一茬内倒计时显著后移 =
       // 主人在两次观察之间浇过水/除过虫。同一茬才可比（换茬会重置）。
       if (prev.dryAtMs > 0 && snapshot.dryAtMs > prev.dryAtMs + 5 * 60_000) {
@@ -523,9 +335,6 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
       if (prev.insectAtMs > 0 && snapshot.insectAtMs > prev.insectAtMs + 5 * 60_000) {
         weakReasons.add('owner_derugged_recently');
       }
-    } else if (snapshot.nudged) {
-      // 没有同一茬基线时仍直接短时 HOT；持久 true 不会产生新证据续热。
-      weakReasons.add('nudged_without_baseline');
     }
     next.set(landId, snapshot);
   });
@@ -556,20 +365,7 @@ function inspectFriendLands(gid, name, lands, now = Date.now(), options = {}) {
       source: 'lands',
     });
   }
-  if (strongReasons.size > 0) {
-    activateHot(id, resolvedName, {
-      now,
-      ripeAt,
-      reason: [...strongReasons].join(','),
-    });
-  } else if (weakReasons.size > 0) {
-    noteWeakSignal(id, resolvedName, {
-      now,
-      ripeAt,
-      reason: [...weakReasons].join(','),
-    });
-  }
-
+  updateArmedMaturity(id, ripeAt, now);
   // 好友活跃证据（2026-09-22，零成本搭车）：
   // 1. 社交道具：地块上非我放置且最近 30 分钟内的社交道具 → 操作者活跃。
   // 2. 隐时钟：weakReasons 里的 owner_watered/derugged → 主人刚动过。
@@ -646,13 +442,7 @@ function getWatchStateForTests(gid, now = Date.now()) {
 }
 
 /** 当前是否仍处于确认施肥后的 HOT；普通重点巡检与自然成熟 PREARM 均返回 false。 */
-function isFertilizerHot(gid, now = Date.now()) {
-  const watch = watches.get(toNum(gid));
-  return !!watch
-    && watch.status === WATCH_STATUS.HOT
-    && now < Number(watch.hotUntil)
-    && now < Number(watch.hardUntil);
-}
+function isFertilizerHot() { return false; }
 
 function getMaturityCacheForTests(gid) {
   const snapshot = ripeSnapshots.get(toNum(gid));
@@ -684,7 +474,10 @@ function resetFertilizerWatchForTests() {
   priorityGids.clear();
 }
 
+function retireFertilizerWatchMode() { require('./request-governor').setWatchMode(false); }
+
 module.exports = {
+  retireFertilizerWatchMode,
   WATCH_STATUS,
   ripeJumpedEarly,
   watchFriend,
@@ -710,6 +503,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   const { registerDataState, restoreContainer } = require('./business-state');
   registerDataState('services/fertilizer-watch.js', () => ({ watches, ripeSnapshots, landObservedAt, landSnapshots, landSnapshotNames, completeLandSnapshotGids, visitHistory, priorityGids }), value => {
       restoreContainer(watches, value.watches);
+      for (const [gid, watch] of watches) if (watch.status !== WATCH_STATUS.PREARM) watches.delete(gid);
       restoreContainer(ripeSnapshots, value.ripeSnapshots);
       restoreContainer(landObservedAt, value.landObservedAt);
       restoreContainer(landSnapshots, value.landSnapshots);

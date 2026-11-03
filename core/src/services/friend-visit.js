@@ -65,18 +65,25 @@ const {
 const crypto = require('node:crypto');
 const { strictServerBusinessError, strictBudgetRejection } = require('./operation-error-meta');
 const visitDiagnosticSalt = crypto.randomBytes(32);
-let visitDiagnosticCount = 0;
+const visitDiagnosticWindows = new Map();
 function visitTrace(gid) {
   return { visitTrace: crypto.randomUUID(), targetRef: crypto.createHmac('sha256', visitDiagnosticSalt).update(String(gid)).digest('hex').slice(0, 16) };
 }
-function noteVisitFailure(trace, phase, count, error) {
+function noteVisitFailure(trace, phase, count, error, details = {}) {
   try {
-    if (visitDiagnosticCount >= 128) return;
-    visitDiagnosticCount++;
-    const business = strictServerBusinessError(error), budget = strictBudgetRejection(error);
-    log('好友', '好友操作阶段诊断', { module: 'friend', event: 'friend_visit_failure', ...trace,
-      phase, landCount: count, category: business ? 'business' : budget ? 'budget' : 'transport',
-      serverCode: business?.code || 0 });
+    const business = strictServerBusinessError(error);
+    const budget = strictBudgetRejection(error);
+    const category = business ? 'business' : budget ? 'budget' : error ? 'transport' : 'deferred';
+    const codeTag = business ? crypto.createHash('sha256').update(String(business.code)).digest('hex').slice(0, 12) : '';
+    const key = `${trace.targetRef}:${category}:${codeTag}:${phase}`;
+    const now = Date.now();
+    for (const [old, at] of visitDiagnosticWindows) if (now - at >= 60_000) visitDiagnosticWindows.delete(old);
+    if (visitDiagnosticWindows.has(key) || visitDiagnosticWindows.size >= 128) return;
+    visitDiagnosticWindows.set(key, now);
+    const message = business ? (details.fallback ? '好友偷菜被服务端拒绝，已结束本次逐地处理' : '普通好友偷菜被服务端拒绝，本次不再逐地重试')
+      : category === 'deferred' ? '好友操作预检查未确认，本次暂缓' : budget ? '好友操作被通信预算暂缓' : '好友操作传输失败，本次停止推进';
+    log('好友', message, { module: 'friend', event: 'friend_visit_failure', ...trace,
+      phase, landCount: count, category, serverCodeTag: codeTag, ...details });
   } catch { /* Observability must not change the operation. */ }
 }
 
@@ -95,20 +102,26 @@ async function stealVisitBatch(gid, targetLands, analysis, trace) {
   };
   try { collect(await stealHarvest(gid, targetLands), targetLands); }
   catch (error) {
-    noteVisitFailure(trace, 'batch', targetLands.length, error);
-    if (!strictServerBusinessError(error)) result.interrupted = true;
-    else {
+    if (!strictServerBusinessError(error)) {
+      result.interrupted = true;
+      noteVisitFailure(trace, 'batch', targetLands.length, error);
+    } else if (isPriorityGid(gid)) {
+      let finalError = error;
       for (const landId of targetLands) {
         try { collect(await stealHarvest(gid, [landId]), [landId]); }
         catch (singleError) {
           if (!strictServerBusinessError(singleError)) {
             result.interrupted = true;
-            noteVisitFailure(trace, 'single', targetLands.length - result.stolen, singleError);
+            finalError = singleError;
             break;
           }
         }
       }
-      noteVisitFailure(trace, 'summary', result.stolen, error);
+      if (result.interrupted || result.stolen < targetLands.length) {
+        noteVisitFailure(trace, 'summary', targetLands.length - result.stolen, finalError, { fallback: true, confirmedLands: result.stolen });
+      }
+    } else {
+      noteVisitFailure(trace, 'batch', targetLands.length, error, { fallback: false, confirmedLands: 0 });
     }
   }
   return result;
@@ -923,7 +936,7 @@ async function visitFriendForSteal(friend, tally, myGid, accountId, options = {}
     acted: actionLogs.length > 0,
     entered: true,
     ripeAtMs,
-    retryNeeded: stealAttemptFailed,
+    retryNeeded: stealAttemptFailed && isPriorityGid(gid),
     enterOutcome,
     enterEpoch,
   };

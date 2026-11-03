@@ -200,6 +200,8 @@ for (const initial of [false, true]) {
 
 test('real quiet controls retain the complete edited group after save and reload', async (t) => {
   const page = await mountPage(t);
+  assert.doesNotMatch(textOf(page.root), /重点好友盯梢窗口/);
+  assert.match(textOf(page.root), /不再进行施肥趋势追踪/);
   await setSwitch(page, '启用静默时段', true);
   await setSwitch(page, '重点防护', true);
   const times = findAll(page.root, node => node.tag === 'input' && node.props.type === 'time');
@@ -208,11 +210,11 @@ test('real quiet controls retain the complete edited group after save and reload
   times[1].props['onUpdate:modelValue']('06:45');
   for (const [label, value] of [
     ['每次最短休息（分钟）', 9], ['每次最长休息（分钟）', 90],
-    ['普通好友盯梢窗口 (分钟)', 55], ['重点好友盯梢窗口 (分钟)', 155],
+    ['普通好友盯梢窗口 (分钟)', 55],
   ]) await setInput(page, label, value);
   const expected = {
     enabled: true, start: '22:15', end: '06:45', minSleepMinutes: 9, maxSleepMinutes: 90,
-    wakeBeforeMinutes: 55, watchlistWakeBeforeMinutes: 155, pauseUntil: '', idleProtectionEnabled: true,
+    wakeBeforeMinutes: 55, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: true,
   };
   assert.deepEqual((await save(page)).friendQuietHours, expected);
   await page.reload();

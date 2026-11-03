@@ -281,14 +281,14 @@ test('只有严格 1002002 真实 Enter 失败累计；其它结局清零；成�
 
 // ==================== 3. 暂停门豁免通道 ====================
 
-test('暂停门只拦普通基线：在线/活跃证据/观察窗/施肥 HOT 放行', () => {
+test('暂停门只拦普通基线：在线/活跃证据/自然成熟窗放行，施肥信号不放行', () => {
     watch.setPriorityGids([501]);
     rejectStale(501, 3);
     assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 3 * 3600_000, {}), true, '无证据时拦基线');
     assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 3 * 3600_000, { onlineNow: true }), false);
-    assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 3 * 3600_000, { activityEvidence: true }), false);
+    assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 3 * 3600_000, { activityEvidence: true }), true, 'offline old activity does not override baseline pause');
     // 观察窗：remain 落在唤醒窗口内（默认约 122 分钟）
-    assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 60 * 60_000, {}), false, '观察窗内放行');
+    assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 30_000, {}), false, '观察窗内放行');
     assert.equal(orchestrator.isWatchlistBaselinePaused(501, now, 0, {}), true, '无墙钟仍拦');
     // 施肥 HOT：成熟点前移（600→594）触发的 summary_ripe_advanced 造出 HOT
     // 后放行（盯梢武装以 store 名单为准；查询用真实墙钟）
@@ -298,8 +298,8 @@ test('暂停门只拦普通基线：在线/活跃证据/观察窗/施肥 HOT 放
     orchestrator.applyStealScheduleFromFriends(fixture(594), { myGid: 1, blacklist: new Set() });
     const at = Date.now();
     const state = watch.getWatchStateForTests(501, at);
-    assert.equal(state.status, watch.WATCH_STATUS.HOT, '成熟临近应进入施肥 HOT');
-    assert.equal(orchestrator.isWatchlistBaselinePaused(501, at, 3 * 3600_000, {}), false, 'HOT 放行');
+    assert.equal(state, null, '成熟时间变化不再激活施肥 HOT');
+    assert.equal(orchestrator.isWatchlistBaselinePaused(501, at, 3 * 3600_000, {}), true, '施肥推断不再绕过暂停');
 });
 
 // ==================== 4. 真实进门路径记账（visitFriendForSteal） ====================

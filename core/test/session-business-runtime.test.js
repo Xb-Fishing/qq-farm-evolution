@@ -48,6 +48,12 @@ test('codec refuses an incomplete checkpoint rather than silently cold-starting 
   assert.throws(() => decode(Buffer.from('not-a-checkpoint')));
 });
 
+function isRetiredWatchCleanup(method, args) {
+  if (method !== 'governor.setWatchMode') return false;
+  assert.deepEqual(args, [false], 'only clearing the retired watch boost is allowed');
+  return true;
+}
+
 test('all real gameplay domains, pending payloads and absolute timers survive a warm restore without startup actions', { timeout: 30000 }, async () => {
   let sequence = 1; const commands = []; let checkpoint;
   const facts = () => ({ sequence: sequence++, host: { accountId: 'synthetic-account' }, game: {
@@ -55,7 +61,7 @@ test('all real gameplay domains, pending payloads and absolute timers survive a 
     userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
   const options = { target: { runtimeRoot }, epoch: 'synthetic-capsule-first', facts: facts(),
     config: { platform: 'wx', __revision: 1 }, read: facts,
-    command: method => { commands.push(method); return { value: undefined, facts: facts() }; },
+    command: (method, args) => { if (!isRetiredWatchCleanup(method, args)) commands.push(method); return { value: undefined, facts: facts() }; },
     query: () => ({ value: 0, facts: facts() }),
     request: () => { throw new Error('No economic operation is allowed during restore'); }, onMaster: () => {} };
   const cold = await createSessionBusinessRuntime(options);
@@ -73,7 +79,7 @@ test('all real gameplay domains, pending payloads and absolute timers survive a 
     ['synthetic-account', { dayKey: '2099-01-01', reason: 'quota', resumeAt: deadline }]]) });
   Object.assign(domain('services/friend-self-echo.js'), { generation: 7, ticketSeq: 19, echoAbsorbedTotal: 4,
     tickets: new Map([['synthetic-ticket', { generation: 7, expiresAt: deadline }]]) });
-  Object.assign(domain('services/fertilizer-watch.js'), { watches: new Map([[42, { dueAt: deadline, evidence: 'synthetic' }]]), priorityGids: new Set([42]) });
+  Object.assign(domain('services/fertilizer-watch.js'), { watches: new Map([[42, { status: 'PREARM', ripeAt: deadline, nextVisitAt: deadline, hardUntil: deadline + 90000, dueAt: deadline, evidence: 'synthetic' }]]), priorityGids: new Set([42]) });
   Object.assign(domain('services/milk-tea-activity.js'), { endedEvidence: { endTime: deadline,
     overview: { timing: { phase: 'ended' }, status: 'complete' } } });
   Object.assign(domain('services/daily-routine-state.js'), { stateByAccount: new Map([
@@ -109,7 +115,7 @@ test('legacy email checkpoint upgrades through real Workers without login or eco
     userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
   const options = { target: { runtimeRoot }, epoch: 'synthetic-mail-capture', facts: facts(),
     config: { platform: 'wx', __revision: 1 }, read: facts,
-    command: method => { commands.push(method); return { value: undefined, facts: facts() }; },
+    command: (method, args) => { if (!isRetiredWatchCleanup(method, args)) commands.push(method); return { value: undefined, facts: facts() }; },
     query: () => ({ value: 0, facts: facts() }),
     request: () => { requests++; throw new Error('No economic operation is allowed during restore'); }, onMaster: () => {} };
   const cold = await createSessionBusinessRuntime(options);
@@ -145,7 +151,7 @@ test('warm restore clears old readiness when a newer socket is OPEN but has not 
     userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
   const options = { target: { runtimeRoot }, epoch: 'synthetic-before-reconnect', facts: facts(),
     config: { platform: 'wx', __revision: 1 }, read: facts,
-    command: method => { commands.push(method); return { value: undefined, facts: facts() }; },
+    command: (method, args) => { if (!isRetiredWatchCleanup(method, args)) commands.push(method); return { value: undefined, facts: facts() }; },
     query: () => ({ value: 0, facts: facts() }), request: () => { requests++; throw new Error('login is incomplete'); }, onMaster: () => {} };
   const cold = await createSessionBusinessRuntime(options);
   try { await cold.prepare(); await cold.activate([]); checkpoint = decode(await cold.quiesce()); }
@@ -171,7 +177,7 @@ test('commerce panel caches migrate only their optional fields, retaining 32 str
     platform: 'wx', connectionEpoch: 1, connected: true, readyState: 1, socketPresent: true,
     userState: {}, status: {}, clock: { serverTimeMs: 0, localTimeAtSync: 0 } } });
   const options = { target: { runtimeRoot }, epoch: 'synthetic-commerce-old', facts: facts(), config: { platform: 'wx' }, read: facts,
-    command: () => { requests++; return { value: undefined, facts: facts() }; }, query: () => ({ value: 0, facts: facts() }),
+    command: (method, args) => { if (!isRetiredWatchCleanup(method, args)) requests++; return { value: undefined, facts: facts() }; }, query: () => ({ value: 0, facts: facts() }),
     request: () => { requests++; throw new Error('No game writes during migration'); }, onMaster: () => {} };
   const cold = await createSessionBusinessRuntime(options);
   try { await cold.prepare(); await cold.activate([]); checkpoint = decode(await cold.quiesce()); }

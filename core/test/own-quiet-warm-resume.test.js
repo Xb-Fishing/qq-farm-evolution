@@ -17,7 +17,8 @@ test('warm activation replaces a restored quiet-until timer with the preserved o
   const tasks = new Map([['own_harvest_guard', { dueAt: quietUntil }]]);
   let marked = 0;
   let unifiedCalls = 0;
-  const sandbox = vm.createContext({ Date, loginReady: true, unifiedSchedulerRunning: true,
+  let watchClears = 0;
+  const sandbox = vm.createContext({ require: name => { assert.equal(name, '../services/fertilizer-watch'); return { retireFertilizerWatchMode: () => { watchClears++; } }; }, Date, loginReady: true, unifiedSchedulerRunning: true,
     ownHarvestArmedFor: dueAt, ownHarvestRetryAttempt: 4, ownHarvestDueAt: () => dueAt,
     getAutomation: () => ({ farm: true, harvest: true }), OWN_HARVEST_ACT_DELAY_MS: [30, 80],
     randInt: min => min, markOwnHarvestDueAt: value => { marked = value; }, onTimer_own_harvest_guard() {},
@@ -33,4 +34,5 @@ test('warm activation replaces a restored quiet-until timer with the preserved o
   assert.equal(sandbox.ownHarvestRetryAttempt, 0); assert.equal(unifiedCalls, 1);
   sandbox.getAutomation = () => ({ farm: false, harvest: false });
   vm.runInContext('refresh()', sandbox); assert.equal(tasks.has('own_harvest_guard'), false);
+  assert.equal(watchClears, 2);
 });

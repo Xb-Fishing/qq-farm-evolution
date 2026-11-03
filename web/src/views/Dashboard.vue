@@ -321,7 +321,7 @@ interface WatchlistRipe {
 const watchlistRipe = ref<WatchlistRipe[]>([])
 let watchlistTicker = 0
 // 盯梢窗口分钟数（重点好友可配，默认 122）；inWindow 判断用它而不是写死
-const watchlistWindowMinutes = ref(122)
+const watchlistWindowMinutes = ref(1)
 
 // 服务端快照按 30s 推一次，这里本地每秒衰减 remainSec 保持平滑。
 // ripeAt 每次巡田会重估：未成熟期间后移的新估计不接受（保持倒计时单调
@@ -871,7 +871,7 @@ useIntervalFn(updateCountdowns, 1000)
       <div class="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
         <div class="i-carbon-warning-alt text-lg" />
         <span>
-          请求异常降速中：普通巡查放缓到约 {{ slowdownDelaySec }} 秒级，自己收获、成熟抢收和施肥 HOT 保持运行；约
+          请求异常降速中：普通巡查放缓到约 {{ slowdownDelaySec }} 秒级，自己收获、重点在线监控和成熟到点动作保持运行；约
           <span class="font-bold font-mono">{{ formatDuration(slowdownRemainSec) }}</span>
           后恢复常规节奏
         </span>
@@ -1247,7 +1247,7 @@ useIntervalFn(updateCountdowns, 1000)
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-star-filled text-yellow-500" />
           <span>重点监控</span>
-          <span class="ml-auto text-xs text-gray-400 font-normal">常态低频；确认施肥后自动进入 HOT</span>
+          <span class="ml-auto text-xs text-gray-400 font-normal">在线时敏捷监控；其余按已知成熟时间执行</span>
         </h3>
         <div class="space-y-1.5">
           <div
@@ -1260,7 +1260,7 @@ useIntervalFn(updateCountdowns, 1000)
               <span
                 v-if="item.inWindow"
                 class="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                :title="`已进入 ${watchlistWindowMinutes} 分钟成熟观察窗口；仅确认施肥后切换 HOT 并放宽门限`"
+                :title="`已进入 ${watchlistWindowMinutes} 分钟自然成熟布控窗口；按成熟时刻执行，不进行施肥趋势追踪`"
               >成熟观察</span>
             </div>
             <div class="text-sm font-bold font-mono" :class="item.inWindow ? 'text-emerald-500' : 'text-gray-500'">
