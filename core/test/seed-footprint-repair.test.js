@@ -94,8 +94,16 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const decorationAdditions = new Set([204011]);
   // Independently covered by the official type35 metadata, exact images and real zero-Sell bag regression.
   const collectionAdditions = new Set([700001, 700002, 700003, 700004, 700005, 700006, 710001, 710002, 710003, 710004, 710005, 710006, 720001, 720002, 720003, 720004, 720005, 720006, 730001, 730002, 730003, 730004, 730005, 730006, 740001, 740002, 740003, 740004, 740005, 740006]);
+  // Real Bag classification and exact images are covered by season-seed-gift-packs.
+  const seedGiftPacks = new Set([101620, 101621, 101622, 101623]);
+  for (const id of seedGiftPacks) {
+    assert.equal(items.filter(x => x.id === id).length, 1);
+    assert.equal(config.getItemById(id).type, 11);
+    assert.equal(config.isSeedItem(id), false);
+    assert.equal(config.getPlantBySeedId(id), undefined);
+  }
   const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
-    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id))
+    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
