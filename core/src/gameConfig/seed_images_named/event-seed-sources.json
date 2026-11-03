@@ -1886,6 +1886,62 @@
       "sha256": "6105e6bba46d5548632177b3527554407fda6e0855ba27ef3af1376530059147",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 101620,
+      "file": "101620_pack_09.png",
+      "assetName": "gui/texture/icon/pack_09/spriteFrame",
+      "kind": "item",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101620.png",
+      "gitBlob": "f47157126663210f8324d336fa713c077a7e20fa",
+      "sha256": "7fd1e53f553cc93fd0cfe2c7b6954149270b6f40c32546cc5e4a61cbf0967087",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 101621,
+      "file": "101621_pack_10.png",
+      "assetName": "gui/texture/icon/pack_10/spriteFrame",
+      "kind": "item",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101621.png",
+      "gitBlob": "3da20005fcf1ae385d59e37a2faa9adf5a0325fc",
+      "sha256": "4f3eaff4e84087dfee123aa33a3f7714d08ee5b294d3214d481ffb4da3b7589d",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 101622,
+      "file": "101622_pack_11.png",
+      "assetName": "gui/texture/icon/pack_11/spriteFrame",
+      "kind": "item",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101622.png",
+      "gitBlob": "c62e5cf76029296f41aa4caf642a06399b7c2473",
+      "sha256": "01a713926b4130f5a2e03dc68f9ea3887f8f1ddcb20b3bc413ef4e33cd088a00",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 101623,
+      "file": "101623_pack_12.png",
+      "assetName": "gui/texture/icon/pack_12/spriteFrame",
+      "kind": "item",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101623.png",
+      "gitBlob": "4f918b122605bc401e2299b330d1fcfdd0bf6b7a",
+      "sha256": "764b5a8d7076927ed63ee520046047dbbce8f226a52f74905d78cc287341bc6e",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
