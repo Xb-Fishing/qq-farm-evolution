@@ -1301,6 +1301,7 @@ async function stopBot() {
     networkEvents.off('kickout', onKickout);
     networkEvents.off('reconnect_failed', onReconnectFailed);
     networkEvents.off('friendLandsChanged', onFriendLandsChanged);
+    networkEvents.off('landsChanged', onOwnLandsPanelChanged);
     if (onClientVersionUpdate) {
         networkEvents.off('client_version_update', onClientVersionUpdate);
         onClientVersionUpdate = null;
@@ -1368,6 +1369,12 @@ function onReconnectFailed(info) {
 }
 
 /** 好友农场地块变化推送：检测催熟/施肥痕迹，触发盯梢并立即重排偷菜唤醒 */
+function onOwnLandsPanelChanged(lands) {
+    // The host already attributes this event to our own farm. Invalidate only;
+    // do not start a read, wake automation, or treat a partial notify as a full list.
+    if (Array.isArray(lands) && lands.length > 0) require('../services/farm-land-analyzer').invalidatePanelLandsCache();
+}
+
 function onFriendLandsChanged(info) {
     const hostGid = toNum(info && info.hostGid);
     const lands = info && info.lands;
@@ -1551,6 +1558,12 @@ async function handleApiCall(msg) {
 
     try {
         switch (method) {
+            case 'getDogReadPanel':
+                result = await require('../services/game-panel-readonly').getDogReadPanel();
+                break;
+            case 'getCollectionReadPanel':
+                result = await require('../services/game-panel-readonly').getCollectionReadPanel();
+                break;
             case 'getLocalConnectionState': {
                 const socket = getWs();
                 const state = socket?.readyState === 1 ? 'online'
@@ -2288,6 +2301,8 @@ function bindWorkerNetworkEvents() {
     networkEvents.on('reconnect_failed', onReconnectFailed);
     networkEvents.on('kickout', onKickout);
     networkEvents.on('friendLandsChanged', onFriendLandsChanged);
+    networkEvents.off('landsChanged', onOwnLandsPanelChanged);
+    networkEvents.on('landsChanged', onOwnLandsPanelChanged);
 
     if (onClientVersionUpdate) networkEvents.off('client_version_update', onClientVersionUpdate);
     onClientVersionUpdate = ({ clientVersion, previous }) => {

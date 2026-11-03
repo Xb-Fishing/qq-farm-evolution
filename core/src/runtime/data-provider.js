@@ -4,6 +4,7 @@ const {
     resolveAccountId: resolveAccountIdByList
 } = require('../services/account-resolver');
 const { getSchedulerRegistrySnapshot } = require('../services/scheduler');
+const { bindingIdentity } = require('./session-registry');
 
 /**
  * 创建数据提供器 —— 封装对 Worker 的 API 调用，供 Admin Server 使用
@@ -54,6 +55,8 @@ function createDataProvider(deps) {
     const FRIEND_TIMEOUT = { _timeoutMs: 180000 };       // 3分钟
     const SYNC_TIMEOUT = { _timeoutMs: 180000 };          // 3分钟
     const DOG_INFO_TIMEOUT = { _timeoutMs: 600000 };     // 10分钟
+    const panelWorkerIds = new WeakMap();
+    let panelWorkerSequence = 0;
 
     function persistClearedLogs(previousRuntime, previousAccounts) {
         if (!deps.persistLogHistory) return;
@@ -64,6 +67,17 @@ function createDataProvider(deps) {
     }
 
     return {
+        getGamePanelReadScope: (ref) => {
+            const id = resolveAccountId(ref), account = findAccount(id), worker = workers[id];
+            if (!account || !worker || worker.status?.connection?.connected !== true) throw new Error('账号连接状态未知');
+            if (!panelWorkerIds.has(worker)) panelWorkerIds.set(worker, ++panelWorkerSequence);
+            const facts = worker.process?.sessionFacts;
+            if (worker.process?.persistentSession && (facts?.game?.connected !== true || facts?.business?.ready !== true)) throw new Error('账号业务尚未就绪');
+            return JSON.stringify([id, bindingIdentity(account), panelWorkerIds.get(worker),
+                facts?.host?.hostId || '', facts?.game?.connectionEpoch || '', facts?.game?.loginEpoch || '', facts?.business?.epoch || '']);
+        },
+        getDogReadPanel: (ref) => callWorkerApi(resolveAccountId(ref), 'getDogReadPanel'),
+        getCollectionReadPanel: (ref) => callWorkerApi(resolveAccountId(ref), 'getCollectionReadPanel'),
         prepareWxRestart: deps.prepareWxRestart,
         validateWxRestart: deps.validateWxRestart,
         cancelWxRestart: deps.cancelWxRestart,

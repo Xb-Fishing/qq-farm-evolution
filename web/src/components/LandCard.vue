@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { getLandPresentation } from '@/utils/land-presentation'
 
 const props = withDefaults(defineProps<{
   land: any
@@ -103,40 +104,9 @@ const isRemovable = computed(() =>
 const canFertilize = computed(() => props.showActions && isFertilizable.value)
 const canRemove = computed(() => props.showActions && isRemovable.value)
 
-const landTextureName = computed(() => {
-  const targetLand = land.value || {}
-  const level = Math.min(5, Math.max(1, Number(targetLand.level) || 1))
-  const isSnow = Boolean(
-    targetLand.isSnow
-    || targetLand.snow
-    || targetLand.snowy
-    || String(targetLand.weather || '').toLowerCase() === 'snow',
-  )
-
-  if (targetLand.status === 'locked')
-    return isSnow ? 'land_locked_snow' : 'land_locked'
-
-  if (targetLand.needWater) {
-    if (level === 1 && isSnow)
-      return 'land_dry1_snow'
-    return `land_dry${level}`
-  }
-
-  if (level === 1 && isSnow)
-    return 'land_valid1_snow'
-  return `land_valid${level}`
-})
-
-const landTextureUrl = computed(() => {
-  if (Number(land.value?.plantSize) > 1)
-    return `/game-config/land_images/land_valid${Math.min(5, Math.max(1, Number(land.value?.level) || 1))}_2x2.png`
-  return `/game-config/land_images/${landTextureName.value}.png`
-})
-
-const shouldRotateLandTexture = computed(() => {
-  const level = Number(land.value?.level) || 1
-  return level === 5
-})
+const landPresentation = computed(() => getLandPresentation(land.value))
+const landTextureUrl = computed(() => landPresentation.value.textureUrl)
+const shouldRotateLandTexture = computed(() => landPresentation.value.rotate)
 
 const mutantEffects = computed(() => {
   const effects = Array.isArray(land.value?.mutantEffects) ? land.value.mutantEffects : []
@@ -182,12 +152,11 @@ const cropImageUrl = computed(() => {
 
 function getLandStatusClass(targetLand: any) {
   const status = targetLand.status
-  const level = Number(targetLand.level) || 0
 
   if (status === 'locked')
     return 'land-level-locked bg-slate-50/90 dark:bg-slate-900/80 border-slate-300 dark:border-slate-700 border-dashed'
 
-  const baseClass = `land-level-${Math.min(5, Math.max(1, level || 1))} bg-stone-50/90 dark:bg-stone-950/80 border-stone-300 dark:border-stone-700`
+  const baseClass = `${getLandPresentation(targetLand).className} bg-stone-50/90 dark:bg-stone-950/80 border-stone-300 dark:border-stone-700`
 
   if (status === 'dead')
     return 'bg-gray-200 dark:bg-gray-700 border-gray-300 dark:border-gray-600 grayscale'
@@ -348,6 +317,7 @@ function getIsometricBubbleClass(targetLand: any) {
     >
       <img
         :src="landTextureUrl"
+        :style="{ filter: landPresentation.filter }"
         alt=""
         :class="[
           Number(land.plantSize) > 1 ? 'land-ground-merged' : 'land-ground-single',
@@ -357,7 +327,7 @@ function getIsometricBubbleClass(targetLand: any) {
     </div>
 
     <div class="land-card-id absolute left-1 top-1 text-[10px] text-gray-400 font-mono">
-      #{{ land.id }}
+      #{{ land.id }} · {{ landPresentation.label }}
     </div>
 
     <div
@@ -1448,4 +1418,9 @@ function getIsometricBubbleClass(targetLand: any) {
 :global(.dark) .land-level-black .land-action-button {
   background: rgba(255, 255, 255, 0.9);
 }
+</style>
+
+<style scoped>
+.land-level-6 { border-color: #38bdf8; background-color: #e0f2fe; }
+:global(.dark) .land-level-6 { background-color: #082f49; border-color: #38bdf8; }
 </style>

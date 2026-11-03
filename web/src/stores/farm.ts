@@ -26,11 +26,14 @@ export const useFarmStore = defineStore('farm', () => {
   const seeds = ref<any[]>([])
   const summary = ref<any>({})
   const loading = ref(false)
+  let landsReadSequence = 0
   const dogSkillGiftPendingCount = ref(0)
   const dogSkillGiftLoading = ref(false)
   const dogSkillGiftError = ref('')
 
   function clearFarmData() {
+    ++landsReadSequence
+    loading.value = false
     lands.value = []
     seeds.value = []
     summary.value = {}
@@ -48,12 +51,13 @@ export const useFarmStore = defineStore('farm', () => {
     if (!accountId)
       return
     const requestedId = String(accountId)
+    const sequence = ++landsReadSequence
     loading.value = true
     try {
       const { data } = await api.get('/api/lands', {
         headers: { 'x-account-id': accountId },
       })
-      if (!isCurrentAccount(requestedId))
+      if (sequence !== landsReadSequence || !isCurrentAccount(requestedId))
         return
       if (data && data.ok) {
         lands.value = data.data.lands || []
@@ -61,7 +65,8 @@ export const useFarmStore = defineStore('farm', () => {
       }
     }
     finally {
-      loading.value = false
+      if (sequence === landsReadSequence && isCurrentAccount(requestedId))
+        loading.value = false
     }
   }
 
