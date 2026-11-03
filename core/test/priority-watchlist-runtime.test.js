@@ -136,14 +136,14 @@ function fixture(t, options = {}) {
         health: () => logs.filter(row => row.event === 'priority_poll_health'), leaves: () => leaves };
 }
 
-test('actual schedule transfers a Set into priority detection; only priority six-second advance activates HOT', t => {
+test('actual schedule transfers a Set into priority detection; maturity advances never activate fertilizer HOT', t => {
     const f = fixture(t);
     const friends = seconds => [9, 10].map(gid => ({ gid, name: 'fixture', plant: { ripe_time_sec: seconds } }));
     f.context.applyStealScheduleFromFriends(friends(600), { myGid: 1, blacklist: new Set() });
     assert.equal(watch.isPriorityGid(9), true);
     assert.equal(watch.isPriorityGid(10), false);
     f.context.applyStealScheduleFromFriends(friends(594), { myGid: 1, blacklist: new Set() });
-    assert.equal(watch.getWatchStateForTests(9, f.time()).status, watch.WATCH_STATUS.HOT);
+    assert.equal(watch.getWatchStateForTests(9, f.time()), null);
     assert.equal(watch.getWatchStateForTests(10, f.time()), null);
     f.setGids([]);
     f.context.applyStealScheduleFromFriends(friends(594), { myGid: 1, blacklist: new Set() });
@@ -171,14 +171,14 @@ for (const known of [false, true]) {
     });
 }
 
-test('window failures retain 45-75 second scheduling under slowdown; unknown failures retain 5-8 minutes', async t => {
+test('offline known maturity uses normal baseline instead of a fertilizer observation tier', async t => {
     const f = fixture(t, { slowdown: true, budgetDenied: true });
     f.context.watchlistPollRipeAt.set(9, f.time() + 3600_000);
     await f.tick();
     assert.equal(f.transport.length, 1);
-    assert.ok(f.next() - f.time() >= 45_000 && f.next() - f.time() <= 75_000);
+    assert.ok(f.next() - f.time() >= 300_000);
     assert.equal(f.health()[0].result, 'failed');
-    assert.equal(f.health()[0].mode, 'observation');
+    assert.equal(f.health()[0].mode, 'baseline');
     assert.equal(f.leaves(), 0, 'a denied budget does not continue into a successful visit');
     f.context.watchlistPollRipeAt.clear();
     f.flags.slowdown = false;
@@ -240,9 +240,9 @@ test('first successful window discovery reports its actual next mode with only a
     await f.tick();
     const rows = f.health();
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].mode, 'observation');
+    assert.equal(rows[0].mode, 'baseline');
     assert.equal(rows[0].nextDelayMs, f.next() - f.time());
-    assert.ok(rows[0].nextDelayMs >= 45_000 && rows[0].nextDelayMs <= 75_000);
+    assert.ok(rows[0].nextDelayMs >= 300_000);
     assert.deepEqual(Object.keys(rows[0]).sort(), ['event', 'message', 'mode', 'module', 'nextDelayMs', 'result']);
     assert.equal(JSON.stringify(rows).includes('fixture-account'), false);
     assert.equal(JSON.stringify(rows).includes('fixture-friend'), false);
@@ -265,7 +265,8 @@ test('ripened-during-visit re-arms PREARM and keeps window cadence instead of id
     assert.equal(state.status, watch.WATCH_STATUS.PREARM, '进门期间已熟必须布 PREARM 重访');
     assert.ok(state.nextVisitAt <= f.time() + 5_000, 'PREARM 必须立即到期');
     const health = f.health().pop();
-    assert.ok(health.nextDelayMs < 100_000, `慢档回退是回归（nextDelayMs=${health.nextDelayMs}）`);
+    assert.ok(health.nextDelayMs >= 300_000, 'ordinary polling stays slow; the independent PREARM remains due');
+    assert.ok(watch.getNextWatchDueAt(f.time()) <= f.time() + 5000);
 });
 
 test('truly-empty friend farm still falls back to idle cadence', async t => {
@@ -288,7 +289,12 @@ test('online tier polls sub-second while friend is at home, regardless of ripene
     const idle = f.context.nextWatchlistPollDelayMs(0, { onlineNow: true });
     assert.ok(idle >= 700 && idle <= 1_000, `无作物但在线仍 1s（idle=${idle}）`);
     const activity = f.context.nextWatchlistPollDelayMs(5 * 3600_000, { activityEvidence: true });
-    assert.ok(activity >= 45_000 && activity <= 75_000, `窗口外活跃 45-75s（activity=${activity}）`);
+    assert.ok(activity >= f.context.WATCHLIST_POLL_IDLE_MIN_MS, 'offline activity alone keeps normal baseline');
     const normal = f.context.nextWatchlistPollDelayMs(30 * 60_000, { onlineNow: false });
     assert.ok(normal >= 45_000, `离线回落（normal=${normal}）`);
+});
+
+test('offline activity without crops never creates an extra fast polling tier', t => {
+  const f = fixture(t); const delay = f.context.nextWatchlistPollDelayMs(0, { onlineNow: false, activityEvidence: true });
+  assert.ok(delay >= f.context.WATCHLIST_POLL_IDLE_MIN_MS && delay <= f.context.WATCHLIST_POLL_IDLE_MAX_MS);
 });

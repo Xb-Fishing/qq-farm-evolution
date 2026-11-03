@@ -29,7 +29,7 @@ function fixture(outcomes = [], flags = {}) {
     enterFriendFarm: async () => { entered++; calls.push('enter'); return { lands: lands.map(id => ({ id, plant: { id: 40001, stealable: true, phases: [{ phase: 4 }], steal_num: 3 } })) }; },
     leaveFriendFarm: async () => calls.push('leave'), checkCanOperateRemote: async () => { calls.push('precheck'); return flags.deferred ? { canOperate: false, canStealNum: 0, deferred: true } : { canOperate: true, canStealNum: 0 }; }, handleFriendEnterError: () => ({ handled: false }),
   });
-  install('../src/services/fertilizer-watch', { inspectFriendLands: () => ({ ripeAt: 0 }), unwatchFriend() {}, isPriorityGid: () => false });
+  install('../src/services/fertilizer-watch', { inspectFriendLands: () => ({ ripeAt: 0 }), unwatchFriend() {}, isPriorityGid: () => flags.priority !== false });
   install('../src/services/friend-activity', { noteEnterPresence: () => ({ onlineEdge: false }) });
   install('../src/services/farm-land-analyzer', { getCurrentPhase: () => ({ phase: 4 }) });
   install('../src/services/friend-land-analyzer', { analyzeFriendLands: () => ({ stealable: [...lands], stealableInfo: lands.map(landId => ({ landId, name: 'synthetic crop' })), needWeed: [31], needBug: [32], needWater: [33], canPutBug: [34], canPutWeed: [35] }) });
@@ -47,7 +47,7 @@ for (const mode of ['visitFriend', 'visitFriendForSteal']) {
   test(`${mode}: transport/epoch/budget batch failure never replays singles or advances other writes`, async () => {
     for (const kind of ['timeout', 'epoch', 'budget']) {
       const h = fixture([transport(kind)], { help: true, bad: true });
-      try { const result = await h.run(mode); assert.deepEqual(h.calls.filter(Array.isArray), [[11, 12, 13]]); assert.equal(result.retryNeeded, true); assert.equal(h.tally.steal, 0); assert.ok(!h.calls.includes('help') && !h.calls.includes('bad')); assert.equal(h.calls.at(-1), 'leave'); } finally { h.restore(); }
+      try { const result = await h.run(mode); assert.deepEqual(h.calls.filter(Array.isArray), [[11, 12, 13]]); assert.equal(result.retryNeeded, true); assert.equal(h.tally.steal, 0); assert.ok(!h.calls.includes('help') && !h.calls.includes('bad')); if (mode === 'visitFriend') assert.equal(h.calls.at(-1), 'leave'); else assert.equal(h.calls.includes('leave'), false, 'priority visits retain existing residency'); } finally { h.restore(); }
     }
   });
   test(`${mode}: confirmed business fallback continues contention, partial transport retains accounting and due`, async () => {
@@ -65,14 +65,14 @@ for (const mode of ['visitFriend', 'visitFriendForSteal']) {
       assert.equal(h.entered, 2); assert.deepEqual(h.calls.filter(Array.isArray), [[12, 13]]); assert.equal(recovered.acted, true); assert.equal(h.records.filter(x => x[0] === 'steal').length, 2); assert.equal(h.tally.steal, 3);
     } finally { h.restore(); }
   });
-  test(`${mode}: business single refusal preserves ordinary fallback; malformed markers stop`, async () => {
+  test(`${mode}: priority business single refusal preserves fallback; malformed markers stop`, async () => {
     const h = fixture([biz(12345), biz(12346), { qty: 2 }, { qty: 2 }]);
     try { const result = await h.run(mode); assert.deepEqual(h.calls.filter(Array.isArray), [[11, 12, 13], [11], [12], [13]]); assert.equal(h.tally.steal, 2); assert.notEqual(result.retryNeeded, true); } finally { h.restore(); }
     for (const error of [Object.assign(Error('synthetic'), { isServerBusinessError: 'true', serverErrorCode: 1 }), biz(0), biz('0x10'), Object.assign(biz(1), { unknown: true })]) {
       const bad = fixture([error]); try { await bad.run(mode); assert.equal(bad.calls.filter(Array.isArray).length, 1); } finally { bad.restore(); }
     }
   });
-  test(`${mode}: deferred precheck performs zero writes, keeps due and cleanup`, async () => { const h = fixture([], { deferred: true, help: true, bad: true }); try { const result = await h.run(mode); assert.equal(result.retryNeeded, true); assert.equal(h.calls.filter(Array.isArray).length, 0); assert.deepEqual(h.calls, ['enter', 'precheck', 'leave']); } finally { h.restore(); } });
+  test(`${mode}: deferred precheck performs zero writes, keeps due and cleanup`, async () => { const h = fixture([], { deferred: true, help: true, bad: true }); try { const result = await h.run(mode); assert.equal(result.retryNeeded, true); assert.equal(h.calls.filter(Array.isArray).length, 0); assert.deepEqual(h.calls, mode === 'visitFriend' ? ['enter', 'precheck', 'leave'] : ['enter', 'precheck']); } finally { h.restore(); } });
 }
 test('anonymous diagnostic failures are bounded, safe, and do not suppress confirmed business fallback', async () => {
   const h = fixture([biz(12345), {}, transport('timeout')]);
@@ -83,7 +83,7 @@ test('diagnostic sink failure cannot stop confirmed successes; per-process diagn
   const sink = fixture([biz(1), { qty: 2 }, { qty: 2 }, { qty: 2 }], { logThrows: true });
   try { assert.equal((await sink.run('visitFriend')).acted, true); assert.equal(sink.tally.steal, 3); } finally { sink.restore(); }
   const bounded = fixture(Array.from({ length: 150 }, () => transport('timeout')));
-  try { for (let i = 0; i < 150; i++) await bounded.run('visitFriend'); assert.equal(bounded.logs.filter(x => x[2]?.event === 'friend_visit_failure').length, 128); assert.equal(bounded.calls.filter(Array.isArray).length, 150); } finally { bounded.restore(); }
+  try { for (let i = 0; i < 150; i++) await bounded.run('visitFriend'); assert.equal(bounded.logs.filter(x => x[2]?.event === 'friend_visit_failure').length, 1); assert.equal(bounded.calls.filter(Array.isArray).length, 150); } finally { bounded.restore(); }
 });
 
 test('generic visit stops remaining help and bad writes after a non-business help failure', async () => {
@@ -94,4 +94,15 @@ test('generic visit stops remaining help and bad writes after a non-business hel
 test('help-only visit stops at the same non-business batch boundary and retains fresh-read scheduling', async () => {
  const h = fixture([], { steal: false, help: true, bad: true, helpError: transport('timeout') });
  try { const result = await h.run('visitFriendForHelp'); assert.equal(result.retryNeeded, true); assert.deepEqual(h.calls, ['enter', 'precheck', 'help', 'leave']); } finally { h.restore(); }
+});
+
+test('ordinary friends skip rejected batches and stop short-cycle retries; a later normal visit can still succeed', async () => {
+  const h = fixture([biz(12345), { qty: 6 }], { priority: false });
+  try {
+    const first = await h.run('visitFriendForSteal');
+    assert.equal(first.retryNeeded, false); assert.equal(h.calls.filter(Array.isArray).length, 1); assert.equal(h.tally.steal, 0);
+    const messages = h.logs.filter(row => row[2]?.event === 'friend_visit_failure'); assert.equal(messages.length, 1);
+    assert.match(messages[0][1], /本次不再逐地重试/); assert.equal(messages[0][2].category, 'business');
+    const later = await h.run('visitFriendForSteal'); assert.equal(later.acted, true); assert.equal(h.tally.steal, 3);
+  } finally { h.restore(); }
 });

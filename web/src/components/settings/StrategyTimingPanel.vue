@@ -183,13 +183,9 @@ async function restartAccount() {
         min="5"
         max="180"
       />
-      <BaseInput
-        v-model.number="settings.friendQuietHours.watchlistWakeBeforeMinutes"
-        label="重点好友盯梢窗口 (分钟)"
-        type="number"
-        min="5"
-        max="360"
-      />
+      <p class="w-full text-xs text-gray-500 dark:text-gray-400">
+        重点好友保留在线监控、成熟推送和到点布控；不再进行施肥趋势追踪。
+      </p>
       <p class="w-full text-xs text-gray-500 dark:text-gray-400">
         每次在你设置的最短与最长分钟数之间随机休息，没有额外的 10 分钟上限。
         若休息会跨入提前观察窗口，则缩短休息；不足最短时长时按正常节奏巡查。设置相同的最短和最长值可固定休息时长。
