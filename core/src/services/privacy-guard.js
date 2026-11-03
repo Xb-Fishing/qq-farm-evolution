@@ -284,6 +284,62 @@ function getReviewedOfficialResources(repoRoot, head, options = {}) {
       if (sha256 !== row.sha256 || blob !== row.gitBlob || !info || info.width !== row.width || info.height !== row.height) continue;
       proofs.push({ file: target, commit: head, sha256 });
     }
+    return proofs.concat(getReviewedPlantResources(repoRoot, head, { runtimeTerms: terms }));
+  } catch { return []; }
+}
+
+// Stage sprites have a different provenance from item icons. Keep the original
+// official manifest bytes so approval can bind each PNG to its actual asset.
+function getReviewedPlantResources(repoRoot, head, options) {
+  const prefix = 'core/src/gameConfig/plant_images/';
+  const gitBytes = args => execFileSync('git', args, { cwd: repoRoot, timeout: 10000,
+    maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  const readRegular = file => {
+    if (!gitBytes(['ls-tree', head, '--', file]).toString('utf8').startsWith('100644 blob ')) throw new Error('resource_not_regular');
+    return gitBytes(['show', `${head}:${file}`]);
+  };
+  try {
+    const registry = JSON.parse(readRegular(prefix + 'reviewed-resources.json').toString('utf8'));
+    const source = registry.manifest;
+    if (registry.version !== 1 || registry.sourceGrade !== 'reviewed_official_cdn_manifest'
+      || source?.bundle !== 'plant' || !/^[a-f0-9]{5}$/.test(String(source.bundleVersion))
+      || source.file !== `official-plant-${source.bundleVersion}.json`
+      || !/^[a-f0-9]{64}$/.test(String(source.sha256))
+      || !Array.isArray(registry.resources) || registry.resources.length < 1 || registry.resources.length > 128) return [];
+    const manifestBytes = readRegular(prefix + source.file);
+    if (crypto.createHash('sha256').update(manifestBytes).digest('hex') !== source.sha256) return [];
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    if (manifest.name !== 'plant' || manifest.nativeBase !== 'native' || !Array.isArray(manifest.types)
+      || !Array.isArray(manifest.uuids) || !manifest.paths || !manifest.extensionMap
+      || Object.keys(manifest.extensionMap).length !== 0 || !Array.isArray(manifest.versions?.native)
+      || manifest.versions.native.length % 2 !== 0) return [];
+    const nativeVersions = new Map();
+    for (let i = 0; i < manifest.versions.native.length; i += 2) {
+      const index = manifest.versions.native[i], hash = manifest.versions.native[i + 1];
+      if (!Number.isSafeInteger(index) || index < 0 || nativeVersions.has(index) || !/^[a-f0-9]{5}$/.test(hash)) return [];
+      nativeVersions.set(index, hash);
+    }
+    const proofs = [], seen = new Set();
+    for (const row of registry.resources) {
+      if (!row || typeof row.file !== 'string' || seen.has(row.file)) return [];
+      seen.add(row.file);
+      if (!/^Crop_[1-9][0-9]*$/.test(row.assetName) || !Number.isInteger(row.phase) || row.phase < 2 || row.phase > 6
+        || row.file !== `${row.assetName}/${row.phase}.png` || !Number.isSafeInteger(row.manifestIndex) || row.manifestIndex < 0
+        || !/^[a-f0-9]{5}$/.test(row.nativeHash) || !/^[a-f0-9]{64}$/.test(row.sha256) || !/^[a-f0-9]{40}$/.test(row.gitBlob)) continue;
+      const asset = manifest.paths[String(row.manifestIndex)], compactUuid = manifest.uuids[row.manifestIndex];
+      if (!Array.isArray(asset) || asset[0] !== `model/v4/${row.assetName}_${row.phase}`
+        || manifest.types[asset[1]] !== 'cc.ImageAsset' || nativeVersions.get(row.manifestIndex) !== row.nativeHash
+        || typeof compactUuid !== 'string' || !/^[a-f0-9]{2}[A-Za-z0-9+/]{20}$/.test(compactUuid)) continue;
+      const hex = compactUuid.slice(0, 2) + Buffer.from(compactUuid.slice(2), 'base64').toString('hex');
+      const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      if (uuid !== row.uuid) continue;
+      const file = prefix + row.file, bytes = readRegular(file);
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      const blob = crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
+      const info = pngResourceInfo(bytes, options);
+      if (sha256 !== row.sha256 || blob !== row.gitBlob || !info || info.width !== row.width || info.height !== row.height) continue;
+      proofs.push({ file, commit: head, sha256 });
+    }
     return proofs;
   } catch { return []; }
 }

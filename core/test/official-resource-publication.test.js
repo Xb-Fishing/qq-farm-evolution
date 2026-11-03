@@ -25,6 +25,28 @@ function fixture(t, bytes = png()) {
   return { repo, git, base, row, registry, save, head: () => git(['rev-parse', 'HEAD']).trim() };
 }
 function audit(f, proofs) { return guard.auditGitRange(f.repo, f.base, f.head(), { runtimeTerms: [], reviewedOfficialResources: proofs }); }
+function stageFixture(t, bytes = png()) {
+  const f = fixture(t); f.base = f.head();
+  const prefix = 'core/src/gameConfig/plant_images/';
+  const resource = prefix + 'Crop_107/2.png';
+  const manifest = { name: 'plant', nativeBase: 'native', types: ['cc.ImageAsset'],
+    uuids: ['00' + Buffer.alloc(15, 1).toString('base64')], paths: { 0: ['model/v4/Crop_107_2', 0, 1] },
+    extensionMap: {}, versions: { native: [0, 'abc12'] } };
+  const row = { file: 'Crop_107/2.png', assetName: 'Crop_107', phase: 2, manifestIndex: 0,
+    uuid: '00010101-0101-0101-0101-010101010101', nativeHash: 'abc12',
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    gitBlob: crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex'), width: 1, height: 1 };
+  const registry = { version: 1, sourceGrade: 'reviewed_official_cdn_manifest',
+    manifest: { file: 'official-plant-abc12.json', bundle: 'plant', bundleVersion: 'abc12' }, resources: [row] };
+  const save = () => {
+    const sourceBytes = Buffer.from(JSON.stringify(manifest));
+    registry.manifest.sha256 = crypto.createHash('sha256').update(sourceBytes).digest('hex');
+    write(f.repo, prefix + 'official-plant-abc12.json', sourceBytes);
+    write(f.repo, prefix + 'reviewed-resources.json', JSON.stringify(registry));
+  };
+  write(f.repo, resource, bytes); save(); f.git(['add', '.']); f.git(['commit', '-qm', 'fixture stage resource']);
+  return { ...f, stage: { prefix, resource, manifest, registry, row, save } };
+}
 test('ordinary binary changes remain blocked; only the exact registered PNG proof passes', t => {
   const f = fixture(t); assert.equal(audit(f).ok, false);
   const proofs = guard.getReviewedOfficialResources(f.repo, f.head(), { runtimeTerms: [] }); assert.equal(proofs.length, 1);
@@ -59,7 +81,7 @@ test('PNG structural verification rejects bad CRC, trailing bytes and malformed 
   assert.equal(guard.pngResourceInfo(Buffer.from('<svg/>')), null);
 });
 test('the actual parent publication entry uses resource proofs only after Main completion approval', async t => {
-  const f = fixture(t), ts = require(path.resolve(__dirname, '../../web/node_modules/typescript'));
+  const f = stageFixture(t), ts = require(path.resolve(__dirname, '../../web/node_modules/typescript'));
   const source = fs.readFileSync(sources[2], 'utf8'); const ast = ts.createSourceFile('activity-evolver.js', source, ts.ScriptTarget.Latest);
   const declaration = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'ensureHeadPushed'); assert.ok(declaration);
   let remote = f.base, pushes = 0, approvals = 0;
@@ -94,3 +116,43 @@ test('registered symlink targets and duplicate resource records are never public
   assert.deepEqual(guard.getReviewedOfficialResources(f.repo, f.head(), { runtimeTerms: [] }), []);
   assert.equal(audit(f).ok, false);
 });
+
+test('official stage PNGs require both the exact manifest and completed content-bound approval', t => {
+  const f = stageFixture(t);
+  const proofs = guard.getReviewedOfficialResources(f.repo, f.head(), { runtimeTerms: [] });
+  assert.equal(proofs.length, 2); assert.ok(proofs.some(p => p.file === f.stage.resource));
+  assert.equal(audit(f).ok, false); assert.equal(audit(f, proofs).ok, true);
+  assert.equal(audit(f, proofs.map(p => ({ ...p, commit: f.base }))).ok, false);
+  write(f.repo, 'core/src/services/privacy-guard.js', '// fixture protected change\n');
+  f.git(['add', '.']); f.git(['commit', '-qm', 'fixture protected change']);
+  const findings = audit(f, guard.getReviewedOfficialResources(f.repo, f.head(), { runtimeTerms: [] })).findings;
+  assert.ok(findings.some(p => p.rule === 'privacy-control-changed'));
+});
+for (const mode of ['source-grade', 'source-hash', 'source-file', 'phase', 'logical-path', 'type', 'uuid', 'native-hash', 'image-hash', 'git-blob', 'dimensions', 'traversal', 'extension', 'duplicate', 'symlink', 'metadata']) {
+  test(`official stage proofs reject ${mode} without changing item-icon proofs`, t => {
+    const f = stageFixture(t, mode === 'metadata' ? png('Comment\0' + ['Bearer', 'synthetic-value-1234567890'].join(' ')) : png());
+    const { registry, manifest, row, prefix, save } = f.stage;
+    if (mode === 'source-grade') registry.sourceGrade = 'worker_claim';
+    if (mode === 'phase') row.phase = 1;
+    if (mode === 'logical-path') manifest.paths[0][0] = 'model/v4/Crop_107_Seed';
+    if (mode === 'type') manifest.types[0] = 'cc.SpriteFrame';
+    if (mode === 'uuid') row.uuid = '0'.repeat(36);
+    if (mode === 'native-hash') row.nativeHash = '00000';
+    if (mode === 'image-hash') row.sha256 = '0'.repeat(64);
+    if (mode === 'git-blob') row.gitBlob = '0'.repeat(40);
+    if (mode === 'dimensions') row.height = 2;
+    if (mode === 'traversal') row.file = '../2.png';
+    if (mode === 'extension') manifest.extensionMap = { '.jpg': [0] };
+    if (mode === 'duplicate') registry.resources.push({ ...row });
+    save();
+    if (mode === 'source-hash') { registry.manifest.sha256 = '0'.repeat(64); write(f.repo, prefix + 'reviewed-resources.json', JSON.stringify(registry)); }
+    if (mode === 'source-file') { registry.manifest.file = '../manifest.json'; write(f.repo, prefix + 'reviewed-resources.json', JSON.stringify(registry)); }
+    if (mode === 'symlink') { fs.unlinkSync(inside(f.repo, f.stage.resource)); fs.symlinkSync('other.png', inside(f.repo, f.stage.resource)); }
+    f.git(['add', '.']);
+    // The metadata variant already has invalid bytes in its first resource commit.
+    if (f.git(['diff', '--cached', '--name-only']).trim()) f.git(['commit', '-qm', 'fixture invalid stage evidence']);
+    const proofs = guard.getReviewedOfficialResources(f.repo, f.head(), { runtimeTerms: [] });
+    assert.equal(proofs.length, 1); assert.equal(proofs[0].file, resource);
+    assert.equal(audit(f, proofs).ok, false);
+  });
+}

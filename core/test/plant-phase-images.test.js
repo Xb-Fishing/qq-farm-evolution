@@ -8,6 +8,35 @@ const {
     getMutantPlantImageByPhase,
     getPlantImageByPhase,
 } = require('../src/config/gameConfig');
+const catalog = require('../src/gameConfig/UpdateCatalog.json');
+const reviewedStages = require('../src/gameConfig/plant_images/reviewed-resources.json');
+const crypto = require('node:crypto');
+
+test('六种已取证作物的土地阶段图命中真实资源，未补齐的十四种保留缺口', () => {
+    const groups = new Map([[20107, 'Crop_107'], [20117, 'Crop_117'], [20119, 'Crop_119'],
+        [20173, 'Crop_173'], [20125, 'Crop_125'], [20189, 'Crop_189']]);
+    assert.equal(reviewedStages.resources.length, 30);
+    for (const crop of catalog.crops) {
+        const asset = groups.get(crop.seedId);
+        assert.equal(getPlantImageByPhase(crop.plantId, 1), '/game-config/plant_images/common/seed.png');
+        if (!asset) {
+            assert.match(crop.imageStatus, /尚未取得/);
+            for (let phase = 2; phase <= 6; phase += 1) assert.equal(getPlantImageByPhase(crop.plantId, phase), '/game-config/plant_images/common/seed.png');
+            continue;
+        }
+        assert.doesNotMatch(crop.imageStatus, /尚未取得/);
+        for (let phase = 2; phase <= 6; phase += 1) {
+            const url = `/game-config/plant_images/${asset}/${phase}.png`;
+            assert.equal(getPlantImageByPhase(crop.plantId, phase), url);
+            assert.equal(getPlantImageByPhase(crop.seedId, phase), url);
+            const file = path.join(__dirname, '..', 'src', url.replace('/game-config/', 'gameConfig/'));
+            const proof = reviewedStages.resources.find(r => r.file === `${asset}/${phase}.png`);
+            assert.ok(proof);
+            assert.equal(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), proof.sha256);
+        }
+    }
+    assert.equal(catalog.crops.filter(c => !groups.has(c.seedId)).length, 14);
+});
 
 test('活动植物按阶段返回官方植物图片', () => {
     const image = getPlantImageByPhase(1021037, 6);

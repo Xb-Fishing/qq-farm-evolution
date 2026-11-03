@@ -787,7 +787,7 @@
       "level": 199,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     },
     {
       "seedId": 21084,
@@ -817,7 +817,7 @@
       "level": 208,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     },
     {
       "seedId": 20119,
@@ -827,7 +827,7 @@
       "level": 211,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     },
     {
       "seedId": 20173,
@@ -837,7 +837,7 @@
       "level": 214,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     },
     {
       "seedId": 20125,
@@ -847,7 +847,7 @@
       "level": 217,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     },
     {
       "seedId": 20189,
@@ -857,7 +857,7 @@
       "level": 220,
       "landLevelNeed": 1,
       "size": 1,
-      "imageStatus": "种子与果实物品图可用；土地阶段图尚未取得精确资源"
+      "imageStatus": "种子与果实物品图、土地生长阶段图可用"
     }
   ],
   "evidenceGaps": [
