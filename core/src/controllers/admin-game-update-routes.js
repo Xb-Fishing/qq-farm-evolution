@@ -64,7 +64,7 @@ function registerAdminGameUpdateRoutes(context) {
         localOnly: true,
         ownership: 'unknown',
         activation: 'unknown',
-        note: '本地目录：当前持有/激活状态未知，官方只读路径未取得，不含任何游戏写入口',
+        note: '本地目录不含账号实时持有、星级和展台；请使用手动只读状态查询，未接入新游戏写入口',
       });
     } catch (error) {
       res.status(500).json({ ok: false, error: error?.message || '本地藏品目录读取失败' });
