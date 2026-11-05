@@ -42,7 +42,8 @@ function harness(t, options = {}) {
     let clock = 1_800_000_000_000;
     let connected = true;
     const calls = [];
-    const network = { isConnected: () => connected, sendMsgAsync: async (service, method, payload) => {
+    const socket = {};
+    const network = { getWs: () => socket, isConnected: () => connected, sendMsgAsync: async (service, method, payload) => {
         const req = type(method === 'GetBulletinList' ? 'GetBulletinListRequest' : 'GetBulletinDetailRequest').toObject(
             type(method === 'GetBulletinList' ? 'GetBulletinListRequest' : 'GetBulletinDetailRequest').decode(payload), { longs: String });
         calls.push({ service, method, req, bytes: payload.length });
