@@ -11,7 +11,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const protobuf = require('protobufjs');
 const { getResourcePath, getDataDir } = require('../config/runtime-paths');
-const { sendMsgAsync, isConnected } = require('../utils/network');
+const { sendMsgAsync, isConnected, getWs } = require('../utils/network');
+const { gameDateKey } = require('../config/game-date');
 
 const SERVICE = 'gamepb.bulletinboardpb.BulletinBoardService';
 const CACHE_MS = 5 * 60_000;
@@ -19,10 +20,21 @@ const FAILURE_MS = 30_000;
 const MAX_DETAILS = 3;
 let codecs;
 let cached = null;
+let cachedOwner = '';
+let cachedScope = null;
 let cachedUntil = 0;
 let failedUntil = 0;
+let failedScope = null;
 let lastError = null;
 let inFlight = null;
+
+const accountOwner = () => String(process.env.FARM_ACCOUNT_ID || 'default');
+const sameScope = (left, right) => !!left && !!right && left.owner === right.owner && left.connection === right.connection;
+function assertCurrent(scope) {
+    if (accountOwner() !== scope.owner || !isConnected() || getWs() !== scope.connection) {
+        throw new Error('账号或连接已变更，公告结果已丢弃');
+    }
+}
 
 function types() {
     if (!codecs) {
@@ -59,9 +71,9 @@ function safeTarget(root, target) {
     return resolved;
 }
 
-function persist(result) {
+function persist(result, owner) {
     const dataDir = getDataDir();
-    const accountKey = crypto.createHash('sha256').update(String(process.env.FARM_ACCOUNT_ID || 'default')).digest('hex').slice(0, 24);
+    const accountKey = crypto.createHash('sha256').update(owner).digest('hex').slice(0, 24);
     const dir = safeTarget(dataDir, path.join(dataDir, 'official-game-announcements'));
     const target = safeTarget(dataDir, path.join(dir, `${accountKey}.json`));
     const temp = safeTarget(dataDir, path.join(dir, `${accountKey}.${crypto.randomUUID()}.tmp`));
@@ -72,27 +84,45 @@ function persist(result) {
     } finally { fs.rmSync(temp, { force: true }); }
 }
 
-async function fetchAnnouncements() {
+async function fetchAnnouncements(scope) {
     const c = types();
+    const previous = cachedOwner === scope.owner ? cached : null;
     // 使用已声明请求的默认值，不枚举分页参数或公告编号。
     const { body } = await sendMsgAsync(SERVICE, 'GetBulletinList', c.listReq.encode(c.listReq.create({})).finish(), 5000);
+    assertCurrent(scope);
     const reply = c.listRep.toObject(c.listRep.decode(body), { longs: String });
+    const previousDetails = new Map((previous?.announcements || []).map(item => [item.id, item]));
     const seen = new Set();
     const announcements = [];
     for (const item of Array.isArray(reply.bulletins) ? reply.bulletins : []) {
         const id = String(item.id || '');
         if (!/^[1-9]\d{0,18}$/.test(id) || seen.has(id)) continue;
         seen.add(id);
-        announcements.push({ id, title: plainText(item.title).slice(0, 300), detailLoaded: false });
+        const listTitle = plainText(item.title).slice(0, 300);
+        const entry = { id, title: listTitle, listTitle, detailLoaded: false };
+        const old = previousDetails.get(id);
+        const detailAt = old?.detailFetchedAt || previous?.fetchedAt;
+        if (old?.detailLoaded === true && typeof old.content === 'string'
+            && (old.listTitle ?? old.title) === listTitle && detailAt > 0 && detailAt <= Date.now()
+            && gameDateKey(detailAt) === gameDateKey(Date.now())) {
+            Object.assign(entry, { title: old.title, content: old.content, beginTime: old.beginTime,
+                endTime: old.endTime, imageUrl: old.imageUrl, detailLoaded: true,
+                detailFetchedAt: detailAt, detailCached: true });
+        }
+        announcements.push(entry);
         if (announcements.length === 30) break;
     }
-    // 仅查询列表真实下发的前几条详情；不提供任意编号或强刷入口。
+    // 仍只读取三个真实下发的编号：先补缺，再轮换复查最旧正文，避免尾项永久饿死。
+    const selected = [...announcements].sort((left, right) =>
+        Number(left.detailLoaded) - Number(right.detailLoaded)
+        || (left.detailFetchedAt || 0) - (right.detailFetchedAt || 0)).slice(0, MAX_DETAILS);
     let detailError = '';
-    for (const item of announcements.slice(0, MAX_DETAILS)) {
-        if (!isConnected()) { detailError = '账号连接已关闭，剩余详情未读取'; break; }
+    for (const item of selected) {
+        assertCurrent(scope);
         try {
             const payload = c.detailReq.encode(c.detailReq.create({ id: item.id })).finish();
             const response = await sendMsgAsync(SERVICE, 'GetBulletinDetail', payload, 5000);
+            assertCurrent(scope);
             const detail = c.detailRep.toObject(c.detailRep.decode(response.body), { longs: String });
             const content = plainText(detail.content);
             item.title = plainText(detail.title).slice(0, 300) || item.title;
@@ -101,40 +131,54 @@ async function fetchAnnouncements() {
             item.endTime = plainText(detail.end_time).slice(0, 100);
             item.imageUrl = String(detail.image_url || '').slice(0, 2000);
             item.detailLoaded = true;
+            item.detailFetchedAt = Date.now();
+            item.detailCached = false;
         } catch (error) {
+            assertCurrent(scope);
             // 失败即停止剩余详情，无重试、替代方法或编号试探。
             detailError = String(error.message || '公告详情读取失败').slice(0, 300);
             break;
         }
     }
+    assertCurrent(scope);
     const result = { source: 'official-game-bulletin', fetchedAt: Date.now(), announcements,
-        partial: announcements.some(item => !item.detailLoaded), detailError,
+        partial: !!detailError || announcements.some(item => !item.detailLoaded), detailError,
         empty: announcements.length === 0 };
     // 写盘失败不影响已经取得的只读结果；原始响应及账号身份不写入缓存。
-    try { persist(result); } catch { /* 缓存不可写时仍返回当前读取结果 */ }
+    try { persist(result, scope.owner); } catch { /* 缓存不可写时仍返回当前读取结果 */ }
     return result;
 }
 
 async function getOfficialAnnouncements() {
     if (!isConnected()) throw new Error('账号未连接，无法读取官方公告');
-    if (cached && Date.now() < cachedUntil
-        && require('../config/game-date').gameDateKey(cached.fetchedAt) === require('../config/game-date').gameDateKey(Date.now())) return { ...cached, upstreamCached: true };
-    if (inFlight) return inFlight;
-    if (Date.now() < failedUntil) throw lastError;
-    inFlight = (async () => {
+    const scope = { owner: accountOwner(), connection: getWs() };
+    if (cached && cachedOwner === scope.owner && sameScope(cachedScope, scope) && Date.now() < cachedUntil
+        && cached.fetchedAt <= Date.now() && gameDateKey(cached.fetchedAt) === gameDateKey(Date.now())) return { ...cached, upstreamCached: true };
+    if (sameScope(inFlight?.scope, scope)) return inFlight.promise;
+    if (sameScope(failedScope, scope) && Date.now() < failedUntil) throw lastError;
+    const operation = { scope, promise: null };
+    inFlight = operation;
+    operation.promise = (async () => {
         try {
-            const result = await fetchAnnouncements();
+            const result = await fetchAnnouncements(scope);
+            assertCurrent(scope);
             cached = result;
+            cachedOwner = scope.owner;
+            cachedScope = scope;
             cachedUntil = Date.now() + CACHE_MS;
             failedUntil = 0;
+            failedScope = null;
             return { ...result, upstreamCached: false };
         } catch (error) {
-            lastError = error;
-            failedUntil = Date.now() + FAILURE_MS;
+            if (accountOwner() === scope.owner && isConnected() && getWs() === scope.connection) {
+                lastError = error;
+                failedUntil = Date.now() + FAILURE_MS;
+                failedScope = scope;
+            }
             throw error;
-        } finally { inFlight = null; }
+        } finally { if (inFlight === operation) inFlight = null; }
     })();
-    return inFlight;
+    return operation.promise;
 }
 
 module.exports = { getOfficialAnnouncements };
@@ -142,10 +186,11 @@ module.exports = { getOfficialAnnouncements };
 // Persistent-session data capsule. No handles, functions or in-flight work.
 if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   const { registerDataState } = require('./business-state');
-  registerDataState('services/official-announcements.js', () => ({ cached, cachedUntil, failedUntil, lastError }), value => {
+  registerDataState('services/official-announcements.js', () => ({ cached, cachedOwner, cachedUntil, failedUntil, lastError }), value => {
       cached = value.cached;
+      cachedOwner = value.cachedOwner || '';
       cachedUntil = value.cachedUntil;
       failedUntil = value.failedUntil;
       lastError = value.lastError;
-  }, { idle: () => !inFlight, });
+  }, { idle: () => !inFlight, optionalKeys: ['cachedOwner'] });
 }
