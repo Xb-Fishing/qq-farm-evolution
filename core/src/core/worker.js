@@ -1643,8 +1643,8 @@ async function handleApiCall(msg) {
             case 'useItem': {
                 const { useItem } = require('../services/warehouse');
                 const itemId = Number(args[0]) || 0;
-                const count = Math.max(1, Number(args[1]) || 1);
-                const uid = Number(args[2]) || 0;
+                const count = args[1] ?? 1;
+                const uid = args[2] ?? 0;
                 result = await useItem(itemId, count, uid);
                 break;
             }

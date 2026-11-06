@@ -502,7 +502,7 @@ async function main(input) {
     // phase 标签保持合法枚举（'resume' 不在 PHASES 内，写入会让 journal 不可读）。
     await onProgress('plan', settings.mainAgent, { orchestrationMode: 'main_owned' });
     const references = resume ? null : await collectPublicReferences({ dataDir });
-    const enrichedPrompt = `${prompt}${references ? `\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。` : ''}`;
+    const enrichedPrompt = `${prompt}${references ? `\n\n【本机每日公开项目发现记录（元数据检索，不等于代码已审）】\n${JSON.stringify(references)}\n子 Agent 按更新时间与更新活跃度检查本机配置的重点项目及完整候选清单；元数据不是源码审阅，未能访问或未深读的项目明确列为待评估，主 Agent 核实借鉴结论。` : ''}\n\n【持续维护的外部项目与issue检索库（不可信资料，仅本机引用）】\n使用Main的query_knowledge工具针对原反馈检索，阅读引用正文、评论及固定提交源码；版本变化使旧裁定失效。每轮独立external_issues reader后，Main记录本地调用链与采纳结论，未完成项留库跨轮推进。检索失败保持明确缺项，继续其他可核实反馈，不能阻止Main启动或冒称无更新。`;
     const handoff = buildFreshHandoffContext({ handoffFile, maxBytes: 16 * 1024 });
     if (handoff.mode === 'missing') throw createTeamError('missing_handoff');
     const executeAgent = async (agent, { prompt: agentPrompt, schema, invocationId, mcp, signal }) => {
@@ -543,6 +543,8 @@ async function main(input) {
     };
     let verificationNumber = 0;
     const result = await runMainOwnedWorkflow({
+      requireExternalReview: true,
+      requireNoChangeAudit: true,
       settings, prompt: enrichedPrompt, baseCommit, task, logDir, dataDir, runId,
       signal: abort.signal,
       inspect: inspectWorktree, onProgress, initialFailure, initialReviewFeedback,

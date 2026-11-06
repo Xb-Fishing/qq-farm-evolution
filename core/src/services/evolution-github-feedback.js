@@ -98,6 +98,7 @@ function readGithubFeedbackConfig(options = {}) {
     ownerLogin,
     pollMs: pollMinutes * 60 * 1000,
     autoCloseAfterReply: raw.autoCloseAfterReply === true,
+    autoCloseFixed: raw.autoCloseFixed === true,
     publicActions: actions,
     readmeAnchors,
     extraNote: sanitizePublicNote(raw.extraNote),
@@ -170,6 +171,7 @@ function ghCliRequest(execFile) {
     try {
       child = execFile('gh', exec.body === undefined ? args : [...args, '--input', '-'], {
         encoding: 'utf8', timeout: GH_TIMEOUT_MS, maxBuffer: MAX_REQUEST_BYTES,
+        ...(exec.signal ? { signal: exec.signal } : {}),
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PAGER: '' },
       }, (error, stdout, stderr) => {
         if (error) {
@@ -194,6 +196,7 @@ function ghCliRequest(execFile) {
     apiPath,
     method: (opts && opts.method) || 'GET',
     body: opts && opts.body,
+    signal: opts && opts.signal,
   });
 }
 
@@ -1193,7 +1196,7 @@ function issueDetailKey(detail) {
 }
 
 /** A new user response needs another maintainer reply; elapsed time alone never resolves it. */
-function inactiveRepliedIssue(issue, ownLogins, now) {
+function inactiveRepliedIssue(issue, ownLogins, now, idleMs = REPLIED_ISSUE_IDLE_MS) {
   if (issue.state !== 'open' || issue.locked || issue.pullRequest || issue.commentsTruncated
     || issue.commentCount !== issue.comments.length || !issue.updatedAt) return false;
   const replies = issue.comments.filter(comment => ownLogins.has(comment.author.toLowerCase()) && comment.body.trim());
@@ -1206,25 +1209,28 @@ function inactiveRepliedIssue(issue, ownLogins, now) {
   const lastCommentAt = Math.max(...issue.comments.map(comment => Math.max(comment.createdAt, comment.updatedAt)));
   // Issue edits, reopening and other unexplained updates require a new review/reply.
   if (issue.updatedAt > lastCommentAt || issue.updatedAt < latest.createdAt) return false;
-  return now - Math.max(issue.updatedAt, lastCommentAt) >= REPLIED_ISSUE_IDLE_MS;
+  return now - Math.max(issue.updatedAt, lastCommentAt) >= idleMs;
 }
 
 /** Opt-in follow-up policy; every close is checked against fresh remote evidence. */
 async function closeInactiveRepliedIssues(options = {}) {
   const cfg = readGithubFeedbackConfig(options);
-  if (!cfg?.autoCloseAfterReply) return { ok: false, reason: 'disabled' };
+  if (!cfg || (!cfg.autoCloseAfterReply && !cfg.autoCloseFixed)) return { ok: false, reason: 'disabled' };
   const dataDir = resolveDataDir(options);
   return withDeliveryLock(dataDir, async () => {
     const store = readStore(dataDir, cfg);
     if (store.collection.state !== 'complete') return { ok: false, reason: 'collection_incomplete' };
     if (store.configFingerprint !== configFingerprintOf(cfg)) return { ok: false, reason: 'config_changed' };
     const request = options.request || createGithubRequest(cfg);
+    const publishedCheck = options.publishedCheck || ((config, revision) => defaultPublishedCheck(config, revision, { request }));
+    const outbox = readOutbox(dataDir);
     const auth = await apiGet(request, '/user');
     const login = String(auth.body?.login || '').toLowerCase();
     if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/.test(login)) return { ok: false, reason: auth.reason || 'invalid_response' };
     const ownLogins = new Set([cfg.ownerLogin, login].filter(Boolean));
     const now = options.now ? options.now() : Date.now();
-    const candidates = store.issues.filter(issue => inactiveRepliedIssue(issue, ownLogins, now))
+    const idleMs = cfg.autoCloseFixed ? 0 : REPLIED_ISSUE_IDLE_MS;
+    const candidates = store.issues.filter(issue => inactiveRepliedIssue(issue, ownLogins, now, idleMs))
       .slice(0, MAX_NEW_CAPTURE_ISSUES);
     const closed = [];
     for (const cached of candidates) {
@@ -1234,7 +1240,19 @@ async function closeInactiveRepliedIssues(options = {}) {
         cached.state = 'closed';
         continue;
       }
-      if (!inactiveRepliedIssue(fresh.snapshot, ownLogins, now)) continue;
+      if (!inactiveRepliedIssue(fresh.snapshot, ownLogins, now, idleMs)) continue;
+      // A reply (including a request for information) is not a verified resolution.
+      // Require the accepted report version, published fix and the actual remote
+      // delivery marker. A deleted comment or new feedback must remain pending.
+      const resolution = Object.values(outbox.entries).find(entry => entry.issue === cached.number
+        && entry.repo === cfg.repo && entry.configFingerprint === configFingerprintOf(cfg)
+        && entry.source && entry.reviewedBy && entry.issueFingerprint === fresh.fingerprint
+        && entry.public.status === 'delivered' && entry.public.commentId > 0
+        && !outbox.heldRevisions[`${cfg.repo}:${entry.revision}`]
+        && markerCommentId(fresh.snapshot.comments, entry, ownLogins) === entry.public.commentId);
+      if (!resolution) continue;
+      const published = await publishedCheck(cfg, resolution.revision);
+      if (published !== true && published?.ok !== true) continue;
       // Recheck detail immediately before PATCH: activity during comment pagination cancels closing.
       const latest = await apiGet(request, `/repos/${cfg.repo}/issues/${cached.number}`);
       if (!latest.body || issueDetailKey(latest.body) !== fresh.detailKey) continue;
@@ -1244,9 +1262,12 @@ async function closeInactiveRepliedIssues(options = {}) {
         });
         if (response?.statusCode === 200 && response.body?.state === 'closed'
           && Number(response.body.number) === cached.number) {
-          cached.state = 'closed';
-          closed.push(cached.number);
-          store.followup.closed.push({ issue: cached.number, at: now });
+          const confirmed = await apiGet(request, `/repos/${cfg.repo}/issues/${cached.number}`);
+          if (confirmed.body?.state === 'closed' && Number(confirmed.body.number) === cached.number) {
+            cached.state = 'closed';
+            closed.push(cached.number);
+            store.followup.closed.push({ issue: cached.number, at: now });
+          }
         }
       } catch { /* The next poll reads remote state first, including ambiguous successful PATCHes. */ }
     }

@@ -12,6 +12,8 @@ let localTimeAtSync = 0;
 
 // ============ 类型转换 ============
 function toLong(val) {
+    if (Long.isLong(val)) return val;
+    if (typeof val === 'string') return Long.fromString(val);
     return Long.fromNumber(val);
 }
 

@@ -5,11 +5,13 @@ const https = require('node:https');
 const crypto = require('node:crypto');
 
 const { readPrivateConfig } = require('./private-config');
+const { collectKnowledge, getKnowledgeSummary } = require('./evolution-knowledge');
 const VERSION = 2;
 const HISTORY_SIZE = 20;
-const QUERIES = ['qq-farm stars:>20', 'qq-farm', 'qq-farm-bot', 'QQ农场', 'qq farm', '农场助手', 'nqf'];
+const QUERIES = ['qq-farm stars:>10', 'qq-farm', 'qq-farm-bot', 'QQ农场', 'qq farm', '农场助手', 'nqf'];
 const FILE = 'evolution-references.json';
-const MAX_REQUESTS = 24;
+const MAX_REQUESTS = 20;
+const KNOWLEDGE_RESERVE = 7;
 const MAX_BYTES = 512 * 1024;
 const REASONS = new Set(['none', 'rate_limited', 'timeout', 'network', 'invalid_response', 'budget_exhausted', 'storage_failed']);
 const SEED_STATES = new Set(['available', 'unavailable', 'not_checked']);
@@ -108,7 +110,7 @@ function summary(record, cached = false) {
 }
 function getPublicReferenceSummary(dataDir) {
     const seeds = referenceSeeds(dataDir);
-    return summary(readRecord(dataDir, seeds) || emptyRecord(seeds));
+    return { ...summary(readRecord(dataDir, seeds) || emptyRecord(seeds)), knowledge: getKnowledgeSummary({ dataDir }) };
 }
 function writeRecord(dataDir, record) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -153,22 +155,27 @@ function relevant(value) {
     return /qq.*farm|farm.*qq|nqf|农场/i.test(name) || /qq\s*农场|qq[ -]*farm/i.test(description);
 }
 
-// Owner preference: recently updated projects with >20 stars get the bounded
+// Owner preference: recently updated projects with >10 stars get the bounded
 // code-history budget first. Small/new projects remain discoverable.
 function compareReferences(a, b) {
-    return Number(b.stars > 20) - Number(a.stars > 20)
+    return Number(b.stars > 10) - Number(a.stars > 10)
         || b.updatedAt.localeCompare(a.updatedAt)
         || (b.recentCommits || 0) - (a.recentCommits || 0) || b.stars - a.stars;
 }
 
 /** request(path, {signal}) returns {statusCode, body}; injected requests must not retain private data. */
-async function collectPublicReferences({ dataDir, now = Date.now(), request = publicRequest }) {
+async function collectPublicReferences({ dataDir, knowledgeDir, now = Date.now(), request }) {
+    if (!request) {
+        const config = readPrivateConfig({ file: process.env.FARM_PRIVATE_CONFIG_FILE || path.join(dataDir, 'private-config.json') });
+        request = config.evolutionReferenceTransport === 'gh_cli'
+            ? require('./evolution-github-feedback').createGithubRequest({ token: '' }) : publicRequest;
+    }
     const seeds = referenceSeeds(dataDir);
     const previous = readRecord(dataDir, seeds);
     const searchedAt = new Date(now).toISOString();
     if (previous && previous.policyFingerprint === policyFingerprint(seeds) && previous.searchedAt.slice(0, 10) === searchedAt.slice(0, 10)) {
         try { writeRecord(dataDir, previous); } catch {}
-        return summary(previous, true);
+        return { ...summary(previous, true), knowledge: getKnowledgeSummary({ dataDir, knowledgeDir }) };
     }
     const record = emptyRecord(seeds);
     record.searchedAt = searchedAt;
@@ -206,8 +213,12 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
             return null;
         } finally { clearTimeout(timer); }
     }
-    for (const seed of record.seedStatus) {
-        if (stopped) break;
+    // Reserve content requests instead of spending the complete round on commit metadata.
+    // Rotate four configured seeds when only three pairs fit beside the seven broad searches.
+    const offset = seeds.length ? Math.floor(now / 86400000) % seeds.length : 0;
+    const seedOrder = [...record.seedStatus.slice(offset), ...record.seedStatus.slice(0, offset)];
+    for (const seed of seedOrder) {
+        if (stopped || calls + 2 > MAX_REQUESTS - KNOWLEDGE_RESERVE - QUERIES.length) break;
         const metadata = fromMetadata(await get(`/repos/${seed.ownerRepo}`));
         const commits = await get(`/repos/${seed.ownerRepo}/commits?per_page=${HISTORY_SIZE}`);
         seed.sha = Array.isArray(commits) ? sha(commits[0]?.sha) : '';
@@ -217,11 +228,12 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
     }
     for (const [index, query] of QUERIES.entries()) {
         if (stopped) break;
-        const body = await get(`/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=10`);
+        const pageSize = index === 0 ? 20 : 10;
+        const body = await get(`/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${pageSize}`);
         const valid = Array.isArray(body?.items) && body.incomplete_results !== true;
         record.queries[index].state = valid ? 'succeeded' : 'failed';
         if (!valid && !stopped && record.failureReason === 'none') record.failureReason = 'invalid_response';
-        for (const item of Array.isArray(body?.items) ? body.items.slice(0, 10) : []) {
+        for (const item of Array.isArray(body?.items) ? body.items.slice(0, pageSize) : []) {
             const clean = relevant(item) && fromMetadata(item);
             if (clean && !found.has(clean.ownerRepo)) {
                 found.set(clean.ownerRepo, clean);
@@ -235,7 +247,7 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
     }
     const extra = [...found.values()].filter(item => !seeds.includes(item.ownerRepo))
         .sort(compareReferences);
-    for (const item of extra.slice(0, Math.max(0, MAX_REQUESTS - calls))) {
+    for (const item of extra.slice(0, Math.max(0, MAX_REQUESTS - KNOWLEDGE_RESERVE - calls))) {
         if (stopped) break;
         const commits = await get(`/repos/${item.ownerRepo}/commits?per_page=${HISTORY_SIZE}`);
         item.sha = Array.isArray(commits) ? sha(commits[0]?.sha) : '';
@@ -251,11 +263,18 @@ async function collectPublicReferences({ dataDir, now = Date.now(), request = pu
     record.seenCandidates = candidates([...record.candidates.map(item => ({
         ...item, sha: item.sha || seen.get(item.ownerRepo)?.sha || '',
     })), ...seen.values()]);
+    let knowledge;
+    try {
+        knowledge = await collectKnowledge({ dataDir, knowledgeDir, now, candidates: record.candidates, seeds, get,
+            remaining: () => stopped || Date.now() >= deadline ? 0 : Math.max(0, MAX_REQUESTS - calls) });
+    } catch {
+        knowledge = { state: 'unavailable', reason: 'storage_failed' };
+    }
     record.state = discoveryComplete(record) ? 'complete' : found.size || record.queries.some(item => item.state === 'succeeded') ? 'partial' : 'unavailable';
     try { writeRecord(dataDir, record); } catch {
         record.failureReason = 'storage_failed'; record.state = record.candidates.length ? 'partial' : 'unavailable';
     }
-    return summary(record);
+    return { ...summary(record), knowledge, requests: calls, requestLimit: MAX_REQUESTS };
 }
 
 module.exports = { collectPublicReferences, getPublicReferenceSummary };

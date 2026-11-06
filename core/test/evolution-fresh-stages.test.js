@@ -292,7 +292,8 @@ const main=!!config.farm_evolution`);
       initialFailure: { code: 'cli_exit', phase: 'research', agent: settings.subAgent } });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     const calls = fs.readFileSync(f.target('core/data/native-calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(calls.length, 2, '这一轮只启动一个新 Main，再由同一 Main 调用一个内嵌 Sub');
+    assert.equal(calls.length, 3, '一个新 Main、一次写实施和额外独立外部issue核查');
+    assert.equal(calls.filter(call => call.kind === 'external').length, 1);
     const main = calls.find(call => call.kind === 'main'); const worker = calls.find(call => call.kind === 'worker');
     assert.equal(main.provider, settings.mainAgent); assert.equal(worker.provider, settings.subAgent);
     for (const call of calls) {

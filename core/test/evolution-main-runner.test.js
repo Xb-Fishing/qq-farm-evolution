@@ -19,13 +19,17 @@ let config={};
 if(provider==='claude'){const at=argv.indexOf('--mcp-config');if(at>=0)config=JSON.parse(argv[at+1]).mcpServers||{};}
 else{const at=argv.indexOf('-c');if(at>=0&&argv[at+1].includes('farm_evolution')){const value=argv[at+1];config.farm_evolution={command:JSON.parse(value.match(/command=("(?:[^"\\]|\\.)*")/)[1]),args:JSON.parse(value.match(/args=(\[[^\]]*\])/)[1])};}}
 const main=!!config.farm_evolution,legacy=!main&&!argv.includes('--strict-mcp-config')&&!argv.includes('-c');
-append('core/data/native-calls.jsonl',JSON.stringify({provider,kind:main?'main':legacy?'legacy':'worker',pid:process.pid,promptLength:input.length,autoCompact:process.env.DISABLE_AUTO_COMPACT,argv})+'\n');
+append('core/data/native-calls.jsonl',JSON.stringify({provider,kind:main?'main':legacy?'legacy':input.includes('本次是独立外部 issue')?'external':'worker',pid:process.pid,promptLength:input.length,autoCompact:process.env.DISABLE_AUTO_COMPACT,argv})+'\n');
 const emit=value=>{if(provider==='claude')process.stdout.write(JSON.stringify({subtype:'success',is_error:false,structured_output:value}));else write(argv[argv.indexOf('--output-last-message')+1],JSON.stringify(value));};
 if(legacy){
  const phase=input.match(/只完成 (\w+) 阶段/)[1];
  if(phase==='implement'){write('core/src/example.js','module.exports = 3;\n');append('docs/HANDOFF.md','Legacy implementation\n');}
  const decision={research:'researched',revise_plan:'researched',plan:'approve',implement:'implemented',review:'approve',diagnose:'repair',repair:'no_change',repair_review:'approve'}[phase];
  emit({decision,summary:'Legacy fixture evidence',...(phase==='plan'?{allowedFiles:['core/src/example.js','docs/HANDOFF.md'],acceptanceChecks:['example returns expected value'],baselineChecks:[]}:{}),...(phase==='diagnose'?{allowedFiles:[]}:{})});
+}else if(!main&&input.includes('本次是独立外部 issue')){
+ const evidence=input.match(/仅可将本任务证据写入 ([^\n。]+)。/)[1];
+ write(path.relative(root,evidence),JSON.stringify({state:'unavailable',summary:'No external sources in isolated native fixture',findings:[],gaps:['Fixture has no external corpus']}));
+ emit({decision:'no_change',summary:'Independent fixture reader recorded its exact missing evidence'});
 }else if(!main){
  if(provider==='claude'&&!argv.includes('--strict-mcp-config'))throw Error('Worker MCP is not isolated');
  if(Object.keys(config).length)throw Error('Worker received the Main bridge');
@@ -46,8 +50,11 @@ if(legacy){
   if(!worker.isError)throw Error('Fixture expected a worker exit failure');
   write('core/data/main-continued.json',JSON.stringify({pid:process.pid,workerFailed:true}));
   write('core/src/example.js','module.exports = 3;\n');append('docs/HANDOFF.md','Main repaired and inspected actual candidate\n');
+  const external=await tool('delegate_worker',{instruction:'Inspect cached external issues',readOnly:true,purpose:'external_issues'});if(external.isError)throw Error(external.content[0].text);
   const verified=await tool('verify_candidate');if(verified.isError)throw Error(verified.content[0].text);
-  const accepted=await tool('accept_result',{decision:'approve',summary:'Main verified and accepted actual behavior',lessons:[],feedbackReviewed:false,githubResolutions:[]});if(accepted.isError)throw Error(accepted.content[0].text);
+  const current=JSON.parse((await tool('status')).content[0].text);
+  if(!current.changedFiles.length){const audit=await tool('review_no_change',{checks:['external_updates','interface_compatibility','retired_activities','planting','runtime_logs','problem_analysis','uncertain_incidents','usability'].map(area=>({area,status:area==='external_updates'?'monitoring':'checked',conclusion:'Isolated fixture condition checked',evidencePaths:[path.join(root,'core/src/example.js')],...(area==='external_updates'?{followup:{question:'Fixture external sources unavailable',ruledOut:['No external corpus in isolated fixture'],missing:'External sources',signal:'Existing daily research snapshot',resolveWhen:'Source available and compared',mechanism:'daily_log_review',nextCheckAt:Date.now()+86400000}}:{})}))});if(audit.isError)throw Error(audit.content[0].text);}
+  const accepted=await tool('accept_result',{decision:'approve',summary:'Main verified and accepted actual behavior',lessons:[],feedbackReviewed:false,githubResolutions:[],externalReviewAcknowledged:true});if(accepted.isError)throw Error(accepted.content[0].text);
   emit({decision:JSON.parse(accepted.content[0].text).decision,summary:'Main completed the one continuous session'});
  })().catch(error=>{process.stderr.write(error.message+'\n');process.exitCode=1;}).finally(()=>{child.stdin.end();});
 }
@@ -55,8 +62,8 @@ if(legacy){
 
 // Both synthetic research CLIs require the other task's actual ready record.
 // Serial delegation therefore fails through the real stdio MCP path.
-const RESEARCH_NATIVE_CLI = NATIVE_CLI.replace("kind:main?'main':legacy?'legacy':'worker'",
-    "kind:main?'main':legacy?'legacy':input.includes('只读研究工具')?'research':'worker'")
+const RESEARCH_NATIVE_CLI = NATIVE_CLI.replace("?'external':'worker'",
+    "?'external':input.includes('只读研究工具')?'research':'worker'")
     .replace('}else if(!main){', String.raw`}else if(!main&&input.includes('只读研究工具')){
  if(provider==='claude'&&!argv.includes('--strict-mcp-config'))throw Error('Research MCP is not isolated');
  if(Object.keys(config).length)throw Error('Research received the Main bridge');
@@ -104,7 +111,7 @@ function createRunnerFixture(t, options = {}) {
     write('core/scripts/run-evolution-team.js', runner);
     write('core/scripts/evolution-apply-process.js', `module.exports=require(${JSON.stringify(require.resolve('../scripts/evolution-apply-process'))});`);
     for (const name of ['activity-evolver', 'privacy-guard', 'evolution-team', 'evolution-validation',
-        'evolution-countercheck', 'evolution-sessions', 'evolution-worktree', 'evolution-main-workflow', 'evolution-main-mcp']) {
+        'evolution-countercheck', 'evolution-knowledge', 'evolution-sessions', 'evolution-worktree', 'evolution-main-workflow', 'evolution-main-mcp']) {
         write(`core/src/services/${name}.js`, `module.exports=require(${JSON.stringify(require.resolve(`../src/services/${name}`))});`);
     }
     write('core/src/services/evolution-references.js', 'exports.collectPublicReferences=async()=>({state:"complete",discoveryComplete:true});');
@@ -152,6 +159,7 @@ if (require.main === module) {
             const calls = fs.readFileSync(f.target('core/data/native-calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
             assert.equal(calls.filter(call => call.kind === 'main').length, 1, 'only one native Main owns the workflow');
             assert.equal(calls.filter(call => call.kind === 'worker').length, 1, 'worker is called by the same Main tool loop');
+            assert.equal(calls.filter(call => call.kind === 'external').length, 1, 'separate independent issue reader is actually invoked');
             assert.equal(calls.find(call => call.kind === 'main').provider, settings.mainAgent);
             assert.equal(calls.find(call => call.kind === 'worker').provider, settings.subAgent);
             const journal = JSON.parse(fs.readFileSync(f.target('core/data/logs/evolve-team-main-run.json')));
@@ -193,7 +201,7 @@ if (require.main === module) {
             }
             const journal = JSON.parse(fs.readFileSync(f.target('core/data/logs/evolve-team-main-run.json')));
             assert.equal(journal.status, 'completed'); assert.equal(journal.checkpoint.mainWorkflow.workerInvocations, 1);
-            assert.equal(journal.checkpoint.mainWorkflow.researchInvocations, 2);
+            assert.equal(journal.checkpoint.mainWorkflow.researchInvocations, 3);
             assert.equal(fs.readFileSync(f.target('core/src/example.js'), 'utf8'), 'module.exports = 3;\n');
             assert.equal(f.git(['status', '--porcelain']), '');
         });

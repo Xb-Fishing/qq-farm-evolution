@@ -42,7 +42,7 @@ function mainOwnedFixtureCli() {
   let script = NATIVE_CLI.replace("provider=path.basename(process.argv[1]).includes('claude')?'claude':'codex'", "provider=argv.includes('exec')?'codex':'claude'");
   script = script.replace("const input=fs.readFileSync(0,'utf8');", String.raw`if(argv.includes('resume')||argv.some(arg=>arg==='--resume'||arg.startsWith('--resume='))||argv.includes('app-server'))process.exit(9);
 const input=fs.readFileSync(0,'utf8');if(input==='/compact')process.exit(9);`);
-  script = script.replace('const emit=value=>', String.raw`append('core/data/calls.log',(main?'main':'worker')+':'+provider+'\n');
+  script = script.replace('const emit=value=>', String.raw`append('core/data/calls.log',(main?'main':input.includes('本次是独立外部 issue')?'external':'worker')+':'+provider+'\n');
 if(provider==='codex'){
  if(fs.existsSync('core/data/giant-events'))process.stdout.write('x'.repeat(2500000)+'\n');
  if(!fs.existsSync('core/data/no-thread-events'))process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'fixture-native-'+process.pid})+'\n');
@@ -65,13 +65,14 @@ const emit=value=>`);
   }
   if(fs.existsSync('core/data/touch-web'))write('web/src/example.js','export default 2;\n');
   if(fs.existsSync('core/data/countercheck-required'))write('core/test/behavior.test.js','require("node:test")("detect old behavior", () => require("node:assert/strict").equal(require("../src/example"), 2));\n');
+  const external=await tool('delegate_worker',{instruction:'Read cached independent issues',readOnly:true,purpose:'external_issues'});if(external.isError)throw Error(external.content[0].text);
   const verified=await tool('verify_candidate');if(verified.isError)throw Error(verified.content[0].text);
   if(fs.existsSync('core/data/countercheck-required')){
    const proof=JSON.parse(fs.readFileSync('core/data/evolution-countercheck.json'));
    if(proof.state!=='passed'||proof.checks[0].baseline.behaviorFailures!==1||proof.checks[0].current.failed!==0)throw Error('Coordinator evidence missing');
   }
   if(fs.existsSync('core/data/reject-review'))throw Error('Synthetic Main withheld acceptance');
-  const accepted=await tool('accept_result',{decision:'approve',summary:'Main verified and accepted actual behavior',lessons:[],feedbackReviewed:false,githubResolutions:[]});if(accepted.isError)throw Error(accepted.content[0].text);
+  const accepted=await tool('accept_result',{decision:'approve',summary:'Main verified and accepted actual behavior',lessons:[],feedbackReviewed:false,githubResolutions:[],externalReviewAcknowledged:true});if(accepted.isError)throw Error(accepted.content[0].text);
   emit({decision:JSON.parse(accepted.content[0].text).decision,summary:'Main completed the one continuous session'});` + script.slice(end);
   return script;
 }
@@ -666,7 +667,7 @@ test('隔离 Git 仓库跑真实协调进程：单 Main 工具回执、独立验
     const active = { runId: 'success', baseCommit, agent: 'codex', subAgent: 'claude', dualAgentEnabled: true };
     assert.equal(isTeamResultApproved(readTeamJournal(path.join(dir, 'core/data/logs'), active), head), true);
     assert.match(success.stdout, /# pass 1/);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\nexternal:claude\n');
     // 此 reset 只操作测试创建的临时仓库。
     git(['reset', '--hard', baseCommit]);
     write('core/data/reject-review', '1');
@@ -686,7 +687,7 @@ test('隔离 Git 仓库跑真实协调进程：单 Main 工具回执、独立验
     assert.equal(journal.recoveryAttempt, 1);
     assert.equal(journal.lastFailure.code, 'cli_exit');
     assert.equal(isTeamResultApproved(journal, recoveredHead), true);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\nexternal:claude\n');
     assert.ok(fs.readdirSync(path.join(dir, 'core/data/logs')).every(file => !file.endsWith('-schema.json')));
     git(['reset', '--hard', baseCommit]);
     write('core/data/touch-web', '1');
@@ -715,7 +716,7 @@ test('隔离 Git 仓库跑真实协调进程：单 Main 工具回执、独立验
     const swappedHead = git(['rev-parse', 'HEAD']);
     assert.notEqual(swappedHead, baseCommit);
     assert.equal(git(['status', '--porcelain']), '');
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:claude\nworker:codex\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:claude\nworker:codex\nexternal:codex\n');
     assert.equal(isTeamResultApproved(readTeamJournal(path.join(dir, 'core/data/logs'), { runId: 'swapped', baseCommit, agent: 'claude', subAgent: 'codex', dualAgentEnabled: true }), swappedHead), true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -801,7 +802,7 @@ test('真实 runner 跨进程：run1 真实 checkpoint，run2 按精确合同续
     const resumedHead = git(['rev-parse', 'HEAD']);
     assert.notEqual(resumedHead, baseCommit);
     assert.equal(git(['status', '--porcelain']), '');
-    assert.equal(calls(), 'main:codex\n', '续接只启动一个新 Main 检查已批准候选，不重新委派实施');
+    assert.equal(calls(), 'main:codex\nexternal:claude\n', '续接Main重新核对独立issue证据，不重新委派实施');
     const journal2 = readTeamJournal(path.join(dir, 'core/data/logs'), { runId: 'resume-ok', baseCommit, agent: 'codex', subAgent: 'claude', dualAgentEnabled: true });
     assert.equal(isTeamResultApproved(journal2, resumedHead), true);
     // 之后的拒绝用例都从基线重建 run1 留下的那棵脏树（内容/权限逐字节一致）。
@@ -1329,7 +1330,7 @@ test('真实 runner：大事件及无原生 ID 不影响单 Main，工具失败�
     const failonceJournal = journalOf('failonce');
     assert.equal(failonceJournal.lastFailure.code, 'cli_exit', '首轮失败按执行失败真实记录');
     assert.ok(failonceJournal.recoveryAttempt >= 1);
-    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\n', '工具失败由同一 Main 处理，不重开独立审批会话');
+    assert.equal(fs.readFileSync(path.join(dir, 'core/data/calls.log'), 'utf8'), 'main:codex\nworker:claude\nexternal:claude\n', '工具失败由同一 Main 处理，不重开独立审批会话');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

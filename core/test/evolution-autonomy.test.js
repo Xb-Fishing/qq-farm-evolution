@@ -652,7 +652,7 @@ test('legacy review_blocked 自主接管：真实 Parent持续Main读取旧失�
   // worker; its tool approval/verification replaces independent native stages.
   assert.equal(out.firstCall, 'main:codex');
   assert.equal(out.firstFailureVisible, true, '旧底层 cli_exit/review 必须进入当前 Main 上下文');
-  assert.deepEqual(out.calls, ['main:codex', 'worker:claude']);
+  assert.deepEqual(out.calls, ['main:codex', 'worker:claude', 'external:claude']);
   assert.equal(out.status, 'pending_apply');
   assert.equal(out.published, out.commit, '真实提交必须已发布到远端');
   assert.equal(out.cleanTree, true);

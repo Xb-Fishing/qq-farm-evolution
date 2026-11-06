@@ -40,9 +40,13 @@ function getItemName(itemId) {
 }
 
 function getBagItemCountMap(bag) {
+  const { decimalOf } = require('../services/manual-commerce');
   const counts = new Map();
   for (const item of bag?.originalItems || []) {
-    counts.set(toNum(item.id), toNum(item.count));
+    const id = toNum(item.id);
+    const count = decimalOf(item.countDec ?? item.count);
+    if (count === '' || counts.get(id) === null) counts.set(id, null);
+    else counts.set(id, (counts.get(id) ?? 0n) + BigInt(count));
   }
   return counts;
 }
@@ -51,16 +55,16 @@ function getNewItemsAfterUse(bagBefore, bagAfter, usedItemId) {
   const beforeCounts = getBagItemCountMap(bagBefore);
   const newItems = [];
 
-  for (const item of bagAfter?.originalItems || []) {
-    const itemId = toNum(item.id);
+  for (const [itemId, count] of getBagItemCountMap(bagAfter)) {
     if (itemId === usedItemId)
       continue;
 
-    const countDelta = toNum(item.count) - (beforeCounts.get(itemId) || 0);
-    if (countDelta > 0) {
+    if (count === null || beforeCounts.get(itemId) === null) continue;
+    const countDelta = count - (beforeCounts.get(itemId) ?? 0n);
+    if (countDelta > 0n) {
       newItems.push({
         id: itemId,
-        count: countDelta,
+        count: countDelta <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(countDelta) : countDelta.toString(),
         name: getItemName(itemId),
       });
     }
@@ -161,11 +165,16 @@ function registerAdminBagRoutes({
         return res.status(400).json({ ok: false, error: "缺少 itemId" });
 
       const usedItemId = toNum(itemId);
-      const usedCount = Math.max(1, toNum(count) || 1);
+      const { decimalOf, assertPositiveInt } = require('../services/manual-commerce');
+      const countText = assertPositiveInt(count ?? 1, '使用数量');
+      const usedCount = BigInt(countText) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(countText) : countText;
+      const uidText = decimalOf(uid ?? 0);
+      if (!uidText) return res.status(400).json({ ok: false, error: '物品 UID 无法精确识别，请刷新背包' });
+      const usedUid = BigInt(uidText) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(uidText) : uidText;
       const usedItemName = getItemName(usedItemId);
       const bagBefore = await provider.getBag(accountId);
 
-      await provider.useItem(accountId, usedItemId, usedCount, toNum(uid));
+      await provider.useItem(accountId, usedItemId, usedCount, usedUid);
       await wait(500);
 
       const bagAfter = await provider.getBag(accountId);
@@ -190,6 +199,7 @@ function registerAdminBagRoutes({
       });
     }
     catch (error) {
+      if (error?.code === "COMMERCE_ARGS") return res.status(400).json({ ok: false, error: error.message });
       sendProviderError(res, error);
     }
   });

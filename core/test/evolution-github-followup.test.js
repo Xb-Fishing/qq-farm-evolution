@@ -47,6 +47,7 @@ test.after(() => {
 const feedback = require('../src/services/evolution-github-feedback');
 const REPO = 'owner/example-farm';
 const ISSUE = 4;
+const REVISION = 'c'.repeat(40);
 const DAY = 24 * 60 * 60 * 1000;
 const WEEK = 7 * DAY;
 const REPLIED_AT = Date.parse('2026-10-01T08:00:00Z');
@@ -138,14 +139,36 @@ function mockGithub(specs) {
   return api;
 }
 
-async function fixture(t, { specs = [repliedIssue()], now = REPLIED_AT + WEEK, config = makeConfig() } = {}) {
+async function fixture(t, { specs = [repliedIssue()], now = REPLIED_AT + WEEK, config = makeConfig(), verified = true } = {}) {
   const dataDir = makeTempDir('case');
   t.after(() => cleanTempDir(dataDir));
   const api = mockGithub(specs);
+  if (verified) {
+    for (const issue of api.issues.values()) {
+      const reply = issue.comments.filter(row => row.user.login === 'owner').at(-1);
+      if (reply) reply.body += `\n${feedback.deliveryMarker(issue.number, REVISION)}`;
+    }
+  }
   const clock = { now };
-  const options = { config, dataDir, request: api.request, now: () => clock.now };
+  const options = { config, dataDir, request: api.request, now: () => clock.now, publishedCheck: async () => true };
   const collected = await feedback.collectGithubFeedback(options);
   assert.equal(collected.ok, true, '必须通过真实采集生成隔离 store');
+  if (verified) {
+    const store = JSON.parse(fs.readFileSync(inside(dataDir, 'evolution-github-feedback.json'), 'utf8'));
+    for (const issue of store.issues) {
+      const reply = api.issues.get(issue.number).comments.filter(row => row.user.login === 'owner').at(-1);
+      if (!reply) continue;
+      const queued = await feedback.enqueueGithubResolution({ dataDir, issue: issue.number, revision: REVISION,
+        issueFingerprint: issue.fingerprint, source: 'dual_review', reviewedBy: 'codex', capturedAt: now,
+        detail: { cause: 'Synthetic confirmed defect', change: 'Published fix', verification: 'Isolated behavior regression' } }, options);
+      assert.equal(queued.ok, true);
+      const file = inside(dataDir, 'evolution-github-outbox.json');
+      const outbox = JSON.parse(fs.readFileSync(file, 'utf8'));
+      outbox.entries[queued.key].public = { status: 'delivered', commentId: reply.id, deliveredAt: REPLIED_AT };
+      outbox.entries[queued.key].private = { status: 'delivered' };
+      fs.writeFileSync(file, JSON.stringify(outbox), { mode: 0o600 });
+    }
+  }
   api.resetCalls();
   return { api, options, clock, dataDir, close: patch => feedback.closeInactiveRepliedIssues({ ...options, ...patch }) };
 }
@@ -192,13 +215,13 @@ test('默认关闭：未显式启用 autoCloseAfterReply 时不访问网络也�
   }
 });
 
-test('维护者人工回复后一周前最后 1ms 不关闭', async (t) => {
+test('经主审确认发布的修复回复后一周前最后 1ms 不关闭', async (t) => {
   const f = await fixture(t, { now: REPLIED_AT + WEEK - 1 });
   assert.deepEqual((await f.close()).closed, []);
   assert.equal(f.api.patches().length, 0);
 });
 
-test('维护者人工回复恰好满七天即关闭，重复运行不重复 PATCH', async (t) => {
+test('经主审确认发布的修复回复恰好满七天即关闭，重复运行不重复 PATCH', async (t) => {
   const f = await fixture(t);
   const result = await f.close();
   assert.equal(result.ok, true);
@@ -379,5 +402,52 @@ test('PATCH 超时但远端实际已关闭时，下轮读取 closed 状态后不
   assert.deepEqual((await f.close()).closed, [], '未知回执不能宣称成功');
   assert.equal(f.api.patches().length, 1);
   await f.close();
+  assert.equal(f.api.patches().length, 1);
+});
+
+test('任意维护者回复即使超过七天也不能代替已验证修复', async (t) => {
+  const f = await fixture(t, { verified: false, now: REPLIED_AT + 30 * DAY });
+  assert.deepEqual((await f.close()).closed, []);
+  assert.equal(f.api.patches().length, 0);
+});
+
+test('启用已修复关闭后无需等七天，关闭成功必须额外读回', async (t) => {
+  const f = await fixture(t, { now: REPLIED_AT + 1, config: makeConfig({ autoCloseFixed: true }) });
+  assert.deepEqual((await f.close()).closed, [ISSUE]);
+  const patchIndex = f.api.calls.findIndex(call => call.method === 'PATCH');
+  assert.ok(f.api.calls.slice(patchIndex + 1).some(call => call.method === 'GET' && call.apiPath === issuePath(ISSUE)));
+});
+
+test('旧投递回执对应的远端评论已删除时不关闭', async (t) => {
+  const f = await fixture(t);
+  f.api.issues.get(ISSUE).comments[0].body = '仍需补充信息';
+  assert.deepEqual((await f.close()).closed, []);
+  assert.equal(f.api.patches().length, 0);
+});
+
+test('坏回执 commentId=0 不能与未找到远端标记的零值匹配', async (t) => {
+  const f = await fixture(t);
+  const file = inside(f.dataDir, 'evolution-github-outbox.json');
+  const outbox = JSON.parse(fs.readFileSync(file, 'utf8'));
+  outbox.entries[`${ISSUE}:${REVISION}`].public.commentId = 0;
+  // An unrelated maintainer reply remains, but there is no actual delivery marker.
+  f.api.issues.get(ISSUE).comments[0].body = '请提供更多信息';
+  const storeFile = inside(f.dataDir, 'evolution-github-feedback.json');
+  await feedback.collectGithubFeedback(f.options);
+  outbox.entries[`${ISSUE}:${REVISION}`].issueFingerprint = JSON.parse(fs.readFileSync(storeFile, 'utf8')).issues[0].fingerprint;
+  fs.writeFileSync(file, JSON.stringify(outbox), { mode: 0o600 });
+  assert.deepEqual((await f.close()).closed, []);
+  assert.equal(f.api.patches().length, 0);
+});
+
+test('未发布或修复被撤回时不关闭，缺失读回不宣称关闭成功', async (t) => {
+  const f = await fixture(t);
+  for (const result of [false, { ok: false, hold: 'owner_reverting' }]) {
+    assert.deepEqual((await f.close({ publishedCheck: async () => result })).closed, []);
+  }
+  assert.equal(f.api.patches().length, 0);
+  f.api.resetCalls();
+  f.api.onDetail = (raw, count) => count >= 3 ? { statusCode: 503, body: null } : { statusCode: 200, body: raw };
+  assert.deepEqual((await f.close()).closed, []);
   assert.equal(f.api.patches().length, 1);
 });

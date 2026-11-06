@@ -3,6 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const isolation = fs.mkdtempSync(path.join(os.tmpdir(), 'reference-module-'));
+process.env.FARM_DATA_DIR = isolation;
+process.env.FARM_PRIVATE_CONFIG_FILE = '';
+test.after(() => fs.rmSync(isolation, { recursive: true, force: true }));
 const { collectPublicReferences, getPublicReferenceSummary } = require('../src/services/evolution-references');
 
 const SEEDS = ['reference-a/qq-farm', 'reference-b/qq-farm', 'reference-c/qq-farm'];
@@ -20,7 +24,10 @@ function fixture(t) {
     let revision = 'a'.repeat(40);
     const request = async (apiPath) => {
         calls.push(apiPath);
-        if (apiPath.startsWith('/search/')) return { statusCode: 200, body: { items } };
+        if (apiPath.startsWith('/search/issues')) return { statusCode: 200, body: { items: [], total_count: 0 } };
+        if (apiPath.includes('/git/trees/')) return { statusCode: 200, body: { tree: [{ path: 'README.md', type: 'blob', size: 4 }] } };
+        if (apiPath.includes('/contents/')) return { statusCode: 200, body: { type: 'file', encoding: 'base64', size: 4, content: 'ZmFybQ==' } };
+        if (apiPath.startsWith('/search/repositories')) return { statusCode: 200, body: { items } };
         if (apiPath.endsWith('/commits?per_page=20')) return { statusCode: 200, body: [{ sha: revision }] };
         return { statusCode: 200, body: metadata(apiPath.slice('/repos/'.length)) };
     };
@@ -37,14 +44,17 @@ test('checks privately configured seeds and seven query groups with a recent sta
     assert.equal(result.queriesSucceeded, 7);
     assert.equal(result.candidateCount, 4);
     assert.deepEqual(result.newCandidates, ['sample/qq-farm-bot']);
-    assert.deepEqual(f.calls.slice(0, 6), SEEDS.flatMap(name => [`/repos/${name}`, `/repos/${name}/commits?per_page=20`]));
-    const searches = f.calls.filter(value => value.startsWith('/search/'));
+    assert.deepEqual([...f.calls.slice(0, 6)].sort(), SEEDS.flatMap(name => [`/repos/${name}`, `/repos/${name}/commits?per_page=20`]).sort());
+    const searches = f.calls.filter(value => value.startsWith('/search/repositories'));
     assert.equal(new Set(searches).size, 7);
     assert.equal(searches.filter(value => value.includes('sort=stars')).length, 0);
     assert.equal(searches.filter(value => value.includes('sort=updated')).length, 7);
-    assert.equal(searches.every(value => value.endsWith('per_page=10')), true);
-    assert.equal(f.calls.length, 14);
-    assert.equal(result.candidates.every(item => /^[a-f\d]{40}$/.test(item.sha)), true);
+    assert.ok(searches[0].endsWith('per_page=20'));
+    assert.equal(searches.slice(1).every(value => value.endsWith('per_page=10')), true);
+    assert.equal(f.calls.length, 20);
+    assert.equal(result.candidates.filter(item => SEEDS.includes(item.ownerRepo)).every(item => /^[a-f\d]{40}$/.test(item.sha)), true);
+    assert.ok(result.knowledge.codeCount > 0);
+    assert.equal(result.knowledge.reviewedCount, 0);
     assert.doesNotMatch(f.persisted(), /reviewed|https?:|description|full_name|README/i);
     assert.equal(fs.statSync(path.join(f.dataDir, 'evolution-references.json')).mode & 0o777, 0o600);
 });
@@ -53,14 +63,14 @@ test('same-day success is reused, but next-day searches find new repositories an
     const f = fixture(t);
     await collectPublicReferences(f.options);
     assert.equal((await collectPublicReferences({ ...f.options, now: NOW + 1000 })).cached, true);
-    assert.equal(f.calls.length, 14);
+    assert.equal(f.calls.length, 20);
     f.setItems([metadata('sample/qq-farm-bot'), metadata('new-project/qq-farm')]);
     f.setRevision('b'.repeat(40));
     const second = await collectPublicReferences({ ...f.options, now: NOW + DAY });
     assert.equal(second.cached, false);
     assert.deepEqual(second.newCandidates, ['new-project/qq-farm']);
-    assert.deepEqual(second.changedCandidates.sort(), [...SEEDS, 'sample/qq-farm-bot'].sort());
-    assert.equal(f.calls.filter(value => value.startsWith('/search/')).length, 14);
+    assert.deepEqual(second.changedCandidates.sort(), [...SEEDS].sort());
+    assert.equal(f.calls.filter(value => value.startsWith('/search/repositories')).length, 14);
     const third = await collectPublicReferences({ ...f.options, now: NOW + 2 * DAY });
     assert.equal(third.queriesSucceeded, 7);
     assert.deepEqual(third.changedCandidates, []);
@@ -134,11 +144,11 @@ test('external metadata and hostile cache fields are reconstructed through stric
     assert.equal((await collectPublicReferences(f.options)).cached, false);
 });
 
-test('large result sets remain bounded to 40 candidates, bounded recent history lookups and 24 requests', async (t) => {
+test('large result sets remain bounded to 40 candidates, bounded recent history lookups and 20 shared content requests', async (t) => {
     const f = fixture(t);
     let searches = 0;
     const request = async (apiPath) => {
-        if (apiPath.startsWith('/search/')) {
+        if (apiPath.startsWith('/search/repositories')) {
             searches += 1;
             f.calls.push(apiPath);
             return { statusCode: 200, body: { items: Array.from({ length: 100 }, (_, index) =>
@@ -149,9 +159,9 @@ test('large result sets remain bounded to 40 candidates, bounded recent history 
     const result = await collectPublicReferences({ ...f.options, request });
     assert.equal(result.candidateCount, 40);
     assert.equal(result.candidates.length, 40);
-    assert.equal(f.calls.filter(value => value.includes('/commits?')).length, 14);
-    assert.equal(f.calls.length <= 24, true);
-    assert.equal(f.calls.length, 24);
+    assert.equal(f.calls.filter(value => value.includes('/commits?per_page=20')).length, 3);
+    assert.equal(f.calls.length <= 20, true);
+    assert.equal(f.calls.length, 20);
 });
 
 test('overall time budget stops further work without claiming successful discovery', async (t) => {
@@ -183,7 +193,7 @@ test('incomplete search responses remain partial while preserving discovered can
     const f = fixture(t);
     const result = await collectPublicReferences({ ...f.options, request: async (apiPath) => {
         const response = await f.request(apiPath);
-        if (apiPath.startsWith('/search/')) response.body.incomplete_results = true;
+        if (apiPath.startsWith('/search/repositories')) response.body.incomplete_results = true;
         return response;
     } });
     assert.equal(result.state, 'partial');
@@ -194,12 +204,13 @@ test('incomplete search responses remain partial while preserving discovered can
 
 test('historical SHA survives a day without a candidate commit lookup and detects later changes', async (t) => {
     const f = fixture(t);
+    fs.writeFileSync(path.join(f.dataDir, 'private-config.json'), JSON.stringify({ evolutionReferenceRepositories: SEEDS.slice(0, 2) }));
     await collectPublicReferences(f.options);
     f.setItems([metadata('sample/qq-farm-bot'), ...Array.from({ length: 15 }, (_, index) => index + 1).map(index =>
         metadata(`recent-${index}/qq-farm-bot`, { pushed_at: '2026-01-06T00:00:00Z' }))]);
     let sampledSearches = 0;
     const second = await collectPublicReferences({ ...f.options, now: NOW + DAY, request: async apiPath => {
-        if (apiPath.startsWith('/search/')) {
+        if (apiPath.startsWith('/search/repositories')) {
             sampledSearches += 1;
             return { statusCode: 200, body: { items: sampledSearches === 1 ? [metadata('sample/qq-farm-bot')] : Array.from({ length: 10 }, (_, index) => metadata(`recent-${index}-${sampledSearches % 2}/qq-farm-bot`, { pushed_at: '2026-01-06T00:00:00Z' })) } };
         }
@@ -224,7 +235,9 @@ test('private source configuration changes invalidate same-day results without d
     const result = await collectPublicReferences({ ...f.options, now: NOW + 1000 });
     assert.equal(result.cached, false);
     assert.deepEqual(result.seedStatus.map(item => item.ownerRepo), updated);
-    assert.equal(result.seedStatus.every(item => item.state === 'available'), true);
+    assert.equal(result.seedStatus.filter(item => item.state === 'available').length, 3);
+    assert.equal(result.state, 'partial');
+    assert.equal(result.seedStatus.filter(item => item.state === 'not_checked').length, 1);
     assert.equal(result.newCandidates.includes('sample/qq-farm-bot'), false);
     assert.equal((await collectPublicReferences({ ...f.options, now: NOW + 2000 })).cached, true);
 });
@@ -237,7 +250,7 @@ test('latest commit samples expose bounded seven-day activity without retaining 
             commit: { committer: { date: new Date(NOW - (index < 15 ? index % 3 : 10) * DAY - 1000).toISOString(), name: 'private-name' },
                 message: 'private-commit-message' }, html_url: 'private-address' })) };
     } });
-    for (const item of result.candidates) {
+    for (const item of result.candidates.filter(item => item.sha)) {
         assert.equal(item.sampledCommits, 20);
         assert.equal(item.recentCommits, 15);
         assert.equal(item.activeDays, 3);
@@ -273,19 +286,18 @@ test('old policy records refresh even on the same day while their known sources 
 });
 
 
-test('recent >20-star references get history budget before newer low-star forks while broad discovery remains', async (t) => {
+test('recent >10-star references are prioritized while broad discovery remains and content shares the budget', async (t) => {
     const f = fixture(t);
     f.setItems([
-        metadata('popular/qq-farm', { stargazers_count: 21, pushed_at: '2026-01-04T00:00:00Z' }),
-        metadata('new-fork/qq-farm', { stargazers_count: 20, pushed_at: '2026-01-05T00:00:00Z' }),
+        metadata('popular/qq-farm', { stargazers_count: 14, pushed_at: '2026-01-04T00:00:00Z' }),
+        metadata('new-fork/qq-farm', { stargazers_count: 10, pushed_at: '2026-01-05T00:00:00Z' }),
         metadata('popular-new/qq-farm', { stargazers_count: 50, pushed_at: '2026-01-05T00:00:00Z' }),
     ]);
     const result = await collectPublicReferences(f.options);
-    const searches = f.calls.filter(value => value.startsWith('/search/'));
-    assert.match(decodeURIComponent(searches[0]), /q=qq-farm stars:>20&sort=updated&order=desc/);
+    const searches = f.calls.filter(value => value.startsWith('/search/repositories'));
+    assert.match(decodeURIComponent(searches[0]), /q=qq-farm stars:>10&sort=updated&order=desc/);
     assert.ok(searches.some(value => decodeURIComponent(value).includes('q=qq-farm&')));
-    const histories = f.calls.filter(value => value.includes('/commits?')).slice(SEEDS.length);
-    assert.deepEqual(histories.map(value => value.split('/')[2]), ['popular-new', 'popular', 'new-fork']);
+    assert.equal(result.knowledge.repositories.some(item => item.repo === 'new-fork/qq-farm'), false);
     assert.deepEqual(result.candidates.slice(SEEDS.length).map(value => value.ownerRepo), ['popular-new/qq-farm', 'popular/qq-farm', 'new-fork/qq-farm']);
-    assert.equal(f.calls.length <= 24, true);
+    assert.equal(f.calls.length <= 20, true);
 });
