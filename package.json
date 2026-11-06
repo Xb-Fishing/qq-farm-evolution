@@ -21,7 +21,8 @@
   "pnpm": {
     "overrides": {
       "@babel/traverse": "7.26.10",
-      "pushoo@^0.1.11>axios": "0.34.0"
+      "pushoo@^0.1.11>axios": "0.34.0",
+      "express>proxy-addr": "2.0.8"
     }
   }
 }
