@@ -24,7 +24,7 @@ function fixture(options = {}) {
   };
   const originalRefresh = proc.refreshSession;
   if (options.initialAttachFailure) {
-    proc.businessInitialized = false; proc.recoverableAttach = options.initialAttachFailure !== 'unverified';
+    proc.businessInitialized = false; proc.attachFailed = true; proc.recoverableAttach = options.initialAttachFailure !== 'unverified';
     proc.ready = Promise.reject(new Error('synthetic first management attach failure')); proc.ready.catch(() => {});
   }
   if (options.controlDrop) proc.refreshSession = async () => { throw new Error('synthetic closed control socket'); };
@@ -43,8 +43,9 @@ function fixture(options = {}) {
     next.refreshSession = async () => { await next.ready; return { facts: next.sessionFacts }; };
     return next;
   };
-  const registry = { ...native('./session-registry'), connectSession: async () => {
+  const registry = { ...native('./session-registry'), ...(options.lookupState ? { lockIsHeld: () => options.lockHeld === true, processIsLive: () => false } : {}), connectSession: async () => {
     lookups++;
+    if (options.lookupState) return { state: options.lookupState };
     if (lookups <= (options.lookupFailures || 0)) throw new Error('synthetic status read failure');
     return { state: 'present', client: { call: () => originalRefresh(), close() {} } };
   } };
@@ -215,4 +216,18 @@ test('an unverified initial attach has no recovery authority or cold-login fallb
   f.proc.emit('error', Object.assign(new Error('synthetic admission failure'), { code: 'SESSION_CONTROL_FAILED', phase: 'attach' }));
   await f.takeRecovery(); assert.equal(f.created(), 1);
   assert.equal(f.counts().stops, 0); assert.equal(f.counts().forks, 0); await f.manager.detachAll();
+});
+
+
+test('only proven host absence retires a failed logical proxy, without a revoke or cold restart', async () => {
+  for (const lockHeld of [false, true]) {
+    const f = fixture({ initialAttachFailure: 'unverified', lookupState: 'absent', lockHeld });
+    assert.equal(await f.manager.startWorker(f.account), false);
+    const original = f.workers[f.account.id];
+    const result = await f.manager.tryAdoptAccountSession(f.account.id);
+    assert.equal(result.state, lockHeld ? 'unknown' : 'absent');
+    assert.equal(f.workers[f.account.id], lockHeld ? original : undefined);
+    assert.equal(f.counts().stops, 0); assert.equal(f.counts().forks, 0);
+    await f.manager.detachAll();
+  }
 });

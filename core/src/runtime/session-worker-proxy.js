@@ -21,9 +21,14 @@ async function replayLifecycle({ dataDir, account, onLifecycle }) {
 function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptOnly = false, onLifecycle }) {
   const proxy = new EventEmitter(); const managerId = crypto.randomUUID();
   let client; let initialized = false; let detached = false; let exiting = false; let managementCommit = '';
+  let attachFailure = null;
+  const queuedApis = new Map();
   let initialStart = {}; let initialConfig = {}; let control = Promise.resolve(); let lifecycleQueue = Promise.resolve(); let lastStatus;
   proxy.persistentSession = true; proxy.exitCode = null; proxy.sessionFacts = null;
   proxy.businessInitialized = false;
+  proxy.attachFailed = false;
+  Object.defineProperty(proxy, 'controlConnected', { get: () => Boolean(client?.ready && !detached
+    && !client.socket?.destroyed && client.socket?.writable !== false) });
   proxy.recoverableAttach = false;
   proxy.businessFaultEpoch = '';
   let sameTargetAttachEpoch = '';
@@ -59,7 +64,7 @@ function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptO
     return lifecycleQueue;
   }
   async function status() {
-    if (!client?.ready || detached) throw new Error('Session management disconnected');
+    if (!client?.ready || detached) throw Object.assign(new Error('Session management disconnected'), { code: 'SESSION_CONTROL_UNAVAILABLE' });
     const socket = client.socket;
     const result = await client.call('status', {}, 15000); update(result.facts);
     await consume(result.lifecycle);
@@ -122,26 +127,66 @@ function createSessionWorkerProxy({ dataDir, account, sourceRoot, logDir, adoptO
       if (initialConfig !== selectedConfig) await client.call('send', { message: { type: 'config_sync', config: sessionPolicyConfig(initialConfig) } });
       await status(); proxy.businessInitialized = true; resolve(true);
     } catch (error) {
+      attachFailure = runtimeError(error, 'attach'); proxy.attachFailed = true;
       if (['SESSION_EPOCH_RETIRED', 'SESSION_REVOKED', 'SESSION_CONTROL_UNAVAILABLE', 'SESSION_BAD_SYNC_REPLY', 'SESSION_BAD_GAME_REPLY'].includes(error?.code)
         && sameTargetAttachEpoch && sameTargetAttachEpoch === proxy.sessionFacts?.business?.epoch) {
         proxy.businessFaultEpoch = sameTargetAttachEpoch;
         if (lastStatus) update(proxy.sessionFacts, lastStatus);
       }
-      client?.close(); proxy.emit('error', runtimeError(error, 'attach'));
+      client?.close(); proxy.emit('error', attachFailure);
       // Admission failure is not a physical disconnect and must not cause a
       // second host or a fresh Code attempt through legacy fallback.
       reject(error);
     }
   }));
   proxy.ready.catch(() => {});
+  proxy.cancelApi = id => {
+    const queued = queuedApis.get(id);
+    if (!queued) return false; // Already sent: its outcome remains unknown.
+    queued.cancelled = true; queuedApis.delete(id); return true;
+  };
   proxy.send = message => {
     if (message?.type === 'start' && !initialized) { initialStart = message.config || {}; return; }
     if (message?.type === 'config_sync') { initialConfig = message.config || {}; if (!initialized) return; }
     if (message?.type === 'config_sync') message = { ...message, config: sessionPolicyConfig(message.config) };
     if (message?.type === 'stop') { proxy.kill().catch(error => proxy.emit('error', error)); return; }
-    control = control.catch(() => {}).then(() => proxy.ready).then(() => client.call('send', { message }))
+    const rejectApi = error => {
+      if (message?.type === 'api_call') proxy.emit('message', { type: 'api_response', id: message.id,
+        result: null, error: error?.code === 'SESSION_BUSINESS_NOT_READY'
+          ? '账号未就绪（未登录或连接未打开），请稍后重试' : error?.code === 'SESSION_API_CANCELLED'
+            ? 'API Timeout' : error?.code || 'SESSION_CONTROL_UNAVAILABLE' });
+    };
+    if (message?.type === 'api_call' && !proxy.businessInitialized) {
+      // An API timeout must not leave a delayed economic action queued behind
+      // cold startup. The caller can retry explicitly after readiness.
+      queueMicrotask(() => rejectApi(attachFailure || { code: 'SESSION_BUSINESS_NOT_READY' }));
+      return false;
+    }
+    if (detached || attachFailure || (client && !proxy.controlConnected)) {
+      queueMicrotask(() => rejectApi(attachFailure));
+      return false;
+    }
+    const queued = message?.type === 'api_call' ? { cancelled: false, deadlineAt: message.dispatchDeadlineAt } : null;
+    if (queued) queuedApis.set(message.id, queued);
+    const forget = () => { if (queued && queuedApis.get(message.id) === queued) queuedApis.delete(message.id); };
+    control = control.catch(() => {}).then(() => proxy.ready).then(() => {
+      if (queued?.cancelled || (Number.isFinite(queued?.deadlineAt) && Date.now() >= queued.deadlineAt)) {
+        throw Object.assign(new Error('API dispatch cancelled'), { code: 'SESSION_API_CANCELLED' });
+      }
+      if (!proxy.controlConnected) throw Object.assign(new Error('Session control unavailable'), { code: 'SESSION_CONTROL_UNAVAILABLE' });
+      forget(); // From this point cancellation must never imply "not sent".
+      const payload = { ...message }; delete payload.dispatchDeadlineAt;
+      return client.call('send', { message: payload });
+    })
       .then(facts => update(facts));
-    control.catch(error => proxy.emit('error', runtimeError(error, 'control')));
+    control.catch(error => {
+      forget();
+      rejectApi(attachFailure || runtimeError(error, 'control'));
+      // Initial admission failure and socket close are already reported once.
+      // Replaying ready rejection on every watchdog tick is not a new incident.
+      if (error?.code !== 'SESSION_API_CANCELLED' && !attachFailure && !detached && proxy.controlConnected) proxy.emit('error', runtimeError(error, 'control'));
+    });
+    return true;
   };
   proxy.kill = async () => {
     await proxy.ready.catch(() => {});
