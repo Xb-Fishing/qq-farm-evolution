@@ -63,7 +63,7 @@ export const useBagStore = defineStore('bag', () => {
         loading.value = false
     }
   }
-  async function useItem(accountId: string, itemId: number, count = 1, uid = 0) {
+  async function useItem(accountId: string, itemId: number, count: number | string = 1, uid: number | string = 0) {
     const res = await api.post('/api/bag/use', { itemId, count, uid }, {
       headers: { 'x-account-id': accountId },
     })

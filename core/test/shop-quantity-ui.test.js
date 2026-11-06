@@ -28,7 +28,9 @@ function setup(kind = 'shop', options = {}) {
   });
   const cache = new Map();
   function resolve(spec) {
-    if (spec === 'vue') return vue;
+    // The synthetic renderer has no browser classList/CSS engine. Keep the real
+    // component transition lifecycle without DOM-specific animation hooks.
+    if (spec === 'vue') return { ...vue, Transition: vue.BaseTransition };
     if (spec === 'pinia') return pinia;
     if (spec === 'vue-router') return { useRoute: () => ({ query: {} }), useRouter: () => ({ push() {} }) };
     if (spec === '@/api') return { __esModule: true, default: api.instance };
@@ -104,6 +106,21 @@ test('actual Bag/store allocates only selected quantity across exact UIDs and pr
   click(button(f.root, '确认出售')); await flush(); assert.equal(f.api.calls.post.length, 1);
   assert.deepEqual(f.api.calls.post[0].body.items, [{ id: 40001, uid: '9007199254740993', count: '4' }, { id: 40001, uid: '9007199254740994', count: '1' }]);
   assert.equal(f.api.calls.post[0].body.explicitBatch, true); assert.ok(f.api.calls.post[0].body.quotes[40001]);
+});
+test('actual Bag use confirmation and store preserve long UID and quantity without writes before confirmation', async () => {
+  const f = setup('bag'); await flush();
+  f.state.bag = { items: [{ id: 20001, name: '示例礼包', itemType: 11, usable: true, count: 9007199254740992, countDec: '9007199254740993' }],
+    originalItems: [{ id: 20001, uid: 9007199254740992, uidDec: '9007199254740993', countDec: '9007199254740993' }] };
+  await f.bagStore.fetchBag('synthetic-a'); await flush();
+  click(buttonsOf(f.root).find(node => textOf(node).includes('道具'))); await flush();
+  const use = buttonsOf(f.root).find(node => node.props.title === '使用全部'); assert.ok(use);
+  use.props.onClick({ stopPropagation() {} }); await flush();
+  assert.equal(f.api.calls.post.length, 0);
+  assert.match(textOf(f.root).replaceAll(',', ''), /9007199254740993/);
+  click(button(f.root, '确认使用')); await flush();
+  assert.equal(f.api.calls.post.length, 1);
+  assert.equal(f.api.calls.post[0].body.uid, '9007199254740993');
+  assert.equal(f.api.calls.post[0].body.count, '9007199254740993');
 });
 test('a verified free offer with sparse zero-price fields still opens a one-unit zero-cost confirmation', async () => {
   const f = setup(); await flush();

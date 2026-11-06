@@ -234,20 +234,25 @@ async function sendSellItems(items, exactMaterials = false) {
  * 使用背包物品。官方请求要求携带物品 UID；未显式传入时从背包查找。
  */
 async function useItem(itemId, count = 1, uid = 0) {
-  let itemUid = toNum(uid);
-  if (itemUid <= 0) {
+  const { decimalOf, assertPositiveInt } = require('./manual-commerce');
+  const idText = assertPositiveInt(itemId, '物品编号');
+  const countText = assertPositiveInt(count, '使用数量');
+  let itemUid = decimalOf(uid);
+  if (!itemUid) throw new Error('物品 UID 必须为精确的非负64位整数');
+  if (itemUid === '0') {
     const bag = await getBag();
     const bagItem = getBagItems(bag).find((item) =>
       toNum(item && item.id) === toNum(itemId) && toNum(item && item.count) > 0
     );
-    itemUid = toNum(bagItem && bagItem.uid);
+    itemUid = decimalOf(bagItem?.uid ?? 0);
+    if (!itemUid) throw new Error('背包物品 UID 无法精确识别');
   }
 
   const request = types.UseRequest.encode(
     types.UseRequest.create({
       item: {
-        id: toLong(itemId),
-        count: toLong(count),
+        id: toLong(idText),
+        count: toLong(countText),
         uid: toLong(itemUid),
       },
     })
@@ -258,11 +263,13 @@ async function useItem(itemId, count = 1, uid = 0) {
 }
 
 async function batchUseItems(entries) {
-  const items = (entries || []).map((e) => ({
-    id: toLong(e.itemId),
-    count: toLong(e.count || 1),
-    uid: toLong(e.uid || 0),
-  }));
+  const { decimalOf, assertPositiveInt } = require('./manual-commerce');
+  const items = (entries || []).map((e) => {
+    const uid = decimalOf(e.uid ?? 0);
+    if (!uid) throw new Error('物品 UID 必须为精确的非负64位整数');
+    return { id: toLong(assertPositiveInt(e.itemId, '物品编号')),
+      count: toLong(assertPositiveInt(e.count ?? 1, '使用数量')), uid: toLong(uid) };
+  });
 
   const request = types.BatchUseRequest.encode(
     types.BatchUseRequest.create({ items })

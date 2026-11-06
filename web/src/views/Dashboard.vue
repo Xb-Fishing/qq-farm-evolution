@@ -941,7 +941,7 @@ useIntervalFn(updateCountdowns, 1000)
           </div>
           <div class="mt-2 flex justify-between text-xs text-gray-400">
             <span>效率: {{ expRate }}</span>
-            <span>{{ timeToLevel }}</span>
+            <span v-if="timeToLevel" title="按本次运行已获得经验的平均速度估算，未计入尚未收获作物的经验；集中成熟时可能有较大偏差。">历史效率估算：{{ timeToLevel }}</span>
           </div>
         </div>
       </div>

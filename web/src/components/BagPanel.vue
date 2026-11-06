@@ -151,7 +151,7 @@ function handleUseClick(item: any) {
   confirmModal.value = {
     show: true,
     title: '确认使用',
-    message: `确定要使用全部 ${item.name || `物品${item.id}`} 吗?\n数量：${item.count || 0}`,
+    message: `确定要使用全部 ${item.name || `物品${item.id}`} 吗?\n数量：${exactText(item.countDec ?? item.count ?? 0)}`,
     type: 'primary',
     loading: false,
     action: 'use',
@@ -174,7 +174,11 @@ async function handleConfirm() {
     }
     else if (modal.action === 'use' && modal.item) {
       const source = originalItems.value.find(row => Number(row.id) === Number(modal.item.id))
-      result = await bagStore.useItem(account, Number(modal.item.id), Number(modal.item.count || 1), Number(source?.uid || 0))
+      const count = exactDecimal(modal.item.countDec ?? modal.item.count ?? 1)
+      const uid = exactDecimal(source?.uidDec ?? source?.uid ?? 0)
+      if (!count || !uid)
+        throw new Error('物品数量或 UID 无法精确识别，请刷新背包')
+      result = await bagStore.useItem(account, Number(modal.item.id), count, uid)
     }
     else {
       return
