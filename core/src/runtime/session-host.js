@@ -16,7 +16,13 @@ function ownsKernelLock(file) {
 function sameCapability(a, b) {
   return /^[a-f0-9]{64}$/.test(String(a || '')) && crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
+function assertStartupDeadline(bootstrap) {
+  if (bootstrap.expiresAt === undefined) return;
+  if (!Number.isSafeInteger(bootstrap.expiresAt)) throw sessionError('SESSION_BOOTSTRAP_DEADLINE_INVALID');
+  if (Date.now() >= bootstrap.expiresAt) throw sessionError('SESSION_HOST_START_TIMEOUT');
+}
 async function startSessionHost({ bootstrap, game, createBusiness, validateTarget, requireKernelLock = true, onClose = () => {} }) {
+  assertStartupDeadline(bootstrap);
   const expected = pathsFor(bootstrap.dataDir, bootstrap.account.id);
   for (const [key, value] of Object.entries(expected)) if (bootstrap.paths[key] !== value) throw sessionError('SESSION_PATH_MISMATCH');
   secureDirectory(expected.directory, false); secureDirectory(expected.socketRoot, false);
@@ -131,6 +137,11 @@ async function startSessionHost({ bootstrap, game, createBusiness, validateTarge
   const socketInode = socketIdentity(process.pid, identity.starttime, expected.socketPath);
   if (!socketInode) { await new Promise(resolve => server.close(resolve)); throw sessionError('SESSION_SOCKET_OWNERSHIP_FAILED'); }
   const descriptor = { version: 1, ...identity, socketPath: expected.socketPath, socketInode, capability: bootstrap.capability };
+  try { assertStartupDeadline(bootstrap); } catch (error) {
+    for (const peer of peers) peer.socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+    throw error;
+  }
   atomicJson(expected.descriptor, descriptor);
   core.events.on('business-pins', roots => {
     descriptor.businessRoots = [...new Set(roots)];
@@ -154,34 +165,59 @@ async function startSessionHost({ bootstrap, game, createBusiness, validateTarge
 }
 
 async function bootstrapHost() {
-  const file = process.env.FARM_SESSION_BOOTSTRAP;
-  if (!file || process.env.FARM_SESSION_ROLE !== 'host') throw sessionError('SESSION_BOOTSTRAP_MISSING');
-  const directory = path.resolve(process.env.FARM_DATA_DIR || '', 'persistent-sessions');
-  if (path.dirname(path.resolve(file)) !== directory) throw sessionError('SESSION_BOOTSTRAP_PATH');
-  secureDirectory(directory, false);
-  const bootstrap = privateJson(file); const paths = pathsFor(bootstrap.dataDir, bootstrap.account.id);
-  if (path.dirname(file) !== paths.directory || !/^bootstrap-[a-f0-9-]+\.json$/.test(path.basename(file))) throw sessionError('SESSION_BOOTSTRAP_PATH');
-  secureDirectory(paths.directory, false); secureDirectory(paths.socketRoot, false);
-  if (!ownsKernelLock(paths.lock)) throw sessionError('SESSION_KERNEL_LOCK_MISSING');
-  require('./session-handoff-barrier').assertSessionCreationAllowed(bootstrap.dataDir, bootstrap.managerPid, bootstrap.managerStarttime);
-  const admitted = resolveBusinessTarget({ runtimeRoot: bootstrap.sourceRoot, dataDir: bootstrap.dataDir });
-  if (bootstrap.sourceCommit !== admitted.commit || bootstrap.sourceFingerprint !== admitted.sourceFingerprint)
-    throw sessionError('SESSION_SOURCE_CHANGED');
-  const { createSessionGameAdapter } = require('./session-game-adapter');
-  let running; let revocationRequested = false; const early = [];
-  const game = await createSessionGameAdapter({ account: bootstrap.account,
-    onMaster: message => { if (running) running.receiveMaster(message); else early.push(message); },
-    onRevoked: () => { if (running) running.close().catch(() => process.exit(1)); else revocationRequested = true; },
-  });
-  running = await startSessionHost({ bootstrap, game,
-    createBusiness: options => require('./session-business-runtime').createSessionBusinessRuntime(options),
-    validateTarget: target => validateBusinessTarget({ target, dataDir: bootstrap.dataDir, hostSourceRoot: bootstrap.sourceRoot }),
-    onClose: () => setTimeout(() => process.exit(0), 25),
-  });
-  for (const message of early) running.receiveMaster(message);
-  fs.unlinkSync(file);
-  if (revocationRequested) await running.close();
-  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => running.close().catch(() => process.exit(1)));
+  let phase = 'read_bootstrap'; let running; let game;
+  try {
+    const file = process.env.FARM_SESSION_BOOTSTRAP;
+    if (!file || process.env.FARM_SESSION_ROLE !== 'host') throw sessionError('SESSION_BOOTSTRAP_MISSING');
+    const directory = path.resolve(process.env.FARM_DATA_DIR || '', 'persistent-sessions');
+    if (path.dirname(path.resolve(file)) !== directory) throw sessionError('SESSION_BOOTSTRAP_PATH');
+    secureDirectory(directory, false);
+    const bootstrap = privateJson(file); const paths = pathsFor(bootstrap.dataDir, bootstrap.account.id);
+    if (path.dirname(file) !== paths.directory || !/^bootstrap-[a-f0-9-]+\.json$/.test(path.basename(file))) throw sessionError('SESSION_BOOTSTRAP_PATH');
+    secureDirectory(paths.directory, false); secureDirectory(paths.socketRoot, false);
+    if (!ownsKernelLock(paths.lock)) throw sessionError('SESSION_KERNEL_LOCK_MISSING');
+    require('./session-handoff-barrier').assertSessionCreationAllowed(bootstrap.dataDir, bootstrap.managerPid, bootstrap.managerStarttime);
+    phase = 'validate_source';
+    const admitted = resolveBusinessTarget({ runtimeRoot: bootstrap.sourceRoot, dataDir: bootstrap.dataDir });
+    if (bootstrap.sourceCommit !== admitted.commit || bootstrap.sourceFingerprint !== admitted.sourceFingerprint)
+      throw sessionError('SESSION_SOURCE_CHANGED');
+    assertStartupDeadline(bootstrap);
+    // Consume before slow initialization and before publishing a discoverable
+    // descriptor. Parent timeout cleanup can no longer crash an admitted host.
+    phase = 'consume_bootstrap';
+    try { fs.unlinkSync(file); } catch (error) {
+      if (error.code === 'ENOENT') throw sessionError('SESSION_BOOTSTRAP_CANCELLED');
+      throw error;
+    }
+    phase = 'load_adapter';
+    const { createSessionGameAdapter } = require('./session-game-adapter');
+    let revocationRequested = false; const early = [];
+    game = await createSessionGameAdapter({ account: bootstrap.account,
+      onMaster: message => { if (running) running.receiveMaster(message); else early.push(message); },
+      onRevoked: () => { if (running) running.close().catch(() => process.exit(1)); else revocationRequested = true; },
+    });
+    assertStartupDeadline(bootstrap);
+    phase = 'publish_host';
+    running = await startSessionHost({ bootstrap, game,
+      createBusiness: options => require('./session-business-runtime').createSessionBusinessRuntime(options),
+      validateTarget: target => validateBusinessTarget({ target, dataDir: bootstrap.dataDir, hostSourceRoot: bootstrap.sourceRoot }),
+      onClose: () => setTimeout(() => process.exit(0), 25),
+    });
+    phase = 'settle_events';
+    for (const message of early) running.receiveMaster(message);
+    if (revocationRequested) await running.close();
+    for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => running.close().catch(() => process.exit(1)));
+  } catch (error) {
+    if (running) await running.close().catch(() => {});
+    else { try { game?.dispose?.(); } catch { /* Preserve the first startup failure. */ } }
+    error.sessionStartupPhase = phase;
+    throw error;
+  }
 }
-if (require.main === module) bootstrapHost().catch(() => { process.stderr.write('session_host_start_failed\n'); process.exit(1); });
+if (require.main === module) bootstrapHost().catch(error => {
+  const reason = /^SESSION_[A-Z_]{1,64}$/.test(error?.code || '') ? error.code : 'SESSION_HOST_START_FAILED';
+  const nodeCode = ['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EDQUOT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED'].includes(error?.code) ? error.code : '';
+  process.stderr.write(`${JSON.stringify({ event: 'session_host_start_failed', reason, nodeCode,
+    phase: error?.sessionStartupPhase || 'unknown', at: Date.now() })}\n`); process.exit(1);
+});
 module.exports = { startSessionHost, ownsKernelLock };

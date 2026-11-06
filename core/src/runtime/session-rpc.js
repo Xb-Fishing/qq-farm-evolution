@@ -51,11 +51,11 @@ class SessionRpcClient extends EventEmitter {
       this.pending.clear(); this.emit('disconnect');
     });
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { socket.destroy(); reject(new Error('Session connect timed out')); }, 5000);
+      const timer = setTimeout(() => { socket.destroy(); reject(new Error('Session connect timed out')); }, this.options.connectTimeoutMs || 5000);
       socket.once('connect', () => { clearTimeout(timer); resolve(); });
       socket.once('error', () => { clearTimeout(timer); reject(new Error('Session connect failed')); });
     });
-    const hello = await this.call('hello', { capability: this.descriptor.capability, hostId: this.descriptor.hostId });
+    const hello = await this.call('hello', { capability: this.descriptor.capability, hostId: this.descriptor.hostId }, this.options.handshakeTimeoutMs);
     if (hello.hostId !== this.descriptor.hostId || hello.pid !== this.descriptor.pid
       || hello.starttime !== this.descriptor.starttime || hello.contractVersion !== this.descriptor.contractVersion
       || hello.sourceRoot !== this.descriptor.sourceRoot || hello.sourceCommit !== this.descriptor.sourceCommit

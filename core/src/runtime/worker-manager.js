@@ -65,8 +65,9 @@ function createWorkerManager(deps) {
     /** 结算某条 Worker 记录的全部挂起 RPC 并清其计时器（记录被替换/删除前必调） */
     function settleWorkerRequests(wrk) {
         if (!wrk || !wrk.requests || wrk.requests.size === 0) return;
-        for (const pending of wrk.requests.values()) {
+        for (const [id, pending] of wrk.requests) {
             if (pending.timerKey) scheduler.clear(pending.timerKey);
+            try { wrk.process?.cancelApi?.(id); } catch { }
             try { pending.reject(new Error('Worker exited')); } catch { }
         }
         wrk.requests.clear();
@@ -83,6 +84,7 @@ function createWorkerManager(deps) {
     const sessionStarts = new Map();
     const businessRecoveries = new Map();
     const businessRecoveryHistory = new Map();
+    const controlDiscoveryHistory = new Map();
     let managerClosing = false;
 
     function cancelBusinessRecovery(id) {
@@ -99,6 +101,25 @@ function createWorkerManager(deps) {
             || record.sessionGeneration !== (account.sessionGeneration || '')) return;
         const stamp = require('./session-registry').bindingIdentity(account);
         const credentialGeneration = account.credentialGeneration || '';
+        let discovery = controlDiscoveryHistory.get(id);
+        if (!discovery || discovery.binding !== stamp || discovery.credentialGeneration !== credentialGeneration) {
+            discovery = { binding: stamp, credentialGeneration, times: [], warned: false };
+            controlDiscoveryHistory.set(id, discovery);
+        }
+        discovery.times = discovery.times.filter(at => Date.now() - at < 600000);
+        if (!discovery.times.length) discovery.warned = false;
+        const discoveryLimited = () => {
+            discovery.times = discovery.times.filter(at => Date.now() - at < 600000);
+            if (discovery.times.length < 3) return false;
+            if (!discovery.warned) {
+                discovery.warned = true;
+                log('系统', '常驻控制通道暂不可用，已暂停重复探查，保留后续恢复', {
+                    accountId: id, accountName: record.name, event: 'session_control_discovery_limited', reason,
+                });
+            }
+            return true;
+        };
+        if (discoveryLimited()) return;
         let knownFaultEpoch = proc.businessFaultEpoch || '';
         const job = { cancelled: false, tries: 0, probes: 0, failures: 0, timerKey: `session_business_recovery_${id}` };
         businessRecoveries.set(id, job);
@@ -119,13 +140,20 @@ function createWorkerManager(deps) {
                 try { before = await proc.refreshSession(); }
                 catch {
                     if (!owns()) { finish(); return; }
+                    if (discoveryLimited()) { finish(); return; }
+                    discovery.times.push(Date.now());
                     const found = await require('./session-registry').connectSession(dataDir, findAccount(id));
                     if (found.state !== 'present') throw new Error('SESSION_CONTROL_UNAVAILABLE');
-                    try { before = await found.client.call('status'); } finally { found.client.close(); }
+                    try { before = await found.client.call('status', {}, 15000); } finally { found.client.close(); }
                     controlReconnect = true;
                 }
                 if (!owns()) { finish(); return; }
                 const facts = before.facts;
+                if (controlReconnect && facts?.host?.hostId && typeof facts.game?.connected === 'boolean') {
+                    // A verified status ends discovery failure; separate
+                    // business-fault probes retain their existing own budget.
+                    discovery.times = []; discovery.warned = false;
+                }
                 if (facts.game.connected !== true || facts.game.terminal === true) { finish(); return; }
                 const hostKey = `${facts.host.hostId}:${facts.host.starttime}`;
                 let history = businessRecoveryHistory.get(id);
@@ -182,6 +210,7 @@ function createWorkerManager(deps) {
                 log('系统', '业务会话已恢复，原游戏连接保持在线', {
                     accountId: id, accountName: record.name, event: 'session_business_recovered', reason,
                 });
+                controlDiscoveryHistory.delete(id);
                 finish();
             } catch {
                 job.failures++;
@@ -391,7 +420,7 @@ function createWorkerManager(deps) {
         proc.on('message', (msg) => {
             const current = workers[latest.id];
             if (!current || current.process !== proc) return;
-            current.sessionFacts = proc.sessionFacts || null;
+            current.sessionFacts = proc.controlConnected === false ? null : proc.sessionFacts || null;
             handleWorkerMessage(latest.id, msg);
         });
 
@@ -410,7 +439,7 @@ function createWorkerManager(deps) {
                 if (!current || current.process !== proc || current.stopping) return;
                 const reason = typeof err?.code === 'string' && /^SESSION_[A-Z_]{1,64}$/.test(err.code) ? err.code : 'SESSION_CONTROL_FAILED';
                 const phase = err?.phase === 'attach' ? 'attach' : err?.phase === 'event_delivery' ? 'event_delivery' : 'control';
-                log('系统', `${phase === 'attach' ? '常驻业务接管失败' : '常驻业务运行异常'}: ${reason}`, {
+                log('错误', `${phase === 'attach' ? '常驻业务接管失败' : '常驻业务运行异常'}: ${reason}`, {
                     accountId: String(latest.id), accountName: latest.name, event: 'session_business_error', reason, phase,
                 });
                 // An initial management attach can also fail on an existing
@@ -462,7 +491,11 @@ function createWorkerManager(deps) {
         // 因此必须由新 Worker 生命周期重新建立，避免重启一次后保活永久消失。
         if (typeof scheduleAccountRefresh === 'function') scheduleAccountRefresh(latest.id);
 
-        if (persistentMode) return proc.ready.then(() => true, () => false);
+        if (persistentMode) return proc.ready.then(() => {
+            if (workers[latest.id]?.process === proc && proc.sessionFacts?.game?.connected === true
+                && proc.sessionFacts?.business?.ready === true && !proc.businessFaultEpoch) controlDiscoveryHistory.delete(String(latest.id));
+            return true;
+        }, () => false);
         return true;
     }
 
@@ -472,6 +505,7 @@ function createWorkerManager(deps) {
     function stopWorker(accountId) {
         cancelBusinessRecovery(accountId);
         businessRecoveryHistory.delete(String(accountId));
+        controlDiscoveryHistory.delete(String(accountId));
         if (persistentMode) return stopPersistentSession(accountId);
         const wrk = workers[accountId];
         if (!wrk) return;
@@ -924,6 +958,7 @@ function createWorkerManager(deps) {
     async function stopPersistentSession(accountId) {
         cancelBusinessRecovery(accountId);
         businessRecoveryHistory.delete(String(accountId));
+        controlDiscoveryHistory.delete(String(accountId));
         const account = findAccount(accountId); const wrk = workers[accountId];
         if (wrk) wrk.stopping = true;
         stopAccountRefresh?.(accountId);
@@ -983,7 +1018,23 @@ function createWorkerManager(deps) {
             await require('./session-worker-proxy').replayLifecycle({ dataDir, account, onLifecycle: event => handleSessionLifecycle(id, event) });
             const found = await require('./session-registry').connectSession(dataDir, account);
             if (found.state === 'absent' || (found.state === 'stale'
-                && !require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime))) return { state: 'absent' };
+                && !require('./session-registry').processIsLive(found.descriptor?.pid, found.descriptor?.starttime))) {
+                const registry = require('./session-registry');
+                if (registry.lockIsHeld((found.paths || registry.pathsFor(dataDir, id)).lock)) return { state: 'unknown' };
+                const unavailable = existing?.process?.attachFailed === true
+                    || (existing?.process?.businessInitialized === true && existing.process.controlConnected === false);
+                if (unavailable && workers[id] === existing && !existing.stopping) {
+                    const binding = registry.bindingIdentity(account); const generation = account.credentialGeneration || '';
+                    await existing.process.detach().catch(() => {});
+                    const latest = findAccount(id);
+                    if (!latest || latest.autoLogin === false || registry.bindingIdentity(latest) !== binding
+                        || (latest.credentialGeneration || '') !== generation || (options.isCurrent && !options.isCurrent())) return { state: 'cancelled' };
+                    if (workers[id] === existing && !existing.stopping) {
+                        settleWorkerRequests(existing); delete workers[id];
+                    }
+                }
+                return { state: 'absent' };
+            }
             if (found.state !== 'present') return { state: 'unknown' };
             let actual;
             try { actual = await found.client.call('status'); } finally { found.client.close(); }
@@ -1089,6 +1140,7 @@ function createWorkerManager(deps) {
             // API 超时保护
             scheduler.setTimeoutTask(timerKey, timeoutMs, () => {
                 if (wrk.requests.has(reqId)) {
+                    try { wrk.process.cancelApi?.(reqId); } catch { }
                     wrk.requests.delete(reqId);
                     reject(new Error('API Timeout'));
                 }
@@ -1098,7 +1150,8 @@ function createWorkerManager(deps) {
                 type: 'api_call',
                 id: reqId,
                 method,
-                args: actualArgs
+                args: actualArgs,
+                ...(wrk.process.persistentSession && Number.isFinite(timeoutMs) ? { dispatchDeadlineAt: Date.now() + Math.max(0, timeoutMs) } : {}),
             });
         });
     }

@@ -121,10 +121,10 @@ function descriptorFor(dataDir, account) {
     return { state: 'absent', paths };
   }
 }
-async function connectSession(dataDir, account) {
+async function connectSession(dataDir, account, options = {}) {
   const found = descriptorFor(dataDir, account);
   if (found.state !== 'present') return found;
-  const client = new SessionRpcClient(found.descriptor);
+  const client = new SessionRpcClient(found.descriptor, options);
   try {
     const hello = await client.connect(); const again = descriptorFor(dataDir, account);
     if (again.state !== 'present' || again.descriptor.hostId !== found.descriptor.hostId
@@ -133,7 +133,9 @@ async function connectSession(dataDir, account) {
   }
   catch { client.close(); return { ...found, state: 'unknown' }; }
 }
-async function ensureSession({ dataDir, account, sourceRoot, logDir }) {
+async function ensureSession({ dataDir, account, sourceRoot, logDir,
+  startupTimeoutMs = require('./session-timeouts').SESSION_HOST_START_TIMEOUT_MS }) {
+  if (!Number.isSafeInteger(startupTimeoutMs) || startupTimeoutMs < 1 || startupTimeoutMs > 180000) throw new Error('Invalid host startup deadline');
   if (process.platform !== 'linux') throw new Error('Persistent sessions require Linux process identity');
   const paths = pathsFor(dataDir, account.id);
   secureDirectory(paths.directory); secureDirectory(paths.socketRoot);
@@ -154,9 +156,10 @@ async function ensureSession({ dataDir, account, sourceRoot, logDir }) {
   } finally { if (fd !== undefined) fs.closeSync(fd); }
   const bootstrap = path.join(paths.directory, `bootstrap-${crypto.randomUUID()}.json`);
   const output = secureDirectory(logDir || path.join(dataDir, 'logs', 'session-hosts'));
+  const expiresAt = Date.now() + startupTimeoutMs;
   atomicJson(bootstrap, { version: 1, account, sourceRoot, sourceCommit: admitted.commit, sourceFingerprint: admitted.sourceFingerprint, dataDir: path.resolve(dataDir),
     hostId: crypto.randomUUID(), capability: crypto.randomBytes(32).toString('hex'), paths,
-    managerPid: process.pid, managerStarttime: processStarttime(process.pid) });
+    managerPid: process.pid, managerStarttime: processStarttime(process.pid), expiresAt });
   let child;
   try {
     fd = fs.openSync(path.join(output, `${hash(account.id).slice(0, 24)}.log`), fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
@@ -168,14 +171,18 @@ async function ensureSession({ dataDir, account, sourceRoot, logDir }) {
       });
     } finally { fs.closeSync(fd); fd = undefined; }
     let launchError = false; child.once('error', () => { launchError = true; }); child.unref();
-    for (let i = 0; i < 200; i++) {
-      await delay(50); found = await connectSession(dataDir, account);
+    while (Date.now() < expiresAt) {
+      await delay(Math.min(50, Math.max(1, expiresAt - Date.now())));
+      const remaining = Math.max(1, expiresAt - Date.now());
+      found = await connectSession(dataDir, account, { connectTimeoutMs: Math.min(5000, remaining), handshakeTimeoutMs: Math.min(5000, remaining) });
       if (found.state === 'present') return found;
       if (launchError || (child.exitCode !== null && child.exitCode !== 73)) break;
     }
     // An unknown startup result never authorizes releasing the live host lock
     // or replaying operations. A later caller must authenticate the same host.
-    throw new Error('Account session host did not become ready');
+    throw Object.assign(new Error('Account session host did not become ready'), {
+      code: Date.now() >= expiresAt ? 'SESSION_HOST_START_TIMEOUT' : 'SESSION_HOST_START_FAILED',
+    });
   } finally {
     try { fs.unlinkSync(bootstrap); } catch {}
   }
