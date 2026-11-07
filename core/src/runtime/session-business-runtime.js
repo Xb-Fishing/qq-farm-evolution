@@ -2,6 +2,7 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { encode, decode } = require('./session-codec');
 const { BUSINESS_CONTROL_TIMEOUT_MS, BUSINESS_BOOT_TIMEOUT_MS } = require('./session-timeouts');
+const { createSessionFailureReporter } = require('./session-failure-diagnostics');
 
 // The host never imports gameplay from a new release into its module cache.
 // Each candidate gets a separate Worker and a separate business authority.
@@ -13,24 +14,30 @@ async function createSessionBusinessRuntime(options) {
       FARM_ACCOUNT_ID: String(options.facts.host.accountId), FARM_SESSION_EPOCH: options.epoch },
     execArgv: process.execArgv.filter(value => !value.startsWith('--inspect')),
   });
-  const waiting = new Map(); let sequence = 0; let dead = false; let failure;
+  const waiting = new Map(); let sequence = 0; let dead = false; let failure; let expectedTermination = false;
+  const reportFailure = createSessionFailureReporter({ epoch: options.epoch });
   let bootResolve; let bootReject;
   const boot = new Promise((resolve, reject) => { bootResolve = resolve; bootReject = reject; });
-  function fail(error) {
+  function fail(error, phase) {
     if (dead) return;
+    if (!expectedTermination) reportFailure(phase, error);
     dead = true; failure = error; bootReject(error);
     for (const pending of waiting.values()) { clearTimeout(pending.timer); pending.reject(error); }
     waiting.clear();
   }
-  worker.on('error', fail);
-  worker.on('exit', code => fail(Object.assign(new Error('Business Worker exited'), { code: 'SESSION_BUSINESS_EXIT', exitCode: code })));
+  worker.on('error', error => fail(error, 'worker_error'));
+  worker.on('exit', code => fail(Object.assign(new Error('Business Worker exited'), { code: 'SESSION_BUSINESS_EXIT', exitCode: code }), 'worker_exit'));
   worker.on('message', message => {
     if (message?.kind === 'business_boot') { bootResolve(); return; }
     if (message?.kind === 'business_reply') {
       const pending = waiting.get(message.id); if (!pending) return;
       waiting.delete(message.id); clearTimeout(pending.timer);
-      try { const result = decode(message.body); result.error ? pending.reject(result.error) : pending.resolve(result.value); }
-      catch (error) { pending.reject(error); }
+      try {
+        const result = decode(message.body);
+        if (result.error) { reportFailure('reply_error', result.error, { method: pending.method }); pending.reject(result.error); }
+        else pending.resolve(result.value);
+      }
+      catch (error) { reportFailure('reply_decode', error, { method: pending.method }); pending.reject(error); }
       return;
     }
     if (message?.kind === 'business_sync') {
@@ -57,7 +64,7 @@ async function createSessionBusinessRuntime(options) {
       Promise.resolve().then(() => options.request(message.sequence, decode(message.body)))
         .then(value => ({ value }), error => ({ error }))
         .then(result => { if (!dead) worker.postMessage({ kind: 'game_reply', id: message.id, body: encode(result) }); })
-        .catch(fail);
+        .catch(error => fail(error, 'control_post'));
       return;
     }
     if (!message?.kind && message?.type) options.onMaster(message);
@@ -67,14 +74,17 @@ async function createSessionBusinessRuntime(options) {
     if (dead) throw failure;
     const id = ++sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { waiting.delete(id); reject(new Error(`Business control timed out: ${method}`)); }, BUSINESS_CONTROL_TIMEOUT_MS);
-      waiting.set(id, { resolve, reject, timer });
+      const timer = setTimeout(() => {
+        waiting.delete(id); const error = new Error(`Business control timed out: ${method}`);
+        reportFailure('control_timeout', error, { method }); reject(error);
+      }, BUSINESS_CONTROL_TIMEOUT_MS);
+      waiting.set(id, { resolve, reject, timer, method });
       try { worker.postMessage({ kind: 'business_control', id, method, body: encode(args) }); }
-      catch (error) { clearTimeout(timer); waiting.delete(id); reject(error); }
+      catch (error) { clearTimeout(timer); waiting.delete(id); reportFailure('control_post', error, { method }); reject(error); }
     });
   }
   // A failed boot must not strand a host's attach queue forever.
-  const bootTimer = setTimeout(() => { fail(new Error('Business Worker boot timed out')); worker.terminate(); }, BUSINESS_BOOT_TIMEOUT_MS);
+  const bootTimer = setTimeout(() => { fail(new Error('Business Worker boot timed out'), 'boot_timeout'); worker.terminate(); }, BUSINESS_BOOT_TIMEOUT_MS);
   boot.finally(() => clearTimeout(bootTimer)).catch(() => {});
   return {
     prepare: () => call('prepare'), activate: events => call('activate', events),
@@ -82,7 +92,7 @@ async function createSessionBusinessRuntime(options) {
     resume: events => call('resume', events), relabelConfig: config => call('relabelConfig', config),
     syncConfig: config => call('syncConfig', config), send: message => call('send', message),
     event: (name, args, facts) => call('event', { name, args, facts }), deliverEvents: events => call('events', events),
-    terminate: async () => { fail(new Error('Business Worker retired')); await worker.terminate(); },
+    terminate: async () => { expectedTermination = true; fail(new Error('Business Worker retired')); await worker.terminate(); },
   };
 }
 module.exports = { createSessionBusinessRuntime };

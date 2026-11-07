@@ -365,8 +365,9 @@ function manualRequest(buffer, app) {
     const host = f.get(3);
     if (!Buffer.isBuffer(ticket) || !ticket.length || !Buffer.isBuffer(device) || !device.length)
         throw new Error("invalid login buffer");
-    const base = Buffer.concat([pbl(1, app), pbv(2, 1901)]);
-    const req = Buffer.concat([pbl(1, base), pbl(3, pbl(1, ticket)), pbv(4, 4), pbl(6, Buffer.alloc(0)), pbv(7, 0), pbv(8, 6)]);
+    // Version belongs to ManualAuthRequest, not its device-only AppBase.
+    const base = pbl(1, app);
+    const req = Buffer.concat([pbl(1, base), pbv(2, 1901), pbl(3, pbl(1, ticket)), pbv(4, 4), pbl(6, Buffer.alloc(0)), pbv(7, 0), pbv(8, 6)]);
     return { req, device, host: Buffer.isBuffer(host) && host.length ? host : HOST_APP };
 }
 function hybrid(plain) {
