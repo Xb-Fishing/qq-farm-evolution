@@ -171,6 +171,19 @@ function recordSent(serviceName, methodName, ok, now = Date.now(), options = {})
                             process.env.FARM_ACCOUNT_ID || '', 'warn', 'slowdown',
                             `连续失败过多，普通巡查降速 ${Math.round(slowdown / 60000)} 分钟${top ? `（${top}）` : ''}`);
                     } catch { /* 事件记录失败不影响降速 */ }
+                    // 降速转换独立留存于 combined，不依赖当日事件的保留周期。
+                    // 只带纯整数元数据，不含 method/service/错误原文/身份。
+                    try {
+                        require('./logger').createModuleLogger('system').warn(
+                            '连续请求失败触发普通巡查降速',
+                            {
+                                event: 'request_slowdown_started',
+                                failureCount: failures.reduce((n, row) => n + row.count, 0),
+                                failureMethodCount: failures.length,
+                                slowdownMs: slowdown,
+                                slowdownUntil,
+                            });
+                    } catch { /* 诊断日志失败不影响降速 */ }
                 }
                 return { tripped: false, slowed: true, slowdownMs: slowdown, failures };
             }
