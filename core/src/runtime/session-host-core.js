@@ -2,6 +2,7 @@ const { EventEmitter } = require('node:events');
 const crypto = require('node:crypto');
 const { encode } = require('./session-codec');
 const { BUSINESS_DRAIN_TIMEOUT_MS } = require('./session-timeouts');
+const { createSessionFailureReporter } = require('./session-failure-diagnostics');
 
 function sessionError(code) { return Object.assign(new Error(code), { code }); }
 
@@ -13,6 +14,7 @@ function createSessionHostCore({ identity, game, createBusiness, validateTarget 
   let factSequence = 0; let manager = null; let lastMasterStatus = null;
   let bufferEvents = false; let transition = null; const queuedEvents = [];
   const activeRequests = new Set();
+  const receiverReporters = new WeakMap();
   function facts() {
     return { sequence: ++factSequence, game: game.snapshot(), host: { ...identity },
       business: business ? { ...business.target, epoch: epoch?.id || '', ready: business.ready === true } : null };
@@ -22,7 +24,19 @@ function createSessionHostCore({ identity, game, createBusiness, validateTarget 
     events.emit('master', { message, facts: facts() });
   }
   function deliverEvent(receiver, event) {
-    const failed = () => {
+    const failed = error => {
+      let report = receiverReporters.get(receiver);
+      if (!report) {
+        report = createSessionFailureReporter({ epoch: event.facts?.business?.epoch });
+        receiverReporters.set(receiver, report);
+      }
+      try {
+        const current = game.snapshot();
+        report('event_rejection', error, { method: 'event', eventName: event.name,
+          receiverCurrent: receiver === business, eventSequence: event.facts?.sequence,
+          eventConnectionEpoch: event.facts?.game?.connectionEpoch, currentConnectionEpoch: current.connectionEpoch,
+          connected: current.connected, terminal: current.terminal });
+      } catch { /* A diagnostic snapshot must not replace the original failure. */ }
       receiver.ready = false;
       if (receiver === business && epoch) epoch.allowed = false;
       events.emit('business-error', { code: 'SESSION_EVENT_DELIVERY_FAILED', facts: facts() });
