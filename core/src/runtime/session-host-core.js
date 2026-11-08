@@ -172,7 +172,9 @@ function createSessionHostCore({ identity, game, createBusiness, validateTarget 
         }
         if (!revoked && previous) {
           epoch = previousEpoch; business = previous; previousEpoch.allowed = true;
-          const restoredConfig = game.syncConfig(previous.config) || previous.config;
+          // Business rollback restores strategy, never an older game version.
+          const rollbackConfig = { ...previous.config }; delete rollbackConfig.__clientRuntime;
+          const restoredConfig = game.syncConfig(rollbackConfig) || rollbackConfig;
           await previous.relabelConfig(restoredConfig);
           previous.config = restoredConfig;
           bufferEvents = true;

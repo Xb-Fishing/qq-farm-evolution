@@ -132,6 +132,8 @@ function createRuntimeEngine(options = {}) {
         runtimeEvents,
         nextConfigRevision,
         buildConfigSnapshotForAccount,
+        startClientRuntimeVersionSync,
+        stopClientRuntimeVersionSync,
         log,
         addAccountLog,
         normalizeStatusForPanel,
@@ -468,6 +470,7 @@ function createRuntimeEngine(options = {}) {
 
     /** 引擎启动入口 */
     async function start(startOpts = {}) {
+        startClientRuntimeVersionSync?.(() => broadcastConfigToWorkers());
         const shouldStartAdmin = startOpts.startAdminServer !== false;
         const shouldAutoStart = startOpts.autoStartAccounts !== false;
 
@@ -507,6 +510,7 @@ function createRuntimeEngine(options = {}) {
     }
 
     async function detachAll() {
+        stopClientRuntimeVersionSync?.();
         try { getSharedWxLoginReminder().stopMaintenanceSweep(); } catch {}
         for (const account of store.getAccounts().accounts || []) autoCodeRefresh.stopAccount(account.id);
         await detachWorkers();

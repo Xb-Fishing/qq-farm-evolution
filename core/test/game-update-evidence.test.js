@@ -180,3 +180,19 @@ test('same solar event detects question/reward/window updates but ignores claim 
   h.advance(60001); h.rows.solarCalendar.events[0].endTime = 300;
   assert.notEqual(question.semanticHash, (await h.read()).semanticHash);
 });
+
+test('local client version evidence compares configured and authoritative connection versions without extra game reads and reaches durable dispatch', async () => {
+  const h=evidenceHarness();const config=require('../src/config/config').CONFIG;const previous=config.clientVersion;
+  const target=require('../src/runtime/client-runtime-version').VERIFIED_CLIENT_VERSION;
+  const digestService=require('../src/services/game-update-digest');
+  try {
+    fs.writeFileSync(path.join(h.dir,'store.json'),JSON.stringify({systemConfig:{clientVersion:target},unrelatedPrivateNote:'fixture-do-not-export'}),{mode:0o600});
+    config.clientVersion='1.13.0.5_20260723';const old=await h.read();assert.equal(h.calls.length,6);
+    assert.equal(old.sources.clientVersion.currentVersion,'1.13.0.5_20260723');assert.equal(old.sources.clientVersion.configuredVersion,target);assert.equal(old.sources.clientVersion.synchronized,false);assert.equal(old.sources.clientVersion.outdated,true);
+    assert.doesNotMatch(JSON.stringify(old),/fixture-do-not-export/);
+    const pending=digestService.recordUpdateDigest(h.dir,{scannedAt:1800000000000,online:{gameUpdateEvidence:old}},'a'.repeat(32));
+    assert.ok(pending.unreviewed.some(row=>row.source==='clientVersion'));
+    const batch=digestService.captureUpdateBatch(h.dir);assert.ok(digestService.updateTriggerFingerprint(batch));
+    config.clientVersion=target;h.advance(60001);const synced=await h.read();assert.equal(synced.sources.clientVersion.synchronized,true);assert.equal(synced.sources.clientVersion.outdated,false);assert.notEqual(old.semanticHash,synced.semanticHash);
+  } finally {config.clientVersion=previous;}
+});

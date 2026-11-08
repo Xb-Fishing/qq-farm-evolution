@@ -6,6 +6,7 @@ const { gameDateKey } = require('../config/game-date');
 const { solarCatalog } = require('./activity-catalog-facts');
 const network = require('../utils/network');
 const { getDataDir } = require('../config/runtime-paths');
+const { VERIFIED_CLIENT_VERSION, validClientVersion, compareClientVersions } = require('../runtime/client-runtime-version');
 const CACHE_MS = 60000;
 const COLLECT_BUDGET_MS = 90000;
 // Refuse to start a reader when its declared finite RPC chain no longer fits.
@@ -102,6 +103,24 @@ async function collectGameUpdateEvidence(options = {}) {
     const deadlineAt = deps.now() + COLLECT_BUDGET_MS;
     const value = { source: 'game-update-evidence', accountKey: owner, collectedAt: deps.now(), sources: {},
       gaps: ['settings', 'collections', 'official-all-red-dots'].map(entry => ({ entry, reason: '缺当前官方界面或可达读取证据，未采集' })) };
+    // Local configuration and the bridge's authoritative host version require
+    // no extra game RPC. Never infer a host upgrade from manager settings alone.
+    try {
+      const currentVersion = require('../config/config').CONFIG.clientVersion;
+      let configuredVersion = VERIFIED_CLIENT_VERSION;
+      try {
+        const file = safeTarget(getDataDir(), path.join(getDataDir(), 'store.json'));
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('invalid_config_snapshot');
+        configuredVersion = JSON.parse(fs.readFileSync(file, 'utf8')).systemConfig?.clientVersion || VERIFIED_CLIENT_VERSION;
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (!validClientVersion(currentVersion) || !validClientVersion(configuredVersion)) throw new Error('invalid_client_version');
+      const latestVersion = VERIFIED_CLIENT_VERSION;
+      value.sources.clientVersion = { status: 'ok', fetchedAt: deps.now(), currentVersion, configuredVersion, latestVersion,
+        synchronized: currentVersion === configuredVersion, outdated: compareClientVersions(currentVersion, latestVersion) < 0,
+        factsHash: digest([latestVersion, configuredVersion, currentVersion]) };
+    } catch { value.sources.clientVersion = { status: 'error', fetchedAt: deps.now(), errorClass: 'client_version_unknown' }; }
+
     const record = async (name, convert) => {
       if (!valid()) throw new Error('连接已变更，剩余读取已取消');
       if (deadlineAt - deps.now() < SOURCE_BUDGET_MS[name]) {

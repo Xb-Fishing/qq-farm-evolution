@@ -97,3 +97,14 @@ test('management detach and verified adoption do not stop the game or create a n
   f.core.detachManager('one'); f.core.claimManager({ id: 'two', pid: 2, starttime: 'b' }, isAlive);
   assert.equal(f.core.facts().game.connected, true); assert.equal(f.runtimes.length, 1); assert.equal(f.sent.length, 0);
 });
+
+test('failed candidate version transition restores old business policy without replaying an older client-runtime envelope', async () => {
+  const f = fixture({ failPrepare: 'bad' });
+  const first = { schema: 1, accountId: 'fixture', platform: 'wx', clientVersion: '1.16.3.8_20261028', issuer: 'fixture-manager', revision: 1 };
+  await f.core.attach(target('v1'), { automation: { task: false }, __clientRuntime: first });
+  await assert.rejects(f.core.attach(target('bad'), { __clientRuntime: { ...first, clientVersion: '1.17.0.1_20261108', revision: 2 } }), /prepare failed/);
+  assert.equal(Object.hasOwn(f.configuration, '__clientRuntime'), false);
+  assert.deepEqual(f.configuration.automation, { task: false });
+  assert.equal(f.core.facts().business.commit, 'v1'); assert.equal(f.core.facts().business.ready, true);
+  assert.equal(f.core.facts().game.connectionEpoch, 1); assert.equal(f.sent.length, 0);
+});
