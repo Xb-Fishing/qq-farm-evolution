@@ -38,6 +38,15 @@
       "repositoryAlias": "public-reference-2",
       "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
       "evidence": "reviewed public client snapshot, current official item and plant metadata cross-check, exact Git blobs and visual inspection"
+    },
+    {
+      "repositoryAlias": "public-reference-2",
+      "commit": "5bdc0297e3dafc3da21a2108b67674cc045b4fa0",
+      "files": [
+        "core/src/gameConfig/seed_images_named/seed_images/101616.png",
+        "core/src/gameConfig/ItemInfo.json",
+        "core/src/gameConfig/solar-calendar.json"
+      ]
     }
   ],
   "entries": [
@@ -1940,6 +1949,21 @@
       "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101623.png",
       "gitBlob": "4f918b122605bc401e2299b330d1fcfdd0bf6b7a",
       "sha256": "764b5a8d7076927ed63ee520046047dbbce8f226a52f74905d78cc287341bc6e",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 101616,
+      "file": "101616_icon_s4_shareTeaPack.png",
+      "itemName": "奶茶券惊喜礼包",
+      "assetPath": "gui/texture/icon/icon_s4_shareTeaPack/spriteFrame",
+      "kind": "gift",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5bdc0297e3dafc3da21a2108b67674cc045b4fa0",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/101616.png",
+      "gitBlob": "7129088ac119c71baaacd87593296d646b852f07",
+      "sha256": "00ec33036a79b619279ba7b969cc28fe8ee611605392518e1bf07e5e8451d026",
       "width": 100,
       "height": 100
     }

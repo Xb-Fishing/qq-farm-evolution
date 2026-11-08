@@ -85,7 +85,8 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,
   // and the separately verified golden-fruit rows asserted independently below.
-  const rewardAdditions = new Set([2163, 202011, 203012, 205011, 206011, 207012, 208012,
+  // Surprise gift packs are independently checked by activity-catalog-updates.
+  const rewardAdditions = new Set([101616, 101617, 2163, 202011, 203012, 205011, 206011, 207012, 208012,
     210031, 210032, 210033, 210034, 210035, 210036, 210037,
     210016, 210026, 210012, 210022, 210013, 210023, 210014, 210024, 210015, 210025, 210011, 210021, 210017, 210027, 210041, 210042, 210043, 401007, 210044, 210045, 210046, 210047]);
   const goldenFruitAdditions = new Set([1040165, 1040526, 1049005, 1040528, 1042254, 1040527, 1040021, 1041435]);

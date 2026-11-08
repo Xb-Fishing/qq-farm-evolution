@@ -165,3 +165,18 @@ test('stop or replacement while scanner is pending cannot publish old results or
   await assert.rejects(pending, error => error.code === 'SCAN_CANCELLED'); assert.equal(published, 0);
   assert.equal(h.service.getActivityUpdateState().nextScanAt, 0); assert.equal(h.service.getActivityUpdateState().nextEndTimeReviewAt, 0);
 });
+
+test('same solar event detects question/reward/window updates but ignores claim and quiz progress', async () => {
+  const h = evidenceHarness();
+  h.rows.solarCalendar.events = [{ id: 403, name: '立冬', question: '问题甲', options: ['甲', '乙'], startTime: 100, endTime: 200, rewards: [{ id: 1002, count: '200' }] }];
+  const first = await h.read();
+  h.advance(60001); h.rows.solarCalendar.events[0].directClaimed = true;
+  h.rows.solarCalendar.events[0].canClaim = false;
+  const progress = await h.read(); assert.equal(first.semanticHash, progress.semanticHash);
+  h.advance(60001); h.rows.solarCalendar.events[0].rewards[0].count = '300';
+  const reward = await h.read(); assert.notEqual(progress.semanticHash, reward.semanticHash);
+  h.advance(60001); h.rows.solarCalendar.events[0].question = '问题乙';
+  const question = await h.read(); assert.notEqual(reward.semanticHash, question.semanticHash);
+  h.advance(60001); h.rows.solarCalendar.events[0].endTime = 300;
+  assert.notEqual(question.semanticHash, (await h.read()).semanticHash);
+});

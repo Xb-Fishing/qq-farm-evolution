@@ -37,6 +37,13 @@ function calendarDto(raw) {
         canAnswer: open && !!entry?.question && options.length > 1 && row.quiz_claimed !== true && row.quiz_wrong_today !== true,
       };
     }),
+    // Static configuration is useful when a game/account version has not yet
+    // published a row. Missing dynamic state never grants eligibility.
+    missingEvents: config.events.filter(entry => !(raw.events || []).some(row => Number(row.id) === entry.id)).map(entry => ({
+      id: entry.id, name: entry.name, description: entry.description || '',
+      question: entry.question || '', options: entry.answer?.split(';') || [],
+      stateAvailable: false, canClaim: false, canAnswer: false,
+    })),
     seasons: (raw.seasons || []).slice(0, 10).map(row => ({ id: Number(row.id),
       name: config.seasons.find(item => item.id === Number(row.id))?.name || '季度图鉴',
       litCount: Number(row.lit_count || 0), totalCount: Number(row.total_count || 0), rewards: rewards(row.rewards),

@@ -30,3 +30,12 @@ test('actual festival read errors and account changes clear old actions and igno
   api.setGet(async () => ({ data: { ok: false, error: '只读失败' } })); click(button(root, '查询节日签到')); await flush();
   assert.match(textOf(root), /只读失败/); assert.equal(findAll(root, node => node.props.role === 'dialog').length, 0);
 });
+
+test('configured 立冬 absent from server renders a clear status without actionable eligibility', async () => {
+  const api = apiMock(); api.setGet(async () => ({ data: { ok: true, calendar: { serverTime: 1794150000, events: [], seasons: [], missingEvents: [{ id: 403, name: '立冬', stateAvailable: false, canClaim: false, canAnswer: false }] } } }));
+  const { root } = mount(api); click(button(root, '查询节日签到')); await flush();
+  assert.match(textOf(root), /立冬：配置已更新/);
+  assert.match(textOf(root), /暂不能领取或答题/);
+  assert.equal(button(root, '领取签到奖励'), undefined);
+  assert.equal(api.calls.post.length, 0);
+});

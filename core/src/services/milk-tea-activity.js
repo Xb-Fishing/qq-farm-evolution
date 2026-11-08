@@ -646,7 +646,14 @@ function buildMilkTeaOverview(snapshot, inventory, now) {
     summary: main?.details?.milkTea || null,
     exchangeShop: shop?.details?.exchangeShop ? { items: list(shop.details.exchangeShop.items).map(goods => ({ ...goods, costs: displayItems(goods.costs), rewards: displayItems(goods.rewards), exchangeBounds: getMilkTeaExchangeBounds(goods, inventory, timing) })) } : null,
     growthFund: fund?.details?.growthFund ? { ...fund.details.growthFund, tiers: list(fund.details.growthFund.tiers).map(tier => ({ ...tier, reward: displayItems(tier.reward) })) } : null,
-    shareReward: happy?.details?.shareReward ? { ...happy.details.shareReward, milestones: list(happy.details.shareReward.milestones).map(tier => ({ ...tier, rewards: list(tier.rewards).map(item => ({ ...item, itemName: getItemById(toNum(item.itemId))?.name || '未知物品' })) })) } : null,
+    shareReward: happy?.details?.shareReward ? { ...happy.details.shareReward, milestones: list(happy.details.shareReward.milestones).map(tier => ({ ...tier, rewards: list(tier.rewards).map(item => ({ ...item, itemName: getItemById(toNum(item.itemId))?.name || '未知物品', description: getItemById(toNum(item.itemId))?.desc || '' })) })) } : null,
+    happyShareUpdate: {
+      notice: '快乐不独享已新增奶茶券惊喜礼包档位。当前账号的档位和领取状态以服务端下发为准；礼包打开有机会获得奶茶兑换券或游戏道具，奶茶券奖池有限，每位农场主最多抽中一次。',
+      gifts: [101616, 101617].map(id => ({ id, name: getItemById(id)?.name || '未知物品',
+        description: getItemById(id)?.desc || '', image: getItemImageById(id) || '',
+        platform: id === 101616 ? 'QQ' : '微信' })),
+      giftTiersAvailable: list(happy?.details?.shareReward?.milestones).some(tier => list(tier.rewards).some(item => [101616, 101617].includes(toNum(item.itemId)))),
+    },
     inventory: {
       available: inventory.available === true,
       ticketItemId: TICKET_ITEM_ID,
