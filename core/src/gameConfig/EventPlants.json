@@ -61,5 +61,6 @@
   {"id":1020119,"seed_id":20119,"name":"紫罗兰","land_level_need":1,"seasons":1,"grow_phases":"种子:2880;发芽:2880;小叶子:2880;大叶子:2880;花蕾:2880;盛开:0;","exp":1584,"fruit_id":40119,"fruit_count":200,"asset_name":"Crop_119","size":1},
   {"id":1020173,"seed_id":20173,"name":"夜来香","land_level_need":1,"seasons":1,"grow_phases":"种子:5760;发芽:5760;小叶子:5760;大叶子:5760;花蕾:5760;盛开:0;","exp":3168,"fruit_id":40173,"fruit_count":200,"asset_name":"Crop_173","size":1},
   {"id":1020125,"seed_id":20125,"name":"太阳花","land_level_need":1,"seasons":1,"grow_phases":"种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;","exp":4752,"fruit_id":40125,"fruit_count":200,"asset_name":"Crop_125","size":1},
-  {"id":1020189,"seed_id":20189,"name":"鸡冠花","land_level_need":1,"seasons":1,"grow_phases":"种子:17280;发芽:17280;小叶子:17280;大叶子:17280;花蕾:17280;盛开:0;","exp":9504,"fruit_id":40189,"fruit_count":200,"asset_name":"Crop_189","size":1}
+  {"id":1020189,"seed_id":20189,"name":"鸡冠花","land_level_need":1,"seasons":1,"grow_phases":"种子:17280;发芽:17280;小叶子:17280;大叶子:17280;花蕾:17280;盛开:0;","exp":9504,"fruit_id":40189,"fruit_count":200,"asset_name":"Crop_189","size":1},
+  {"id": 1020530, "seed_id": 20530, "name": "油茶", "land_level_need": 1, "seasons": 1, "grow_phases": "种子:8640;发芽:8640;小叶子:8640;大叶子:8640;初熟:8640;成熟:0;", "exp": 1680, "special_fruit": null, "fruit_id": 40530, "fruit_count": 48, "asset_name": "Crop_530", "size": 1, "mutant_effect_plant": "5:1120530:1"}
 ]
