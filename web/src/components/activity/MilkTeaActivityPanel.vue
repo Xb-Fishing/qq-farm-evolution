@@ -35,6 +35,9 @@ const exchangeNotice = ref('')
 const dialogRef = ref<HTMLElement | null>(null)
 let returnFocus: HTMLElement | null = null
 const pending = ref<{ action: string, input: Record<string, unknown>, text: string, boostStock?: number } | null>(null)
+// 档位确认发起时的活动快照（非响应式引用，避免深层代理破坏身份比较）。
+let confirmedShareActivity: unknown = null
+let confirmedShareState = ''
 const busy = computed(() => props.loading || !!props.operating || !props.activity)
 const notOpened = computed(() => props.activity?.summary?.shopOpenAt === 0)
 const settle = computed(() => props.activity?.timing?.phase === 'settle')
@@ -91,6 +94,54 @@ const interactDisabledReason = computed(() => {
   return ''
 })
 const workshop = computed(() => props.queries.workshop.data)
+// 快乐值档位严格资格：currentScore 与 tier.id/threshold/state 全部已知且合法才认定可领；
+// 分数未知、档位畸形（数组缺失/非数组/id 非正整数/threshold 非安全数/state 非数字）一律待确认，
+// 不把未知冒充“无可领取”，也不把仅 state=2 但分数不足的档位标成可领。
+const shareNotice = ref('')
+function isSafeShareCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+const shareScore = computed(() => isSafeShareCount(props.activity?.shareReward?.currentScore) ? props.activity!.shareReward!.currentScore : null)
+const shareMilestoneTiers = computed(() => {
+  const share = props.activity?.shareReward
+  if (!share || typeof share !== 'object' || !Array.isArray(share.milestones))
+    return null
+  return share.milestones
+})
+function shareTierShapeKnown(tier: any) {
+  return shareScore.value != null
+    && Number.isSafeInteger(tier?.id) && Number(tier?.id) >= 1
+    && isSafeShareCount(tier?.threshold) && [1, 2, 3].includes(tier?.state)
+}
+function shareTierClaimable(tier: any) {
+  return shareTierShapeKnown(tier) && tier.state === 2 && shareScore.value! >= tier.threshold
+}
+function shareTierLabel(tier: any) {
+  if (!shareTierShapeKnown(tier))
+    return '待确认'
+  if (tier.state === 3)
+    return '已领取'
+  return shareTierClaimable(tier) ? '可领取' : '暂不可领取'
+}
+const shareMilestoneEligible = computed(() => shareMilestoneTiers.value != null && shareScore.value != null
+  && shareMilestoneTiers.value.some(tier => shareTierClaimable(tier)))
+const shareMilestoneDisabledReason = computed(() => {
+  const phase = props.activity?.timing?.phase
+  if (phase === 'beforeStart')
+    return '活动尚未开始，暂不能领取快乐值档位。'
+  if (phase === 'ended')
+    return '活动已结束，不能领取快乐值档位。'
+  const share = props.activity?.shareReward
+  if (!share || typeof share !== 'object' || shareScore.value == null || shareMilestoneTiers.value == null)
+    return '快乐值档位信息待确认，请刷新状态。'
+  if (shareMilestoneEligible.value)
+    return ''
+  if (shareMilestoneTiers.value.some(tier => !shareTierShapeKnown(tier)))
+    return '存在待确认的快乐值档位，请刷新状态。'
+  if (!shareMilestoneTiers.value.length)
+    return '当前没有可领取的快乐值档位。'
+  return '快乐值档位暂无可领取奖励。'
+})
 const hireCandidatesReady = computed(() => !props.queries.hireList.loading && !props.queries.hireList.error && Number(hires.value?.durationId) === Number(durationId.value))
 const candidates = computed(() => hireCandidatesReady.value ? [...(hires.value?.friends || []), ...(hires.value?.robots || [])] : [])
 const hireAvailabilityKnown = computed(() => shop.value?.slotAvailabilityKnown === true && !props.queries.shop.loading && !props.queries.shop.error)
@@ -168,6 +219,17 @@ watch(() => JSON.stringify(props.activity?.exchangeShop || null), () => {
     exchangeNotice.value = '商城信息已更新，请重新核对数量和费用。'
   }
 })
+// 确认期间活动快照（身份）、快乐值分数/档位（深层）、阶段或读取/操作状态任一变化，撤销旧的档位确认。
+function shareConfirmationState() {
+  return JSON.stringify([props.activity?.shareReward ?? null, props.activity?.timing ?? null])
+}
+watch(() => [props.activity, shareConfirmationState(), props.loading, props.operating], () => {
+  shareNotice.value = ''
+  if (pending.value?.action === 'shareMilestones') {
+    closeConfirmation()
+    shareNotice.value = '快乐值档位状态已更新，请重新确认。'
+  }
+}, { flush: 'sync' })
 watch(() => freeSlots.value.map((slot: any) => Number(slot.slotIndex)).filter((id: number) => Number.isSafeInteger(id) && id >= 0), (ids: number[]) => {
   if (ids.length && !ids.includes(slotIndex.value))
     slotIndex.value = ids[0]!
@@ -233,12 +295,25 @@ function prepareBoost() {
   if (pending.value)
     pending.value.boostStock = boostStock.value
 }
+function prepareShareMilestones() {
+  if (busy.value || shareMilestoneDisabledReason.value)
+    return
+  shareNotice.value = ''
+  prepare('shareMilestones', {}, '领取已达成的快乐值档位奖励？')
+}
 function prepare(action: string, input: Record<string, unknown> = {}, text = '确认执行此操作？') {
   if (action === 'interact') {
     if (interactionHasEnded())
       interactNotice.value = 'ended'
     if (busy.value || interactDisabledReason.value)
       return
+  }
+  // 档位领取没有合法可领档位时零确认：直接走旧 prepare('shareMilestones') 入口同样不放行。
+  if (action === 'shareMilestones' && (busy.value || shareMilestoneDisabledReason.value))
+    return
+  if (action === 'shareMilestones') {
+    confirmedShareActivity = props.activity
+    confirmedShareState = shareConfirmationState()
   }
   returnFocus = typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null
   pending.value = { action, input, text }
@@ -261,6 +336,14 @@ function confirm() {
     closeConfirmation()
     return
   }
+  // 确认时重新核对实时资格与活动身份/阶段；快照已换或资格失效就就地撤销，零写。
+  if (action.action === 'shareMilestones'
+    && (!shareMilestoneEligible.value || shareMilestoneDisabledReason.value || confirmedShareActivity !== props.activity
+      || confirmedShareState !== shareConfirmationState())) {
+    closeConfirmation()
+    shareNotice.value = '快乐值档位状态已更新，请重新确认。'
+    return
+  }
   if (action.action === 'interact') {
     const currentShiftId = String(shift.value?.shiftId ?? '')
     const selectedType = Number(action.input.interactionType)
@@ -281,6 +364,8 @@ function confirm() {
 }
 function closeConfirmation() {
   pending.value = null
+  confirmedShareActivity = null
+  confirmedShareState = ''
   const target = returnFocus
   void nextTick(() => {
     if (target?.isConnected !== false)
@@ -691,16 +776,18 @@ function exchange(goods: ExchangeGoods) {
             </details>
           </div>
           <p v-for="(tier, index) in activity?.shareReward?.milestones || []" :key="index" class="milk-list-row">
-            快乐值档位 {{ number(tier.threshold) }} · {{ tier.state === 2 ? '可领取' : tier.state === 3 ? '已领取' : '暂不可领取' }}<span v-for="(item, itemIndex) in tier.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item.image" :src="item.image" :alt="item.itemName || '奖励'"><span :title="item.description">{{ item.itemName || '未知物品' }} × {{ number(item.itemCount) }}</span></span>
+            快乐值档位 {{ number(tier?.threshold) }} · {{ shareTierLabel(tier) }}<span v-for="(item, itemIndex) in tier?.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item?.image" :src="item.image" :alt="item.itemName || '奖励'"><span :title="item?.description">{{ item?.itemName || '未知物品' }} × {{ number(item?.itemCount) }}</span></span>
           </p><div class="milk-actions">
             <BaseButton class="milk-action" variant="primary" :disabled="busy || activity?.shareReward?.daily?.rewardClaimed === true" @click="prepare('shareDaily')">
               领取每日快乐值
             </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || activity?.shareReward?.daily?.firstShareAwarded !== false" @click="prepare('shareFirst', {}, '领取今日首次分享快乐值奖励？')">
               领取首次分享奖励
-            </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy" @click="prepare('shareMilestones')">
+            </BaseButton><BaseButton class="milk-action" variant="secondary" :disabled="busy || !!shareMilestoneDisabledReason" @click="prepareShareMilestones">
               领取快乐值档位
             </BaseButton>
-          </div><p class="milk-muted">
+          </div><p v-if="shareNotice || shareMilestoneDisabledReason" class="milk-muted" role="status">
+            {{ shareNotice || shareMilestoneDisabledReason }}
+          </p><p class="milk-muted">
             好友快乐包链接请在官方客户端使用。
           </p>
         </div>

@@ -1966,6 +1966,62 @@
       "sha256": "00ec33036a79b619279ba7b969cc28fe8ee611605392518e1bf07e5e8451d026",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 20530,
+      "file": "20530_Crop_530_Seed.png",
+      "assetName": "Crop_530",
+      "kind": "seed",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20530.png",
+      "gitBlob": "0034a4c68a5609e595e4ed56068875b4699155eb",
+      "sha256": "681648fde1a6b822111092da229a7aad9ca7a72a10a9672369fdc9f151d8600a",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 40530,
+      "file": "40530_Crop_530_Fruit.png",
+      "assetName": "Crop_530",
+      "kind": "fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/40530.png",
+      "gitBlob": "0034a4c68a5609e595e4ed56068875b4699155eb",
+      "sha256": "681648fde1a6b822111092da229a7aad9ca7a72a10a9672369fdc9f151d8600a",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 1040529,
+      "file": "1040529_gold_Crop_529.png",
+      "assetName": "gold/Crop_529",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040529.png",
+      "gitBlob": "e14461e4be550efa87d0d5399fa75284f7ccee4d",
+      "sha256": "8e8b3f3cfa250b6e3a5e19753633ab3bd90902da40c337773fd7db3ba084478c",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 1040530,
+      "file": "1040530_gold_Crop_530.png",
+      "assetName": "gold/Crop_530",
+      "kind": "golden_fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1040530.png",
+      "gitBlob": "0302c2c59acb7c0a1fd185cfd50a855a9ea4a570",
+      "sha256": "894fbefbbc0696f7cad299928cf284475c50065d0b962985110bb2136f92a150",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
@@ -2142,5 +2198,57 @@
         "bytes": 11077
       }
     ]
+  },
+  "reviewedOilTeaPlantMapping": {
+    "sourceGrade": "official_client_config",
+    "officialManifest": "mainscene@47eba",
+    "manifestSha256": "202ba34843980b497cc3ed642d3ddce8a4a42447c5069efe7218e07e6daa1bc0",
+    "configSources": [
+      {
+        "name": "ItemInfo",
+        "logicalPath": "config/ItemInfo",
+        "importVersion": "4378a",
+        "rawSha256": "d8844852426e7ff524ebbd2a5818d24ea08a6b1d37a40ea6702b8bbd8d4aec77",
+        "decodedSha256": "faa74a2a11aba4d0b5ac95c004f08b98334e00b626169aa7e4511702a8158fe4"
+      },
+      {
+        "name": "Plant",
+        "logicalPath": "config/Plant",
+        "rawSha256": "59256bdb0e5915c5d45471a2cdfc9b8dfb186a72ac3f998b35901a65f03b38e1",
+        "decodedSha256": "4e03a517903c01940e0a5b81b982d12592c5dd4352953c690b68cf429170b795"
+      }
+    ],
+    "crossCheckedReference": {
+      "repositoryAlias": "public-reference-2",
+      "commit": "5e7c027115ede6fc835bb69d7ad9a081a84c4133",
+      "targetRowsEqual": true,
+      "wholeItemTableEqual": false
+    },
+    "itemIds": [
+      20530,
+      40530,
+      1040529,
+      1040530
+    ],
+    "sizeEvidence": "reviewed_client_default_single_plot",
+    "anchors": [
+      20516,
+      25995,
+      21625,
+      26030,
+      20435,
+      21072
+    ],
+    "mapping": {
+      "seedId": 20530,
+      "plantId": 1020530,
+      "fruitId": 40530,
+      "fruitCount": 48,
+      "size": 1,
+      "sourceSize": null,
+      "landLevelNeed": 1,
+      "itemDisplayLevel": 41
+    },
+    "note": "当前自然背包的三个果实 ID 与官方逐行配置交叉；仅采纳目标行，不由编号推断。size null 复用同版已核验客户端单格默认及锚点，非未知种子的全局回退。黄金果实只补物品索引，不增加 Plant 或自动出售资格。"
   }
 }

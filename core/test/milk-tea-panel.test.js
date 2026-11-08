@@ -50,7 +50,7 @@ test('十四种面板操作均先确认后发出；成员/槽位/配方/班次/�
   q.workshop.data = { recipes:[{recipeId:2,fruitItemId:40525,name:'甜莓奶茶',unlocked:true}], fruits:[{uid:'23563',itemId:40525,name:'森野甜莓',count:7}] };
   // 明确有效班次：互动次数/上限/结束时间齐全，避免把缺失字段误判为可互动。
   q.work.data = { interactDone:false, myShift: { shiftId:'3001',interactCount:0,interactLimit:3,endAt:4102444800,interactPreviews:[{interactionType:1}] } };
-  const { root, events } = mountPanel(snapshot({ summary:{canUpgrade:true}, inventory:{available:true,boostItemCount:2}, growthFund:{unlocked:true}, exchangeShop:{items:[{id:9,name:'种子',costs:[{id:1041,count:'10',name:'奶茶券'}],exchangeBounds:{requestMax:999,limitKnown:true,hasPurchaseLimit:true,remainingLimit:5,affordableCount:20,maxCount:5,blockReason:'',unitCosts:[{itemId:1041,count:'10',name:'奶茶券'}]}}]} }), q);
+  const { root, events } = mountPanel(snapshot({ summary:{canUpgrade:true}, inventory:{available:true,boostItemCount:2}, growthFund:{unlocked:true}, shareReward:{ currentScore: 140, milestones: [{ id: 5, threshold: 80, state: 2, rewards: [{ itemId: 1041, itemName: '奶茶券', itemCount: 1 }] }] }, exchangeShop:{items:[{id:9,name:'种子',costs:[{id:1041,count:'10',name:'奶茶券'}],exchangeBounds:{requestMax:999,limitKnown:true,hasPurchaseLimit:true,remainingLimit:5,affordableCount:20,maxCount:5,blockReason:'',unitCosts:[{itemId:1041,count:'10',name:'奶茶券'}]}}]} }), q);
   setModel(root,'店名','奶茶冲鸭'); setModel(root,'雇佣候选','101'); setModel(root,'选择森野甜莓，7个',['23563']); await vue.nextTick();
   for (const label of ['开店','改名','升级','领取收银台','使用宣传喇叭','雇佣所选员工','暂停被雇佣','制作所选果实','领取工资','执行班次互动','确认兑换 种子 × 1','领取成长基金','领取每日快乐值','领取快乐值档位']) {
     const count = events.length; click(button(root,label)); await vue.nextTick(); assert.equal(events.length,count, '写前确认');
@@ -470,4 +470,11 @@ test('happy-share gift names and probability descriptions render without inventi
   }));
   assert.match(textOf(root), /奶茶券惊喜礼包/); assert.match(textOf(root), /概率获得奶茶兑换券/);
   assert.match(textOf(root), /尚未下发奶茶券惊喜礼包档位/); assert.equal(events.length, 0);
+});
+
+test('稀疏奖励数据安全渲染，已确认档位不因空奖励展示条目崩溃', () => {
+  const { root } = mountPanel(snapshot({ shareReward: { currentScore: 140, milestones: [{ id: 5, threshold: 80, state: 2, rewards: [null] }] } }));
+  assert.equal(button(root, '领取快乐值档位').props.disabled, false);
+  assert.match(textOf(root), /未知物品/);
+  render(null, root);
 });

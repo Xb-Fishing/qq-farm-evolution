@@ -81,7 +81,11 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const novemberItems = new Set([20381, 40381, 20397, 40397, 20399, 40399, 21080, 41080, 21082, 41082, 21096, 41096, 21097, 41097, 21099, 41099, 21100, 41100, 20374, 40374, 20398, 40398, 20457, 40457, 21084, 41084, 21111, 41111, 20117, 40117, 20119, 40119, 20173, 40173, 20125, 40125, 20189, 40189]);
   assert.equal(plants.filter(row => row.id === 1020165).length, 1);
   assert.deepEqual([config.getPlantBySeedId(20165)?.id, config.getPlantBySeedId(20165)?.size, config.getPlantBySeedId(20165)?.fruit.id], [1020165, 1, 40165]);
-  assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id) && !novemberPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
+  // Exact additions independently exercised by oil-tea-item-evidence.test.js;
+  // the historical unrelated-row hashes remain unchanged.
+  const oilTeaPlants = new Set([1020530]);
+  const oilTeaItems = new Set([20530, 40530, 1040529, 1040530]);
+  assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id) && !novemberPlants.has(x.id) && !oilTeaPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,
   // and the separately verified golden-fruit rows asserted independently below.
@@ -104,7 +108,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
     assert.equal(config.getPlantBySeedId(id), undefined);
   }
   const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
-    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id))
+    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id) && !oilTeaItems.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
