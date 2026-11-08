@@ -73,7 +73,12 @@ test('an empty custom user agent is preserved and omitted from the QQ handshake'
     }, 'alice');
 
     const protocol = store.getUserDeviceProtocol('alice');
+    // This assertion is about the configured QQ handshake, independent of future default version bumps.
+    const runtime = require('../src/config/config').CONFIG;
+    const previousVersion = runtime.clientVersion;
+    runtime.clientVersion = '1.13.0.5_20260723';
     const headers = buildWebSocketHeaders(protocol);
+    runtime.clientVersion = previousVersion;
     assert.equal(protocol.userAgent, '');
     assert.equal(headers['User-Agent'], undefined);
     assert.equal(headers.Origin, 'https://gate-obt.nqf.qq.com');
