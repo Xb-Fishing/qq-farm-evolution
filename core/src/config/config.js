@@ -1,9 +1,11 @@
 const process = require('node:process');
+const runtimeConfigEvents = new (require('node:events'))();
 
 // 默认系统配置
 const DEFAULT_SYSTEM_CONFIG = {
     serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
-    clientVersion: '1.13.0.5_20260723',
+    // Current official UI confirmed by owner; reviewed client build metadata agrees.
+    clientVersion: require('../runtime/client-runtime-version').VERIFIED_CLIENT_VERSION,
     platform: 'qq',
     os: 'iOS'
 };
@@ -39,6 +41,7 @@ function updateRuntimeConfig(config) {
     }
     if (config.clientVersion && typeof config.clientVersion === 'string') {
         CONFIG.clientVersion = config.clientVersion;
+        runtimeConfigEvents.emit('clientVersionConfigured', { clientVersion: CONFIG.clientVersion });
     }
     if (config.platform && typeof config.platform === 'string') {
         CONFIG.platform = config.platform;
@@ -84,6 +87,7 @@ const PHASE_NAMES = ['未知', '种子', '发芽', '小叶', '大叶', '开花',
 
 module.exports = {
     CONFIG,
+    runtimeConfigEvents,
     PlantPhase,
     PHASE_NAMES,
     updateRuntimeConfig,

@@ -3,6 +3,7 @@ const { EventEmitter } = require('node:events');
 const { encode } = require('./session-codec');
 const { bindingIdentity } = require('./session-registry');
 const { sessionError } = require('./session-host-core');
+const { prepareClientRuntime, validClientVersion } = require('./client-runtime-version');
 
 const STATS_METHODS = new Set(['recordOperation', 'recordTongQiGift', 'getTongQiGiftCount', 'getTongQiGiftLimit',
   'initStats', 'initStatsWithPersistence', 'updateStats', 'setInitialValues', 'recordGoldExp', 'resetSessionGains',
@@ -22,7 +23,10 @@ async function createSessionGameAdapter({ account, onRevoked = () => {}, onMaste
   const status = require('../services/status'); const governor = require('../services/request-governor');
   const store = require('../models/store'); const idle = require('../utils/idle-protection');
   const utils = require('../utils/utils'); const proto = require('../utils/proto');
-  const { CONFIG } = require('../config/config');
+  const { CONFIG, updateRuntimeConfig } = require('../config/config');
+  const clientRuntimeState = {};
+  const savedVersion = store.getSystemConfig?.()?.clientVersion;
+  if (validClientVersion(savedVersion)) updateRuntimeConfig({ clientVersion: savedVersion });
   const authority = new AsyncLocalStorage(); const events = new EventEmitter();
   const expectedBinding = bindingIdentity(account); let stopped = false; let loginReady = false;
   let lastSocket = null; let connectionEpoch = 0; let configRevision = 0; let loginEpoch = 0; let policyIdentity = '';
@@ -79,13 +83,16 @@ async function createSessionGameAdapter({ account, onRevoked = () => {}, onMaste
   }
   function syncConfig(config = {}) {
     assertBinding();
-    const comparable = { ...config }; delete comparable.__revision; delete comparable.code; delete comparable.platform;
+    const clientRuntime = prepareClientRuntime(config.__clientRuntime, { accountId: account.id, platform: account.platform || 'qq', currentVersion: CONFIG.clientVersion, state: clientRuntimeState });
+    const comparable = { ...config, __clientVersion: clientRuntime?.apply ? clientRuntime.clientVersion : CONFIG.clientVersion }; delete comparable.__clientRuntime; delete comparable.__revision; delete comparable.code; delete comparable.platform;
     const ordered = value => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object'
       ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
     const identity = JSON.stringify(ordered(comparable));
     if (identity !== policyIdentity) { policyIdentity = identity; configRevision++; }
-    const patch = { ...config }; delete patch.knownFriendGids;
+    const patch = { ...config }; delete patch.knownFriendGids; delete patch.__clientRuntime;
     store.applyConfigSnapshot(patch, { persist: false, accountId: account.id });
+    if (clientRuntime?.apply) updateRuntimeConfig({ clientVersion: clientRuntime.clientVersion });
+    if (clientRuntime) Object.assign(clientRuntimeState, clientRuntime.nextState);
     if (store.getFriendQuietHours(account.id).idleProtectionEnabled !== true) idle.setIdleProtectionUntil(0);
     return { ...config, __revision: configRevision };
   }

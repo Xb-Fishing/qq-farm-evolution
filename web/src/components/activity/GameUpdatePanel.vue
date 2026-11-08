@@ -29,7 +29,7 @@ const materials = computed(() => {
   }).join('，')
 })
 const score = computed(() => catalog.value?.scores?.find((row: any) => row.star === Number(star.value))?.scores?.[Number(selected.value?.group?.rarity) - 1])
-const labels: Record<string, string> = { announcements: '官方公告', emails: '两类邮箱', solarCalendar: '节令日历', tasks: '任务', illustrated: '图鉴', mall: '免费商城' }
+const labels: Record<string, string> = { announcements: '官方公告', emails: '两类邮箱', solarCalendar: '节令日历', tasks: '任务', illustrated: '图鉴', mall: '免费商城', clientVersion: '连接版本' }
 const status = (value: string) => ({ ok: '读取成功', partial: '部分读取失败', error: '读取失败' }[value] || '未确认')
 async function open() {
   expanded.value = !expanded.value
@@ -59,7 +59,7 @@ onBeforeUnmount(() => store.cancelUpdateReads())
         <p>采集：{{ time(store.updateReads.evidence.data?.collectedAt) }}。缓存状态有时效，不代表此刻没有新奖励。</p>
         <ul v-if="store.updateReads.evidence.data">
           <li v-for="(source, key) in store.updateReads.evidence.data.sources" :key="key">
-            {{ labels[String(key)] || '已审入口' }}：{{ status(source.status) }} · {{ time(source.fetchedAt) }}<span v-if="Number.isInteger(source.claimable)"> · 可领/可答 {{ number(source.claimable) }} 项</span>
+            {{ labels[String(key)] || '已审入口' }}：{{ status(source.status) }} · {{ time(source.fetchedAt) }}<span v-if="String(key) === 'clientVersion' && source.status === 'ok'"> · 已核 {{ source.latestVersion }} / 配置 {{ source.configuredVersion }} / 连接 {{ source.currentVersion }} · {{ source.synchronized && !source.outdated ? '已同步' : '需要核对更新' }}</span><span v-if="Number.isInteger(source.claimable)"> · 可领/可答 {{ number(source.claimable) }} 项</span>
           </li>
         </ul>
         <p class="update-muted">

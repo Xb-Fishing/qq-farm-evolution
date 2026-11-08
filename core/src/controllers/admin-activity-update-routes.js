@@ -1,3 +1,4 @@
+const { validClientVersion } = require('../runtime/client-runtime-version');
 const activity = require('../services/activity');
 const {
   getActivityUpdateState,
@@ -100,6 +101,7 @@ function anonymizeGameUpdateEvidence(evidence) {
     sources[name] = value?.status === 'ok' || value?.status === 'partial'
       ? { status: value.status, fetchedAt: value.fetchedAt,
         factsHash: /^[a-f0-9]{64}$/.test(value.factsHash) ? value.factsHash : '',
+        ...(name === 'clientVersion' ? { latestVersion: validClientVersion(value.latestVersion) ? value.latestVersion : '', configuredVersion: validClientVersion(value.configuredVersion) ? value.configuredVersion : '', currentVersion: validClientVersion(value.currentVersion) ? value.currentVersion : '', synchronized: value.synchronized === true && validClientVersion(value.currentVersion) && validClientVersion(value.configuredVersion), outdated: value.outdated === true } : {}),
         ...(name === 'announcements' ? { entries: value.entries, listComplete: value.listComplete === true } : {}),
         ...(name === 'emails' ? { boxes: Object.fromEntries([1, 2].map(box => [box, {
           status: value.boxes?.[box]?.status || 'unknown',

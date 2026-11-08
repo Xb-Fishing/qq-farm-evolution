@@ -1,4 +1,7 @@
 const EventEmitter = require('node:events');
+const { randomUUID } = require('node:crypto');
+const { runtimeConfigEvents } = require('../config/config');
+const { validClientVersion } = require('./client-runtime-version');
 const { createModuleLogger } = require('../services/logger');
 const { getTodayKey, loadPersistedStats } = require('../services/stats');
 const { createRuntimeLogHistory } = require('./runtime-log-history');
@@ -35,6 +38,9 @@ function createRuntimeState(deps) {
     const runtimeEvents = new EventEmitter();
 
     let configRevision = Date.now();
+    const clientVersionIssuer = randomUUID();
+    let clientVersionRevision = 0;
+    let lastClientVersion;
     const moduleLogger = createModuleLogger('runtime');
 
     function appendRuntimeLog(entry) {
@@ -50,9 +56,27 @@ function createRuntimeState(deps) {
         return configRevision;
     }
 
+    let stopClientVersionListener = null;
+    function stopClientRuntimeVersionSync() { stopClientVersionListener?.(); stopClientVersionListener = null; }
+    function startClientRuntimeVersionSync(broadcast) {
+        stopClientRuntimeVersionSync();
+        if (!runtimeConfigEvents || typeof broadcast !== 'function') return;
+        const changed = () => { nextConfigRevision(); broadcast(); };
+        runtimeConfigEvents.on('clientVersionConfigured', changed);
+        stopClientVersionListener = () => runtimeConfigEvents.off('clientVersionConfigured', changed);
+    }
+
     /** 为指定账号构建配置快照 */
     function buildConfigSnapshotForAccount(accountId) {
+        const account = store.getAccounts?.()?.accounts?.find(item => String(item.id) === String(accountId));
+        const clientVersion = store.getSystemConfig?.()?.clientVersion;
+        if (validClientVersion(clientVersion) && clientVersion !== lastClientVersion) { lastClientVersion = clientVersion; clientVersionRevision++; }
+        const clientRuntime = account && validClientVersion(clientVersion) ? {
+            schema: 1, accountId: String(accountId), platform: account.platform || 'qq', clientVersion,
+            issuer: clientVersionIssuer, revision: clientVersionRevision,
+        } : null;
         return {
+            ...(clientRuntime ? { __clientRuntime: clientRuntime } : {}),
             automation: store.getAutomation(accountId),
             plantingStrategy: store.getPlantingStrategy(accountId),
             preferredSeedId: store.getPreferredSeed(accountId),
@@ -252,6 +276,8 @@ function createRuntimeState(deps) {
         runtimeEvents,
         nextConfigRevision,
         buildConfigSnapshotForAccount,
+        startClientRuntimeVersionSync,
+        stopClientRuntimeVersionSync,
         log,
         addAccountLog,
         normalizeStatusForPanel,

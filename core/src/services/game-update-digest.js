@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { activityCatalog } = require('./activity-catalog-facts');
 
 const HASH = /^[a-f0-9]{64}$/;
-const SOURCE_NAMES = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall'];
+const SOURCE_NAMES = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall', 'clientVersion'];
 const SOURCE_KEYS = new Set([...SOURCE_NAMES, 'emails.1', 'emails.2', 'activities']);
 const MAX_EVENTS = 2000;
 const MAX_CONTEXT_EVENTS = 24;
@@ -163,7 +163,7 @@ function validateUpdateBatch(batch) {
   return { ...batch, entries };
 }
 
-function isUpdateTrigger(entry) { return entry.kind !== 'source_changed' || ['announcements', 'activities', 'solarCalendar'].includes(entry.source); }
+function isUpdateTrigger(entry) { return entry.kind !== 'source_changed' || ['announcements', 'activities', 'solarCalendar', 'clientVersion'].includes(entry.source); }
 
 function updateTriggerFingerprint(batch) {
   const entries = validateUpdateBatch(batch).entries.filter(isUpdateTrigger);

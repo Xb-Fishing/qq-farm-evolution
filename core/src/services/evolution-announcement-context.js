@@ -1,3 +1,4 @@
+const { validClientVersion } = require('../runtime/client-runtime-version');
 const fs = require('node:fs');
 const path = require('node:path');
 const { captureUpdateBatch } = require('./game-update-digest');
@@ -78,7 +79,7 @@ function readGameUpdateEvidenceSummary(dataDir, now = Date.now()) {
           || collectedAt <= 0 || collectedAt > now + 300000 || !snapshot.sources) {
           result.incomplete = true; continue;
         }
-        const names = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall'];
+        const names = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall', 'clientVersion'];
         const sources = names.map(name => {
           const value = snapshot.sources[name];
           const status = ['ok', 'partial', 'error'].includes(value?.status) ? value.status : 'unknown';
@@ -89,7 +90,7 @@ function readGameUpdateEvidenceSummary(dataDir, now = Date.now()) {
             const box = value?.boxes?.[key];
             if (box?.status === 'ok') { counts[`box${  key}`] = Number(box.total) || 0; counts[`claimable${  key}`] = Number(box.claimable) || 0; }
           }
-          return { name, status, fetchedAt: Number(value?.fetchedAt) || 0, counts, errorClass: status === 'error' ? 'read_failed' : '' };
+          return { name, status, ...(name === 'clientVersion' ? { clientVersion: { latest: validClientVersion(value?.latestVersion) ? value.latestVersion : '未知', configured: validClientVersion(value?.configuredVersion) ? value.configuredVersion : '未知', actual: validClientVersion(value?.currentVersion) ? value.currentVersion : '未知', synchronized: value?.synchronized === true, outdated: value?.outdated === true } } : {}), fetchedAt: Number(value?.fetchedAt) || 0, counts, errorClass: status === 'error' ? 'read_failed' : '' };
         });
         const day = value => new Date(value + 8 * 3600000).toISOString().slice(0, 10);
         const sameDay = day(collectedAt) === day(now);
@@ -122,6 +123,7 @@ function buildGameUpdateEvidenceContext(dataDir, now = Date.now()) {
   }
   for (const item of summary.snapshots) {
     const errors = item.sources.filter(source => source.status === 'error' || source.status === 'partial');
+    for (const source of item.sources.filter(row => row.name === 'clientVersion' && row.clientVersion)) lines.push(`  连接版本：官方已核 ${source.clientVersion.latest}；配置 ${source.clientVersion.configured}；实际连接 ${source.clientVersion.actual}；同步=${source.clientVersion.synchronized}，落后=${source.clientVersion.outdated}。实际版本须来自宿主事实，不能只改管理端就称生效。`);
     for (const source of item.sources) lines.push(`  ${source.name}: ${source.status}，采集 ${source.fetchedAt > 0 ? new Date(source.fetchedAt).toISOString() : '未知'}，数量 ${JSON.stringify(source.counts)}`);
     lines.push(`- ${item.file}：采集 ${new Date(item.collectedAt).toISOString()}（${item.ageMinutes} 分钟前${item.sameDay ? '，当日' : '，非当日，不可当新鲜'}），整体 ${item.status}，语义哈希 ${item.semanticHash || '无'}${errors.length ? `，失败入口 ${errors.map(source => `${source.name}(${source.errorClass || source.status})`).join('/')}` : ''}`);
   }
