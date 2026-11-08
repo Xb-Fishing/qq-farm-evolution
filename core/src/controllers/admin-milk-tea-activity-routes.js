@@ -62,6 +62,17 @@ function registerAdminMilkTeaActivityRoutes({
     canAccessAccount,
   };
 
+  // Static catalog: authenticated by the existing /api gate, no account or
+  // game RPC is needed (including when configuring a default-plan template).
+  app.get('/api/activity/milk-tea/seed-catalog', (req, res) => {
+    const config = require('../config/gameConfig');
+    const seeds = config.getAllSeeds().map(seed => ({
+      id: Number(seed.seedId), name: config.getItemById(seed.seedId)?.name || `${seed.name}种子`,
+      requiredLevel: seed.requiredLevel, image: seed.image || '',
+    })).sort((a, b) => a.requiredLevel - b.requiredLevel || a.id - b.id);
+    res.json({ ok: true, seeds });
+  });
+
   app.get('/api/activity/milk-tea', async (req, res) => {
     // 权限检查先于缓存：未授权请求不产生任何上游读取
     const accountId = getAuthorizedAccountId(req, res, routeContext);
