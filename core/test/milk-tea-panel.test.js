@@ -462,3 +462,12 @@ test('活动到期后的迟到成功回复不泄漏奖励且不新增读取', as
     Date.now = originalNow;
   }
 });
+
+test('happy-share gift names and probability descriptions render without inventing missing tiers or claims', () => {
+  const { root, events } = mountPanel(snapshot({
+    happyShareUpdate: { notice: '快乐不独享已新增奶茶券惊喜礼包档位', giftTiersAvailable: false, gifts: [{ id: 101616, name: '奶茶券惊喜礼包', platform: 'QQ', description: '概率获得奶茶兑换券' }] },
+    shareReward: { currentScore: 140, milestones: [{ id: 5, threshold: 80, state: 2, rewards: [{ itemId: 101616, itemName: '奶茶券惊喜礼包', itemCount: 1, description: '概率获得奶茶兑换券' }] }] },
+  }));
+  assert.match(textOf(root), /奶茶券惊喜礼包/); assert.match(textOf(root), /概率获得奶茶兑换券/);
+  assert.match(textOf(root), /尚未下发奶茶券惊喜礼包档位/); assert.equal(events.length, 0);
+});

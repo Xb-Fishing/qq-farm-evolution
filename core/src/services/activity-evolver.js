@@ -1390,6 +1390,7 @@ function buildCachedActivityContext({ activityPlan = null, pendingActivity = nul
   const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(id => id > 0).join('、') || '无';
   const lines = [
     CACHED_ACTIVITY_CONTEXT_HEADER,
+    '- 每日逐项复核所有在架活动与独立节日签到：读取 online.festivalCalendar、online.groups 的完整奖励档位及官方公告正文；同一活动 ID 下新增节令、题目、奖励种类、数量、档位和活动时间也算更新。不得以已适配、无新增编号或旧快照判定没有变化；服务端缺失状态和读取失败须明确保留。',
     `- 最新活动扫描报告：${reportAvailable ? '可用；先读取现成 core/data/activity-update-report.json，缓存摘要构造器不新增任何游戏请求' : plan ? '当前不可用；沿用原任务已捕获的活动计划与证据指纹，核对原本机已有证据，材料不足保留待处理，不新增游戏请求' : '不可用；本轮只完成安全巡检部分，不为了等待报告重试'}`,
   ];
   if (plan) {

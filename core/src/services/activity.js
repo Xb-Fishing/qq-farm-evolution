@@ -376,11 +376,11 @@ function normalizeDiscoveryActivity(node) {
         rewardClaimed: summary.daily?.daily_reward_claimed === true,
         firstShareAwarded: summary.daily?.first_share_awarded === true,
       },
-      milestones: (summary.milestones || []).slice(0, 30).map(tier => ({
+      milestones: (summary.milestones || []).map(tier => ({
         id: toNum(tier.tier_id),
         threshold: toNum(tier.threshold),
         state: toNum(tier.state),
-        rewards: (tier.rewards || []).slice(0, 20).map(normalizeCoreItem),
+        rewards: (tier.rewards || []).map(normalizeCoreItem),
       })),
     };
   }

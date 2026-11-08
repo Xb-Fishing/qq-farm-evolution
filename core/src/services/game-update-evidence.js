@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { gameDateKey } = require('../config/game-date');
+const { solarCatalog } = require('./activity-catalog-facts');
 const network = require('../utils/network');
 const { getDataDir } = require('../config/runtime-paths');
 const CACHE_MS = 60000;
@@ -150,7 +151,7 @@ async function collectGameUpdateEvidence(options = {}) {
       const seasonClaimable = raw.seasons.filter(row => row.canClaim === true).length;
       return { count: events.length, open: raw.events.filter(row => row.open).length,
         eventClaimable, seasonClaimable, claimable: eventClaimable + seasonClaimable,
-        factsHash: digest([events, seasons]), state: raw };
+        factsHash: digest(solarCatalog(raw)), state: raw };
     });
     await record('tasks', raw => {
       const info = raw?.task_info;

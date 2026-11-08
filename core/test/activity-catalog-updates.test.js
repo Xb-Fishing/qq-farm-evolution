@@ -1,0 +1,65 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const data = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-catalog-update-'));
+process.env.FARM_DATA_DIR = data;
+test.after(() => fs.rmSync(data, { recursive: true, force: true }));
+const { normalizeDiscoveryActivity } = require('../src/services/activity');
+const { getItemById, getItemImageById } = require('../src/config/gameConfig');
+const { calendarDto } = require('../src/services/solar-calendar');
+const { computeReportDigest } = require('../src/services/activity-update-monitor');
+const { recordUpdateDigest, captureUpdateBatch, updateTriggerFingerprint } = require('../src/services/game-update-digest');
+const group = () => ({ id: 2026110100, children: [{ id: 2026110104, details: { shareReward: { currentScore: 140, daily: { rewardClaimed: false }, milestones: [{ id: 1, threshold: 10, state: 2, rewards: [{ itemId: 80002, itemCount: 1 }] }] } } }] });
+const report = groups => ({ scannedAt: Date.now(), online: { available: true, activities: [], unknownActivityIds: [], groups } });
+test('same activity detects new gift tiers, changed rewards and rules, while claim/score progress is stable and durable', () => {
+  const root = group(); const a = report([root]); const original = computeReportDigest(a);
+  recordUpdateDigest(data, a, original);
+  const share = root.children[0].details.shareReward;
+  share.currentScore++; share.daily.rewardClaimed = true; share.milestones[0].state = 3;
+  assert.equal(computeReportDigest(a), original);
+  const initial = recordUpdateDigest(data, a, original).unreviewed.length;
+  share.milestones.push({ id: 2, threshold: 80, state: 2, rewards: [{ itemId: 101616, itemCount: 1 }] });
+  assert.notEqual(computeReportDigest(a), original);
+  const changed = recordUpdateDigest(data, a, computeReportDigest(a));
+  assert.equal(changed.unreviewed.length, initial + 1);
+  assert.equal(changed.unreviewed.at(-1).source, 'activities');
+  assert.ok(updateTriggerFingerprint(captureUpdateBatch(data)), 'same-ID reward update must reach immediate evolution dispatch');
+  assert.equal(recordUpdateDigest(data, a, computeReportDigest(a)).unreviewed.length, initial + 1);
+  const missing = { ...a, online: { available: false, groups: [] } };
+  assert.equal(recordUpdateDigest(data, missing, computeReportDigest(missing)).unreviewed.length, initial + 1);
+  const failedGroup = report([{ id: root.id, error: 'read failed' }]);
+  assert.equal(recordUpdateDigest(data, failedGroup, computeReportDigest(failedGroup)).unreviewed.length, initial + 1);
+  share.milestones[1].rewards[0].itemCount = 2;
+  assert.equal(recordUpdateDigest(data, a, computeReportDigest(a)).unreviewed.length, initial + 2);
+  root.children[0].payload = { tips: { txt: ['新增礼包规则'] } };
+  assert.equal(recordUpdateDigest(data, a, computeReportDigest(a)).unreviewed.length, initial + 3);
+});
+test('all returned share tiers/rewards survive decoding and new gifts resolve to usable gift items with dedicated icons', () => {
+  const milestones = Array.from({ length: 35 }, (_, i) => ({ tier_id: i + 1, threshold: i * 10, state: 2, rewards: Array.from({ length: 25 }, () => ({ id: 101616, count: 1 })) }));
+  const dto = normalizeDiscoveryActivity({ activity: { id: 2026110104 }, share_reward: { summary: { milestones } } });
+  assert.equal(dto.details.shareReward.milestones.length, 35);
+  assert.equal(dto.details.shareReward.milestones[34].rewards.length, 25);
+  for (const id of [101616, 101617]) {
+    assert.equal(getItemById(id).name, '奶茶券惊喜礼包');
+    assert.equal(getItemById(id).can_use, 1);
+    assert.match(getItemImageById(id), /101616_icon_s4_shareTeaPack/);
+    assert.match(getItemById(id).desc, /概率/);
+  }
+});
+test('立冬 uses dynamic window/rewards and manual options; absent server state remains explicitly unavailable', () => {
+  const now = 1794150000;
+  const row = { id: 403, window_status: 2, open_start_time: now - 10, open_end_time: now + 10, rewards: [{ id: 1002, count: 200 }] };
+  const dto = calendarDto({ server_time: now, events: [row], seasons: [] });
+  assert.equal(dto.events[0].name, '立冬');
+  assert.match(dto.events[0].question, /北方/);
+  assert.equal(dto.events[0].options.length, 4);
+  assert.equal(dto.events[0].canClaim, true);
+  assert.equal(dto.events[0].canAnswer, true);
+  assert.equal(Object.hasOwn(dto.events[0], 'answerIndex'), false);
+  const missing = calendarDto({ server_time: now, events: [], seasons: [] }).missingEvents.find(event => event.id === 403);
+  assert.equal(missing.stateAvailable, false);
+  assert.equal(missing.canClaim, false);
+  assert.equal(missing.canAnswer, false);
+});

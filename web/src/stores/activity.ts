@@ -619,7 +619,7 @@ export interface MilkTeaItem { id: number, count?: string | number, name?: strin
 export interface MilkTeaShareReward {
   currentScore?: number
   daily?: { rewardClaimed?: boolean, firstShareAwarded?: boolean, claimedCount?: number, claimLimit?: number }
-  milestones?: Array<{ id?: number, threshold?: number, state?: number, rewards?: Array<{ itemId?: number, itemCount?: number, itemName?: string, image?: string }> }>
+  milestones?: Array<{ id?: number, threshold?: number, state?: number, rewards?: Array<{ itemId?: number, itemCount?: number, itemName?: string, image?: string, description?: string }> }>
 }
 export interface MilkTeaExchangeBounds {
   requestMax: number
@@ -662,6 +662,7 @@ export interface MilkTeaActivityData {
   inventory?: { available?: boolean, ticketCount?: number, boostItemCount?: number }
   exchangeShop?: { items?: Array<{ id: number, name?: string, rewards?: MilkTeaItem[], costs?: MilkTeaItem[], purchaseLimit?: number, purchaseLimitKnown?: boolean, purchasedCountKnown?: boolean, purchasedCount?: number, diamondCostCount?: number, exchangeBounds?: MilkTeaExchangeBounds }> }
   growthFund?: { unlocked?: boolean, tiers?: Array<{ tierId?: number, state?: number, conditions?: Array<{ reached?: boolean }>, reward?: MilkTeaItem[] }> }
+  happyShareUpdate?: { notice: string, giftTiersAvailable: boolean, gifts: Array<{ id: number, name: string, platform: string, description: string, image?: string }> }
   shareReward?: MilkTeaShareReward
   automationStatus?: MilkTeaAutomationStatus | null
   gameplay?: Partial<Record<'shop' | 'workshop' | 'work', {

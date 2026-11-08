@@ -4,6 +4,7 @@ const path = require('node:path');
 const { readUpdateDigest, recordUpdateDigest } = require('./game-update-digest');
 const { getDataFile } = require('../config/runtime-paths');
 const { scanActivityUpdates } = require('./activity-update-scanner');
+const { activityCatalog } = require('./activity-catalog-facts');
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000;
 const MANUAL_SCAN_UPSTREAM_CACHE_MS = 2 * 60 * 1000;
@@ -78,6 +79,7 @@ function computeReportDigest(value) {
     groups: (online.groups || []).map((item) => `${Number(item?.id)}:${item?.reviewKind || ''}`).sort(),
     activityIds: (online.activities || []).map((item) => Number(item?.id)).filter(id => id > 0).sort((a, b) => a - b),
     sourceVersion: String(value?.source?.version || ''),
+    catalog: activityCatalog(online.groups),
     gameFacts: value?.online?.gameUpdateEvidence?.factsComplete === true ? value.online.gameUpdateEvidence.semanticHash : '',
   };
   return crypto.createHash('sha256').update(JSON.stringify(stable)).digest('hex').slice(0, 32);

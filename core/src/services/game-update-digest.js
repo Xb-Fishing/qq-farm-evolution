@@ -1,10 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { activityCatalog } = require('./activity-catalog-facts');
 
 const HASH = /^[a-f0-9]{64}$/;
 const SOURCE_NAMES = ['announcements', 'emails', 'solarCalendar', 'tasks', 'illustrated', 'mall'];
-const SOURCE_KEYS = new Set([...SOURCE_NAMES, 'emails.1', 'emails.2']);
+const SOURCE_KEYS = new Set([...SOURCE_NAMES, 'emails.1', 'emails.2', 'activities']);
 const MAX_EVENTS = 2000;
 const MAX_CONTEXT_EVENTS = 24;
 const MAX_BYTES = 1024 * 1024;
@@ -121,6 +122,13 @@ function recordUpdateDigest(dataDir, scanned, reportDigest) {
     if (evidence.semanticHash !== previous?.gameFacts) append({ kind: 'game_facts', digest: evidence.semanticHash, firstSeenAt: scanned.scannedAt });
     value.gameFacts = evidence.semanticHash;
   }
+  // Only successful group reads replace the previous catalog. A failed read
+  // must not look like removal of every reward.
+  if (scanned.online?.available === true && Array.isArray(scanned.online.groups)
+      && !scanned.online.groups.some(group => group?.error)
+      && (scanned.online.groups.length > 0 || value.sourceHashes.activities)) {
+    observe('activities', hash(activityCatalog(scanned.online.groups)));
+  }
   return writeUpdateDigest(dataDir, value);
 }
 
@@ -155,7 +163,7 @@ function validateUpdateBatch(batch) {
   return { ...batch, entries };
 }
 
-function isUpdateTrigger(entry) { return entry.kind !== 'source_changed' || entry.source === 'announcements'; }
+function isUpdateTrigger(entry) { return entry.kind !== 'source_changed' || ['announcements', 'activities', 'solarCalendar'].includes(entry.source); }
 
 function updateTriggerFingerprint(batch) {
   const entries = validateUpdateBatch(batch).entries.filter(isUpdateTrigger);

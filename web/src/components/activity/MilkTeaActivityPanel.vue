@@ -677,13 +677,21 @@ function exchange(goods: ExchangeGoods) {
         </div>
         <div>
           <div class="milk-subheading">
-            <h4>快乐值奖励</h4><span class="milk-badge">{{ number(activity?.shareReward?.currentScore) }} 快乐值</span>
+            <h4>快乐不独享 · 快乐值奖励</h4><span class="milk-badge">{{ number(activity?.shareReward?.currentScore) }} 快乐值</span>
           </div><p class="milk-muted">
             每日快乐值 {{ activity?.shareReward?.daily?.rewardClaimed == null ? '待确认' : activity.shareReward.daily.rewardClaimed ? '已领取' : '未领取' }} · 首次分享奖励 {{ activity?.shareReward?.daily?.firstShareAwarded == null ? '待确认' : activity.shareReward.daily.firstShareAwarded ? '已领取' : '未领取' }}
           </p><p class="milk-muted">
             好友快乐包今日已领 {{ number(activity?.shareReward?.daily?.claimedCount) }} / {{ number(activity?.shareReward?.daily?.claimLimit) }}；与每日、首次分享奖励分别计算。开启奶茶自动领奖后自动领取合格快乐值奖励。
-          </p><p v-for="(tier, index) in activity?.shareReward?.milestones || []" :key="index" class="milk-list-row">
-            快乐值档位 {{ number(tier.threshold) }} · {{ tier.state === 2 ? '可领取' : tier.state === 3 ? '已领取' : '暂不可领取' }}<span v-for="(item, itemIndex) in tier.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item.image" :src="item.image" :alt="item.itemName || '奖励'"><span>{{ item.itemName || '未知物品' }} × {{ number(item.itemCount) }}</span></span>
+          </p>
+          <div v-if="activity?.happyShareUpdate" class="milk-muted">
+            <p>{{ activity.happyShareUpdate.notice }}</p>
+            <p v-if="!activity.happyShareUpdate.giftTiersAvailable">当前账号尚未下发奶茶券惊喜礼包档位，不能据旧档位认定新增奖励已领完；可刷新状态核对。已获得的礼包可前往背包查看和使用。</p>
+            <details><summary>奶茶券惊喜礼包说明</summary>
+              <p v-for="gift in activity.happyShareUpdate.gifts" :key="gift.id">{{ gift.name }}（{{ gift.platform }}）：{{ gift.description }}</p>
+            </details>
+          </div>
+          <p v-for="(tier, index) in activity?.shareReward?.milestones || []" :key="index" class="milk-list-row">
+            快乐值档位 {{ number(tier.threshold) }} · {{ tier.state === 2 ? '可领取' : tier.state === 3 ? '已领取' : '暂不可领取' }}<span v-for="(item, itemIndex) in tier.rewards || []" :key="itemIndex" class="milk-reward"><img v-if="item.image" :src="item.image" :alt="item.itemName || '奖励'"><span :title="item.description">{{ item.itemName || '未知物品' }} × {{ number(item.itemCount) }}</span></span>
           </p><div class="milk-actions">
             <BaseButton class="milk-action" variant="primary" :disabled="busy || activity?.shareReward?.daily?.rewardClaimed === true" @click="prepare('shareDaily')">
               领取每日快乐值

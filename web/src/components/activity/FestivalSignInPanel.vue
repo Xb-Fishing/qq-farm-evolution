@@ -155,6 +155,14 @@ const time = (value: number) => value > 0 ? new Date(value * 1000).toLocaleStrin
     <p v-if="calendar && !currentEvents.length" class="muted">
       当前没有开放的节令签到；季度图鉴奖励仍可查看。
     </p>
+    <p v-if="calendar" class="muted">
+      状态时间：{{ time(calendar.serverTime) }}。奖励与领取资格以当前账号的服务端状态为准。
+    </p>
+    <div v-if="calendar?.missingEvents?.length" role="status" class="muted">
+      <p v-for="event in calendar.missingEvents" :key="event.id">
+        {{ event.name }}：配置已更新，当前账号的服务端尚未下发状态，暂不能领取或答题。
+      </p>
+    </div>
     <div class="festival-grid">
       <article v-for="event in currentEvents" :key="event.id">
         <h3>{{ event.name }} <small>{{ event.open ? '进行中' : '当前不可参与' }}</small></h3>
