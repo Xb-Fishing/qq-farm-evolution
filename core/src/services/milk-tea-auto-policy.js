@@ -4,7 +4,7 @@
  *
  * 只做三件事，无网络、无持久化、无 Worker 状态，store 与 milk-tea 服务共享：
  * 1. 默认值与 failclosed 规范化（无效输入关闭购买目标，绝不把额度 0 变成默认大值）；
- * 2. 本期活动种子白名单（CONFIG.activitySeedItemIds 八项）；
+ * 2. 完整本机种子目录校验（执行仍仅使用当前奶茶商城在售商品）；
  * 3. 购种份数/预算的 BigInt 精确计算。
  *
  * 金额一律用非负整数字符串承载（protobuf count 是 int64），比较用 BigInt。
@@ -13,8 +13,7 @@
 const CONFIG = require('../gameConfig/MilkTeaActivity.json');
 const toNum = value => Number(value) || 0;
 
-// 本期已登记八项活动种子（20525/26/27/28/29、21435、20021、29005）。
-// 自动购种目标只能来自这份名单；名单外的目标一律拒绝。
+// 历史本期推荐项保留给兼容调用者；不再限制用户可保存的完整种子目录。
 const ACTIVITY_SEED_ITEM_IDS = Object.freeze((CONFIG.activitySeedItemIds || []).map(toNum).filter(id => id > 0));
 
 // 允许自动支付的活动货币：金币 1001、奶茶券 1041。其余（含钻石 1004）零写。
@@ -35,7 +34,13 @@ const DEFAULT_SEED_POLICY = Object.freeze({
 });
 
 const MAX_TARGET_STOCK = 9999;
-const MAX_TARGET_SEEDS = 8;
+const MAX_TARGET_SEEDS = 4096;
+function registeredSeedIds() {
+    return require('../config/gameConfig').getAllSeeds().map(row => Number(row.seedId));
+}
+function isRegisteredSeedId(id) {
+    return Number.isSafeInteger(id) && id > 0 && registeredSeedIds().includes(id);
+}
 const INTERACTION_TYPES = new Set(CONFIG.interactionTypes.map(row => row.id));
 
 // 工程推荐雇佣预算（非官方安全保证）：最短 4h 班（40 券/人），独立于购种预算；
@@ -57,8 +62,8 @@ function parseExactCount(value) {
     return value;
 }
 
-/** 白名单内的正整数种子 ID 列表（去重，保持输入顺序，最多 8 项）。 */
-function normalizeTargetSeedIds(raw, allowedIds = ACTIVITY_SEED_ITEM_IDS) {
+/** 完整目录内的正整数种子 ID 列表（去重，保持输入顺序，有限载荷）。 */
+function normalizeTargetSeedIds(raw, allowedIds = registeredSeedIds()) {
     if (!Array.isArray(raw)) return null;
     const allowed = new Set(allowedIds);
     const result = [];
@@ -278,6 +283,8 @@ function unitCostsToArray(unitCosts) {
 
 module.exports = {
     ACTIVITY_SEED_ITEM_IDS,
+    registeredSeedIds,
+    isRegisteredSeedId,
     ALLOWED_AUTO_COST_ITEM_IDS,
     COIN_ITEM_ID,
     TICKET_ITEM_ID,

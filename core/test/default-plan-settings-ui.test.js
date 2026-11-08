@@ -76,6 +76,7 @@ async function mountPage(t, config = completeConfig()) {
   const api = {
     failure: null,
     async get(url) {
+      if (url === '/api/activity/milk-tea/seed-catalog') return { data: { ok: true, seeds: [{id:20525,name:'森野甜莓种子'},{id:21435,name:'森野柿子种子'}] } };
       assert.equal(url, endpoint, 'no production or unrelated API calls');
       calls.push({ method: 'get', url });
       return { data: { ok: true, data: clone(stored) } };
@@ -128,6 +129,7 @@ function button(root, label) {
 }
 
 function input(root, label) {
+  const direct = findAll(root, node => node.tag === 'input' && node.props['aria-label'] === label)[0]; if (direct) return direct;
   const found = findAll(root, node => node.tag === 'label' && textOf(node).trim() === label)[0];
   assert.ok(found, `missing real control label: ${label}`);
   const children = findAll(found, node => node.tag === 'input');
@@ -140,9 +142,9 @@ async function setSwitch(page, label, value) {
   const checkbox = input(page.root, label);
   assert.equal(checkbox.props.type, 'checkbox');
   // Drive the real checkbox's model handler through BaseSwitch and both parent models.
-  checkbox.props['onUpdate:modelValue'](value);
-  await vue.nextTick();
-  assert.equal(input(page.root, label).checked, value, 'real checkbox must reflect the emitted value');
+  if (checkbox.props['onUpdate:modelValue']) checkbox.props['onUpdate:modelValue'](value); else checkbox.props.onChange({target:{checked:value}});
+  await flush();
+  assert.equal(input(page.root, label).props.checked ?? input(page.root, label).checked, value, 'real checkbox must reflect the emitted value');
 }
 
 test('dedicated milk rewards switch saves and remounts without enabling ordinary tasks', async t => {
@@ -296,7 +298,7 @@ test('milk seed/work/upgrade preferences and exact budgets survive real default-
   assert.equal(saved.automation.milk_tea_auto_seeds, true); assert.equal(saved.automation.milk_tea_auto_work, true); assert.equal(saved.automation.milk_tea_auto_upgrade, true);
   assert.deepEqual(saved.automation.milk_tea_seed_policy.targetSeedIds, [20525]); assert.equal(saved.automation.milk_tea_seed_policy.ticketDailyLimit, '0');
   assert.equal(saved.automation.task, false);
-  await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '森野甜莓种子').checked, true);
+  await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '森野甜莓种子').props.checked, true);
   page.api.failure = 'response'; await save(page); assert.ok(page.notifications.some(row => row[1] === 'danger'));
 });
 

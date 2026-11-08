@@ -77,11 +77,13 @@ withDefaults(defineProps<{
   fertilizerOptions: { label: string, value: string | number }[]
   title?: string
   saveLabel?: string
+  templateMode?: boolean
   showRunAutoCodeRefresh?: boolean
 }>(), {
   title: '自动控制',
   saveLabel: '保存自动控制',
   showRunAutoCodeRefresh: true,
+  templateMode: false,
 })
 
 const emit = defineEmits<{
@@ -175,7 +177,7 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.golden_bug_clear" label="自动清除黄金虫" />
       </div>
 
-      <MilkTeaAutomationSettings v-model:automation="settings.automation" />
+      <MilkTeaAutomationSettings v-model:automation="settings.automation" :account-id="currentAccountId" :template-mode="templateMode" />
 
       <Transition name="fade">
         <div v-if="mysteryShopSettingsVisible" class="fixed inset-0 z-50 grid place-items-center bg-gray-950/45 p-4 backdrop-blur-[2px]" @click.self="mysteryShopSettingsVisible = false">

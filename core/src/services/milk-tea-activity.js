@@ -576,7 +576,7 @@ function getMilkTeaExchangeBounds(goods, inventory, timing = {}) {
   const block = reason => ({ ...bounds, maxCount: 0, blockReason: reason });
   if (toNum(goods.diamondCostCount) > 0 || (goods.costs || []).some(cost => toNum(cost.id) === DIAMOND_ITEM_ID)) return block('该商品涉及钻石，暂不支持兑换');
   if ((goods.condHints || []).some(hint => hint.satisfied === false)) return block('尚未满足兑换条件');
-  if (timing.phase === 'settle' && (goods.rewards || []).some(item => (CONFIG.activitySeedItemIds || []).includes(toNum(item.id)))) return block('结算期已停止种子兑换');
+  if (timing.phase === 'settle' && (goods.rewards || []).some(item => milkTeaPolicy.isRegisteredSeedId(toNum(item.id)))) return block('结算期已停止种子兑换');
   if (bounds.remainingLimit === 0) return block('已达限购上限');
   let totals;
   try { totals = costTotals(goods.costs || []); } catch { totals = null; }
@@ -1227,7 +1227,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
     const exchangeShop = findChild(MILK_TEA_SHOP_ACTIVITY_ID)?.details?.exchangeShop || null;
     const growthFund = findChild(MILK_TEA_FUND_ACTIVITY_ID)?.details?.growthFund || null;
     const shareReward = findChild(MILK_TEA_HAPPY_SHARE_ACTIVITY_ID)?.details?.shareReward || null;
-    if (['claimWages', 'interact', 'upgrade'].includes(action) || (action === 'exchange' && list(exchangeShop?.items).some(row => num64(row.id) === Number(input.goodsId) && list(row.rewards).some(item => CONFIG.activitySeedItemIds.includes(num64(item.id)))))) {
+    if (['claimWages', 'interact', 'upgrade'].includes(action) || (action === 'exchange' && list(exchangeShop?.items).some(row => num64(row.id) === Number(input.goodsId) && list(row.rewards).some(item => milkTeaPolicy.isRegisteredSeedId(num64(item.id)))))) {
       reconcileActionState({ summary, goodsById: new Map(list(exchangeShop?.items).map(row => [num64(row.id), row])), nowMs: nowSec() * 1000 });
     }
 
@@ -1514,7 +1514,7 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
       // 结算期停止活动专属种子购买（种子名单来自当前商城下发与固定配置交叉；
       // 相位用「当前时间」重算，非种子商品不受影响）
       const rewardIds = new Set((goods.rewards || []).map(item => toNum(item.id)));
-      const seedIds = new Set((CONFIG.activitySeedItemIds || []).map(toNum));
+      const seedIds = new Set(milkTeaPolicy.registeredSeedIds());
       if (timingOf(timingSource, nowSec()).phase === 'settle'
         && [...rewardIds].some(id => seedIds.has(id))) {
         fail('SEASON_WISH_MILK_TEA_SETTLING_SEEDS', '结算期已停止活动专属种子购买');
@@ -1547,11 +1547,10 @@ async function runManualMilkTeaAction(action, input = {}, deps = {}) {
           fail('SEASON_WISH_MILK_TEA_INSUFFICIENT', '兑换余额不足');
         }
       }
-      const activitySeedSet = new Set((CONFIG.activitySeedItemIds || []).map(toNum));
       deps.validateAutomaticPurchase?.({ goods, balances });
       exchangeDeclaration = {
         goodsId,
-        seedId: (goods.rewards || []).map(item => toNum(item.id)).find(id => activitySeedSet.has(id)) || 0,
+        seedId: (goods.rewards || []).map(item => toNum(item.id)).find(id => milkTeaPolicy.isRegisteredSeedId(id)) || 0,
         count,
         baselinePurchased: goods.purchasedCountKnown === true && Number.isSafeInteger(Number(goods.purchasedCount)) ? Number(goods.purchasedCount) : null,
         counterKnown: goods.purchasedCountKnown === true,
@@ -2197,7 +2196,7 @@ function seedPurchaseForGoods(auto, goods, balances, nowMs, onBlocked) {
   const rewards = rewardAmounts(goods.rewards);
   if (!rewards || Object.keys(rewards).length !== 1) return blocked('购种暂停：商品奖励身份或数量未确认');
   const seedId = Number(Object.keys(rewards)[0]);
-  if (!policy.targetSeedIds.includes(seedId) || !milkTeaPolicy.ACTIVITY_SEED_ITEM_IDS.includes(seedId)) return null;
+  if (!policy.targetSeedIds.includes(seedId) || !milkTeaPolicy.isRegisteredSeedId(seedId)) return null;
   const each = BigInt(rewards[seedId]);
   if (each > 9999n) return null;
   const totals = milkTeaPolicy.mergeCosts(list(goods.costs).map(row => ({ itemId: num64(row.id), count: str64(row.count) })));

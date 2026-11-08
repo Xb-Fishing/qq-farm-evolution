@@ -429,6 +429,7 @@ onMounted(fetchPlan)
       :saving="saving"
       :auto-code-refreshing="false"
       :show-run-auto-code-refresh="false"
+      :template-mode="true"
       title="默认自动控制"
       save-label="保存默认方案"
       :fertilizer-land-type-options="fertilizerLandTypeOptions"

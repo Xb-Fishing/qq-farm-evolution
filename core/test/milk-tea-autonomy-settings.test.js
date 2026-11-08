@@ -15,7 +15,11 @@ async function fixture(t) {
   const alerts = []; const calls = [];
   const saved = { automation: { task: false, milk_tea_auto_rewards: false } };
   const api = { fail: false, pending: null,
-    async get() { return { data: { ok: true, data: clone(saved) } }; },
+    async get(url) {
+      if (url === '/api/activity/milk-tea/seed-catalog') return { data: { ok: true, seeds: [20525, 20526, 29005, 21435].map(id => ({ id, name: ({20525:'森野甜莓种子',20526:'森野白桃种子',29005:'森野黄金芽种子',21435:'森野柿子种子'})[id] })) } };
+      if (url === '/api/activity/milk-tea') return { data: { ok: true, activity: { timing: { phase: 'open' }, exchangeShop: { items: [20525,20526,29005,21435].map(id => ({ id, rewards: [{id,count:'1'}], costs:[{id:1001,count:'10000'}], condHints:[], automaticPurchaseDataComplete:true,purchaseLimitKnown:true,purchasedCountKnown:true,purchaseLimit:100,purchasedCount:0 })) } } } };
+      return { data: { ok: true, data: clone(saved) } };
+    },
     async post(url, body) { calls.push({ url, body: clone(body) }); if (api.pending) await api.pending.promise;
       if (api.fail) return { data: { ok: false, error: 'synthetic save rejected' } };
       if (url === '/api/automation') {
@@ -44,8 +48,8 @@ async function fixture(t) {
   return { root, alerts, calls, account, api, store, get control() { return control; }, reload: () => { render(null, root); mount(); }, saved: () => saved };
 }
 const button = (root, label) => { const node = buttonsOf(root).find(node => textOf(node).trim() === label); assert.ok(node, label); return node; };
-function checkbox(root, label) { const node = findAll(root, row => row.tag === 'label' && textOf(row).trim() === label)[0]; assert.ok(node, label); return findAll(node, row => row.tag === 'input')[0]; }
-async function toggle(f, label, value) { checkbox(f.root, label).props['onUpdate:modelValue'](value); await vue.nextTick(); }
+function checkbox(root, label) { const direct = findAll(root, row => row.tag === 'input' && row.props['aria-label'] === label)[0]; if (direct) return direct; const node = findAll(root, row => row.tag === 'label' && textOf(row).trim() === label)[0]; assert.ok(node, label); return findAll(node, row => row.tag === 'input')[0]; }
+async function toggle(f, label, value) { const node = checkbox(f.root, label); if (node.props['onUpdate:modelValue']) node.props['onUpdate:modelValue'](value); else node.props.onChange({target:{checked:value}}); await flush(); }
 function input(f, label, value) { const parent = findAll(f.root, row => row.tag === 'label' && textOf(row).trim() === label)[0]; assert.ok(parent, label); const node = findAll(parent, row => row.tag === 'input')[0]; node.props.onInput({ target: { value } }); }
 
 test('real account component, composition and Pinia store save and reload new policies without ordinary tasks', async t => {
@@ -61,7 +65,7 @@ test('real account component, composition and Pinia store save and reload new po
   assert.equal(payload.milk_tea_auto_seeds, true); assert.equal(payload.milk_tea_auto_work, true); assert.equal(payload.milk_tea_auto_upgrade, true);
   assert.equal(payload.milk_tea_auto_rewards, false); assert.equal(body.task, false); assert.equal(payload.milk_tea_work_interaction_type, 3);
   assert.deepEqual(payload.milk_tea_seed_policy.targetSeedIds, [20525, 29005]); assert.equal(payload.milk_tea_seed_policy.ticketDailyLimit, '8000');
-  f.reload(); await flush(); assert.equal(checkbox(f.root, '自动购买活动种子').checked, true); assert.equal(checkbox(f.root, '森野黄金芽种子').checked, true);
+  f.reload(); await flush(); assert.equal(checkbox(f.root, '自动购买活动种子').checked, true); assert.equal(checkbox(f.root, '森野黄金芽种子').props.checked, true);
 });
 test('ordinary response failure and rejected save show failure and release loading, never false success', async t => {
   for (const mode of ['response', 'throw']) {
@@ -152,7 +156,7 @@ test('old save finally cannot clear a new account read loading owner', async t =
 });
 
 test('real settings component renders absent or partial legacy policy without a crash or invented zero budget', () => {
-  const Component = compileSfcModule(path.join(WEB, 'src/components/settings/MilkTeaAutomationSettings.vue'), spec => spec === 'vue' ? vue : undefined);
+  const Component = compileSfcModule(path.join(WEB, 'src/components/settings/MilkTeaAutomationSettings.vue'), spec => spec === 'vue' ? vue : spec === '@/api' ? { __esModule: true, default: { get: async () => ({ data: { ok: true, seeds: [] } }) } } : undefined);
   for (const policy of [undefined, {}, { targetSeedIds: null, targetStock: 3 }]) {
     const root = makeNode('root');
     try {
@@ -172,7 +176,8 @@ test('real settings payload, route and provider publish milk authorization as on
   const routes = new Map(); const app = {};
   for (const method of ['get', 'post', 'put', 'delete']) app[method] = (url, handler) => routes.set(`${method} ${url}`, handler);
   require('../src/controllers/admin-farm-resource-routes').registerAdminFarmResourceRoutes({ app, provider, getAccountIdFromRequest: () => id, canAccessAccount: () => true });
-  f.api.get = async () => ({ data: { ok: true, data: backend.getConfigSnapshot(id) } });
+  const catalogGet = f.api.get;
+  f.api.get = async url => url.startsWith('/api/activity/milk-tea') ? catalogGet(url) : ({ data: { ok: true, data: backend.getConfigSnapshot(id) } });
   f.api.post = async (url, body) => {
     f.calls.push({ url, body: clone(body) });
     if (url === '/api/settings/save') return { data: { ok: true, data: await provider.saveSettings(id, body) } };
