@@ -52,8 +52,6 @@ const farmMin = intervalModel('farmMin')
 const farmMax = intervalModel('farmMax')
 const helpMin = intervalModel('helpMin')
 const helpMax = intervalModel('helpMax')
-const stealMin = intervalModel('stealMin')
-const stealMax = intervalModel('stealMax')
 
 function addPauseMinutes(minutes: number) {
   const current = Date.parse(settings.value.friendQuietHours.pauseUntil || '')
@@ -146,20 +144,9 @@ async function restartAccount() {
       />
     </div>
 
-    <div class="grid grid-cols-2 gap-3 md:grid-cols-2">
-      <BaseInput
-        v-model.number="stealMin"
-        label="偷菜巡查最小 (秒)"
-        type="number"
-        min="1"
-      />
-      <BaseInput
-        v-model.number="stealMax"
-        label="偷菜巡查最大 (秒)"
-        type="number"
-        min="1"
-      />
-    </div>
+    <p class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+      偷菜检查按好友作物成熟时间自动安排；暂无成熟时间时，约每5–8分钟重新发现。重点好友仍按在线状态和成熟时间检查。
+    </p>
 
     <div class="idle-rest-settings flex flex-wrap items-center gap-4 border-t pt-3 dark:border-gray-700">
       <BaseInput
