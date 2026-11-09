@@ -319,3 +319,82 @@ test('full milk preset and separate hire budget survive default-plan reload and 
   click(button(page.root, '保存默认方案')); await flush();
   assert.equal(page.calls.filter(row => row.method === 'put').length, before); assert.match(page.notifications.at(-1)[0], /雇佣/);
 });
+
+test('shared timing panel drops dead steal interval inputs and renders maturity scheduling note', async (t) => {
+  const config = completeConfig();
+  config.intervals.stealMin = 123;
+  config.intervals.stealMax = 456;
+  const page = await mountPage(t, config);
+  assert.doesNotMatch(textOf(page.root), /偷菜巡查最小|偷菜巡查最大/, 'ineffective steal interval inputs must not render');
+  assert.match(textOf(page.root), /偷菜检查按好友作物成熟时间自动安排/);
+  assert.match(textOf(page.root), /暂无成熟时间时，约每5–8分钟重新发现/);
+  assert.match(textOf(page.root), /重点好友仍按在线状态和成熟时间检查/);
+  for (const label of ['农场巡查最小 (秒)', '农场巡查最大 (秒)', '帮助巡查最小 (秒)', '帮助巡查最大 (秒)', '种植延迟 (秒)', '偷菜延迟 (秒)']) {
+    const control = input(page.root, label);
+    assert.equal(typeof control.props.onInput, 'function', `real control must stay editable: ${label}`);
+  }
+});
+
+test('non-default steal intervals survive real load, valid timing edits, save and remount', async (t) => {
+  const config = completeConfig();
+  config.intervals.stealMin = 123;
+  config.intervals.stealMax = 456;
+  const page = await mountPage(t, config);
+  assert.doesNotMatch(textOf(page.root), /偷菜巡查最小/);
+  await setInput(page, '农场巡查最小 (秒)', 11);
+  await setInput(page, '帮助巡查最大 (秒)', 44);
+  await setInput(page, '偷菜延迟 (秒)', 9);
+  const saved = await save(page);
+  assert.equal(saved.intervals.farmMin, 11);
+  assert.equal(saved.intervals.helpMax, 44);
+  assert.equal(saved.stealDelaySeconds, 9);
+  assert.equal(saved.intervals.stealMin, 123, 'compat stealMin must pass through the real model chain untouched');
+  assert.equal(saved.intervals.stealMax, 456, 'compat stealMax must pass through the real model chain untouched');
+  await page.reload();
+  assert.equal(input(page.root, '农场巡查最小 (秒)').props.value, 11);
+  const reloaded = await save(page);
+  assert.equal(reloaded.intervals.stealMin, 123);
+  assert.equal(reloaded.intervals.stealMax, 456);
+  assert.equal(reloaded.intervals.farmMin, 11);
+});
+
+test('page load and local timing edits perform zero PUT', async (t) => {
+  const config = completeConfig();
+  config.intervals.stealMin = 123;
+  config.intervals.stealMax = 456;
+  const page = await mountPage(t, config);
+  assert.equal(page.calls.filter(call => call.method === 'put').length, 0, 'mount must not save');
+  await setInput(page, '农场巡查最大 (秒)', 21);
+  await setInput(page, '帮助巡查最小 (秒)', 33);
+  await setSwitch(page, '启用静默时段', true);
+  await flush();
+  assert.equal(page.calls.filter(call => call.method === 'put').length, 0, 'local edits must not save');
+  assert.equal((await save(page)).intervals.farmMax, 21, 'only an explicit save issues one PUT');
+  assert.equal(page.calls.filter(call => call.method === 'put').length, 1, 'explicit save must issue exactly one PUT');
+});
+
+for (const failure of ['response', 'throw']) {
+  test(`failed save (${failure}) keeps saved compatibility steal intervals after reload`, async (t) => {
+    const config = completeConfig();
+    config.intervals.stealMin = 123;
+    config.intervals.stealMax = 456;
+    const page = await mountPage(t, config);
+    await setInput(page, '农场巡查最小 (秒)', 13);
+    const saved = await save(page);
+    assert.equal(saved.intervals.farmMin, 13);
+    assert.equal(saved.intervals.stealMin, 123);
+    assert.equal(saved.intervals.stealMax, 456);
+    page.api.failure = failure;
+    await setInput(page, '帮助巡查最小 (秒)', 31);
+    await save(page);
+    assert.equal(page.notifications.at(-1)[1], 'danger');
+    await page.reload();
+    page.api.failure = null;
+    const retained = await save(page);
+    assert.equal(page.notifications.at(-1)[0], '默认方案已保存', 'normal saving must recover after re-entry');
+    assert.equal(retained.intervals.stealMin, 123, 'saved compat stealMin survives a failed save and reload');
+    assert.equal(retained.intervals.stealMax, 456, 'saved compat stealMax survives a failed save and reload');
+    assert.equal(retained.intervals.farmMin, 13);
+    assert.equal(retained.intervals.helpMin, 30, 'reloaded draft must come from the stored config, not the unsaved edit');
+  });
+}
