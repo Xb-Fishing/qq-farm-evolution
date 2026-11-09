@@ -91,6 +91,9 @@ function createWorkerManager(deps) {
         const job = businessRecoveries.get(String(id));
         if (job) { job.cancelled = true; scheduler.clear(job.timerKey); businessRecoveries.delete(String(id)); }
     }
+    // 探查型恢复只做有界确认：控制通道握手与 status 读取均以 5 秒为限，
+    // 不影响 proc.refreshSession 的 15 秒、正常 adopt/游戏 RPC 与握手默认值。
+    const SESSION_RECOVERY_PROBE_TIMEOUT_MS = 5000;
     function queueBusinessRecovery(accountId, proc, reason = 'SESSION_EVENT_DELIVERY_FAILED') {
         const id = String(accountId);
         if (!persistentMode || managerClosing || (proc.businessInitialized === false && proc.recoverableAttach !== true)
@@ -131,10 +134,13 @@ function createWorkerManager(deps) {
                 && require('./session-registry').bindingIdentity(current) === stamp;
         };
         const accountCurrent = () => accountIdentityCurrent() && (!workers[id] || workers[id] === record);
-        const owns = () => accountCurrent() && workers[id] === record && !record.stopping;
+        const owns = () => accountCurrent() && workers[id] === record && record.process === proc && !record.stopping;
         const finish = () => { if (businessRecoveries.get(id) === job) businessRecoveries.delete(id); };
         const schedule = delay => scheduler.setTimeoutTask(job.timerKey, delay, async () => {
             if (!owns()) { finish(); return; }
+            // phase 只标记本次探查到达的阶段，供脱敏诊断使用；
+            // 不携带账号身份、原始 reason 或错误正文/堆栈。
+            let phase = 'refresh';
             try {
                 let before; let controlReconnect = false;
                 try { before = await proc.refreshSession(); }
@@ -142,9 +148,18 @@ function createWorkerManager(deps) {
                     if (!owns()) { finish(); return; }
                     if (discoveryLimited()) { finish(); return; }
                     discovery.times.push(Date.now());
-                    const found = await require('./session-registry').connectSession(dataDir, findAccount(id));
+                    phase = 'discover';
+                    const found = await require('./session-registry').connectSession(dataDir, findAccount(id), {
+                        connectTimeoutMs: SESSION_RECOVERY_PROBE_TIMEOUT_MS,
+                        handshakeTimeoutMs: SESSION_RECOVERY_PROBE_TIMEOUT_MS,
+                    });
+                    if (!owns()) {
+                        try { found.client?.close(); } finally { finish(); }
+                        return;
+                    }
                     if (found.state !== 'present') throw new Error('SESSION_CONTROL_UNAVAILABLE');
-                    try { before = await found.client.call('status', {}, 15000); } finally { found.client.close(); }
+                    phase = 'status';
+                    try { before = await found.client.call('status', {}, SESSION_RECOVERY_PROBE_TIMEOUT_MS); } finally { found.client.close(); }
                     controlReconnect = true;
                 }
                 if (!owns()) { finish(); return; }
@@ -191,6 +206,7 @@ function createWorkerManager(deps) {
                 log('系统', '正在恢复异常业务会话，保留原游戏连接', {
                     accountId: id, accountName: record.name, event: 'session_business_recovering', reason, attempt: job.tries,
                 });
+                phase = 'adopt';
                 const result = await tryAdoptAccountSession(id, { connectedOnly: true, isCurrent: accountCurrent,
                     onRecordReplaced: (previous, replacement) => {
                         // Only this recovery's own adopt-only replacement may
@@ -214,6 +230,16 @@ function createWorkerManager(deps) {
                 finish();
             } catch {
                 job.failures++;
+                // 有界脱敏诊断：仅阶段/次数/是否耗尽，日志中不出现账号
+                // 身份与原始 reason 或错误正文/堆栈；重试预算保持不变。
+                if (owns()) {
+                    try {
+                        log('系统', '常驻会话控制探查失败，保留原连接等待既有恢复预算', {
+                            event: 'session_control_recovery_failed', phase, attempt: job.failures,
+                            exhausted: job.failures >= 3 || job.tries >= 3,
+                        });
+                    } catch { /* 诊断写入失败不能打断退避或留下未清理的恢复 job。 */ }
+                }
                 if (owns() && job.failures < 3 && job.tries < 3) schedule(job.failures > 1 ? 5000 : 1000);
                 else finish();
             }
