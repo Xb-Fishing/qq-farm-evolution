@@ -5,12 +5,100 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { getDataFile } = require('../config/runtime-paths');
 const { collectRuntimePrivacyTerms, redactExternalText } = require('./privacy-guard');
 
 const MAX_EVENTS = 200; // 单日上限，够看且防刷爆
 
 const accounts = new Map(); // accountId -> { date, events: [] }
+const automationCleanupDays = new Map();
+const AUTOMATION_CATEGORIES = new Set(['task', 'rewards', 'warehouse', 'fertilizer', 'land', 'shop', 'friend', 'activity', 'login']);
+
+function automationFile(accountId, day = todayKey()) {
+  const id = String(accountId || 'default');
+  if (!/^[\w-]{1,80}$/.test(id)) throw new Error('invalid_event_account');
+  return getDataFile(`automation-actions-${id}-${day}.jsonl`);
+}
+
+// A separate append-only stream lets manager and business processes record
+// actions without replacing each other's cached daily-event snapshots.
+function recordAutomationEvent(accountId, category, message, level = 'info') {
+  if (!AUTOMATION_CATEGORIES.has(category)) return false;
+  const at = Date.now();
+  const operationDay = todayKeyAt(at);
+  try {
+    const file = automationFile(accountId, operationDay);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const entry = { kind: 'automation-action', id: crypto.randomUUID(), at, category,
+      level: ['warn', 'error'].includes(level) ? level : 'info', type: `auto_${category}`,
+      message: String(message || '').slice(0, 300) };
+    try { if (fs.lstatSync(file).isSymbolicLink()) return false; }
+    catch (error) { if (error.code !== 'ENOENT') return false; }
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1) return false;
+      try { fs.fchmodSync(fd, 0o600); }
+      catch (error) { if (process.platform !== 'win32') throw error; }
+      fs.appendFileSync(fd, `\n${JSON.stringify(entry)}\n`);
+    } finally { fs.closeSync(fd); }
+    const key = String(accountId || 'default');
+    if (automationCleanupDays.get(key) !== operationDay) {
+      automationCleanupDays.set(key, operationDay);
+      const prefix = `automation-actions-${key}-`;
+      for (const name of fs.readdirSync(path.dirname(file))) {
+        if (!name.startsWith(prefix) || !/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name.slice(prefix.length))
+          || name.slice(prefix.length, -6) >= operationDay) continue;
+        const old = path.join(path.dirname(file), name);
+        try {
+          if (!fs.lstatSync(old).isFile()) continue;
+          const fd = fs.openSync(old, 'r');
+          let first;
+          try {
+            const buffer = Buffer.alloc(2048);
+            const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+            first = buffer.subarray(0, size).toString('utf8').split('\n').find(line => line.trim());
+          } finally { fs.closeSync(fd); }
+          if (JSON.parse(first).kind === 'automation-action') fs.unlinkSync(old);
+        } catch { /* Keep unknown files and failed cleanup; never affect the action. */ }
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
+function readAutomationEvents(accountId) {
+  let fd;
+  try {
+    fd = fs.openSync(automationFile(accountId), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - 1024 * 1024);
+    const buffer = Buffer.alloc(size - start);
+    const bytes = fs.readSync(fd, buffer, 0, buffer.length, start);
+    const lines = buffer.subarray(0, bytes).toString('utf8').split('\n');
+    if (start > 0) lines.shift();
+    return lines.flatMap(line => {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.kind !== 'automation-action' || !AUTOMATION_CATEGORIES.has(entry.category)
+          || entry.type !== `auto_${entry.category}` || typeof entry.message !== 'string'
+          || todayKeyAt(entry.at) !== todayKey()) return [];
+        return [entry];
+      } catch { return []; }
+    }).slice(-MAX_EVENTS);
+  } catch { return []; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+function todayKeyAt(at) {
+  const date = new Date(Number(at) + 8 * 3600 * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : '';
+}
+
+function mergeAutomationEvents(accountId, events) {
+  return [...events, ...readAutomationEvents(accountId)].sort((a, b) => a.at - b.at).slice(-MAX_EVENTS);
+}
 
 function todayKey() {
   const d = new Date(Date.now() + 8 * 3600 * 1000); // 北京时间跨日
@@ -25,10 +113,10 @@ function readPersistedTodayEvents(accountId) {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath(String(accountId || 'default')), 'utf8'));
     if (raw && raw.date === todayKey() && Array.isArray(raw.events)) {
-      return raw.events.slice(-MAX_EVENTS);
+      return mergeAutomationEvents(accountId, raw.events.slice(-MAX_EVENTS));
     }
   } catch {}
-  return [];
+  return readAutomationEvents(accountId);
 }
 
 function load(accountId) {
@@ -93,7 +181,7 @@ function recordEvent(accountId, level, type, message) {
 }
 
 function getTodayEvents(accountId) {
-  return load(accountId).events;
+  return mergeAutomationEvents(accountId, load(accountId).events);
 }
 
 function sanitizeShareableMessage(event, runtimeTerms) {
@@ -217,9 +305,11 @@ function buildStealDailyEventLog(events, interactRecords, options = {}) {
 /** 测试用 */
 function resetForTest() {
   accounts.clear();
+  automationCleanupDays.clear();
 }
 
 module.exports = {
+  recordAutomationEvent,
   recordEvent,
   getTodayEvents,
   readPersistedTodayEvents,

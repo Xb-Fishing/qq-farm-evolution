@@ -168,8 +168,12 @@ async function checkAndAutoBuyMysteryShop() {
   if (automation.mystery_shop_auto_buy !== true) return { skipped: true, reason: 'disabled' };
 
   try {
+    require('./automation-observability').logAutomationQuery('shop', '正在查询神秘商人商品与购买资格');
     const offer = await getActiveMysteryShop();
-    if (!offer.active) return { skipped: true, reason: 'inactive' };
+    if (!offer.active) {
+      require('./automation-observability').logAutomationQuery('shop', '神秘商人查询完成：当前未营业');
+      return { skipped: true, reason: 'inactive' };
+    }
     if (!isCurrencyAllowed(offer.currencyId, automation)) {
       log('商城', `神秘商人自动购买已跳过：未允许使用${offer.currencyName}`, {
         module: 'shop', event: '神秘商人自动购买', result: 'skip', currencyId: offer.currencyId

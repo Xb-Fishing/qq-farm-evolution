@@ -652,6 +652,7 @@ async function visitFriend(friend, tally, myGid, accountId) {
       module: 'friend',
       event: '照顾好友',
       result: 'ok',
+      completedActions: actionLogs.filter(action => /^(?:[草虫水]|放[虫草])\d+$/.test(action)),
       friendName: name,
       friendGid: gid,
       actions: actionLogs,

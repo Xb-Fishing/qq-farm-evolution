@@ -677,7 +677,7 @@ async function autoBuyOrganicFertilizerViaMall() {
 
   if (totalBought > 0) {
     log('商城', `购买化肥成功，共购买 ${totalBought} 个`, {
-      module: 'warehouse', event: '购买化肥', result: 'ok', count: totalBought, type: 'organic',
+      module: 'warehouse', event: '购买化肥', result: 'ok', count: totalBought, type: 'organic', automationAction: true,
     });
   }
   return totalBought;
@@ -765,7 +765,7 @@ async function autoBuyFertilizerViaMall(type = 'organic', targetCount = 0, optio
 
   if (totalBought > 0) {
     log('商城', `购买化肥成功，共购买 ${totalBought} 个`, {
-      module: 'warehouse', event: '购买化肥', result: 'ok', count: totalBought, type,
+      module: 'warehouse', event: '购买化肥', result: 'ok', count: totalBought, type, automationAction: true,
     });
   }
 

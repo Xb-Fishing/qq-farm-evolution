@@ -100,6 +100,7 @@ function modalHarness(show = true) {
         '@vueuse/core': { useIntervalFn: callback => { const interval = { callback, active: false }; intervals.push(interval); return { pause: () => { interval.active = false; }, resume: () => { interval.active = true; } }; } },
         '@/api': { __esModule: true, default: { get: async () => ({ data: {} }), post: async (_url, body) => { saves.push(body); return { data: { ok: true } }; } } },
         '@/components/ui/BaseButton.vue': stub, '@/components/ui/BaseInput.vue': stub, '@/components/ui/BaseTextarea.vue': stub,
+        '@/components/MengkaNtLoginGuide.vue': stub,
         '@/stores/wx-login': { useWxLoginStore: () => wx }, '@/utils/gateway-url': { parseManualLoginInput: () => ({}) },
     }, { localStorage: storage }).default;
     Modal.render = () => null;
@@ -248,7 +249,7 @@ function dashboardHarness() {
     });
     const filename = path.join(root, 'web/src/views/Dashboard.vue');
     const source = fs.readFileSync(filename, 'utf8')
-        .replace('</script>', '\ndefineExpose({ reloginFromHome, rescanFromHome, onAccountSaved, showReloginModal })\n</script>');
+        .replace('</script>', '\ndefineExpose({ reloginFromHome, rescanFromHome, onAccountSaved, showReloginModal, dailyEvents, dailyEventCategory, visibleDailyEvents, events })\n</script>');
     const { descriptor } = compiler.parse(source, { filename });
     const code = compiler.compileScript(descriptor, { id: 'wx-dashboard-test' }).content;
     const stub = { __esModule: true, default: {} };
@@ -268,6 +269,7 @@ function dashboardHarness() {
         '@/stores/status': { useStatusStore },
         '@/stores/toast': { useToastStore },
         '@/utils/number-format': { formatCouponAmount: v => v, formatGoldAmount: v => v, formatGoldBeanAmount: v => v },
+        '@/utils/automation-observability': evaluate(fs.readFileSync(path.join(root, 'web/src/utils/automation-observability.ts'), 'utf8'), {}),
     }, { localStorage: storage, window: { setInterval: () => 0, clearInterval: () => {} } }).default;
     Dashboard.render = () => null;
     const renderer = vue.createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null });
@@ -282,6 +284,30 @@ function dashboardHarness() {
     };
     return { app, instance: () => instance, accountStore, statusStore: undefined, switchAccount, reloginCalls, toasts, fetchAccountCalls: h.fetchAccountCalls, clearCalls: h.clearCalls, setResponder: fn => { responder = fn; }, setFetchAccountsError: err => { h.fetchAccountsError = err; } };
 }
+
+test('真实Dashboard按动作类别筛今日事件，运行查询单独筛选，切账号即时清旧事件', async () => {
+    const h = dashboardHarness();
+    try {
+        await vue.nextTick(); await vue.nextTick();
+        const dash = h.instance();
+        dash.dailyEvents = [
+            { at: 1, level: 'info', type: 'harvest', message: '已有收菜' },
+            { at: 2, level: 'info', type: 'auto_task', category: 'task', message: '已领任务' },
+            { at: 3, level: 'info', type: 'auto_fertilizer', category: 'fertilizer', message: '已填充' },
+        ];
+        dash.dailyEventCategory = 'task';
+        await vue.nextTick();
+        assert.deepEqual(dash.visibleDailyEvents.map(row => row.type), ['auto_task']);
+        dash.dailyEventCategory = 'farm';
+        await vue.nextTick();
+        assert.deepEqual(dash.visibleDailyEvents.map(row => row.type), ['harvest']);
+        assert.ok(dash.events.some(group => group.value.includes('automation_query')));
+        h.switchAccount({ id: 'account-c', name: 'C', platform: 'wx' });
+        await vue.nextTick();
+        assert.deepEqual(dash.dailyEvents, []);
+        assert.equal(dash.dailyEventCategory, '');
+    } finally { h.app.unmount(); }
+});
 
 test('重新登录保留在线连接：真实 Dashboard 区分接管成功、待恢复与明确需要扫码', async () => {
     const h = dashboardHarness();

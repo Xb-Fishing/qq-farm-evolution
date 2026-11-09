@@ -5,6 +5,7 @@ import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseTextarea from '@/components/ui/BaseTextarea.vue'
+import MengkaNtLoginGuide from '@/components/MengkaNtLoginGuide.vue'
 import { useWxLoginStore } from '@/stores/wx-login'
 import { parseManualLoginInput } from '@/utils/gateway-url'
 
@@ -44,7 +45,7 @@ interface CaptureFlowState {
   }
 }
 
-const activeTab = ref<'wx' | 'capture' | 'manual'>('manual')
+const activeTab = ref<'wx' | 'capture' | 'manual' | 'mengka_nt'>('manual')
 const loading = ref(false)
 const wxChecking = ref(false)
 let modalGeneration = 0
@@ -476,8 +477,8 @@ watch(() => props.show, (newVal) => {
   wxChecking.value = false
   loading.value = false
   if (newVal) {
-    activeTab.value = (['wx', 'capture', 'manual'] as const).includes(props.initialTab as any)
-      ? (props.initialTab as 'wx' | 'capture' | 'manual')
+    activeTab.value = (['wx', 'capture', 'manual', 'mengka_nt'] as const).includes(props.initialTab as any)
+      ? (props.initialTab as 'wx' | 'capture' | 'manual' | 'mengka_nt')
       : 'manual'
     errorMessage.value = ''
     captureError.value = ''
@@ -545,6 +546,15 @@ onUnmounted(() => {
 
         <div class="mb-4 flex border-b" :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 10%, transparent)' }">
           <button
+            v-if="!editData || editData.platform !== 'wx'"
+            class="flex-1 py-2 text-center text-sm font-medium transition-colors"
+            :class="activeTab === 'mengka_nt' ? 'border-b-2' : 'opacity-60'"
+            :style="{ color: activeTab === 'mengka_nt' ? 'var(--theme-primary)' : 'var(--theme-text)', borderColor: 'var(--theme-primary)' }"
+            @click="activeTab = 'mengka_nt'"
+          >
+            萌卡 NT
+          </button>
+          <button
             class="flex-1 py-2 text-center text-sm font-medium transition-colors"
             :class="activeTab === 'manual' ? 'border-b-2' : 'opacity-60'"
             :style="{
@@ -579,6 +589,8 @@ onUnmounted(() => {
             抓包登录
           </button>
         </div>
+
+        <MengkaNtLoginGuide v-if="activeTab === 'mengka_nt'" />
 
         <div v-if="activeTab === 'wx'" class="space-y-4">
           <BaseInput

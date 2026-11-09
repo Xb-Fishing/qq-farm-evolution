@@ -335,8 +335,16 @@ function createAutoCodeRefreshService(deps) {
       if (!stillCurrent()) return false;
       // 只写本轮生成的 Code；断线保活可能刚刚滚动过 loginBuffer/token，
       // 不能用函数开头读取的旧 account 快照把新长凭据覆盖回去。
+      const previousCode = String(account.code || '');
       addOrUpdateAccount({ id: account.id, code });
-      const nextAccount = findAccount(accountId) || { ...account, code };
+      const persistedAccount = findAccount(accountId);
+      const nextAccount = persistedAccount || { ...account, code };
+      if (persistedAccount && persistedAccount.code === code && previousCode !== String(code)) {
+        try {
+          require('../services/daily-events').recordAutomationEvent(account.id, 'login',
+            '已更新农场 Code；账号恢复结果请查看运行日志');
+        } catch { /* Observability must not affect credential renewal or recovery. */ }
+      }
 
       const controls = typeof resolveWorkerControls === 'function' ? (resolveWorkerControls() || {}) : {};
       if (typeof controls.restartWorker === 'function') {
