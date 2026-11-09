@@ -101,6 +101,7 @@ const ORCHESTRATION_FILES = new Set([
 ]);
 // 隐私控制与 hooks 只能人工审阅修改；编排文件另需主 Agent 验收列入 reviewedOrchestrationFiles。
 const PROTECTED_FILES = new Set([
+  'core/src/services/evolution-github-issue-review.js',
   'core/src/services/evolution-main-workflow.js', 'core/src/services/evolution-main-mcp.js',
   'core/scripts/run-evolution-main-mcp.js',
   '.gitignore', 'core/src/services/privacy-guard.js', 'core/src/services/local-privacy-terms.js',

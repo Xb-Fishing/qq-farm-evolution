@@ -391,14 +391,19 @@ function isFertilizerContainerFullError(err) {
 
 async function autoOpenFertilizerGiftPacks() {
   try {
+    require('./automation-observability').logAutomationQuery('fertilizer', '正在查询背包化肥道具与容器余量');
     const bag = await getBag();
     const items = getBagItems(bag);
     const payloads = collectFertilizerUsePayload(items);
 
-    if (payloads.length <= 0) return 0;
+    if (payloads.length <= 0) {
+      require('./automation-observability').logAutomationQuery('fertilizer', '化肥查询完成：没有可使用的化肥道具');
+      return 0;
+    }
 
     const containerHours = getContainerHoursFromBagItems(items);
     let totalUsed = 0;
+    let attempted = 0;
     const usedLabels = [];
 
     for (const payload of payloads) {
@@ -424,6 +429,7 @@ async function autoOpenFertilizerGiftPacks() {
 
       let used = 0;
       try {
+        attempted += 1;
         await batchUseItems([{ itemId, count, uid: 0 }]);
         used = count;
       } catch {
@@ -447,6 +453,10 @@ async function autoOpenFertilizerGiftPacks() {
       log('仓库', `自动使用化肥类道具 x${totalUsed}${usedLabels.length ? ` [${usedLabels.join('，')}]` : ''}`, {
         module: 'warehouse', event: '开启化肥礼包', result: 'ok', count: totalUsed,
       });
+    } else {
+      require('./automation-observability').logAutomationQuery('fertilizer', attempted > 0
+        ? '化肥使用结果尚未确认，请按后续背包状态核对'
+        : '化肥查询完成：容器余量或道具条件不满足，本轮未填充');
     }
 
     return totalUsed;

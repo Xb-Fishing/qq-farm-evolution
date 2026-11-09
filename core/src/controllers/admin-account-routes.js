@@ -1,3 +1,5 @@
+const { prepareMengkaNtAccount } = require('./mengka-nt-bridge');
+
 function createLogQuery(query) {
   return {
     limit: Number.parseInt(query.limit) || 100,
@@ -210,7 +212,18 @@ function registerAdminAccountRoutes({
   app.post("/api/accounts", async (req, res) => {
     try {
       const rawBody = req.body && typeof req.body === "object" ? req.body : {};
-      const body = stripProtectedWxCredentials(rawBody);
+      let bridgeAccount = null;
+      if (req.mengkaNtBridge === true) {
+        if (!req.currentUser) return res.status(401).json({ ok: false, error: '未登录' });
+        // Authorize before looking up or comparing another account's QQ binding.
+        if (rawBody.id && !isAdminUser(req.currentUser)
+            && !canAccessAccount(req, resolveAccountReference(rawBody.id))) {
+          return res.status(403).json({ ok: false, error: '无权访问此账号' });
+        }
+        bridgeAccount = prepareMengkaNtAccount(rawBody, getAccountsForUser(), req.currentUser, resolveAccountReference);
+        if (bridgeAccount.error) return res.status(bridgeAccount.status).json({ ok: false, error: bridgeAccount.error });
+      }
+      const body = stripProtectedWxCredentials(bridgeAccount ? bridgeAccount.body : rawBody);
       const gateway = parseOfficialGatewayUrl(body.gatewayUrl);
       if (body.gatewayUrl && !gateway) {
         return res.status(400).json({ ok: false, error: "WebSocket URL 无效或缺少有效的 code/ver" });
@@ -239,6 +252,19 @@ function registerAdminAccountRoutes({
             error: `账号数量已达上限（${  accountLimit  }个），请购买额度卡密增加额度`,
           });
         }
+      }
+
+      const bridgeResponse = state => ({ source: 'mengka_nt', state, startPolicy: 'new_accounts_only' });
+      const visibleAccounts = () => {
+        const result = provider.getAccounts();
+        return currentUser && !isAdmin
+          ? { ...result, accounts: result.accounts.filter(account => account.username === currentUser.username) }
+          : result;
+      };
+      if (bridgeAccount?.existing && bridgeAccount.existing.code === body.code
+          && bridgeAccount.existing.name === body.name) {
+        return res.json({ ok: true, data: visibleAccounts(), startup: { queued: false, autoRefreshEnabled: false },
+          bridge: bridgeResponse('unchanged') });
       }
 
       const resolvedId = isUpdate ? resolveAccountReference(body.id) : "";
@@ -312,6 +338,15 @@ function registerAdminAccountRoutes({
       if (!isUpdate && currentUser) nextAccount.username = currentUser.username;
       const wxLoginAdapter = require("../services/wx-login-adapter");
       const saveAccount = () => {
+        if (bridgeAccount?.existing) {
+          const latest = getAccountsForUser().find(account => String(account.id) === String(nextAccount.id));
+          if (!latest || latest.platform !== 'qq' || String(latest.qq || latest.uin || '') !== body.qq
+              || (!isAdmin && !canAccessAccount(req, nextAccount.id))) {
+            const error = new Error('账号绑定已变化，请重新读取账号列表后推送');
+            error.statusCode = 409;
+            throw error;
+          }
+        }
         if (body.wxSessionId && body.wxid && currentUser) {
           const latest = wxLoginAdapter.peekPendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
           if (!latest) throw new Error("微信扫码会话无效或已过期，请重新扫码");
@@ -390,7 +425,7 @@ function registerAdminAccountRoutes({
             }
           });
         }
-      } else if (wasRunning && !onlyRenaming) {
+      } else if (wasRunning && !onlyRenaming && !bridgeAccount) {
         await provider.restartAccount(nextAccount.id);
         // 在线原生重扫：用刚保存的二维码 Code 立即重建一次连接（不追加
         // 授权请求、不改 autoLogin），queued 表示正在用新授权重连。
@@ -410,13 +445,14 @@ function registerAdminAccountRoutes({
       // 使用 provider 的脱敏结果，避免把微信滚动凭证返回浏览器。
       res.json({
         ok: true,
-        data: provider.getAccounts(),
+        data: bridgeAccount ? visibleAccounts() : provider.getAccounts(),
         startup: { queued: startQueued, autoRefreshEnabled },
+        ...(bridgeAccount ? { bridge: bridgeResponse(isUpdate ? (wasRunning ? 'saved_online' : 'saved_offline') : 'created') } : {}),
         clientVersion: gateway ? gateway.clientVersion : "",
         clientVersionUpdated,
       });
     } catch (error) {
-      res.status(500).json({ ok: false, error: error.message });
+      res.status(error.statusCode || 500).json({ ok: false, error: error.message });
     }
   });
 

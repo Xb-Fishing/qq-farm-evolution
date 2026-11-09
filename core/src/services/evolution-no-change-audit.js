@@ -147,5 +147,5 @@ function finalizeInvestigations(proposals, options) {
     write(options.dataDir, FOLLOWUPS, store);
 }
 
-module.exports = { AREAS, reviewNoChange, auditStillValid, getInvestigationFollowups, reviewInvestigation, recordInvestigation,
+module.exports = { AREAS, evidenceFiles, reviewNoChange, auditStillValid, getInvestigationFollowups, reviewInvestigation, recordInvestigation,
     resolutionStillValid, finalizeInvestigations };

@@ -36,6 +36,7 @@ const { registerAdminAccountRoutes } = require("./admin-account-routes");
 const { registerAdminAnalyticsRoutes } = require("./admin-analytics-routes");
 const { createAdminAccountAccess } = require("./admin-account-access");
 const { registerAdminAuthRoutes } = require("./admin-auth-routes");
+const { registerMengkaNtBridge } = require("./mengka-nt-bridge");
 const { registerAdminBagRoutes } = require("./admin-bag-routes");
 const { registerAdminCardRoutes } = require("./admin-card-routes");
 const { registerAdminCareerRoutes } = require("./admin-career-routes");
@@ -334,6 +335,7 @@ function startAdminServer(dataProvider) {
   app = express();
   app.set("trust proxy", true);
   app.use(express.json({ limit: "256kb" }));
+  registerMengkaNtBridge(app);
 
   const adminSessionManager = createAdminSessionManager({
     logger: adminLogger,

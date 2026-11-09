@@ -64,7 +64,8 @@ test('活动与综合巡检的真实任务提示均包含公告证据和后续�
       assert.match(prompt, /【官方活动公告缓存】/);
       assert.match(prompt, /官方游戏|official-game-bulletin/);
       assert.match(prompt, /docs\/CHANGELOG\.md/);
-      assert.match(prompt, /近期更新且超过20星/);
+      assert.match(prompt, /近期更新且严格超过10星/);
+      assert.match(prompt, /具体功能需求按标题定向检索/);
       assert.match(prompt, /未验证或未实现的能力不得写成已完成/);
     }
     assert.equal(requests, 0);

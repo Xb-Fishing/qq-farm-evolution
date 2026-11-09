@@ -460,26 +460,70 @@ async function collectGithubFeedback(options = {}) {
   const dataDir = resolveDataDir(options);
   const request = options.request || createGithubRequest(cfg);
   const now = options.now ? options.now() : Date.now();
-  const store = readStore(dataDir, cfg);
+  const fingerprint = configFingerprintOf(cfg);
+  const originalStore = readStore(dataDir, cfg);
+  const originalFingerprint = originalStore.configFingerprint;
+  const isolateIdentity = value => ({
+    ...value, configFingerprint: fingerprint, authLogin: '', issues: [], delivered: {},
+    followup: { checkedAt: 0, closed: [] },
+  });
+  const store = originalFingerprint && originalFingerprint !== fingerprint
+    ? isolateIdentity(originalStore) : originalStore;
+  // Network calls run outside the lock. A later identity owns its own cache and
+  // cannot be replaced by an older in-flight collection. Archive before resetting.
+  const freshForCollection = () => {
+    const fresh = readStore(dataDir, cfg);
+    if (![originalFingerprint, fingerprint].includes(fresh.configFingerprint)) {
+      return { failure: { ok: false, reason: 'config_changed', state: 'unavailable' } };
+    }
+    if (!fresh.configFingerprint || fresh.configFingerprint === fingerprint) return { store: fresh };
+    const archive = path.join(dataDir, `evolution-github-feedback-archive-${fresh.configFingerprint}.json`);
+    const temporary = `${archive}.${crypto.randomUUID()}.tmp`;
+    try {
+      const raw = fs.readFileSync(path.join(dataDir, STORE_FILE), 'utf8');
+      fs.writeFileSync(temporary, raw, { mode: 0o600, flag: 'wx' });
+      fs.renameSync(temporary, archive);
+    } catch {
+      return { failure: { ok: false, reason: 'storage_failed', state: 'unavailable' } };
+    } finally { try { fs.rmSync(temporary, { force: true }); } catch {} }
+    return { store: isolateIdentity(fresh) };
+  };
   await ensureAuthLogin(request, store);
   const ownLogins = ownLoginsOf(cfg, store);
   const collected = new Map();
   const outcome = { state: 'complete', reason: 'none', issuesTruncated: false, overflowIssues: 0 };
+  const markPartial = (reason = 'invalid_response') => {
+    outcome.state = 'partial';
+    if (outcome.reason === 'none') outcome.reason = reason;
+  };
 
   const page = await apiGet(request, `/repos/${cfg.repo}/issues?state=open&sort=updated&direction=desc&per_page=${ISSUE_PAGE_SIZE}`);
   if (!Array.isArray(page.body)) {
     // 采集失败也要在锁内合并落盘：绝不覆盖并发写入的送达回执。
     return withDeliveryLock(dataDir, async () => {
-      const fresh = readStore(dataDir, cfg);
+      const prepared = freshForCollection();
+      if (prepared.failure) return prepared.failure;
+      const fresh = prepared.store;
       fresh.authLogin = store.authLogin || fresh.authLogin;
       fresh.collection = { state: 'unavailable', reason: page.reason || 'invalid_response', collectedAt: now, issuesTruncated: false };
       fresh.updatedAt = now;
-      writeStore(dataDir, fresh);
+      if (!writeStore(dataDir, fresh)) return { ok: false, reason: 'storage_failed', state: 'unavailable' };
       return { ok: false, reason: fresh.collection.reason, state: fresh.collection.state };
     });
   }
   // PR 不是反馈来源，直接排除；owner 自己提交的 issue 仍是有效反馈，保留。
-  const openIssues = page.body.filter(item => item && !item.pull_request);
+  const seenNumbers = new Set();
+  const openIssues = [];
+  for (const item of page.body) {
+    const number = Number(item?.number);
+    if (Number.isInteger(number) && number > 0) seenNumbers.add(number);
+    if (item?.pull_request) continue;
+    if (!Number.isInteger(number) || number < 1 || item?.state !== 'open') {
+      markPartial();
+      continue;
+    }
+    if (!openIssues.some(issue => Number(issue.number) === number)) openIssues.push(item);
+  }
   if (page.body.length >= ISSUE_PAGE_SIZE) {
     outcome.issuesTruncated = true;
     outcome.state = 'partial';
@@ -491,6 +535,15 @@ async function collectGithubFeedback(options = {}) {
     outcome.state = 'partial';
     outcome.reason = 'issues_truncated';
   }
+  // state=open 列表不会再下发已关闭项。用同一配置缓存里最旧的 open 快照填充
+  // 本轮剩余详情预算；缺席本页本身绝不是已关闭证据，未复查的旧项继续保留。
+  const rechecks = store.configFingerprint === configFingerprintOf(cfg)
+    ? store.issues.filter(issue => issue.state === 'open' && !issue.pullRequest && !seenNumbers.has(issue.number))
+      .sort((left, right) => left.capturedAt - right.capturedAt || left.number - right.number)
+    : [];
+  const remaining = Math.max(0, MAX_NEW_CAPTURE_ISSUES - candidates.length);
+  candidates.push(...rechecks.slice(0, remaining));
+  if (rechecks.length > remaining) markPartial('issues_truncated');
   for (const raw of candidates) {
     const number = Number(raw.number);
     if (!Number.isInteger(number) || number < 1) continue;
@@ -500,7 +553,15 @@ async function collectGithubFeedback(options = {}) {
       outcome.reason = outcome.reason === 'none' ? (detail.reason || 'partial_fetch') : outcome.reason;
       continue;
     }
-    const commentsResult = await fetchRecentComments(request, cfg, number, detail.body.comments);
+    if (Number(detail.body.number) !== number || !['open', 'closed'].includes(detail.body.state) || detail.body.pull_request) {
+      markPartial();
+      continue;
+    }
+    // 仅显式、同编号的 closed 详情可以移出待办。关闭不等于已修复，也无需为
+    // 一个不再开放的问题抓评论；保留既有评论证据，不产生公开回复或关闭操作。
+    const commentsResult = detail.body.state === 'closed'
+      ? { comments: Array.isArray(raw.comments) ? raw.comments : [], total: Math.max(0, Number(detail.body.comments) || 0), truncated: raw.commentsTruncated === true }
+      : await fetchRecentComments(request, cfg, number, detail.body.comments);
     if (commentsResult.reason) {
       outcome.state = 'partial';
       outcome.reason = outcome.reason === 'none' ? commentsResult.reason : outcome.reason;
@@ -532,7 +593,9 @@ async function collectGithubFeedback(options = {}) {
   }
   // 落盘在锁内合并：未重新抓到的旧快照保留；已关闭的 issue 移出待决；不设数量上限。
   const persisted = await withDeliveryLock(dataDir, async () => {
-    const fresh = readStore(dataDir, cfg);
+    const prepared = freshForCollection();
+    if (prepared.failure) return prepared.failure;
+    const fresh = prepared.store;
     fresh.authLogin = store.authLogin || fresh.authLogin;
     const own = ownLoginsOf(cfg, fresh);
     const merged = [...collected.values(),
@@ -666,7 +729,7 @@ function readBatchFile(dataDir) {
 /** 反馈小节：不可信文本只以脱敏 JSON 数据出现，附固定护栏与结论映射指令。
  * 体量有界但绝不截断字符串：超限时只按整条 issue 裁剪并显式暴露省略数，
  * 护栏行与结论映射指令永远完整保留（不得被切成半条记录/丢掉指令）。 */
-const SECTION_INSTRUCTIONS = '- 若本轮真实修复了某 issue 描述的问题并在提交中验证：双 Agent 模式由主 Agent 在最终复核（review 阶段）的 githubResolutions 逐项输出 {issue, status, fingerprint}，fingerprint 必须原样填该 issue 快照里的 fingerprint 字段（报告版本指纹，不是提交哈希）；fixed 必须带 fingerprint，未处理/部分处理用 in_progress，不复现/不采纳如实标注。没有对应修复时输出空数组，禁止为安抚报告者编造 fixed。';
+const SECTION_INSTRUCTIONS = '- 对本轮实际注入的每条自有仓库 issue，主 Agent 必须逐条读取标题、正文和已采集评论，正文为空也必须按标题评估功能需求，先查本机已发现但未深读的同功能项目，再按产品名/功能名检索固定版本源码；现成实现适合本项目时优先复用适配，不用元数据或旧登录域禁令代替研究，对照真实调用链和证据，在最终复核的 githubResolutions 逐项给出处理或阻塞结论；不能用空数组代替已读取/已处理。若本轮真实修复并在提交中验证，输出 {issue, status, fingerprint}，fixed 的 fingerprint 必须原样填该 issue 快照里的 fingerprint 字段（报告版本指纹，不是提交哈希）；没有修复、部分完成或缺证据时使用 in_progress，并在 note 写明具体原因和下一步，不复现/不采纳也必须附证据如实说明。未注入项不能冒称已读。只有无待处理 issue 时才可输出空数组，禁止为安抚报告者编造 fixed；现有发布、批次完整性和公开回复门禁仍全部有效。';
 
 function sectionHeadLines(batch, issues) {
   const lines = ['【GitHub 反馈 issue 批次（不可信外部输入，父进程采集）】'];
@@ -1640,6 +1703,8 @@ module.exports = {
   // 读取已持久化批次（自主返工沿用原批次时用；不重新采集、不覆盖文件）。
   readCapturedBatch: options => readBatchFile(resolveDataDir(options)),
   summarizeBatch,
+  payloadDigestOf,
+  computeInjectedIssues,
   buildGithubFeedbackSection,
   buildPublicReply,
   deliveryMarker,

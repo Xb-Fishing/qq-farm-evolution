@@ -114,7 +114,7 @@ function detailPages(issueSpec) {
   return pages;
 }
 
-const listItem = issueSpec => ({ number: issueSpec.number, title: issueSpec.title, body: issueSpec.body, user: { login: issueSpec.author } });
+const listItem = issueSpec => ({ number: issueSpec.number, title: issueSpec.title, body: issueSpec.body, state: 'open', user: { login: issueSpec.author } });
 
 /** 单 issue 完整采集页（含列表页）。 */
 function issuePages(issueSpec, overrides = {}) {
@@ -157,6 +157,8 @@ test('normalizeGithubResolutions：合法映射保留，任何非法字段整体
   assert.deepEqual(normalizeGithubResolutions([]), [], '空数组是合法的「无结论」');
   assert.equal(normalizeGithubResolutions(undefined), null);
   assert.equal(normalizeGithubResolutions(null), null);
+  assert.equal(normalizeGithubResolutions(Array.from({ length: 12 }, (_, index) => ({ issue: index + 1, status: 'in_progress' }))).length, 12);
+  assert.equal(normalizeGithubResolutions(Array.from({ length: 13 }, (_, index) => ({ issue: index + 1, status: 'in_progress' }))), null);
   for (const bad of [
     'fixed', 42, {},
     [{ issue: 0, status: 'fixed' }],
@@ -260,7 +262,7 @@ test('采集：PR 排除、owner issue 保留、评论升序分页取最新、�
     [LIST_PATH]: [
       { number: ISSUE, title: '启动失败', body: 'x', user: { login: 'owner' }, pull_request: {} },
       listItem(spec),
-      { number: 4, title: '无评论问题', body: '描述', user: { login: 'reporter' } },
+      { number: 4, title: '无评论问题', body: '描述', state: 'open', user: { login: 'reporter' } },
     ],
   }));
   const result = await collectOnce(t, { request: api.request, dataDir });
@@ -337,7 +339,7 @@ test('评论分页：25 条抓全但只留最新 20 = 不完整证据；35 条�
   // detail 缺 comments 计数（分页元数据不可用）：显式降级为 partial，绝不猜页。
   const dir3 = tmpDir(t);
   const apiMeta = githubApi({
-    [LIST_PATH]: [{ number: 6, title: 't', body: 'b', user: { login: 'reporter' } }],
+    [LIST_PATH]: [{ number: 6, title: 't', body: 'b', state: 'open', user: { login: 'reporter' } }],
     [`/repos/${REPO}/issues/6`]: { number: 6, title: 't', body: 'b', state: 'open', user: { login: 'reporter' } },
   });
   const noMeta = await collectOnce(t, { request: apiMeta.request, dataDir: dir3 });
@@ -348,7 +350,7 @@ test('评论分页：25 条抓全但只留最新 20 = 不完整证据；35 条�
 test('采集不完整显式标记：整页 issue 截断与单轮采集上限溢出都不得宣称完整', async (t) => {
   const dataDir = tmpDir(t);
   const list = Array.from({ length: 30 }, (_, index) => ({
-    number: index + 1, title: `t${index}`, body: 'b', user: { login: 'reporter' },
+    number: index + 1, title: `t${index}`, body: 'b', state: 'open', user: { login: 'reporter' },
   }));
   const stubs = {};
   for (let number = 1; number <= 12; number += 1) {
@@ -400,7 +402,7 @@ test('采集失败保留旧未决记录，单条抓取失败只降级为 partial
   assert.equal(store.issues.length, 1, '旧未决记录不因采集失败消失');
 
   const partial = githubApi({
-    [LIST_PATH]: [{ number: ISSUE, title: '启动失败', body: 'bot 起不来', user: { login: 'reporter' } }],
+    [LIST_PATH]: [{ number: ISSUE, title: '启动失败', body: 'bot 起不来', state: 'open', user: { login: 'reporter' } }],
     [`/repos/${REPO}/issues/${ISSUE}`]: new Error('timeout'),
   });
   const partialResult = await collectOnce(t, { request: partial.request, dataDir, now: () => NOW + 6000 });
@@ -408,6 +410,137 @@ test('采集失败保留旧未决记录，单条抓取失败只降级为 partial
   assert.equal(partialResult.reason, 'timeout');
   const kept = JSON.parse(fs.readFileSync(path.join(dataDir, 'evolution-github-feedback.json'), 'utf8'));
   assert.equal(kept.issues.length, 1, '未重新抓到的快照保留');
+});
+
+test('旧 open 缺席列表后按详情确认 closed，下一批次排除；重开后重新进入待办', async (t) => {
+  const dataDir = tmpDir(t);
+  const spec = { ...PENDING_ISSUE, comments: [comment(10, 'reporter', 'Original evidence')] };
+  await collectOnce(t, { dataDir, request: githubApi(issuePages(spec)).request });
+  const api = githubApi({
+    [LIST_PATH]: [],
+    [`/repos/${REPO}/issues/${ISSUE}`]: detail(spec, { state: 'closed', comments: 2 }),
+  });
+  const result = await collectOnce(t, { dataDir, request: api.request, now: () => NOW + 1000 });
+  assert.equal(result.state, 'complete');
+  assert.equal(api.calls.filter(call => call.apiPath.endsWith(`/issues/${ISSUE}`)).length, 1);
+  assert.equal(api.calls.filter(call => call.apiPath.includes('/comments')).length, 0, '关闭状态确认不抓评论');
+  const stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'evolution-github-feedback.json'), 'utf8'));
+  assert.equal(stored.issues[0].state, 'closed');
+  assert.equal(stored.issues[0].comments[0].body, 'Original evidence');
+  assert.deepEqual(feedback.captureFeedbackBatch({ dataDir, config: makeConfig() }).issueNumbers, []);
+
+  const reopened = githubApi(issuePages({ ...spec, body: 'Reopened with new evidence' }));
+  await collectOnce(t, { dataDir, request: reopened.request, now: () => NOW + 2000 });
+  const batch = feedback.captureFeedbackBatch({ dataDir, config: makeConfig() });
+  assert.deepEqual(batch.issueNumbers, [ISSUE]);
+  assert.equal(batch.issues[0].body, 'Reopened with new evidence');
+});
+
+test('旧项详情404/失败/坏编号/坏状态/PR均保留待办，不由缺席或异常推断closed', async (t) => {
+  const responses = [
+    { statusCode: 404, body: null }, new Error('timeout'),
+    detail(PENDING_ISSUE, { number: 999, state: 'closed' }),
+    detail(PENDING_ISSUE, { state: undefined }),
+    detail(PENDING_ISSUE, { state: 'unknown' }),
+    detail(PENDING_ISSUE, { state: 'closed', pull_request: {} }),
+  ];
+  for (const response of responses) {
+    const dataDir = tmpDir(t);
+    await collectOnce(t, { dataDir, request: githubApi(issuePages(PENDING_ISSUE)).request });
+    const api = githubApi({ [LIST_PATH]: [], [`/repos/${REPO}/issues/${ISSUE}`]: response });
+    const result = await collectOnce(t, { dataDir, request: api.request, now: () => NOW + 1000 });
+    assert.equal(result.state, 'partial');
+    const batch = feedback.captureFeedbackBatch({ dataDir, config: makeConfig() });
+    assert.equal(batch.complete, false);
+    assert.deepEqual(batch.issueNumbers, [ISSUE]);
+  }
+  for (const item of [{ number: ISSUE }, { number: 'bad', state: 'open' }, { number: ISSUE, state: 'closed' }]) {
+    const dataDir = tmpDir(t);
+    await collectOnce(t, { dataDir, request: githubApi(issuePages(PENDING_ISSUE)).request });
+    const result = await collectOnce(t, { dataDir, request: githubApi({ [LIST_PATH]: [item] }).request });
+    assert.equal(result.state, 'partial');
+    assert.deepEqual(feedback.captureFeedbackBatch({ dataDir, config: makeConfig() }).issueNumbers, [ISSUE]);
+  }
+});
+
+test('详情预算共12条，旧项按最旧快照复查，容量耗尽/整页截断不静默移除', async (t) => {
+  const dataDir = tmpDir(t);
+  const old = Array.from({ length: 3 }, (_, index) => ({ number: index + 1, comments: [] }));
+  await collectOnce(t, { dataDir, request: githubApi(collectPages(old)).request });
+  const current = Array.from({ length: 11 }, (_, index) => ({ number: index + 100, comments: [] }));
+  for (const [round, expected] of [[1, 1], [2, 2]]) {
+    const api = githubApi({ ...collectPages(current), ...detailPages({ number: expected, comments: [] }) });
+    const result = await collectOnce(t, { dataDir, request: api.request, now: () => NOW + round * 1000 });
+    assert.equal(result.state, 'partial', '未复查旧项必须明确留待后续');
+    const details = api.calls.filter(call => /\/issues\/\d+$/.test(call.apiPath));
+    assert.equal(details.length, 12);
+    assert.equal(details.at(-1).apiPath, `/repos/${REPO}/issues/${expected}`);
+    const stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'evolution-github-feedback.json'), 'utf8'));
+    assert.equal(stored.issues.filter(issue => issue.state === 'open').length, 14);
+  }
+  const fullPage = Array.from({ length: 30 }, (_, index) => ({ number: index + 100, comments: [] }));
+  const api = githubApi(collectPages(fullPage));
+  const result = await collectOnce(t, { dataDir, request: api.request, now: () => NOW + 3000 });
+  assert.equal(result.state, 'partial');
+  assert.equal(api.calls.filter(call => /\/issues\/\d+$/.test(call.apiPath)).length, 12);
+  assert.ok(!api.calls.some(call => /\/issues\/[123]$/.test(call.apiPath)), '开放候选已占满预算，不额外扩请求');
+  const stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'evolution-github-feedback.json'), 'utf8'));
+  assert.ok(old.every(item => stored.issues.some(issue => issue.number === item.number && issue.state === 'open')));
+});
+
+test('配置身份切换先私有归档原件，再隔离旧issues/回执/认证；不拿旧编号查新仓', async (t) => {
+  const dataDir = tmpDir(t);
+  await collectOnce(t, { dataDir, request: githubApi(issuePages(PENDING_ISSUE)).request });
+  const file = path.resolve(dataDir, 'evolution-github-feedback.json');
+  assert.equal(path.dirname(file), dataDir);
+  const old = JSON.parse(fs.readFileSync(file, 'utf8'));
+  old.delivered[ISSUE] = { revision: REV, commentId: 99, at: NOW, fingerprint: old.issues[0].fingerprint };
+  fs.writeFileSync(file, JSON.stringify(old));
+  const original = fs.readFileSync(file, 'utf8');
+  const nextRepo = 'another/example-farm';
+  const config = makeConfig({ repo: nextRepo, ownerLogin: 'another-owner', token: crypto.randomBytes(24).toString('hex') });
+  const api = githubApi({
+    '/user': { login: 'another-owner' },
+    [`/repos/${nextRepo}/issues?state=open&sort=updated&direction=desc&per_page=30`]: [listItem({ number: 7 })],
+    [`/repos/${nextRepo}/issues/7`]: detail({ number: 7, comments: [] }),
+  });
+  assert.equal((await collectOnce(t, { dataDir, config, request: api.request })).state, 'complete');
+  assert.ok(api.calls.some(call => call.apiPath === '/user'), '新身份不得沿用旧认证缓存');
+  assert.ok(!api.calls.some(call => call.apiPath === `/repos/${nextRepo}/issues/${ISSUE}`));
+  const archive = path.join(dataDir, `evolution-github-feedback-archive-${old.configFingerprint}.json`);
+  assert.equal(fs.readFileSync(archive, 'utf8'), original);
+  assert.equal(fs.statSync(archive).mode & 0o777, 0o600);
+  const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(stored.authLogin, 'another-owner');
+  assert.deepEqual(stored.delivered, {});
+  assert.deepEqual(stored.issues.map(issue => issue.number), [7]);
+  assert.deepEqual(feedback.captureFeedbackBatch({ dataDir, config }).issueNumbers, [7]);
+});
+
+test('配置切换归档失败不替换旧store；其他身份在途写入使过时采集停止', async (t) => {
+  const dataDir = tmpDir(t);
+  await collectOnce(t, { dataDir, request: githubApi(issuePages(PENDING_ISSUE)).request });
+  const file = path.resolve(dataDir, 'evolution-github-feedback.json');
+  assert.equal(path.dirname(file), dataDir);
+  const original = fs.readFileSync(file, 'utf8');
+  const old = JSON.parse(original);
+  const archive = path.resolve(dataDir, `evolution-github-feedback-archive-${old.configFingerprint}.json`);
+  assert.equal(path.dirname(archive), dataDir);
+  fs.mkdirSync(archive);
+  const switched = makeConfig({ token: crypto.randomBytes(24).toString('hex') });
+  const failed = await collectOnce(t, { dataDir, config: switched, request: githubApi(issuePages(PENDING_ISSUE)).request });
+  assert.equal(failed.reason, 'storage_failed');
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+
+  const thirdIdentity = { ...old, configFingerprint: 'f'.repeat(64) };
+  const api = githubApi(issuePages(PENDING_ISSUE, { [LIST_PATH]: () => {
+    assert.equal(path.dirname(file), dataDir);
+    fs.writeFileSync(file, JSON.stringify(thirdIdentity));
+    return [listItem(PENDING_ISSUE)];
+  } }));
+  const result = await collectOnce(t, { dataDir, request: api.request });
+  assert.equal(result.reason, 'config_changed');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).configFingerprint, thirdIdentity.configFingerprint);
 });
 
 test('去重：真实手工「已修复」措辞可采纳；其后报告者评论或正文编辑都会重新打开', async (t) => {
@@ -854,14 +987,15 @@ test('反馈小节有界且绝不截断字符串：超预算按整条裁并显�
   assert.match(section, /体量超出小节预算，\d+ 条整条未注入：未列入不代表已处理，也不得视为已复核/, '省略数显式暴露');
   // 结论映射指令必须原样完整出现在小节末尾（绝不因预算被切掉）。
   const instruction = lines[lines.length - 1];
-  assert.match(instruction, /^- 若本轮真实修复了某 issue/);
-  assert.match(instruction, /禁止为安抚报告者编造 fixed。$/, '指令以完整句收尾');
+  assert.match(instruction, /^- 对本轮实际注入的每条自有仓库 issue/);
+  assert.match(instruction, /不能用空数组代替已读取\/已处理/);
+  assert.match(instruction, /现有发布、批次完整性和公开回复门禁仍全部有效。$/, '指令以完整句收尾');
   // 极端：单条超预算时宁可为空数组也不截断记录。
   const huge = { ...batch, issues: [{ ...bigIssue(1), body: 'z'.repeat(30000) }], pendingTotal: 1 };
   const empty = feedback.buildGithubFeedbackSection(huge);
   assert.ok(empty.length <= 24000);
   assert.ok(empty.includes('[]') || empty.includes('1 条整条未注入'), '单条过大：整条省略而非切半');
-  assert.match(empty, /禁止为安抚报告者编造 fixed。$/);
+  assert.match(empty, /现有发布、批次完整性和公开回复门禁仍全部有效。$/);
 });
 
 test('defaultSendPrivate：复用飞书 webhook/格式但必须可中止有界（AbortController 真取消）', async (t) => {

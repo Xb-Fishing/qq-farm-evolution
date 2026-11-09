@@ -1473,7 +1473,9 @@ async function acceptFriendsWithRetry(gids, options = {}) {
       const names = friends
         .map(f => f.name || f.remark || `GID:${toNum(f.gid)}`)
         .join(', ');
-      log('申请', `已同意 ${friends.length} 人: ${names}`);
+      log('好友', `已同意 ${friends.length} 人: ${names}`, {
+        module: 'friend', event: '自动同意好友', result: 'ok', count: friends.length,
+      });
 
       // Sync accepted GIDs to known friends list
       const newGids = friends

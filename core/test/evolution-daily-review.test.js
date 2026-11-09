@@ -14,12 +14,26 @@ const privacy = require('../src/services/privacy-guard');
 test.mock.method(privacy, 'collectRuntimePrivacyTerms', () => new Set());
 const { runTeamWorkflow, createTeamError } = require('../src/services/evolution-team');
 const { settleDailyReview } = require('../src/services/activity-evolver');
+const { buildIncrementalReviewContext, buildSafetyPrompt, buildPrompt } = require('../src/services/activity-evolver');
 const { createDailyFeedbackStore } = require('../src/services/daily-feedback');
 const { recordApprovedLessons, readLearningSummary } = require('../src/services/evolution-learning');
 test.after(() => fs.rmSync(isolatedDataDir, { recursive: true, force: true }));
 
 const BASE = 'a'.repeat(40);
 const HEAD = 'b'.repeat(40);
+
+test('真实进化任务同时读取标题空正文需求，并允许研究复用现成功能接入', () => {
+    const context = buildIncrementalReviewContext({}, 'safety', null, {
+        version: 1, complete: true, pendingTotal: 1,
+        issues: [{ number: 1, title: 'Can an existing QQ Code bridge be integrated?', body: '', comments: [], fingerprint: 'f'.repeat(64) }],
+    });
+    for (const prompt of [buildSafetyPrompt('', null, [], context), buildPrompt({ online: {} }, [], [], '', null, [], context)]) {
+        assert.match(prompt, /Can an existing QQ Code bridge be integrated/);
+        assert.match(prompt, /正文为空也必须按标题评估功能需求/);
+        assert.match(prompt, /优先复用适配/);
+        assert.doesNotMatch(prompt, /不复制 RPC\/登录\/设备/);
+    }
+});
 const lesson = rule => ({ topic: 'workflow', rule, evidence: 'regression' });
 const masterLesson = lesson('Keep daily feedback until the selected main agent approves its review.');
 const childLesson = lesson('A child report alone must not approve feedback cleanup.');

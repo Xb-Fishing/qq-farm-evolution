@@ -43,6 +43,43 @@ function fixture(t, keepAlive = async () => ({ Success: true })) {
 const tasksFor = id => getSchedulerRegistrySnapshot('auto_code_refresh').schedulers
   .flatMap(s => s.tasks.map(task => task.name)).filter(name => name.endsWith(`_${id}`));
 
+test('Code确认更新才记今日动作，不记录原始Code；同Code重复回包不多记', async (t) => {
+  const { account, svc } = fixture(t);
+  account.id = 'runtime-observe';
+  account.code = 'before-refresh';
+  const original = adapter.getFarmCode;
+  adapter.getFarmCode = async () => ({ Success: true, Data: { code: 'after-refresh' } });
+  try {
+    assert.equal(await svc.refreshAccountCode(account.id, 'manual_relogin'), true);
+    assert.equal(await svc.refreshAccountCode(account.id, 'manual_relogin'), true);
+    const rows = require('../src/services/daily-events').getTodayEvents(account.id);
+    assert.equal(rows.filter(row => row.type === 'auto_login').length, 1);
+    assert.doesNotMatch(JSON.stringify(rows), /before-refresh|after-refresh|fixture-buffer|fixture-refresh/);
+  } finally { adapter.getFarmCode = original; }
+});
+
+test('保存后账号消失或保存未生效时不借业务fallback伪造今日更新动作', async (t) => {
+  const original = adapter.getFarmCode;
+  adapter.getFarmCode = async () => ({ Success: true, Data: { code: 'unpersisted-result' } });
+  try {
+    for (const variant of ['missing', 'unchanged']) {
+      const account = { id: `persist-observe-${variant}`, code: 'old-value', name: 'Fixture', wxid: 'fixture',
+        loginBuffer: 'fixture-buffer', wxCredentialExpiresAt: Date.now() + 2 * 3600000 };
+      let attemptedSave = false;
+      const svc = createAutoCodeRefreshService({
+        store: { isAccountAutoLogin: () => true, getAutoCodeRefresh: () => ({ enabled: true }) },
+        getAccounts: () => ({ accounts: variant === 'missing' && attemptedSave ? [] : [account] }),
+        addOrUpdateAccount: () => { attemptedSave = true; },
+        resolveWorkerControls: () => ({ restartWorker: () => undefined }), log() {}, addAccountLog() {},
+      });
+      t.after(() => svc.stopAccount(account.id));
+      await svc.refreshAccountCode(account.id, 'manual_relogin');
+      assert.equal(attemptedSave, true);
+      assert.equal(require('../src/services/daily-events').getTodayEvents(account.id).filter(row => row.type === 'auto_login').length, 0);
+    }
+  } finally { adapter.getFarmCode = original; }
+});
+
 test('到期预刷新明确失败后不再申请 Code，新凭据后恢复', async (t) => {
   let terminal = true;
   const { account, counters, svc } = fixture(t, async acc => {

@@ -221,14 +221,19 @@ function formatLocalDateTime24(date = new Date()) {
 // ==================== 日志/统计钩子 ====================
 
 setLogHook((tag, msg, isWarn, meta) => {
+    let observed = { tag, meta: meta || {} };
+    try {
+        observed = require('../services/automation-observability').observeAutomationLog(
+            process.env.FARM_ACCOUNT_ID || '', tag, msg, isWarn, meta || {});
+    } catch { /* Optional observation must never drop the original runtime log. */ }
     sendToMaster({
         type: 'log',
         data: {
             time: formatLocalDateTime24(new Date()),
-            tag,
+            tag: observed.tag,
             msg,
             isWarn,
-            meta: meta || {}
+            meta: observed.meta
         }
     });
 });
@@ -1142,12 +1147,20 @@ function stopUnifiedScheduler() {
 
 function applyRuntimeConfig(config, syncStatusAfter = false) {
     const prevAuto = getAutomation();
+    let automationObservation;
+    let observedConfig;
+    try {
+        automationObservation = require('../services/automation-observability');
+        observedConfig = automationObservation.snapshotAutomationConfig(prevAuto);
+    } catch { /* Configuration application does not depend on its status log. */ }
     const accountId = process.env.FARM_ACCOUNT_ID || '';
 
     applyConfigSnapshot(config || {}, {
         persist: false,
         accountId
     });
+    try { if (observedConfig) automationObservation.logAutomationConfigChanges(observedConfig, getAutomation()); }
+    catch { /* Keep the existing application and scheduling path. */ }
     if (getFriendQuietHours().idleProtectionEnabled !== true) setIdleProtectionUntil(0);
 
     // 配置侧意图 reconcile（2026-10-07 陈旧名单治理）：配置应用完成后、

@@ -13,6 +13,7 @@ import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
 import { formatCouponAmount, formatGoldAmount, formatGoldBeanAmount } from '@/utils/number-format'
+import { AUTOMATION_CATEGORY_LABELS, AUTOMATION_LOG_EVENT_GROUPS, getDailyEventCategory } from '@/utils/automation-observability'
 
 const statusStore = useStatusStore()
 const accountStore = useAccountStore()
@@ -163,6 +164,7 @@ const modules = [
 // 用逗号合并（后端按逗号拆分做 OR 匹配）
 const events = [
   { label: '全部事件', value: '' },
+  ...AUTOMATION_LOG_EVENT_GROUPS,
   { label: '偷好友菜', value: '偷好友菜' },
   { label: '化肥趋势触发', value: '化肥趋势触发' },
   { label: '化肥盯梢冷却', value: '化肥盯梢冷却' },
@@ -610,14 +612,24 @@ function getExpPercent(progress: any) {
 }
 
 interface DailyEvent {
+  id?: string
   at: number
   level: 'info' | 'warn' | 'error'
   type: string
   message: string
   count?: number
+  category?: string
 }
 
 const dailyEvents = ref<DailyEvent[]>([])
+const dailyEventCategory = ref('')
+const dailyEventCategories = [{ label: '全部分类', value: '' }, ...Object.entries(AUTOMATION_CATEGORY_LABELS).map(([value, label]) => ({ label, value }))]
+const visibleDailyEvents = computed(() => dailyEvents.value.filter(event => !dailyEventCategory.value || getDailyEventCategory(event) === dailyEventCategory.value).slice().reverse())
+watch(currentAccountId, () => {
+  dailyEventCategory.value = ''
+  dailyEvents.value = []
+  dailyEventsRequestId += 1
+})
 const downloadingDailyEvents = ref(false)
 const downloadingStealEvents = ref(false)
 let dailyEventsRequestId = 0
@@ -705,6 +717,7 @@ const EVENT_LEVEL_STYLE: Record<string, string> = {
   error: 'text-red-600 dark:text-red-400',
 }
 const EVENT_TYPE_LABELS: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(AUTOMATION_CATEGORY_LABELS).map(([key, label]) => [`auto_${key}`, label])),
   harvest: '收菜',
   plant: '播种',
   steal: '偷菜',
@@ -1141,6 +1154,7 @@ useIntervalFn(updateCountdowns, 1000)
               <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time, log.ts) }}]</span>
               <span class="mr-2 rounded px-1.5 py-0.5 text-xs font-bold" :class="getLogTagClass(log.tag)">{{ log.tag }}</span>
               <span v-if="log.meta?.event" class="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-500 dark:bg-blue-900/20 dark:text-blue-400">{{ getEventLabel(log.meta.event) }}</span>
+              <span v-if="log.meta?.automationCategory" class="mr-2 text-xs text-violet-500">{{ AUTOMATION_CATEGORY_LABELS[log.meta.automationCategory] || '' }}</span>
               <span :class="getLogMsgClass(log.tag)">{{ log.msg }}</span>
             </div>
           </div>
@@ -1275,7 +1289,8 @@ useIntervalFn(updateCountdowns, 1000)
           <div class="i-carbon-list-checked" />
           <span>今日事件</span>
           <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-            <span class="text-xs text-gray-400 font-normal">仅保留当天</span>
+            <span class="text-xs text-gray-400 font-normal">动作与重要事件 · 当天最近 200 条</span>
+            <BaseSelect v-model="dailyEventCategory" :options="dailyEventCategories" class="w-28" />
             <BaseButton
               variant="secondary"
               size="sm"
@@ -1300,13 +1315,13 @@ useIntervalFn(updateCountdowns, 1000)
             </BaseButton>
           </div>
         </h3>
-        <div v-if="!dailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
-          今天还没有记录到事件
+        <div v-if="!visibleDailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
+          {{ dailyEvents.length ? '该分类暂无已执行动作' : '今天还没有记录到事件' }}
         </div>
         <div v-else class="max-h-80 overflow-y-auto pr-1 space-y-1.5">
           <div
-            v-for="ev in [...dailyEvents].reverse()"
-            :key="`${ev.at}-${ev.type}`"
+            v-for="ev in visibleDailyEvents"
+            :key="ev.id || `${ev.at}-${ev.type}`"
             class="ui-subtle-panel flex items-start gap-2 rounded-lg px-3 py-1.5"
           >
             <span class="shrink-0 text-xs text-gray-400 font-mono">{{ formatEventTime(ev.at) }}</span>

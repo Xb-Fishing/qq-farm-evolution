@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const knowledge = require('./evolution-knowledge');
 const noChangeAudit = require('./evolution-no-change-audit');
+const { createGithubIssueReview, STATUSES: ISSUE_STATUSES } = require('./evolution-github-issue-review');
 const {
     parseStageResult, normalizeCheckpoint, createTeamError, normalizeTeamFailure,
     normalizeOrchestrationFiles, buildStageSchema, FULL_HANDOFF_MANDATE, safeReviewFeedback,
@@ -13,6 +14,7 @@ const TOOL_LIMIT = 6000;
 const CONTROL_FILES = new Set([
     'core/src/services/evolution-main-workflow.js', 'core/src/services/evolution-main-mcp.js',
     'core/src/services/evolution-no-change-audit.js',
+    'core/src/services/evolution-github-issue-review.js',
     'core/scripts/run-evolution-main-mcp.js',
 ]);
 const MAIN_RESULT_SCHEMA = {
@@ -118,6 +120,17 @@ function mainTools() {
     const review = buildStageSchema('review').properties;
     const entries = [
         { name: 'status', description: 'Read the trusted current contract, draft, last worker failure and validation identity.', inputSchema: empty },
+        { name: 'read_github_issue', description: 'Read one page of the immutable owner issue batch. Every page must be read before its review.', inputSchema: {
+            type: 'object', additionalProperties: false,
+            properties: { issue: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0 } }, required: ['issue'],
+        } },
+        { name: 'review_github_issue', description: 'Record an evidence-bound disposition for one fully read owner issue; unfinished work requires a concrete next action.', inputSchema: {
+            type: 'object', additionalProperties: false,
+            properties: { issue: { type: 'integer', minimum: 1 }, fingerprint: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+                status: { type: 'string', enum: ISSUE_STATUSES }, note: { type: 'string', minLength: 1, maxLength: 300 },
+                nextAction: { type: 'string', maxLength: 1000 }, evidencePaths: { ...strings, maxItems: 8, minItems: 1 } },
+            required: ['issue', 'fingerprint', 'status', 'note', 'nextAction', 'evidencePaths'],
+        } },
         { name: 'approve_plan', description: 'Main approves an exact writable scope and executable contract before implementation.', inputSchema: {
             type: 'object', additionalProperties: false,
             properties: { summary: { type: 'string', maxLength: TOOL_LIMIT }, allowedFiles: strings,
@@ -211,6 +224,8 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         task, promptDigest: digest(String(prompt)), feedbackThroughAt: 0,
         activityPlanDigest: '', githubBatchDigest: '', quotaDate: '', automatic: false, combinedDaily: false,
     };
+    const issueReview = createGithubIssueReview({ dataDir, identity, prompt, enabled: !requiresApply,
+        knowledgeDir: knowledge.resolveKnowledgeDir({ dataDir }) });
     const abort = new AbortController();
     const abortOuter = () => abort.abort(signal?.reason);
     if (signal?.aborted) abortOuter();
@@ -310,6 +325,23 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         return { content: [{ type: 'text', text }], isError };
     };
     const operations = {
+        read_github_issue: async args => {
+            try { return issueReview.read(args); }
+            catch (error) { return result({ state: error.message, summary: '无法读取本轮 issue；请核对 status 的批次身份与页偏移。' }, true); }
+        },
+        review_github_issue: async args => {
+            const tree = await current();
+            seal = null;
+            try {
+                const receipt = issueReview.review(args, tree.fingerprint);
+                const receipts = [...issueReview.snapshot().filter(item => item.issue !== receipt.issue), receipt];
+                const file = writeArtifact('github-issue-reviews.json', JSON.stringify(receipts));
+                memory.append('github_issue_reviewed', { summary: receipt.note, issue: receipt.issue,
+                    fingerprint: tree.fingerprint, file });
+                issueReview.commit(receipt);
+                return { state: 'recorded', issue: receipt.issue, status: receipt.status, file };
+            } catch (error) { return result({ state: error.message, summary: '逐条读取后附当前源码/日志证据与具体处理结论；未完成时列明下一步。' }, true); }
+        },
         record_investigation: async args => {
             const tree = await current();
             seal = null;
@@ -362,6 +394,7 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
                 acceptanceCheckCount: contract?.acceptanceChecks.length || 0, changedFiles: tree.files,
                 fingerprint: tree.fingerprint, validation: validation ? { fingerprint: validation.worktreeFingerprint } : null,
                 repairMemory: memory.location(), initialWorkerInvoked,
+                githubIssues: issueReview.status(),
                 lastFailure, ...summary() };
         },
         approve_plan: async args => {
@@ -556,6 +589,9 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         },
         accept_result: async args => {
             const tree = await current();
+            const issueError = issueReview.validate(args, tree);
+            if (issueError) return result({ state: issueError,
+                summary: '本轮自有 GitHub issue 尚未逐条读取并记录当前证据与结论，或批次/证据已变化；零改动也不能跳过。未完成项保留 in_progress 与下一步，feedbackReviewed=false。' }, true);
             const pending = followups();
             const proposed = new Set(validResolutions(tree).map(proposal => proposal.id));
             if (requireNoChangeAudit && args.feedbackReviewed === true && (pending.state === 'unavailable'
@@ -592,10 +628,19 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
                 throw createTeamError('invalid_decision');
             }
             const accepted = parseStageResult(JSON.stringify({ ...args, decision: 'approve' }), requiresApply ? 'patch_review' : 'review');
+            const issueNotes = issueReview.snapshot().map(item => `#${item.issue} ${item.note}`);
+            if (issueNotes.length) {
+                const suffix = ` GitHub反馈：${issueNotes.join('；')}`.slice(0, 1800);
+                accepted.summary = accepted.summary.slice(0, TOOL_LIMIT - suffix.length) + suffix;
+            }
             if (requireNoChangeAudit) {
                 const openCount = pending.pending?.filter(entry => !proposed.has(entry.id)).length || 0;
                 const suffix = pending.state === 'unavailable' ? ' 调查台账暂不可读，仍须复查。' : openCount ? ` 仍有${openCount}项调查未结案，后续继续跟进。` : '';
                 if (suffix) accepted.summary = accepted.summary.slice(0, TOOL_LIMIT - suffix.length) + suffix;
+            }
+            if (issueReview.status().legacyRawMissing) {
+                const warning = ' 历史GitHub批次原文缺失，未声称已读或解决；旧反馈仍保留待补。';
+                accepted.summary = accepted.summary.slice(0, TOOL_LIMIT - warning.length) + warning;
             }
             if (requiresApply && !normalizeOrchestrationFiles(tree.files || []).length) throw createTeamError('worktree_changed');
             seal = { fingerprint: tree.fingerprint, validationDigest: validation.digest,
@@ -673,12 +718,15 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
             pendingCount: investigationState.pending?.length || 0, dueCount: investigationState.due?.length || 0,
             duePreview: investigationState.due?.slice(0, 5).map(item => ({ id: item.id, area: item.area, question: String(item.question).slice(0, 240) })) };
         const zeroChangeAcceptance = requireNoChangeAudit ? `\n零改动不是默认通过。收口前通过review_no_change逐项检查：按更新时间逐仓核对新增/未补齐改进、现有接口兼容、已结束活动页面与后台清退、种植/2x2/背包逻辑、最近日志首错与放大、解决问题的根因与排除过程、未确定事件、用户入口/配置/默认值/反馈与相关skill未决项。每项附实际有界证据文件；未知不能用“无问题”代替。能定位的继续解决；确实缺材料时提供已排除原因、缺项、现有日志/事件监控信号、下轮检查时间与解除条件。监控通过既有每日进化读取，不因此新增游戏轮询。未决记录跨轮保留，修复轮也用record_investigation保存新未决项；先status读取到期investigations，用review_investigation复查/续监控，resolved先留为提案；有代码改动时等以后已发布的干净基线再核验，干净基线也须完整验收和正常结束才销账。不因新一轮、过期或没有新日志自动销账。持久跟进入口：${JSON.stringify(investigationBrief)}。库或监控证据缺失如实保留，不得把feedbackReviewed标真。` : '';
-        if (mainPrompt.length + researchAcceptance.length + zeroChangeAcceptance.length + 1 > CONTEXT_LIMIT) throw createTeamError('output_limit');
+        const issueAcceptance = issueReview.status().required
+            ? `\n【本仓库 GitHub issue 必须逐条处理】status.githubIssues 列出本批次编号。若 legacyRawMissing=true，则旧任务从未注入且原文已缺失：只可继续其他已验证修复，githubResolutions=[]、feedbackReviewed=false，不声称这些旧issue已读或解决，后续补回资料再处理。否则：先逐条调用 read_github_issue（按 nextOffset 读完标题、正文和全部已采集评论；正文为空也按标题评估需求），再沿真实代码/日志核对请求，合理且证据充分的需求推进实施。用 review_github_issue 记录原报告指纹、当前证据文件、处理结论和下一步。无改动也必须逐条给出结论，不能输出空 githubResolutions；未完成用 in_progress 并明确具体缺项/解除条件/下一步，不以“暂无对应修复”跳过需求。accept_result 的 githubResolutions 必须与逐条记录一致，未完成或采集不完整时 feedbackReviewed=false。记录只证明本轮核查，不授权公开回复、关闭或真实游戏写；fixed 仍受完整证据和发布门约束。批次/证据/源码变化后重新核对。`
+            : '';
+        if (mainPrompt.length + researchAcceptance.length + zeroChangeAcceptance.length + issueAcceptance.length + 1 > CONTEXT_LIMIT) throw createTeamError('output_limit');
         bridge = await (createBridge || require('./evolution-main-mcp').createMainToolBridge)({
             tools: mainTools(), instructions: 'Only the owning Main may approve, delegate, verify and seal this run.', handler,
         });
         await progress('plan');
-        const mainResult = await runMain({ prompt: `${mainPrompt}\n${researchAcceptance}${zeroChangeAcceptance}`, mcp: bridge.mcp, schema: MAIN_RESULT_SCHEMA, signal: abort.signal });
+        const mainResult = await runMain({ prompt: `${mainPrompt}\n${researchAcceptance}${zeroChangeAcceptance}${issueAcceptance}`, mcp: bridge.mcp, schema: MAIN_RESULT_SCHEMA, signal: abort.signal });
         if (blocked) throw blocked;
         if (abort.signal.aborted) throw createTeamError('cli_exit', { signal: 'SIGTERM' });
         if (pendingWorkers.size || activeResearch.size || busy) throw createTeamError('unsafe_worktree');
@@ -698,6 +746,7 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         bridge = null;
         final = await current();
         if (final.fingerprint !== seal.fingerprint) throw createTeamError('worktree_changed');
+        if (issueReview.validate(seal.accepted, final)) throw createTeamError('review_rejected');
         if (!final.dirty && requireNoChangeAudit && !noChangeAudit.auditStillValid(zeroChangeReview, final.fingerprint)) throw createTeamError('verification_failed');
         const remainingInvestigations = followups();
         const finalProposals = new Set(validResolutions(final).map(proposal => proposal.id));

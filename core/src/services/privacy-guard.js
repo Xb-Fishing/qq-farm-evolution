@@ -366,6 +366,7 @@ function auditGitRange(repoRoot, base, head, options = {}) {
     'core/src/services/evolution-team.js',
     'core/scripts/run-evolution-team.js',
     'core/src/services/evolution-main-workflow.js',
+    'core/src/services/evolution-github-issue-review.js',
     'core/src/services/evolution-main-mcp.js',
     'core/scripts/run-evolution-main-mcp.js',
     'scripts/evolution-hooks/pre-push',

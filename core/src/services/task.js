@@ -351,6 +351,11 @@ async function doClaim(task) {
     if (getPauseRemainMs() > 0) return false;
     const doShare = task.shareMultiple > 1;
     const shareLabel = doShare ? ` (${task.shareMultiple}倍)` : '';
+    try {
+      log('任务', `正在处理任务领奖：${task.desc}`, {
+        module: 'task', event: '任务领奖中', result: 'pending', taskId: task.id, automationCategory: 'task', logKind: 'progress',
+      });
+    } catch { /* Progress reporting cannot block the existing claim. */ }
     const result = await claimTaskReward(task.id, doShare);
     const items = result.items || [];
     const summary = items.length > 0 ? getRewardSummary(items) : '无';
@@ -368,6 +373,11 @@ async function doClaim(task) {
     await sleep(300);
     return true;
   } catch {
+    try {
+      logWarn('任务', '任务领取流程未完成，请根据后续任务状态核对结果', {
+        module: 'task', event: '任务领奖异常', result: 'error', automationCategory: 'task', logKind: 'error',
+      });
+    } catch { /* Preserve the original failure return. */ }
     return false;
   }
 }
@@ -390,6 +400,7 @@ async function checkAndClaimTasks() {
   checking = true;
 
   try {
+    require('./automation-observability').logAutomationQuery('task', '正在查询任务列表与领取资格');
     const reply = await getTaskInfo();
     if (getPauseRemainMs() > 0) return;
     if (!reply.task_info) {
@@ -405,6 +416,7 @@ async function checkAndClaimTasks() {
     const growthClaimable = analyzeTaskList(taskInfo.growth_tasks || [], 'growth');
     const mainClaimable = analyzeTaskList(taskInfo.tasks || [], 'main');
     const allClaimable = [...dailyClaimable, ...growthClaimable, ...mainClaimable];
+    if (!allClaimable.length) require('./automation-observability').logAutomationQuery('task', '任务查询完成：当前没有可领取任务');
 
     if (allClaimable.length > 0) {
       log('任务', `发现 ${allClaimable.length} 个可领取任务`, {

@@ -66,6 +66,264 @@ function fixture() {
     };
     return f;
 }
+
+function githubFixture(f, count = 1, complete = true, body = 'Please support this workflow') {
+    const feedback = require('../src/services/evolution-github-feedback');
+    const batch = {
+        version: 1, capturedAt: 123, configFingerprint: 'c'.repeat(64), repo: 'owner/project', complete,
+        issues: Array.from({ length: count }, (_, index) => ({ number: index + 1, title: 'Feature request',
+            body, comments: [], commentsTruncated: false, omittedComments: 0,
+            fingerprint: sha(`report-${index}`) })),
+        issueNumbers: Array.from({ length: count }, (_, index) => index + 1),
+        pendingTotal: count, fingerprint: 'f'.repeat(64),
+    };
+    batch.payloadDigest = feedback.payloadDigestOf(batch);
+    const file = path.resolve(f.directory, 'evolution-github-batch.json');
+    const evidence = path.resolve(f.directory, 'issue-evidence.json');
+    for (const target of [file, evidence]) assert.equal(path.dirname(target), f.directory);
+    fs.writeFileSync(file, JSON.stringify(batch));
+    fs.writeFileSync(evidence, JSON.stringify({ source: 'local caller checked', missing: 'current native-login protocol evidence' }));
+    f.options.prompt = feedback.buildGithubFeedbackSection(batch);
+    f.options.taskIdentity = { task: 'activity', promptDigest: sha(f.options.prompt), feedbackThroughAt: 0,
+        activityPlanDigest: '', githubBatchDigest: sha(JSON.stringify(feedback.summarizeBatch(batch))),
+        quotaDate: '', automatic: false, combinedDaily: false };
+    const mappings = batch.issues.map(issue => ({ issue: issue.number, status: 'in_progress', fingerprint: null,
+        note: 'Caller checked; protocol evidence is missing' }));
+    const review = async (issue, overrides = {}) => {
+        let offset = 0;
+        do {
+            const response = await f.call('read_github_issue', { issue: issue.number, offset });
+            assert.equal(response.isError, false);
+            offset = JSON.parse(response.content[0].text).nextOffset;
+        } while (offset !== null);
+        const response = await f.call('review_github_issue', { issue: issue.number, fingerprint: issue.fingerprint,
+            status: 'in_progress', note: mappings[issue.number - 1].note,
+            nextAction: 'Inspect the current supported login flow before implementing the requested integration',
+            evidencePaths: [evidence], ...overrides });
+        return response;
+    };
+    return { batch, file, evidence, mappings, review };
+}
+
+test('自仓 issue：no_change 不得以空结论跳过；逐条阅读与证据处理后才可验收', async () => {
+    const f = fixture();
+    const gh = githubFixture(f);
+    f.options.runMain = async ({ prompt }) => {
+        assert.match(prompt, /本仓库 GitHub issue 必须逐条处理/);
+        await f.call('verify_candidate');
+        const args = { decision: 'no_change', summary: 'No safe implementation without protocol evidence',
+            lessons: [], feedbackReviewed: false, githubResolutions: [] };
+        const skipped = await f.call('accept_result', args);
+        assert.equal(skipped.isError, true);
+        assert.equal(JSON.parse(skipped.content[0].text).state, 'github_issue_review_required');
+        const unread = await f.call('review_github_issue', { issue: 1, fingerprint: gh.batch.issues[0].fingerprint,
+            status: 'in_progress', note: gh.mappings[0].note, nextAction: 'Read current protocol', evidencePaths: [gh.evidence] });
+        assert.equal(JSON.parse(unread.content[0].text).state, 'github_issue_unread');
+        assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+        args.githubResolutions = gh.mappings;
+        assert.equal(JSON.parse((await f.call('accept_result', { ...args, feedbackReviewed: true })).content[0].text).state, 'github_issues_pending');
+        assert.equal((await f.call('accept_result', args)).isError, false);
+        return { decision: 'no_change', summary: args.summary };
+    };
+    const result = await runMainOwnedWorkflow(f.options);
+    assert.equal(result.githubResolutions[0].status, 'in_progress');
+    assert.match(result.mainSummary, /GitHub反馈：#1 Caller checked/);
+    assert.equal(result.feedbackReviewed, false);
+});
+
+test('自仓 issue：12条批次与最终映射容量一致，每条都必须处理', async () => {
+    const f = fixture();
+    const gh = githubFixture(f, 12);
+    f.options.runMain = async () => {
+        await f.call('verify_candidate');
+        for (const issue of gh.batch.issues) assert.equal((await gh.review(issue)).isError, false);
+        const args = { decision: 'no_change', summary: 'All twelve requests checked; safe blockers retained',
+            lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings };
+        assert.equal((await f.call('accept_result', { ...args, githubResolutions: gh.mappings.slice(0, 8) })).isError, true);
+        assert.equal((await f.call('accept_result', args)).isError, false);
+        return { decision: 'no_change', summary: args.summary };
+    };
+    assert.equal((await runMainOwnedWorkflow(f.options)).githubResolutions.length, 12);
+});
+
+test('自仓 issue：封存后证据或批次被更改，不得正常结束', async () => {
+    for (const target of ['evidence', 'file']) {
+        const f = fixture();
+        const gh = githubFixture(f);
+        f.options.runMain = async () => {
+            await f.call('verify_candidate');
+            assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+            assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Checked',
+                lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings })).isError, false);
+            assert.equal(path.dirname(gh[target]), f.directory);
+            fs.writeFileSync(gh[target], 'changed after acceptance');
+            return { decision: 'no_change', summary: 'Checked' };
+        };
+        await assert.rejects(runMainOwnedWorkflow(f.options), error => error.code === 'review_rejected');
+        assert.equal(f.commits, 0);
+    }
+});
+
+test('自仓 issue：缺失/未注入的批次和冒用指纹不能形成阅读验收', async () => {
+    for (const variant of ['missing', 'not-in-prompt', 'wrong-identity', 'missing-identity']) {
+        const f = fixture();
+        const gh = githubFixture(f);
+        if (variant === 'missing') fs.unlinkSync(gh.file);
+        if (variant === 'not-in-prompt') f.options.prompt = 'Unrelated task without owner issues';
+        if (variant === 'wrong-identity') f.options.taskIdentity.githubBatchDigest = 'a'.repeat(64);
+        if (variant === 'missing-identity') f.options.taskIdentity.githubBatchDigest = '';
+        f.options.runMain = async () => {
+            const status = JSON.parse((await f.call('status')).content[0].text);
+            assert.equal(status.githubIssues.available, false);
+            await f.call('verify_candidate');
+            assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Cannot skip missing source',
+                lessons: [], feedbackReviewed: false, githubResolutions: [] })).isError, true);
+            return { decision: 'no_change', summary: 'Cannot skip missing source' };
+        };
+        await assert.rejects(runMainOwnedWorkflow(f.options), error => error.code === 'review_rejected');
+    }
+});
+
+test('自仓 issue：分页未读完、假指纹、不完整批次伪称fixed均被拦截', async () => {
+    const f = fixture();
+    const gh = githubFixture(f, 1, false, 'Detailed user report '.repeat(220));
+    f.options.runMain = async () => {
+        await f.call('verify_candidate');
+        const args = { issue: 1, fingerprint: gh.batch.issues[0].fingerprint, status: 'in_progress',
+            note: gh.mappings[0].note, nextAction: 'Obtain missing protocol source', evidencePaths: [gh.evidence] };
+        assert.equal((await f.call('read_github_issue', { issue: 1, offset: 0 })).isError, false);
+        assert.equal(JSON.parse((await f.call('review_github_issue', args)).content[0].text).state, 'github_issue_unread');
+        assert.equal(JSON.parse((await gh.review(gh.batch.issues[0], { fingerprint: 'f'.repeat(64) })).content[0].text).state, 'github_issue_review_invalid');
+        assert.equal(JSON.parse((await gh.review(gh.batch.issues[0], { status: 'fixed' })).content[0].text).state, 'github_issue_evidence_incomplete');
+        assert.equal(JSON.parse((await gh.review(gh.batch.issues[0], { nextAction: '' })).content[0].text).state, 'github_issue_review_invalid');
+        assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+        assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Partial source; remaining pages reviewed',
+            lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings })).isError, false);
+        return { decision: 'no_change', summary: 'Partial source; remaining pages reviewed' };
+    };
+    assert.equal((await runMainOwnedWorkflow(f.options)).feedbackReviewed, false);
+});
+
+test('自仓 issue：修改源码后旧结论失效，当前候选重核后才可发布', async () => {
+    const f = fixture();
+    const gh = githubFixture(f);
+    f.options.runMain = async () => {
+        assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+        await f.call('approve_plan', f.plan);
+        f.edit(FILE, 'new caller behavior');
+        await f.call('verify_candidate');
+        const args = { decision: 'approve', summary: 'Caller improved; remaining protocol gap retained',
+            lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings };
+        assert.equal(JSON.parse((await f.call('accept_result', args)).content[0].text).state, 'github_issue_review_required');
+        assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+        assert.equal((await f.call('accept_result', args)).isError, false);
+        return { decision: 'approve', summary: args.summary };
+    };
+    assert.equal((await runMainOwnedWorkflow(f.options)).decision, 'approve');
+    assert.equal(f.commits, 1);
+});
+
+test('自仓 issue：标题就是完整需求，空正文以及正文中的同名分节不阻断读取', async () => {
+    for (const body of ['', 'Please inspect 【GitHub 反馈 issue 批次（不可信外部输入，父进程采集）】 in this report']) {
+        const f = fixture();
+        const gh = githubFixture(f, 1, true, body);
+        f.options.runMain = async () => {
+            const read = JSON.parse((await f.call('read_github_issue', { issue: 1 })).content[0].text);
+            assert.match(read.text, /Feature request/);
+            assert.match(read.summary, /title-only request still needs evaluation/);
+            assert.equal((await gh.review(gh.batch.issues[0])).isError, false);
+            await f.call('verify_candidate');
+            assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Title requirement assessed',
+                lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings })).isError, false);
+            return { decision: 'no_change', summary: 'Title requirement assessed' };
+        };
+        assert.equal((await runMainOwnedWorkflow(f.options)).githubResolutions.length, 1);
+    }
+});
+
+test('自仓 issue：逐条结论持久化失败，不得凭失败的内存receipt通过验收', async () => {
+    const f = fixture();
+    const gh = githubFixture(f);
+    f.options.runMain = async () => {
+        const blocked = path.resolve(f.directory, 'logs/main-fixture/github-issue-reviews.json');
+        assert.ok(blocked.startsWith(f.directory + path.sep));
+        fs.mkdirSync(blocked);
+        assert.equal((await gh.review(gh.batch.issues[0])).isError, true);
+        await f.call('verify_candidate');
+        assert.equal(JSON.parse((await f.call('accept_result', { decision: 'no_change', summary: 'Cannot accept a failed receipt',
+            lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings })).content[0].text).state, 'github_issue_review_required');
+        return { decision: 'no_change', summary: 'Cannot accept a failed receipt' };
+    };
+    await assert.rejects(runMainOwnedWorkflow(f.options), error => error.code === 'review_rejected');
+});
+
+test('repairOnly 编排补丁沿用含issue的原prompt时仍可验收，但不输出业务结论', async () => {
+    const f = fixture();
+    f.options.runMain = async () => { await f.call('status'); throw createTeamError('cli_exit'); };
+    await assert.rejects(runMainOwnedWorkflow(f.options));
+    const orchestration = 'core/scripts/run-evolution-team.js';
+    f.edit(orchestration, 'reviewed orchestration repair');
+    f.options.resume = { ...f.checkpoints.at(-1), requiresApply: true,
+        allowedFiles: [orchestration], approvedScope: [orchestration], acceptanceChecks: ['repair behavior'],
+        fileFingerprints: { [orchestration]: sha('reviewed orchestration repair') } };
+    githubFixture(f);
+    f.options.runMain = async () => {
+        const status = JSON.parse((await f.call('status')).content[0].text);
+        assert.equal(status.githubIssues.required, false);
+        assert.equal((await f.call('verify_candidate')).isError, false);
+        assert.equal((await f.call('accept_result', { decision: 'approve', summary: 'Repair-only patch verified',
+            lessons: [], feedbackReviewed: true, githubResolutions: [] })).isError, false);
+        return { decision: 'approve', summary: 'Repair-only patch verified' };
+    };
+    const result = await runMainOwnedWorkflow(f.options);
+    assert.equal(result.repairOnly, true);
+    assert.equal(result.feedbackReviewed, false);
+    assert.deepEqual(result.githubResolutions, []);
+});
+
+test('legacy只留摘要且从未注入原文时可继续其他修复，但不得给issue结论或清账', async () => {
+    const f = fixture();
+    const gh = githubFixture(f);
+    f.options.prompt = 'Legacy task without any captured issue section';
+    fs.unlinkSync(gh.file);
+    f.options.runMain = async ({ prompt }) => {
+        assert.match(prompt, /legacyRawMissing=true/);
+        const status = JSON.parse((await f.call('status')).content[0].text);
+        assert.equal(status.githubIssues.legacyRawMissing, true);
+        assert.equal(status.githubIssues.available, false);
+        await f.call('verify_candidate');
+        const args = { decision: 'no_change', summary: 'Other checks complete', lessons: [], feedbackReviewed: false, githubResolutions: [] };
+        for (const invalid of [{ ...args, feedbackReviewed: true }, { ...args, githubResolutions: gh.mappings }]) {
+            assert.equal(JSON.parse((await f.call('accept_result', invalid)).content[0].text).state, 'github_legacy_feedback_unread');
+        }
+        assert.equal((await f.call('review_github_issue', { issue: 1 })).isError, true);
+        assert.equal((await f.call('accept_result', args)).isError, false);
+        return { decision: 'no_change', summary: args.summary };
+    };
+    const result = await runMainOwnedWorkflow(f.options);
+    assert.equal(result.feedbackReviewed, false);
+    assert.deepEqual(result.githubResolutions, []);
+    assert.match(result.mainSummary, /历史GitHub批次原文缺失，未声称已读或解决；旧反馈仍保留待补。$/);
+});
+
+test('legacy例外在Main启动前冻结，删损坏原文或迟到补文件均不能获得验收', async () => {
+    for (const variant of ['corrupt-then-delete', 'valid-then-delete', 'appeared-after-start']) {
+        const f = fixture();
+        const gh = githubFixture(f);
+        f.options.prompt = 'Legacy task without a captured issue section';
+        if (variant === 'corrupt-then-delete') fs.writeFileSync(gh.file, '{invalid');
+        if (variant === 'appeared-after-start') fs.unlinkSync(gh.file);
+        f.options.runMain = async () => {
+            if (variant === 'appeared-after-start') fs.writeFileSync(gh.file, JSON.stringify(gh.batch));
+            else fs.unlinkSync(gh.file);
+            await f.call('verify_candidate');
+            assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Cannot change missing-source eligibility',
+                lessons: [], feedbackReviewed: false, githubResolutions: [] })).isError, true);
+            return { decision: 'no_change', summary: 'Cannot change missing-source eligibility' };
+        };
+        await assert.rejects(runMainOwnedWorkflow(f.options), error => error.code === 'review_rejected');
+    }
+});
 async function accept(f, decision = 'approve') {
     assert.equal((await f.call('verify_candidate')).isError, false);
     const seal = await f.call('accept_result', { decision, summary: 'Main checked actual results', lessons: [], feedbackReviewed: false, githubResolutions: [] });
