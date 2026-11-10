@@ -212,6 +212,25 @@ function analyzeTaskList(tasks, category = 'main') {
 }
 
 /**
+ * 本批候选按任务ID去重：仅保留正数且安全整数的ID，同ID保留首条。
+ * daily 回退与主线列表可能包含同一任务，重复领取会被服务端拒绝。
+ * seen 只在本次调用内使用，不引入跨批持久去重（新快照/新日仍可正常领取）。
+ */
+function uniqueClaimableTasks(formattedTasks) {
+  const list = Array.isArray(formattedTasks) ? formattedTasks : [];
+  const seen = new Set();
+  const unique = [];
+  for (const task of list) {
+    const id = task && task.id;
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    unique.push(task);
+  }
+  return unique;
+}
+
+/**
  * 构建每日任务列表（回退：从 tasks + growth_tasks 中筛选 task_type=2 的）
  */
 function buildDailyTasksForDebug(taskInfoRaw) {
@@ -384,7 +403,8 @@ async function doClaim(task) {
 
 async function claimTasksFromList(tasks) {
   if (!isAutomationOn('task')) return;
-  for (const task of tasks) {
+  // 消费时再按ID去重一次：兼容旧胶囊 pending 里已持久化的重复行。
+  for (const task of uniqueClaimableTasks(tasks)) {
     await doClaim(task);
   }
 }
@@ -410,12 +430,15 @@ async function checkAndClaimTasks() {
 
     const taskInfo = reply.task_info;
 
-    // 收集可领取任务
+    // 收集可领取任务：三组已格式化候选合并后按任务ID去重（同ID保留首条），
+    // 再从去重结果中筛出每日分类，供计数与结果日志使用。
     const dailyTasks = buildDailyTasksForDebug(taskInfo);
-    const dailyClaimable = analyzeTaskList(dailyTasks, 'daily');
-    const growthClaimable = analyzeTaskList(taskInfo.growth_tasks || [], 'growth');
-    const mainClaimable = analyzeTaskList(taskInfo.tasks || [], 'main');
-    const allClaimable = [...dailyClaimable, ...growthClaimable, ...mainClaimable];
+    const allClaimable = uniqueClaimableTasks([
+      ...analyzeTaskList(dailyTasks, 'daily'),
+      ...analyzeTaskList(taskInfo.growth_tasks || [], 'growth'),
+      ...analyzeTaskList(taskInfo.tasks || [], 'main'),
+    ]);
+    const dailyClaimable = allClaimable.filter((task) => task.category === 'daily');
     if (!allClaimable.length) require('./automation-observability').logAutomationQuery('task', '任务查询完成：当前没有可领取任务');
 
     if (allClaimable.length > 0) {
@@ -465,11 +488,11 @@ function onTaskInfoNotify(payload) {
   if (!payload) return;
   if (!isAutomationOn('task')) return;
 
-  const claimable = [
+  const claimable = uniqueClaimableTasks([
     ...analyzeTaskList(payload.daily_tasks || [], 'daily'),
     ...analyzeTaskList(payload.growth_tasks || [], 'growth'),
     ...analyzeTaskList(payload.tasks || [], 'main'),
-  ];
+  ]);
 
   const actives = payload.actives || [];
   const hasClaimable = claimable.length > 0;
