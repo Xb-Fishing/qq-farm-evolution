@@ -6,6 +6,8 @@ interface FeedbackEvent {
   trace?: string
   target?: string
   category?: string
+  operation?: string
+  failurePhase?: string
 }
 const pageNames = new Set(['dashboard', 'farm', 'friends', 'bag', 'shop', 'task', 'warehouse', 'activity', 'settings', 'accounts', 'admin'])
 let queue: FeedbackEvent[] = []
@@ -47,11 +49,11 @@ export function currentFeedbackTrace() {
   // A short-lived interaction window includes its immediate refresh requests.
   return Date.now() - traceAt <= 5000 ? trace : ''
 }
-export function recordClientFailure(category: 'vue_error' | 'unhandled_rejection' | 'script_error' | 'network_error' | 'request_timeout') {
+export function recordClientFailure(category: 'vue_error' | 'unhandled_rejection' | 'script_error' | 'network_error' | 'request_timeout' | 'http_error', detail?: { operation: string, failurePhase: 'transport' | 'http_response' }) {
   if (Date.now() - lastErrorAt < 500)
     return
   lastErrorAt = Date.now()
-  enqueue({ kind: 'client_error', category, page: page(), trace: currentFeedbackTrace() })
+  enqueue({ kind: 'client_error', category, page: page(), trace: currentFeedbackTrace(), operation: detail?.operation, failurePhase: detail?.failurePhase })
 }
 export async function flushFeedback() {
   if (sending || !queue.length)

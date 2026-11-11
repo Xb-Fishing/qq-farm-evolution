@@ -128,7 +128,12 @@ function mainTools() {
             type: 'object', additionalProperties: false,
             properties: { issue: { type: 'integer', minimum: 1 }, fingerprint: { type: 'string', pattern: '^[0-9a-f]{64}$' },
                 status: { type: 'string', enum: ISSUE_STATUSES }, note: { type: 'string', minLength: 1, maxLength: 300 },
-                nextAction: { type: 'string', maxLength: 1000 }, evidencePaths: { ...strings, maxItems: 8, minItems: 1 } },
+                nextAction: { type: 'string', maxLength: 1000 },
+                implementationFiles: strings, existingCommit: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+                blocker: { type: 'object', additionalProperties: false, properties: {
+                    kind: { type: 'string', enum: ['external_material', 'external_access', 'owner_decision'] },
+                    missing: { type: 'string' }, checkedSources: { type: 'string' }, verification: { type: 'string' }, releaseCondition: { type: 'string' },
+                }, required: ['kind', 'missing', 'checkedSources', 'verification', 'releaseCondition'] }, evidencePaths: { ...strings, maxItems: 8, minItems: 1 } },
             required: ['issue', 'fingerprint', 'status', 'note', 'nextAction', 'evidencePaths'],
         } },
         { name: 'approve_plan', description: 'Main approves an exact writable scope and executable contract before implementation.', inputSchema: {
@@ -167,8 +172,11 @@ function mainTools() {
         } },
         { name: 'review_investigation', description: 'Recheck a durable unresolved investigation; resolving it requires current verification. Monitoring retains the question and records new evidence.', inputSchema: {
             type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, status: { type: 'string', enum: ['monitoring', 'resolved'] },
-                conclusion: { type: 'string' }, evidencePaths: strings, nextCheckAt: { type: 'integer' } },
-            required: ['id', 'status', 'conclusion', 'evidencePaths'],
+                conclusion: { type: 'string' }, remaining: { type: 'string', maxLength: 2000 }, evidencePaths: strings, nextCheckAt: { type: 'integer' },
+                verification: { type: 'object', additionalProperties: false, properties: {
+                    method: { type: 'string', enum: ['regression', 'observation', 'source_review'] }, checked: { type: 'string' }, result: { type: 'string' },
+                }, required: ['method', 'checked', 'result'] } },
+            required: ['id', 'status', 'conclusion', 'evidencePaths', 'verification'],
         } },
         { name: 'verify_candidate', description: 'Run the coordinator-owned full verification and registered baseline counterchecks for the actual candidate.', inputSchema: empty },
         { name: 'record_iteration', description: 'Persist why a round failed, Main corrections, remaining problems and the next action before continuing.', inputSchema: {
@@ -225,7 +233,9 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         activityPlanDigest: '', githubBatchDigest: '', quotaDate: '', automatic: false, combinedDaily: false,
     };
     const issueReview = createGithubIssueReview({ dataDir, identity, prompt, enabled: !requiresApply,
-        knowledgeDir: knowledge.resolveKnowledgeDir({ dataDir }) });
+        knowledgeDir: knowledge.resolveKnowledgeDir({ dataDir }), sourceRoot: process.cwd() });
+    const initiallyDueInvestigations = new Set(noChangeAudit.getInvestigationFollowups(dataDir).due.map(entry => entry.id));
+    const reviewedInvestigations = new Set();
     const abort = new AbortController();
     const abortOuter = () => abort.abort(signal?.reason);
     if (signal?.aborted) abortOuter();
@@ -366,10 +376,11 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         },
         review_investigation: async args => {
             const tree = await current();
-            if (args.status === 'resolved' && (!validation || validation.worktreeFingerprint !== tree.fingerprint)) throw createTeamError('verification_failed');
+            if ((args.status === 'resolved' || args.verification?.method === 'regression') && (!validation || validation.worktreeFingerprint !== tree.fingerprint)) throw createTeamError('verification_failed');
             seal = null;
-            const reviewed = noChangeAudit.reviewInvestigation({ ...args, dataDir, fingerprint: tree.fingerprint,
+            const reviewed = noChangeAudit.reviewInvestigation({ ...args, dataDir, runId, fingerprint: tree.fingerprint,
                 knowledgeDir: knowledge.resolveKnowledgeDir({ dataDir }) });
+            reviewedInvestigations.add(reviewed.id);
             if (args.status === 'resolved') {
                 investigationResolutions.set(reviewed.id, reviewed);
                 memory.append('investigation_resolution_proposed', { ...reviewed, fingerprint: tree.fingerprint });
@@ -591,9 +602,11 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
             const tree = await current();
             const issueError = issueReview.validate(args, tree);
             if (issueError) return result({ state: issueError,
-                summary: '本轮自有 GitHub issue 尚未逐条读取并记录当前证据与结论，或批次/证据已变化；零改动也不能跳过。未完成项保留 in_progress 与下一步，feedbackReviewed=false。' }, true);
+                summary: '本轮自有 GitHub issue 尚未逐条读取并记录当前证据与结论，或批次/证据已变化；零改动也不能跳过。可实现需求须完成交付；in_progress 仅允许绑定已查来源、实际验证、确切外部缺项和解除条件的 blocker，feedbackReviewed=false。' }, true);
             const pending = followups();
             const proposed = new Set(validResolutions(tree).map(proposal => proposal.id));
+            if (requireNoChangeAudit && [...initiallyDueInvestigations].some(id => !reviewedInvestigations.has(id))) return result({
+                state: 'investigation_fresh_verification_required', summary: '本轮开始已到期的调查须逐项实际补验证；无关改动、旧证据和延期不能代替复查。' }, true);
             if (requireNoChangeAudit && args.feedbackReviewed === true && (pending.state === 'unavailable'
                 || pending.pending.some(entry => !proposed.has(entry.id)))) return result({ state: 'investigations_pending',
                 summary: '仍有未解决、待发布核验或不可读的调查；修复轮也不能标记全部反馈已解决。' }, true);
@@ -717,9 +730,9 @@ async function runMainOwnedWorkflow({ settings, prompt, baseCommit, task = 'safe
         const investigationBrief = { file: investigationState.file, state: investigationState.state,
             pendingCount: investigationState.pending?.length || 0, dueCount: investigationState.due?.length || 0,
             duePreview: investigationState.due?.slice(0, 5).map(item => ({ id: item.id, area: item.area, question: String(item.question).slice(0, 240) })) };
-        const zeroChangeAcceptance = requireNoChangeAudit ? `\n零改动不是默认通过。收口前通过review_no_change逐项检查：按更新时间逐仓核对新增/未补齐改进、现有接口兼容、已结束活动页面与后台清退、种植/2x2/背包逻辑、最近日志首错与放大、解决问题的根因与排除过程、未确定事件、用户入口/配置/默认值/反馈与相关skill未决项。每项附实际有界证据文件；未知不能用“无问题”代替。能定位的继续解决；确实缺材料时提供已排除原因、缺项、现有日志/事件监控信号、下轮检查时间与解除条件。监控通过既有每日进化读取，不因此新增游戏轮询。未决记录跨轮保留，修复轮也用record_investigation保存新未决项；先status读取到期investigations，用review_investigation复查/续监控，resolved先留为提案；有代码改动时等以后已发布的干净基线再核验，干净基线也须完整验收和正常结束才销账。不因新一轮、过期或没有新日志自动销账。持久跟进入口：${JSON.stringify(investigationBrief)}。库或监控证据缺失如实保留，不得把feedbackReviewed标真。` : '';
+        const zeroChangeAcceptance = requireNoChangeAudit ? `\n零改动不是默认通过。收口前通过review_no_change逐项检查：按更新时间逐仓核对新增/未补齐改进、现有接口兼容、已结束活动页面与后台清退、种植/2x2/背包逻辑、最近日志首错与放大、解决问题的根因与排除过程、未确定事件、用户入口/配置/默认值/反馈与相关skill未决项。每项附实际有界证据文件；未知不能用“无问题”代替。能定位的继续解决；确实缺材料时提供已排除原因、缺项、现有日志/事件监控信号、下轮检查时间与解除条件。监控通过既有每日进化读取，不因此新增游戏轮询。未决记录跨轮保留，修复轮也用record_investigation保存新未决项；先status读取到期investigations，用review_investigation逐项补实际验证，附verification.method/checked/result和不同于旧证据的新执行或观察结果；仅重引旧材料、改nextCheckAt无效，resolved先留为提案；有代码改动时等以后已发布的干净基线再核验，干净基线也须完整验收和正常结束才销账。不因新一轮、过期或没有新日志自动销账。持久跟进入口：${JSON.stringify(investigationBrief)}。库或监控证据缺失如实保留，不得把feedbackReviewed标真。` : '';
         const issueAcceptance = issueReview.status().required
-            ? `\n【本仓库 GitHub issue 必须逐条处理】status.githubIssues 列出本批次编号。若 legacyRawMissing=true，则旧任务从未注入且原文已缺失：只可继续其他已验证修复，githubResolutions=[]、feedbackReviewed=false，不声称这些旧issue已读或解决，后续补回资料再处理。否则：先逐条调用 read_github_issue（按 nextOffset 读完标题、正文和全部已采集评论；正文为空也按标题评估需求），再沿真实代码/日志核对请求，合理且证据充分的需求推进实施。用 review_github_issue 记录原报告指纹、当前证据文件、处理结论和下一步。无改动也必须逐条给出结论，不能输出空 githubResolutions；未完成用 in_progress 并明确具体缺项/解除条件/下一步，不以“暂无对应修复”跳过需求。accept_result 的 githubResolutions 必须与逐条记录一致，未完成或采集不完整时 feedbackReviewed=false。记录只证明本轮核查，不授权公开回复、关闭或真实游戏写；fixed 仍受完整证据和发布门约束。批次/证据/源码变化后重新核对。`
+            ? `\n【本仓库 GitHub issue 必须逐条处理】status.githubIssues 列出本批次编号。若 legacyRawMissing=true，则旧任务从未注入且原文已缺失：只可继续其他已验证修复，githubResolutions=[]、feedbackReviewed=false，不声称这些旧issue已读或解决，后续补回资料再处理。否则：先逐条调用 read_github_issue（按 nextOffset 读完标题、正文和全部已采集评论；正文为空也按标题评估需求），再沿真实代码/日志核对请求，合理且证据充分的需求推进实施。用 review_github_issue 记录原报告指纹、当前证据文件、处理结论和下一步。无改动也必须逐条给出结论，不能输出空 githubResolutions；可实现需求必须继续实现并验证，fixed附implementationFiles对应当前真实源码差异；已在公开干净基线交付的能力可附existingCommit=当前基线HEAD和未变的实现文件，经本轮真实验证后核验结案，不能用无关改动代替；in_progress只允许真实外部阻塞，附blocker.kind、missing、checkedSources、verification、releaseCondition。选定方案未实现、缺审美偏好或公共预算耗尽都不能替代本机可实现工作，不以“暂无对应修复”跳过需求。accept_result 的 githubResolutions 必须与逐条记录一致，未完成或采集不完整时 feedbackReviewed=false。记录只证明本轮核查，不授权公开回复、关闭或真实游戏写；fixed 仍受完整证据和发布门约束。批次/证据/源码变化后重新核对。`
             : '';
         if (mainPrompt.length + researchAcceptance.length + zeroChangeAcceptance.length + issueAcceptance.length + 1 > CONTEXT_LIMIT) throw createTeamError('output_limit');
         bridge = await (createBridge || require('./evolution-main-mcp').createMainToolBridge)({

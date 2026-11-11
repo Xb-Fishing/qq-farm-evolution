@@ -399,6 +399,13 @@ async function main() {
   const adminPort = Number(arg('admin-port')) || 3007;
   const nodeBinDir = path.resolve(arg('node-bin-dir') || path.dirname(process.execPath));
   const autonomyRequired = arg('autonomy') === '1';
+  const programUpdateId = arg('program-update');
+  const proofDir = arg('proof-dir');
+  let updateState = null;
+  const assertProgramUpdate = () => {
+    if (programUpdateId) updateState = require('../src/services/program-update').assertCandidate({ dataDir, runId: programUpdateId,
+      proofDir, expectedHead, botPid, botStarttime });
+  };
   // 隔离候选（Stage C）：--target-root = 已接受公开提交上的干净运行时工作区。
   // 提供时部署/构建/HEAD 核对全部落在目标根；原库保留物只做「未被触碰」证明，
   // 绝不部署原库内容。未提供时保持既有同根路径（REPO_ROOT）语义不变。
@@ -446,6 +453,7 @@ async function main() {
   let targetValidation = null;
   const assertTargetProven = () => {
     if (!targetRoot) return;
+    assertProgramUpdate();
     const record = evolutionPublish.readApplyTarget(dataDir);
     if (!record || record.commit !== expectedHead
       || path.resolve(record.runtimeRoot) !== targetRoot) {
@@ -523,13 +531,33 @@ async function main() {
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true, mode: 0o700 });
   const buildLog = path.join(dataDir, 'logs', 'evolve-apply.log');
   const buildRoot = fs.mkdtempSync(path.join(deployRoot, 'tmp', 'evolution-apply.XXXXXX'));
+  if (programUpdateId && updateState.artifactsRoot) {
+    const output = path.join(updateState.artifactsRoot, `helper-web-${Date.now()}`);
+    fs.mkdirSync(output, { mode: 0o700 });
+    fs.symlinkSync(output, path.join(buildRoot, 'dist'), 'dir');
+    const stats = path.join(deployRoot, 'web/stats.html');
+    if (fs.existsSync(stats) || fs.lstatSync(stats, { throwIfNoEntry: false })) throw new Error('helper_stats_destination_occupied');
+    fs.symlinkSync(path.join(updateState.artifactsRoot, 'helper-visualizer-stats.html'), stats);
+  }
   let contextFile = '';
   let wxPreflight = null;
   let stoppingStarted = false;
+  let rollbackContext = null;
+  let oldFingerprint = '';
+  let oldCommit = '';
+  let physicalProof = [];
+  let discoveredNewPid = 0;
+  let discoveredNewStart = '';
+  let targetArgv = [];
+  const sendRestart = file => {
+    const command = [process.execPath, __filename, '--restart', file].map(shellQuote).join(' ');
+    const bytes = Buffer.concat([Buffer.from([0x15]), Buffer.from(command, 'utf8'), Buffer.from([0x0D])]);
+    execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '-H', ...bytes.toString('hex').match(/../g)], { stdio: 'ignore' });
+  };
   const receiptFile = path.join(dataDir, 'evolution-apply-receipt.json');
   const writeReceipt = (fields) => {
     fs.writeFileSync(receiptFile, `${JSON.stringify({
-      expectedHead, oldPid: botPid, oldStarttime: botStarttime, adminPort, startedAt: Date.now(),
+      expectedHead, ...(programUpdateId ? { programUpdateId } : {}), oldPid: botPid, oldStarttime: botStarttime, adminPort, startedAt: Date.now(),
       ...(targetRoot ? { runtimeRoot: targetRoot,
         sourceFingerprint: targetRecord ? targetRecord.sourceFingerprint : '',
         holdDigest: targetRecord ? targetRecord.holdDigest : '' } : {}),
@@ -587,6 +615,16 @@ async function main() {
       adminPort,
       expectedHead,
     };
+    if (programUpdateId) {
+      rollbackContext = JSON.parse(JSON.stringify(botContext));
+      rollbackContext.cwd = fs.realpathSync(rollbackContext.cwd);
+      rollbackContext.argv[1] = fs.realpathSync(path.resolve(rollbackContext.cwd, rollbackContext.argv[1]));
+      rollbackContext.env = require('../src/services/program-update-overlay').pinEnvironment(rollbackContext.env, updateState.overlay, false);
+      oldCommit = git(['rev-parse', 'HEAD'], REPO_ROOT);
+      oldFingerprint = require('../src/services/evolution-validation').logicSnapshot(REPO_ROOT).fingerprint;
+      if (git(['status', '--porcelain'], REPO_ROOT)) throw new Error('rollback_source_not_clean');
+      physicalProof = await require('../src/runtime/session-physical-proof').capture(dataDir);
+    }
     // 隔离候选：Bot 上下文按「被证明的源仓库根（provenance.repoRootReal）→ 目标根」
     // 映射。真实脚本形态是 argv=[node,'client.js']、cwd=<源根>/core——cwd 不是仓库
     // 根；入口从原始 cwd 解析后落在源根内才可映射。只映射被证明的 Node 入口与
@@ -598,6 +636,8 @@ async function main() {
       Object.assign(botContext, { argv, argv0, exe, cwd, env });
     }
     Object.assign(botContext.env, wxPreflight.env);
+    if (programUpdateId) botContext.env = require('../src/services/program-update-overlay').pinEnvironment(botContext.env, updateState.overlay, true);
+    targetArgv = botContext.argv;
     fs.writeFileSync(contextFile, `${JSON.stringify(botContext)}\n`, { mode: 0o600 });
     try { fs.chmodSync(contextFile, 0o600); } catch {}
 
@@ -632,39 +672,33 @@ async function main() {
     // 无法证明空闲就诚实中止重启，绝不超时后猜着送。
     const quiet = await waitFor(() => paneAcceptingCommands(panePid), 10_000, 'pane 提示符空闲');
     if (!quiet) throw new Error('pane 前台未回到提示符（仍有前台任务或无法证明空闲），已取消送键重启，请人工处理');
-    const command = [process.execPath, __filename, '--restart', contextFile].map(shellQuote).join(' ');
-    // 单事务送键（2026-10-08 真实事故修复）：清行（C-u）+ 字面命令 + 回车必须在
-    // 一个 tmux 调用里以原始字节（-H hex）送达。旧实现分两次 exec——literal 已敲入
-    // 而 Enter 未达的中断窗口里，pane 残留未提交行；下一个 helper 又把命令直接拼在
-    // 残行之后，坏路径 context.json/root/.nvm/.../node 打开失败、helper 超时且服务
-    // 已停。注意不能用 C-u ... -l cmd Enter 混排：本机 tmux 会把中途的 -l 当字面键
-    // 敲出（实测 -lecho ...）；-H 按字节发送无歧义（0x15=C-u、0x0d=回车，UTF-8 安全）。
-    // Buffer.concat 显式字节（0x15/0x0d）：模板字符串转义在复制/改写时易被二次
-    // 转义成字面反斜杠文本（2026-10-08 事故复核），直接给字节杜绝歧义。
-    const keyBytes = Buffer.concat([
-      Buffer.from([0x15]), Buffer.from(command, 'utf8'), Buffer.from([0x0D]),
-    ]);
-    execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '-H',
-      ...keyBytes.toString('hex').match(/../g)], { stdio: ['ignore', 'ignore', 'ignore'] });
+    // Clear the pending line and submit the private context in one tmux transaction.
+    sendRestart(contextFile);
 
     const minStarttime = Number(processStarttime(process.pid)) || 0;
     // waitFor 返回谓词真值：这里就是找到的新 Bot PID（不是布尔），绝不能当 true 用。
     const newBot = await waitFor(() => findRestartedBot(panePid, botContext.argv, botPid, minStarttime),
       30_000, '新 Bot 进程出现在原 pane');
     if (!newBot) throw new Error('新 Bot 未在原 pane 中启动（重启未发生，服务已停止，请人工启动）');
+    discoveredNewPid = newBot;
     const newStarttime = await spawnStarttime(newBot);
+    discoveredNewStart = newStarttime;
     writeReceipt({ phase: 'started', newPid: newBot, newStarttime });
 
     // ready = 新进程仍存活且身份未复用 + HEAD 未漂移 + 真实持有 adminPort 的
     // LISTEN socket + /api/health 返回 ok:true。任意 TCP 应答不算成功。
     let sessionReadyProof = { ok: false, outcomes: [] };
     const ready = await waitFor(async () => {
-      if (!aliveNonZombie(newBot, newStarttime)) return false;
+      if (!aliveNonZombie(newBot, newStarttime)) {
+        if (programUpdateId) throw new Error('new_manager_exited');
+        return false;
+      }
       if (git(['rev-parse', 'HEAD'], deployRoot) !== expectedHead) return false;
       if (!holdsSocket(newBot, listeningInodes(adminPort))) return false;
       if (!await healthOk(adminPort)) return false;
       try { sessionReadyProof = await wxPreflight.verifyReady(); } catch { return false; }
-      return sessionReadyProof.ok === true;
+      return sessionReadyProof.ok === true && (!programUpdateId || (sessionReadyProof.outcomes.every(item => item.state === 'preserved')
+        && await require('../src/runtime/session-physical-proof').verify(dataDir, physicalProof)));
     }, wxPreflight.readyTimeoutMs, `新 Bot 端口 ${adminPort} 监听与健康检查`);
     // ready 之后、落盘回执之前再全量重证一次：健康进程不能掩盖「源内容/保留物/
     // 远端在重启窗口内被改写」——此时仍可诚实 failed，而不是把错误对象标记 ready。
@@ -672,9 +706,11 @@ async function main() {
       try { assertTargetProven(); } catch (error) {
         writeReceipt({ phase: 'failed', newPid: newBot, newStarttime: processStarttime(newBot) || '',
           error: `就绪后复核失败：${String(error.message || '').slice(0, 240)}` });
-        return fail(error.message || '就绪后复核失败');
+        throw error;
       }
     }
+    if (programUpdateId && !ready) throw new Error('version_update_not_ready');
+    if (programUpdateId) require('../src/services/program-update-overlay').commitOverlay(updateState.overlay);
     writeReceipt({ phase: ready ? 'ready' : 'ready-timeout', newPid: newBot,
       newStarttime: processStarttime(newBot) || '', readyAt: ready ? Date.now() : 0,
       sessionPreservation: { required: Boolean(wxPreflight.sessions?.length), verified: ready && sessionReadyProof.ok, outcomes: sessionReadyProof.outcomes } });
@@ -697,8 +733,21 @@ async function main() {
     contextFile = '';
     if (!ready) process.exitCode = 1;
   } catch (error) {
-    if (contextFile) { try { fs.unlinkSync(contextFile); } catch {} }
-    if (stoppingStarted) writeReceipt({ phase: 'failed', newPid: 0, newStarttime: '', error: String(error.message || '').slice(0, 300) });
+    if (stoppingStarted && programUpdateId && rollbackContext) {
+      try {
+        const recovered = await require('../src/services/program-update-recovery').recover({ context: rollbackContext, contextFile, updateState, dataDir,
+          panePid: firstPanePid, paneStart: firstPaneStart, tmuxTarget, botPid, newPid: discoveredNewPid, newStart: discoveredNewStart,
+          sessions: wxPreflight?.sessions || [], physicalProof, oldFingerprint, oldRoot: REPO_ROOT, oldCommit,
+          api: { collectProcesses, processStarttime, panePidOf, isDescendantOf, aliveNonZombie, stopBotTree, waitFor, portFree,
+            paneAcceptingCommands, sendRestart, findRestartedBot, holdsSocket, listeningInodes, healthOk, targetArgv,
+            logicSnapshot: require('../src/services/evolution-validation').logicSnapshot,
+            verifySessions: require('../src/runtime/session-update').verifySessionProofs,
+            verifyPhysical: require('../src/runtime/session-physical-proof').verify } });
+        writeReceipt({ phase: 'rolled_back', ...recovered, error: '目标版本未就绪，已恢复原版本及原游戏连接' });
+      } catch {
+        writeReceipt({ phase: 'rollback_failed', newPid: discoveredNewPid, newStarttime: discoveredNewStart, error: '更新失败，自动恢复未通过验收，请检查本机记录' });
+      }
+    } else if (stoppingStarted) writeReceipt({ phase: 'failed', newPid: 0, newStarttime: '', error: String(error.message || '').slice(0, 300) });
     else fs.writeFileSync(path.join(dataDir, 'evolution-apply-attempt.json'), JSON.stringify({
       phase: 'failed_before_stop', expectedHead, oldPid: botPid, oldStarttime: botStarttime,
       failedAt: Date.now(), reasonCode: error.wxUpdateReason || '',

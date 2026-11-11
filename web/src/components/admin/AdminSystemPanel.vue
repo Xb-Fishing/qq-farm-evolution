@@ -4,6 +4,10 @@ import { ref, watch } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
+import ProgramUpdateCard from '@/components/admin/ProgramUpdateCard.vue'
+import InvestigationFollowupsCard from '@/components/admin/InvestigationFollowupsCard.vue'
+import { useUserStore } from '@/stores/user'
+const userStore = useUserStore()
 
 interface OptionItem {
   label: string
@@ -67,6 +71,9 @@ function handleLogoFileChange(event: Event) {
     <div class="rounded-2xl bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:bg-gray-900/40 dark:text-gray-300">
       修改后会直接影响全局连接参数与微信登录行为，保存前建议再次核对目标环境。
     </div>
+
+    <ProgramUpdateCard v-if="userStore.isSuperAdmin" />
+    <InvestigationFollowupsCard v-if="userStore.isSuperAdmin" />
 
     <div class="space-y-4">
       <div class="border border-gray-200 rounded-lg bg-white p-4 dark:border-gray-700 dark:bg-gray-800">

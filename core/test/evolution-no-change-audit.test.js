@@ -10,6 +10,13 @@ const root = fs.mkdtempSync(prefix);
 process.env.FARM_DATA_DIR = root;
 const audit = require('../src/services/evolution-no-change-audit');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
+let sequence = 0;
+function fresh(f) {
+    const evidence = path.resolve(f.dataDir, `verification-${++sequence}.json`);
+    assert.equal(path.dirname(evidence), f.dataDir);
+    fs.writeFileSync(evidence, JSON.stringify({ newExecution: sequence }));
+    return { evidencePaths: [evidence], verification: { method: 'observation', checked: 'new isolated natural-event interval', result: 'no matching event in the actual new interval' } };
+}
 function fixture() {
     const dataDir = fs.mkdtempSync(path.join(root, 'case-'));
     const evidence = path.resolve(dataDir, 'observations.json');
@@ -44,9 +51,9 @@ test('uncertain findings require investigated exclusions and a concrete monitori
     audit.reviewNoChange({ ...next, dataDir: f.dataDir, sourceRoot: next.dataDir, runId: 'next-round' });
     assert.equal(audit.getInvestigationFollowups(f.dataDir).pending.length, 1, 'an unrelated clean review cannot erase the old incident');
     const id = pending.due[0].id;
-    audit.reviewInvestigation({ ...f, id, status: 'monitoring', evidencePaths: [f.evidence], conclusion: 'No new natural failure yet; signal is still recorded', nextCheckAt: f.now + 2000 });
+    audit.reviewInvestigation({ ...f, id, status: 'monitoring', ...fresh(f), conclusion: 'No new natural failure yet; signal is still recorded', nextCheckAt: f.now + 2000 });
     assert.equal(audit.getInvestigationFollowups(f.dataDir, f.now + 1500).due.length, 0);
-    const proposal = audit.reviewInvestigation({ ...f, id, status: 'resolved', evidencePaths: [f.evidence], conclusion: 'Actual root cause and passing regression reviewed' });
+    const proposal = audit.reviewInvestigation({ ...f, id, status: 'resolved', ...fresh(f), conclusion: 'Actual root cause and passing regression reviewed' });
     assert.equal(audit.getInvestigationFollowups(f.dataDir).pending.length, 1, 'a proposal is not successful acceptance');
     audit.finalizeInvestigations([proposal], f);
     assert.equal(audit.getInvestigationFollowups(f.dataDir).pending.length, 0);
@@ -66,7 +73,7 @@ test('re-registering an overdue question does not postpone or overwrite the prio
     const actual = audit.getInvestigationFollowups(f.dataDir, f.now + 2000).due[0];
     assert.deepEqual(actual, prior);
     audit.reviewInvestigation({ ...f, id: prior.id, status: 'monitoring', now: f.now + 2000, nextCheckAt: f.now + 4000,
-        evidencePaths: [f.evidence], conclusion: 'Explicit recheck: no new matching event; continue existing log review' });
+        ...fresh(f), conclusion: 'Explicit recheck: no new matching event; continue existing log review' });
     assert.equal(audit.getInvestigationFollowups(f.dataDir, f.now + 3000).due.length, 0);
     assert.ok(audit.getInvestigationFollowups(f.dataDir).pending[0].lastReview);
 });
@@ -77,4 +84,20 @@ test('unknown evidence paths and symlinks are rejected without creating a succes
     f.checks[0].evidencePaths = [link];
     assert.throws(() => audit.reviewNoChange(f), /boundary/);
     assert.equal(fs.existsSync(path.join(f.dataDir, 'evolution-no-change-audit.json')), false);
+});
+
+test('moving the deadline with the same evidence is rejected even with a new explanation', () => {
+    const f = fixture();
+    const input = { area: 'runtime_logs', status: 'monitoring', conclusion: 'Actual caller inspected', evidencePaths: [f.evidence],
+        followup: { question: 'Missing historical first error', ruledOut: ['current verified guard'], missing: 'old first error', signal: 'existing natural failure log',
+            resolveWhen: 'capture the first failure', mechanism: 'existing_event_log', nextCheckAt: f.now + 1000 } };
+    audit.recordInvestigation({ ...f, ...input });
+    const id = audit.getInvestigationFollowups(f.dataDir).pending[0].id;
+    const review = { ...f, id, status: 'monitoring', conclusion: 'No new failure; postpone again', evidencePaths: [f.evidence], nextCheckAt: f.now + 3000,
+        verification: { method: 'source_review', checked: 'same source file', result: 'unchanged' } };
+    assert.throws(() => audit.reviewInvestigation(review), /fresh_verification_required/);
+    assert.equal(audit.getInvestigationFollowups(f.dataDir).pending[0].nextCheckAt, f.now + 1000);
+    const result = audit.reviewInvestigation({ ...review, ...fresh(f) });
+    assert.equal(result.status, 'pending');
+    assert.equal(audit.getInvestigationFollowups(f.dataDir).pending[0].lastReview.verification.method, 'observation');
 });

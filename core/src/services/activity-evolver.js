@@ -1548,6 +1548,7 @@ function getActivityReviewDate(state) {
 }
 
 function launchEvolution(task, payload = {}) {
+  if (require('./program-update').lockHeld(path.dirname(STATE_FILE))) return { ok: false, reason: 'program_update_busy', error: '正在准备或应用主程序更新' };
   const tag = task === 'safety' ? '安全巡检' : '活动进化';
   if (running) return { ok: false, reason: 'busy', error: '已有进化任务在执行' };
 
@@ -2591,6 +2592,7 @@ function autonomousApplyValidationGate(root = REPO_ROOT) {
  * source：'manual'（面板按钮，HEAD 祖先包含即可）或 'autonomous'（自主轮，
  * 要求 HEAD 严格等于已审提交，且 helper 停服前复核自主开关未被关闭）。 */
 function applyEvolution(source = 'manual') {
+  if (require('./program-update').lockHeld(path.dirname(STATE_FILE))) return { ok: false, error: '正在准备或应用主程序更新' };
   const state = readState();
   if (state.status !== 'pending_apply') {
     return { ok: false, error: `当前没有待应用的进化（状态：${state.status}）` };

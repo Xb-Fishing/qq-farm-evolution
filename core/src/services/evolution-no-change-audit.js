@@ -116,12 +116,23 @@ function reviewInvestigation(options) {
     if (!entry) throw new Error('investigation_not_pending');
     const resolution = { conclusion: text(options.conclusion), evidence: evidenceFiles(options.evidencePaths, options),
         fingerprint: options.fingerprint, reviewedAt: options.now ?? Date.now() };
+    const previousHashes = new Set([...(entry.evidence || []), ...(entry.lastReview?.evidence || []),
+        ...(entry.history || []).flatMap(item => item.evidence || [])].map(item => item.sha256));
+    const verification = options.verification;
+    if (!verification || !['regression', 'observation', 'source_review'].includes(verification.method)
+        || typeof verification.checked !== 'string' || !verification.checked.trim()
+        || typeof verification.result !== 'string' || !verification.result.trim()
+        || !resolution.evidence.some(item => !previousHashes.has(item.sha256))) throw new Error('investigation_fresh_verification_required');
+    resolution.verification = { method: verification.method, checked: text(verification.checked), result: text(verification.result) };
+    resolution.runId = options.runId || '';
+    resolution.remaining = options.remaining === undefined ? entry.missing : options.status === 'resolved' && options.remaining === '' ? '' : text(options.remaining);
     if (options.status === 'resolved') {
         // A tool call is only a proposal. An interrupted/unpublished repair must
         // leave the durable incident pending for the next Main.
         return { id: entry.id, status: 'resolution_proposed', priorDigest: hash(JSON.stringify(entry)), resolution };
     } else if (options.status === 'monitoring' && Number.isSafeInteger(options.nextCheckAt)
         && options.nextCheckAt > resolution.reviewedAt && options.nextCheckAt <= resolution.reviewedAt + 8 * 86400000) {
+        entry.history = [...(entry.history || []), ...(entry.lastReview ? [entry.lastReview] : [])].slice(-20);
         entry.nextCheckAt = options.nextCheckAt; entry.lastReview = resolution;
     } else throw new Error('invalid_investigation_review');
     write(options.dataDir, FOLLOWUPS, store);

@@ -98,6 +98,7 @@ function githubFixture(f, count = 1, complete = true, body = 'Please support thi
         } while (offset !== null);
         const response = await f.call('review_github_issue', { issue: issue.number, fingerprint: issue.fingerprint,
             status: 'in_progress', note: mappings[issue.number - 1].note,
+            blocker: { kind: 'external_material', missing: 'current supported native protocol material', checkedSources: 'local caller and cached source', verification: 'isolated caller review found no wire encoding', releaseCondition: 'obtain official supported encoding' },
             nextAction: 'Inspect the current supported login flow before implementing the requested integration',
             evidencePaths: [evidence], ...overrides });
         return response;
@@ -355,6 +356,13 @@ test('clean candidates cannot bypass the eight-area zero-change audit by asking 
     assert.equal((await runMainOwnedWorkflow(f.options)).decision, 'no_change');
 });
 
+let verificationSequence = 0;
+function freshInvestigation(f) {
+    const file = path.resolve(f.directory, `verification-${++verificationSequence}.json`);
+    assert.equal(path.dirname(file), f.directory);
+    fs.writeFileSync(file, JSON.stringify({ run: verificationSequence, fixture: 'new isolated regression result' }));
+    return { evidencePaths: [file], verification: { method: 'regression', checked: 'isolated fixture failure branch', result: 'new current baseline check passed' } };
+}
 function investigationFixture(f, question = 'Uncertain natural failure') {
     const file = path.resolve(f.directory, 'investigation-evidence.json');
     assert.ok(file.startsWith(f.directory + path.sep)); fs.writeFileSync(file, '{"observed":true}');
@@ -376,7 +384,7 @@ test('repair rounds cannot clear pending feedback; failed or unpublished resolut
             const pending = audit.getInvestigationFollowups(f.directory).pending[0];
             await f.call('verify_candidate');
             const proposal = await f.call('review_investigation', { id: pending.id, status: 'resolved',
-                conclusion: 'Candidate has a tested repair, publication still needed', evidencePaths: question.evidencePaths });
+                conclusion: 'Candidate has a tested repair, publication still needed', ...freshInvestigation(f) });
             assert.equal(JSON.parse(proposal.content[0].text).status, 'resolution_proposed');
             assert.equal(audit.getInvestigationFollowups(f.directory).pending.length, 1);
             if (ending === 'interrupted') throw createTeamError('cli_exit');
@@ -400,7 +408,7 @@ test('clean baseline resolutions finalize only after Main returns a matching acc
             await f.call('record_investigation', question);
             const pending = audit.getInvestigationFollowups(f.directory).pending[0];
             await f.call('verify_candidate');
-            await f.call('review_investigation', { id: pending.id, status: 'resolved', conclusion: 'Current unchanged baseline evidence explains the incident', evidencePaths: question.evidencePaths });
+            await f.call('review_investigation', { id: pending.id, status: 'resolved', conclusion: 'Current unchanged baseline evidence explains the incident', ...freshInvestigation(f) });
             await f.call('review_no_change', { checks: audit.AREAS.map(area => ({ area, status: 'checked', conclusion: 'Actual source snapshot checked', evidencePaths: question.evidencePaths })) });
             assert.equal((await f.call('accept_result', { decision: 'no_change', summary: 'Clean baseline investigation complete', lessons: [], githubResolutions: [], feedbackReviewed: true })).isError, false);
             assert.equal(audit.getInvestigationFollowups(f.directory).pending.length, 1, 'seal alone is not finalization');
@@ -422,9 +430,9 @@ test('changing a proposed resolution back to monitoring cancels it and permits t
             await f.call('record_investigation', question);
             const pending = audit.getInvestigationFollowups(f.directory).pending[0];
             await f.call('verify_candidate');
-            await f.call('review_investigation', { id: pending.id, status: 'resolved', conclusion: 'Initial resolution hypothesis', evidencePaths: question.evidencePaths });
+            await f.call('review_investigation', { id: pending.id, status: 'resolved', conclusion: 'Initial resolution hypothesis', ...freshInvestigation(f) });
             if (via === 'review') await f.call('review_investigation', { id: pending.id, status: 'monitoring',
-                conclusion: 'Further inspection requires a natural event', evidencePaths: question.evidencePaths, nextCheckAt: Date.now() + 2 * 86400000 });
+                conclusion: 'Further inspection requires a natural event', ...freshInvestigation(f), nextCheckAt: Date.now() + 2 * 86400000 });
             if (via === 'registration') await f.call('record_investigation', question);
             if (via === 'registration_whitespace') await f.call('record_investigation', { ...question,
                 followup: { ...question.followup, question: `  ${question.followup.question}  ` } });
@@ -1126,4 +1134,37 @@ test('an unchanged environmental retry requires and retains an explicit Main exp
     };
     assert.equal((await runMainOwnedWorkflow(f.options)).decision, 'no_change');
     assert.equal(checks, 2);
+});
+
+
+test('feasible owner feedback cannot seal a selected plan or unrelated change as completion', async () => {
+    for (const unrelated of [false, true]) {
+        const f = fixture(); const gh = githubFixture(f, 1);
+        f.options.runMain = async () => {
+            if (unrelated) { await f.call('approve_plan', f.plan); f.edit(FILE, 'unrelated changed caller'); }
+            await f.call('verify_candidate');
+            await gh.review(gh.batch.issues[0], { blocker: null, note: gh.mappings[0].note });
+            const args = { decision: unrelated ? 'approve' : 'no_change', summary: 'Selected implementation still unfinished', lessons: [], feedbackReviewed: false, githubResolutions: gh.mappings };
+            assert.equal(JSON.parse((await f.call('accept_result', args)).content[0].text).state, 'github_implementation_required');
+            await gh.review(gh.batch.issues[0]);
+            assert.equal((await f.call('accept_result', args)).isError, false);
+            return { decision: args.decision, summary: args.summary };
+        };
+        await runMainOwnedWorkflow(f.options);
+    }
+});
+
+test('a genuinely verified existing implementation can close an issue on its published baseline without a cosmetic diff', async () => {
+    const f = fixture(); const gh = githubFixture(f, 1);
+    f.options.runMain = async () => {
+        await f.call('verify_candidate');
+        const note = 'Existing published caller verified by current full regression';
+        fs.writeFileSync(gh.evidence, JSON.stringify({ verifiedPublishedCaller: true }));
+        await gh.review(gh.batch.issues[0], { status: 'fixed', note, nextAction: '', existingCommit: HEAD, implementationFiles: [FILE] });
+        const resolutions = [{ issue: 1, status: 'fixed', fingerprint: gh.batch.issues[0].fingerprint, note }];
+        const accepted = await f.call('accept_result', { decision: 'no_change', summary: note, lessons: [], feedbackReviewed: true, githubResolutions: resolutions });
+        assert.equal(accepted.isError, false);
+        return { decision: 'no_change', summary: note };
+    };
+    assert.equal((await runMainOwnedWorkflow(f.options)).feedbackReviewed, true);
 });

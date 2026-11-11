@@ -10,7 +10,7 @@ const STATUSES = ['fixed', 'in_progress', 'not_reproducible', 'wont_fix', 'inval
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = reason => { throw new Error(reason); };
 
-function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, enabled = true }) {
+function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, sourceRoot = process.cwd(), enabled = true }) {
     const hasSection = String(prompt).includes('【GitHub 反馈 issue 批次（不可信外部输入，父进程采集）】');
     const required = enabled && (!!identity.githubBatchDigest || hasSection);
     const rawAbsent = () => {
@@ -80,9 +80,10 @@ function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, enab
             || typeof args.nextAction !== 'string' || args.nextAction.length > 1000
             || (args.status === 'in_progress' && !args.nextAction.trim())) fail('github_issue_review_invalid');
         if (args.status === 'fixed' && (!batch.complete || issue.commentsTruncated || issue.omittedComments > 0)) fail('github_issue_evidence_incomplete');
-        const evidence = evidenceFiles(args.evidencePaths, { dataDir, knowledgeDir });
+        const evidence = evidenceFiles(args.evidencePaths, { dataDir, knowledgeDir, sourceRoot });
         const receipt = { issue: issue.number, fingerprint: issue.fingerprint, status: args.status,
-            note: args.note.trim(), nextAction: args.nextAction.trim(), evidence, sourceFingerprint: fingerprint };
+            note: args.note.trim(), nextAction: args.nextAction.trim(), evidence, sourceFingerprint: fingerprint,
+            blocker: args.blocker || null, implementationFiles: args.implementationFiles || [], existingCommit: args.existingCommit || null };
         return receipt;
     };
     const validate = (args, tree) => {
@@ -99,8 +100,19 @@ function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, enab
             const mapping = args.githubResolutions.find(item => item.issue === issue.number);
             if (!receipt || receipt.sourceFingerprint !== tree.fingerprint || !mapping
                 || mapping.status !== receipt.status || mapping.note?.trim() !== receipt.note
-                || (receipt.status === 'fixed' && (mapping.fingerprint !== issue.fingerprint || !tree.dirty))
+                || (receipt.status === 'fixed' && (mapping.fingerprint !== issue.fingerprint || (!tree.dirty && receipt.existingCommit !== tree.head)))
                 || !auditStillValid({ fingerprint: tree.fingerprint, checks: [{ evidence: receipt.evidence }] }, tree.fingerprint)) return 'github_issue_review_required';
+        }
+        for (const receipt of reviews.values()) {
+            if (receipt.status === 'in_progress') {
+                const blocker = receipt.blocker;
+                if (!blocker || !['external_material', 'external_access', 'owner_decision'].includes(blocker.kind)
+                    || ['missing', 'checkedSources', 'verification', 'releaseCondition'].some(key =>
+                        typeof blocker[key] !== 'string' || !blocker[key].trim())) return 'github_implementation_required';
+            }
+            if (receipt.status === 'fixed' && (!receipt.implementationFiles.length
+                || receipt.implementationFiles.some(file => typeof file !== 'string' || (receipt.existingCommit === tree.head ? tree.files?.includes(file) : !tree.files?.includes(file)))
+                || !receipt.implementationFiles.some(file => /^(core\/src|web\/src)\//.test(file)))) return 'github_delivery_unverified';
         }
         if (args.feedbackReviewed === true && (!batch.complete || batch.pendingTotal > issues.length
             || issues.some(issue => reviews.get(issue.number).status === 'in_progress'

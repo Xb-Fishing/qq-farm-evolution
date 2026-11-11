@@ -189,13 +189,20 @@ async function guardedWrite(owner, keys, payload, operationId, send, confirmed, 
   if (owner.valid()) invalidate?.();
   return reply;
 }
+function recordMallFailure(failurePhase) {
+  try { require('./daily-feedback').getDailyFeedback().record({ kind: 'runtime', domain: 'farm', category: 'runtime_error',
+    operation: 'mall_purchase', failurePhase }); } catch { /* Diagnostic failure cannot alter trade ownership or retry semantics. */ }
+}
 async function guardedMallPurchase(request) {
   assertConfirmation(request);
   const goodsId = assertPositiveInt(request?.goodsId, '商品ID', 0x7FFFFFFF); const count = assertPositiveInt(request?.count, '份数', 99);
   const owner = ownership();
   return exclusive(async () => {
+    let failurePhase = 'fresh_read';
+    try {
     const mall = require('./mall');
     const list = await mall.getMallGoodsList(1);
+    failurePhase = 'preflight';
     if (!owner.valid()) throw fail('账号连接已变化', 'COMMERCE_OWNER');
     const live = list.find(row => decimalOf(row.goods_id) === goodsId);
     const entry = live && mall.buildMallGoodsPanelEntry(live, 0);
@@ -205,9 +212,14 @@ async function guardedMallPurchase(request) {
     if (!unlimited && (!entry.limit.present || !entry.limit.limitCountDec || BigInt(entry.limit.limitCountDec) <= 0n)) throw fail('限购余量未知', 'COMMERCE_LIMIT');
     if (!unlimited && BigInt(entry.limit.limitCountDec) - BigInt(entry.limit.boughtNumDec) < BigInt(count)) throw fail('剩余限购数量不足', 'COMMERCE_LIMIT');
     if (!entry.isFree) requireAffordable(entry.price.currencyId, entry.price.amountDec, count);
-    return guardedWrite(owner, [`mall:${goodsId}`], { goodsId, count, quote: entry.quoteFingerprint }, request.operationId,
+    failurePhase = 'write_pending';
+    return await guardedWrite(owner, [`mall:${goodsId}`], { goodsId, count, quote: entry.quoteFingerprint }, request.operationId,
       () => mall.purchaseMallGoods(goodsId, count), reply => decimalOf(reply?.goods_id) === goodsId && decimalOf(reply?.count) === count,
       () => { mall.invalidateMallPanelCatalog(); require('./warehouse').invalidatePanelBagCache(); });
+    } catch (error) {
+      recordMallFailure(error?.code === 'COMMERCE_UNKNOWN' ? 'write_reply_unknown' : error?.code === 'COMMERCE_REJECTED' ? 'server_rejected' : failurePhase);
+      throw error;
+    }
   });
 }
 async function guardedShopPurchase(request) {
