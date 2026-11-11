@@ -23,5 +23,6 @@
       "@babel/traverse": "7.26.10",
       "pushoo@^0.1.11>axios": "0.34.0"
     }
-  }
+  },
+  "version": "2.3.1"
 }

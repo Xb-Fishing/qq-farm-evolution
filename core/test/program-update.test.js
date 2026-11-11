@@ -26,14 +26,17 @@ test('update source accepts only the fixed owner repository; arbitrary branches,
         cp.execFileSync('git', ['remote', 'set-url', 'origin', url], { cwd: dir }); assert.throws(() => updater.assertTrustedOrigin(dir), /untrusted/);
     }
 });
-test('all version endpoints require both authentication and super-admin; no URL or shell body is passed to the updater', async () => {
+test('version operations require an administrator; no request URL or shell body is forwarded', async () => {
     const routes = [];
     const app = { get: (url, ...handlers) => routes.push({ url, handlers }), post: (url, ...handlers) => routes.push({ url, handlers }) };
-    const auth = () => {}; const role = () => {};
-    require('../src/controllers/admin-super-admin-routes').registerAdminSuperAdminRoutes({ app, requireAdminToken: auth, requireSuperAdminRole: role });
-    const updates = routes.filter(r => r.url.startsWith('/api/super-admin/') && r.url.includes('program-update'));
-    assert.equal(updates.length, 3);
-    for (const route of updates) { assert.equal(route.handlers[0], auth); assert.equal(route.handlers[1], role); }
+    const auth = () => {}; const superRole = () => {};
+    require('../src/controllers/admin-super-admin-routes').registerAdminSuperAdminRoutes({ app, requireAdminToken: auth, requireSuperAdminRole: superRole });
+    const updates = routes.filter(r => r.url.includes('program-update'));
+    assert.equal(updates.length, 6);
+    for (const route of updates) {
+        assert.equal(route.handlers[0], auth);
+        for (const role of ['admin', 'super_admin']) { let passed = false; route.handlers[1]({ currentUser: { role } }, {}, () => { passed = true; }); assert.equal(passed, true); }
+    }
     const original = updater.begin; let args;
     updater.begin = (...provided) => { args = provided; return { phase: 'queued' }; };
     try {
@@ -42,6 +45,7 @@ test('all version endpoints require both authentication and super-admin; no URL 
         assert.deepEqual(args, []); assert.equal(result.ok, true);
     } finally { updater.begin = original; }
 });
+
 test('interrupted work is recovered only by exact same-host dead process identity, never by elapsed time', () => {
     const dir = fixture();
     put(dir, 'program-update.json', { phase: 'validating', currentCommit: 'a'.repeat(40), targetCommit: 'b'.repeat(40), runId: 'one', workerPid: process.pid, workerStarttime: updater.starttime(process.pid), workerHost: os.hostname() });
@@ -110,10 +114,10 @@ test('an unchanged installed overlay cannot authorize mutated private or public 
 
 test('a worker that exits before its first stage releases only its own queued lock', async () => {
     const dir = fixture(); const repo = path.join(dir, 'repo'); fs.mkdirSync(repo);
-    cp.execFileSync('git', ['init', '-q', repo]); cp.execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:Xb-Fishing/qq-farm-evolution.git'], { cwd: repo });
+    cp.execFileSync('git', ['init', '-q', repo]); cp.execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'commit', '--allow-empty', '-qm', 'fixture'], { cwd: repo }); cp.execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:Xb-Fishing/qq-farm-evolution.git'], { cwd: repo });
     const data = path.join(dir, 'data'); fs.mkdirSync(data);
     put(data, 'private-config.json', { evolutionKnowledgeDir: path.join(dir, 'artifacts') });
-    put(data, 'program-update.json', { phase: 'available', currentCommit: 'a'.repeat(40), targetCommit: 'b'.repeat(40) });
+    put(data, 'program-update.json', { phase: 'available', currentCommit: cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(), targetCommit: 'b'.repeat(40), latestVersion: '1.1.0' });
     const { EventEmitter } = require('node:events'); const child = new EventEmitter(); child.unref = () => {};
     updater.begin({ root: repo, dataDir: data, resolvePane: () => '%fixture', spawn: () => child });
     assert.equal(updater.lockHeld(data), true);
@@ -169,9 +173,9 @@ test('version checks report no update and never overwrite an update that began d
     const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
     const dataDir = path.join(dir, 'data');
     put(dataDir, 'program-update.json', { phase: 'idle', currentCommit: head });
-    assert.equal((await updater.check({ root: dir, dataDir, readRemoteHead: async () => head })).phase, 'current');
+    assert.equal((await updater.check({ root: dir, dataDir, readRemoteHead: async () => head, readTargetVersion: async () => '1.0.0' })).phase, 'current');
     let finish;
-    const pending = updater.check({ root: dir, dataDir, readRemoteHead: () => new Promise(resolve => { finish = resolve; }) });
+    const pending = updater.check({ root: dir, dataDir, readRemoteHead: () => new Promise(resolve => { finish = resolve; }), readTargetVersion: async () => '1.0.0' });
     put(dataDir, 'program-update.json', { phase: 'validating', currentCommit: head, targetCommit: 'c'.repeat(40), runId: 'another' });
     finish('b'.repeat(40));
     assert.equal((await pending).phase, 'validating');
@@ -190,7 +194,7 @@ test('status projects the actual running revision and invalidates stale latest-v
     assert.equal(updater.read(path.join(dataDir, 'program-update.json')).currentCommit, 'a'.repeat(40));
 });
 
-test('administrator metadata is visible, ordinary users are denied, and update POSTs remain exclusively super-admin', async t => {
+test('administrators can check and install; ordinary users are denied and local investigation routes are absent', async t => {
     const http = require('node:http');
     const app = require('express')();
     const roles = require('../src/controllers/admin-route-helpers').createAdminRouteHelpers({});
@@ -206,6 +210,7 @@ test('administrator metadata is visible, ordinary users are denied, and update P
     updater.begin = () => { actions.push('install'); return { phase: 'queued' }; };
     t.after(() => Object.assign(updater, originals));
     require('../src/controllers/admin-super-admin-routes').registerAdminSuperAdminRoutes({ app, requireAdminToken: auth, requireSuperAdminRole: roles.requireSuperAdminRole });
+    app.use((_req, res) => res.status(404).json({ ok: false }));
     const server = http.createServer(app); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => { server.closeIdleConnections(); server.close(resolve); }));
     const port = server.address().port;
@@ -216,17 +221,41 @@ test('administrator metadata is visible, ordinary users are denied, and update P
     });
     assert.equal((await request('/api/admin/program-update')).status, 401);
     assert.equal((await request('/api/admin/program-update', 'user')).status, 403);
-    assert.equal((await request('/api/admin/investigations', 'user')).status, 403);
+    assert.equal((await request('/api/admin/investigations', 'user')).status, 404);
     for (const role of ['admin', 'super_admin']) {
         const response = await request('/api/admin/program-update', role);
-        assert.equal(response.status, 200); assert.equal(response.body.access.canUpdate, role === 'super_admin');
-        assert.equal(response.body.update.currentCommit, 'b'.repeat(40));
-        assert.equal((await request('/api/admin/investigations', role)).status, 200);
+        assert.equal(response.status, 200); assert.equal(response.body.access.canUpdate, true);
+        assert.equal(response.body.update.currentVersion, require('../package.json').version);
+        assert.equal('currentCommit' in response.body.update, false); assert.equal('targetCommit' in response.body.update, false);
+        assert.equal((await request('/api/admin/investigations', role)).status, 404);
     }
     assert.deepEqual(actions, [], 'metadata reads never dispatch check/install');
     for (const action of ['check', 'install']) {
-        assert.equal((await request(`/api/super-admin/program-update/${  action}`, 'admin', 'POST')).status, 403);
+        assert.equal((await request(`/api/admin/program-update/${action}`, 'user', 'POST')).status, 403);
+        assert.equal((await request(`/api/admin/program-update/${action}`, 'admin', 'POST')).status, 200);
         assert.equal((await request(`/api/super-admin/program-update/${  action}`, 'super_admin', 'POST')).status, 200);
     }
-    assert.deepEqual(actions, ['check', 'install']);
+    assert.deepEqual(actions, ['check', 'check', 'install', 'install']);
+});
+
+
+test('late checks cannot replace a newer check or a completed update transaction', async () => {
+    const dir = fixture(); cp.execFileSync('git', ['init', '-q', dir]);
+    cp.execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'commit', '--allow-empty', '-qm', 'base'], { cwd: dir });
+    cp.execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:Xb-Fishing/qq-farm-evolution.git'], { cwd: dir });
+    const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+    const dataDir = path.join(dir, 'data');
+    for (const completed of [false, true]) {
+        put(dataDir, 'program-update.json', { phase: 'idle', currentCommit: head });
+        let release; let started;
+        const entered = new Promise(resolve => { started = resolve; });
+        const pending = updater.check({ root: dir, dataDir, readRemoteHead: async () => 'b'.repeat(40),
+            readTargetVersion: () => { started(); return new Promise(resolve => { release = resolve; }); } });
+        await entered;
+        if (completed) put(dataDir, 'program-update.json', { phase: 'applied', runId: 'actual-update', currentCommit: head, targetCommit: head, latestVersion: '2.0.0' });
+        else await updater.check({ root: dir, dataDir, readRemoteHead: async () => 'c'.repeat(40), readTargetVersion: async () => '3.0.0' });
+        const expected = fs.readFileSync(path.join(dataDir, 'program-update.json'), 'utf8');
+        release('1.0.0'); await pending;
+        assert.equal(fs.readFileSync(path.join(dataDir, 'program-update.json'), 'utf8'), expected);
+    }
 });
