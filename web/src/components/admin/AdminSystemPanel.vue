@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import type { CaptureConfig, LoginLinks, SystemConfig, WxConfig } from '@/composables/useAdminSystemConfig'
 import { ref, watch } from 'vue'
+import ProgramUpdateCard from '@/components/admin/ProgramUpdateCard.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
-import ProgramUpdateCard from '@/components/admin/ProgramUpdateCard.vue'
-import InvestigationFollowupsCard from '@/components/admin/InvestigationFollowupsCard.vue'
 import { useUserStore } from '@/stores/user'
-const userStore = useUserStore()
 
 interface OptionItem {
   label: string
@@ -42,6 +40,7 @@ const localSystemConfig = defineModel<SystemConfig>('localSystemConfig', { requi
 const localWxConfig = defineModel<WxConfig>('localWxConfig', { required: true })
 const localCaptureConfig = defineModel<CaptureConfig>('localCaptureConfig', { required: true })
 const localLoginLinks = defineModel<LoginLinks>('localLoginLinks', { required: true })
+const userStore = useUserStore()
 const previewLogoFailed = ref(false)
 const logoFileInput = ref<HTMLInputElement | null>(null)
 
@@ -72,8 +71,7 @@ function handleLogoFileChange(event: Event) {
       修改后会直接影响全局连接参数与微信登录行为，保存前建议再次核对目标环境。
     </div>
 
-    <ProgramUpdateCard v-if="userStore.isAdmin" :can-update="userStore.isSuperAdmin" />
-    <InvestigationFollowupsCard v-if="userStore.isAdmin" />
+    <ProgramUpdateCard v-if="userStore.isAdmin" :can-update="userStore.isAdmin" />
 
     <div class="space-y-4">
       <div class="border border-gray-200 rounded-lg bg-white p-4 dark:border-gray-700 dark:bg-gray-800">

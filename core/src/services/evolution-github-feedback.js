@@ -632,8 +632,10 @@ function redactComment(comment) {
   };
 }
 
-function batchIssue(issue, ownLogins) {
-  const visible = issue.comments.filter(comment => !isOwnDelivery(comment, ownLogins));
+function batchIssue(issue) {
+  // Delivery replies are excluded only from semantic deduplication, not from
+  // reading evidence. Every retained comment must remain visible to review.
+  const visible = issue.comments;
   return {
     number: issue.number,
     title: clip(redactExternalText(issue.title), 300),
@@ -673,7 +675,7 @@ function captureFeedbackBatch(options = {}) {
       repo: cfg.repo,
       complete,
       failureReason: complete ? '' : (store.collection.reason && store.collection.reason !== 'none' ? store.collection.reason : 'capture_failed'),
-      issues: included.map(issue => batchIssue(issue, ownLogins)),
+      issues: included.map(issue => batchIssue(issue)),
       issueNumbers: included.map(issue => issue.number),
       pendingTotal: pending.length,
       fingerprint: sha256Hex(pending.map(issue => issue.fingerprint)),

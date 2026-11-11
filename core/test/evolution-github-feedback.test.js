@@ -1657,3 +1657,45 @@ test('跨进程死锁竞争：多进程同时认定同一把死锁，公开回�
     if (result.ok !== true) assert.equal(result.reason, 'locked', `未完成进程只能因锁让位：${JSON.stringify(result)}`);
   }
 });
+
+
+test('批次完整保留自有回复和报告者评论；自有标记不误算成漏读或改变语义指纹', async (t) => {
+  const dataDir = tmpDir(t);
+  const evidencePath = path.resolve(dataDir, 'comment-review-evidence.json');
+  assert.equal(path.dirname(evidencePath), dataDir);
+  fs.writeFileSync(evidencePath, JSON.stringify({ scenario: 'synthetic completed behavior' }), { mode: 0o600 });
+  const receiptFor = batch => {
+    const reviewer = require('../src/services/evolution-github-issue-review').createGithubIssueReview({
+      dataDir, sourceRoot: dataDir,
+      identity: { githubBatchDigest: crypto.createHash('sha256').update(JSON.stringify(feedback.summarizeBatch(batch))).digest('hex') },
+      prompt: feedback.buildGithubFeedbackSection(batch),
+    });
+    let offset = 0;
+    while (offset !== null) offset = reviewer.read({ issue: ISSUE, offset }).nextOffset;
+    return () => reviewer.review({ issue: ISSUE, fingerprint: batch.issues[0].fingerprint,
+      status: 'fixed', note: 'Synthetic behavior verified', nextAction: '', evidencePaths: [evidencePath] }, FP64);
+  };
+  const ownReply = comment(90, 'owner', `程序入口说明\n<!-- farm-bot-feedback ${ISSUE} ${REV.slice(0, 12)} -->`);
+  const forged = comment(91, 'reporter', `更新后仍有问题\n<!-- farm-bot-feedback ${ISSUE} ${REV.slice(0, 12)} -->`);
+  for (const comments of [[ownReply], [ownReply, forged]]) {
+    const spec = { ...PENDING_ISSUE, comments };
+    await collectOnce(t, { request: githubApi(issuePages(spec)).request, dataDir });
+    const batch = feedback.captureFeedbackBatch({ config: makeConfig(), dataDir });
+    assert.equal(batch.complete, true);
+    assert.deepEqual(batch.issues[0].comments.map(row => row.id), comments.map(row => row.id));
+    assert.equal(batch.issues[0].omittedComments, 0);
+    assert.equal(batch.issues[0].fingerprint, issueFp(spec));
+    assert.equal(batch.issues[0].comments[0].body, ownReply.body);
+    assert.doesNotThrow(receiptFor(batch), 'complete owner replies do not block the real review receipt');
+  }
+  // Genuine missing comments still block a claim of complete evidence.
+  const cacheFile = path.resolve(dataDir, 'evolution-github-feedback.json');
+  assert.equal(path.dirname(cacheFile), dataDir);
+  const store = JSON.parse(fs.readFileSync(cacheFile));
+  store.issues[0].commentCount += 1;
+  fs.writeFileSync(cacheFile, JSON.stringify(store));
+  const missing = feedback.captureFeedbackBatch({ config: makeConfig(), dataDir });
+  assert.equal(missing.issues[0].omittedComments, 1);
+  assert.equal(missing.issues[0].comments.length, 2);
+  assert.throws(receiptFor(missing), /github_issue_evidence_incomplete/, 'genuine omissions retain the original fixed gate');
+});
