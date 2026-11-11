@@ -2,6 +2,7 @@ import { useStorage } from '@vueuse/core'
 import axios from 'axios'
 import { useToastStore } from '@/stores/toast'
 import { currentFeedbackTrace, recordClientFailure } from '@/utils/daily-feedback'
+import { requestOperation } from '@/utils/request-diagnostics'
 import { resolveSafeRedirect } from '@/utils/safe-redirect'
 
 const tokenRef = useStorage('admin_token', '')
@@ -45,6 +46,7 @@ api.interceptors.response.use((response) => {
 
   const toast = useToastStore()
 
+  const operation = requestOperation(error.config?.method, error.config?.url)
   if (error.response) {
     const backendError = String(error.response.data?.error || error.response.data?.message || '')
       .replace(/[\r\n]+/g, ' ')
@@ -61,6 +63,7 @@ api.interceptors.response.use((response) => {
       }
     }
     else if (error.response.status >= 500) {
+      recordClientFailure('http_error', { operation, failurePhase: 'http_response' })
       if (backendError === '账号未运行' || backendError === 'API Timeout' || backendError === 'Request Timeout') {
         return Promise.reject(error)
       }
@@ -71,7 +74,7 @@ api.interceptors.response.use((response) => {
     }
   }
   else if (error.request) {
-    recordClientFailure(error.code === 'ECONNABORTED' ? 'request_timeout' : 'network_error')
+    recordClientFailure(error.code === 'ECONNABORTED' ? 'request_timeout' : 'network_error', { operation, failurePhase: 'transport' })
     if (error.code === 'ECONNABORTED') {
       showNetworkToast('请求超时，请稍后重试')
     }

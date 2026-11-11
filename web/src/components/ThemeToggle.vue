@@ -1,83 +1,105 @@
 <script setup lang="ts">
-import type { Theme } from '@/stores/app'
+import type { Theme } from '@/utils/theme'
+import { nextTick, ref } from 'vue'
+import ThemePalette from '@/components/ThemePalette.vue'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
+const trigger = ref<HTMLButtonElement | null>(null)
+const panel = ref<HTMLElement | null>(null)
+
+function closePanel() {
+  appStore.showThemePanel = false
+  void nextTick(() => trigger.value?.focus())
+}
 
 function selectTheme(theme: Theme) {
   appStore.applyTheme(theme)
-  appStore.toggleThemePanel()
+  closePanel()
+}
+
+function trapFocus(event: KeyboardEvent) {
+  if (event.key !== 'Tab')
+    return
+  const buttons = Array.from(panel.value?.querySelectorAll<HTMLButtonElement>('button') || [])
+  const first = buttons[0]
+  const last = buttons[buttons.length - 1]
+  if (first && last && ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last))) {
+    event.preventDefault()
+    const target = event.shiftKey ? last : first
+    target.focus()
+  }
 }
 </script>
 
 <template>
   <div class="relative">
-    <!-- 主题切换按钮 -->
-    <button
-      class="icon-btn mx-2 !outline-none"
-      title="主题设置"
-      @click="appStore.toggleThemePanel()"
-    >
+    <button ref="trigger" type="button" class="theme-trigger icon-btn mx-2" title="主题设置" aria-label="主题设置" aria-haspopup="dialog" :aria-expanded="appStore.showThemePanel" @click="appStore.toggleThemePanel()">
       <div i-carbon-color-palette />
     </button>
-
-    <!-- 使用 Teleport 将面板渲染到 body，避免被父容器裁剪 -->
-    <teleport to="body">
-      <!-- 遮罩层 -->
-      <div
-        v-if="appStore.showThemePanel"
-        class="fixed inset-0 z-[99] bg-black/30"
-        @click="appStore.toggleThemePanel()"
-      />
-
-      <div
-        v-if="appStore.showThemePanel"
-        class="fixed z-[100] w-80 rounded-xl bg-white p-4 shadow-xl dark:bg-gray-800"
-        :style="{
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-        }"
-      >
-        <h3 class="mb-3 text-sm text-gray-700 font-semibold dark:text-gray-200">
-          选择主题
-        </h3>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            v-for="(t, theme) in appStore.themes"
-            :key="theme"
-            class="relative flex flex-col items-center justify-center gap-2 rounded-lg p-3 transition-all hover:scale-105"
-            :class="{
-              'ring-2 ring-offset-2': appStore.currentTheme === theme,
-              'ring-blue-500': appStore.currentTheme === theme,
-              'dark:ring-offset-gray-800': t.isDark,
-            }"
-            :style="{
-              'background': t.gradient,
-              '--tw-ring-color': t.primary,
-              '--tw-ring-offset-color': t.isDark ? '#1f2937' : '#ffffff',
-            }"
-            :title="t.name"
-            @click="selectTheme(theme as Theme)"
-          >
-            <div :class="t.icon" class="text-xl text-white" />
-            <span class="text-sm text-white font-medium">{{ t.name }}</span>
-            <div
-              v-if="appStore.currentTheme === theme"
-              class="i-carbon-checkmark absolute right-1 top-1 text-sm text-white"
-            />
-          </button>
-        </div>
-
-        <div class="mt-3 border-t border-gray-100 pt-3 text-center dark:border-gray-700">
-          <button
-            class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-            @click="appStore.toggleThemePanel()"
-          >
-            关闭
-          </button>
+    <Teleport to="body">
+      <div v-if="appStore.showThemePanel" class="theme-dialog-backdrop" @click.self="closePanel">
+        <div ref="panel" role="dialog" aria-modal="true" aria-label="选择界面主题" class="theme-dialog ui-card-elevated" @keydown="trapFocus" @keydown.esc.stop.prevent="closePanel">
+          <div class="theme-dialog-heading">
+            <div><h3>让农场更合眼缘</h3><p>八款配色，选择即刻生效</p></div>
+            <button type="button" class="theme-close" aria-label="关闭主题设置" @click="closePanel">
+              <span class="i-carbon-close" />
+            </button>
+          </div>
+          <ThemePalette :current="appStore.currentTheme" @select="selectTheme" @close="closePanel" />
         </div>
       </div>
-    </teleport>
+    </Teleport>
   </div>
 </template>
+
+<style scoped>
+.theme-trigger:focus-visible,
+.theme-close:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}
+.theme-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(9, 19, 31, 0.4);
+}
+.theme-dialog {
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: 20px;
+  border-radius: 18px;
+  color: var(--theme-text);
+}
+.theme-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.theme-dialog-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+.theme-dialog-heading p {
+  margin: 5px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+.theme-close {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+</style>

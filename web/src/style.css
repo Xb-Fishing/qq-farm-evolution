@@ -9,23 +9,14 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: #cbd5e1; /* slate-300 */
+  background-color: color-mix(in srgb, var(--theme-primary) 40%, var(--surface-3));
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: #94a3b8; /* slate-400 */
-}
-
-/* Dark mode scrollbar */
-.dark ::-webkit-scrollbar-thumb {
-  background-color: #475569; /* slate-600 */
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background-color: #64748b; /* slate-500 */
+  background-color: var(--theme-primary);
 }
 
 /* Base styles to reset some defaults if needed, though UnoCSS reset handles most */
@@ -53,4 +44,17 @@ body {
   box-shadow:
     0 0 10px var(--theme-primary),
     0 0 5px var(--theme-primary) !important;
+}
+
+/* Keyboard focus stays visible without repainting component backgrounds. */
+.app-root :where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-fade-enter-active,
+  .slide-fade-leave-active {
+    transition: none;
+  }
 }

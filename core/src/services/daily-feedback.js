@@ -12,10 +12,12 @@ const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_DAY_BYTES = 12 * 1024 * 1024;
 const PAGES = new Set(['dashboard', 'farm', 'friends', 'bag', 'shop', 'task', 'warehouse', 'activity', 'settings', 'accounts', 'admin', 'other']);
 const OUTCOMES = new Set(['started', 'succeeded', 'accepted', 'failed', 'partial', 'rejected', 'aborted', 'observed']);
-const CATEGORIES = new Set(['vue_error', 'unhandled_rejection', 'script_error', 'network_error', 'request_timeout', 'runtime_warn', 'runtime_error']);
+const CATEGORIES = new Set(['vue_error', 'unhandled_rejection', 'script_error', 'network_error', 'request_timeout', 'http_error', 'runtime_warn', 'runtime_error']);
 const TARGETS = new Set(['button', 'link', 'input', 'select', 'tab', 'control']);
 const OPERATIONS = new Set(['initialize', 'feed', 'draw', 'claimDog', 'seeds', 'compensation', 'story', 'exchange',
   'harvest', 'water', 'weed', 'insect', 'fertilize', 'remove', 'plant', 'steal', 'help', 'all']);
+const FAILURE_OPERATIONS = new Set(['mall_purchase', 'shop_purchase', 'bag_sale', 'status_query', 'farm_query', 'friend_query', 'bag_query', 'shop_query', 'activity_query', 'settings_query', 'account_query', 'admin_query', 'other_query', 'other']);
+const FAILURE_PHASES = new Set(['transport', 'http_response', 'fresh_read', 'preflight', 'write_pending', 'write_reply_unknown', 'server_rejected']);
 const DOMAINS = new Set(['farm', 'friends', 'activity', 'auth', 'network', 'worker', 'admin', 'system']);
 const REASONS = new Set(['timeout', 'not_ready', 'permission', 'invalid_input', 'insufficient_resources', 'network', 'unknown']);
 const TRACE_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -58,6 +60,8 @@ function normalizeFeedback(value, now, revision = '') {
     item.domain = DOMAINS.has(value.domain) ? value.domain : 'system';
     if (PAGES.has(value.page)) item.page = value.page;
     item.outcome = 'failed';
+    if (FAILURE_OPERATIONS.has(value.operation)) item.operation = value.operation;
+    if (FAILURE_PHASES.has(value.failurePhase)) item.failurePhase = value.failurePhase;
   }
   return item;
 }

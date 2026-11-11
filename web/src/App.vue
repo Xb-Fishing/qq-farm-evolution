@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { Theme } from '@/stores/app'
 import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import ToastContainer from '@/components/ToastContainer.vue'
@@ -7,19 +6,13 @@ import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 
-// 立即应用保存的主题（在组件挂载前）
-const savedTheme = localStorage.getItem('ui_theme') as Theme
-if (savedTheme && appStore.themes[savedTheme]) {
-  appStore.applyTheme(savedTheme)
-}
-
 onMounted(() => {
   appStore.fetchTheme()
 })
 </script>
 
 <template>
-  <div class="h-screen w-screen overflow-hidden app-root" :style="{ color: 'var(--theme-text)' }">
+  <div class="app-root h-screen w-screen overflow-hidden" :style="{ color: 'var(--theme-text)' }">
     <RouterView />
     <ToastContainer />
   </div>
@@ -29,77 +22,61 @@ onMounted(() => {
 /* Global styles */
 body {
   margin: 0;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'DM Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   background: var(--app-bg);
   color: var(--theme-text);
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 /* Color theme variables */
 :root {
-  --theme-bg: #f8fafc;
-  --theme-text: #172033;
-  --theme-primary: #3b82f6;
-  --theme-secondary: #2563eb;
-  --theme-gradient: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
-  --app-bg: linear-gradient(180deg, #f6f8fb 0%, #eef3f8 100%);
-  --surface-1: color-mix(in srgb, var(--theme-bg) 8%, #ffffff);
-  --surface-2: color-mix(in srgb, var(--theme-bg) 22%, #ffffff);
-  --surface-3: color-mix(in srgb, var(--theme-bg) 40%, #ffffff);
-  --surface-border: rgba(15, 23, 42, 0.09);
-  --surface-border-strong: rgba(15, 23, 42, 0.14);
-  --surface-shadow: 0 16px 45px rgba(15, 23, 42, 0.08);
-  --surface-shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
-  --muted-text: #64748b;
-  --input-bg: rgba(255, 255, 255, 0.84);
-  --panel-glow: color-mix(in srgb, var(--theme-primary) 14%, transparent);
+  --theme-bg: #f4f7fb;
+  --theme-text: #182b42;
+  --theme-primary: #1d4ed8;
+  --theme-secondary: #1e40af;
+  --theme-gradient: linear-gradient(135deg, #1d4ed8, #1e40af);
+  --theme-on-primary: #ffffff;
+  --theme-on-gradient: #ffffff;
+  --app-bg: linear-gradient(160deg, var(--theme-bg), color-mix(in srgb, var(--theme-bg) 97%, var(--theme-primary)));
+  --surface-1: color-mix(in srgb, var(--theme-bg) 12%, #ffffff);
+  --surface-2: color-mix(in srgb, var(--theme-bg) 58%, #ffffff);
+  --surface-3: color-mix(in srgb, var(--theme-bg) 84%, #ffffff);
+  --surface-border: rgba(30, 48, 70, 0.1);
+  --surface-border-strong: rgba(30, 48, 70, 0.18);
+  --surface-shadow: 0 12px 32px rgba(24, 43, 66, 0.1);
+  --surface-shadow-soft: 0 2px 8px rgba(24, 43, 66, 0.045);
+  --muted-text: #5b6b7f;
+  --input-bg: var(--surface-1);
+  --panel-glow: color-mix(in srgb, var(--theme-primary) 6%, transparent);
 }
 
 .dark {
-  --app-bg: radial-gradient(circle at top left, color-mix(in srgb, var(--theme-primary) 16%, transparent) 0, transparent 28rem), linear-gradient(180deg, #0b1020 0%, color-mix(in srgb, var(--theme-bg) 74%, #020617) 100%);
-  --surface-1: color-mix(in srgb, var(--theme-bg) 72%, #ffffff 9%);
-  --surface-2: color-mix(in srgb, var(--theme-bg) 78%, #ffffff 6%);
-  --surface-3: color-mix(in srgb, var(--theme-bg) 84%, #ffffff 4%);
-  --surface-border: rgba(255, 255, 255, 0.09);
-  --surface-border-strong: rgba(255, 255, 255, 0.14);
-  --surface-shadow: 0 18px 55px rgba(0, 0, 0, 0.34);
-  --surface-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.24);
-  --muted-text: #9ca3af;
-  --input-bg: rgba(15, 23, 42, 0.54);
-  --panel-glow: color-mix(in srgb, var(--theme-primary) 18%, transparent);
+  --surface-1: color-mix(in srgb, var(--theme-bg) 92%, #ffffff);
+  --surface-2: color-mix(in srgb, var(--theme-bg) 96%, #ffffff);
+  --surface-3: color-mix(in srgb, var(--theme-bg) 87%, #ffffff);
+  --surface-border: rgba(205, 220, 235, 0.12);
+  --surface-border-strong: rgba(205, 220, 235, 0.24);
+  --surface-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  --surface-shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --muted-text: #a8b5c7;
+  --input-bg: var(--surface-2);
+  --panel-glow: color-mix(in srgb, var(--theme-primary) 5%, transparent);
 }
 
 .app-root {
   background: var(--app-bg);
 }
 
-/* SaaS surface system */
-.bg-white {
-  background-color: var(--surface-1) !important;
-}
-
-.dark .bg-gray-800,
-.dark .bg-gray-900 {
-  background-color: var(--surface-1) !important;
-}
-
-.bg-gray-50 {
-  background-color: var(--surface-2) !important;
-}
-
-.dark .bg-gray-700 {
-  background-color: var(--surface-3) !important;
-}
-
+/* Theme surfaces are explicit components, never overrides of utility colors. */
 .ui-card {
   border: 1px solid var(--surface-border);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, #ffffff 4%), var(--surface-1));
+  background: var(--surface-1);
   box-shadow: var(--surface-shadow-soft);
 }
 
 .ui-card-elevated {
   border: 1px solid var(--surface-border);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 92%, #ffffff 8%), var(--surface-1));
+  background: var(--surface-1);
   box-shadow: var(--surface-shadow);
 }
 
@@ -110,8 +87,8 @@ body {
 
 .glass-panel {
   border: 1px solid var(--surface-border);
-  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
-  backdrop-filter: blur(20px);
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
+  backdrop-filter: blur(8px);
   box-shadow: var(--surface-shadow-soft);
 }
 
@@ -121,7 +98,7 @@ body {
 }
 
 .metric-card::before {
-  content: "";
+  content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -134,10 +111,9 @@ body {
   position: relative;
 }
 
-.shadow,
-.shadow-sm,
-.shadow-md {
-  box-shadow: var(--surface-shadow-soft) !important;
+/* Solid accent fills need their paired text color in every theme. */
+.text-white[style*="background-color: var(--theme-primary)"] {
+  color: var(--theme-on-primary);
 }
 
 /* Use CSS variables for theme colors */
@@ -147,7 +123,7 @@ body {
 }
 
 .btn-primary:hover {
-  background: var(--theme-secondary);
+  filter: brightness(0.94);
 }
 
 .text-primary {
@@ -164,25 +140,5 @@ body {
 
 .bg-gradient-primary {
   background: var(--theme-gradient);
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--theme-primary) 50%, #94a3b8);
-  border-radius: 999px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--theme-secondary);
-  opacity: 0.8;
 }
 </style>

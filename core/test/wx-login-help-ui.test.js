@@ -88,6 +88,7 @@ function apiHarness(pathname, search) {
     axios: axiosStub,
     '@/stores/toast': { useToastStore: () => ({ warning: m => warnings.push(m), error: m => errors.push(m) }) },
     '@/utils/daily-feedback': { currentFeedbackTrace: () => '', recordClientFailure: () => {} },
+    '@/utils/request-diagnostics': evaluate(fs.readFileSync(path.join(root, 'web/src/utils/request-diagnostics.ts'), 'utf8'), {}),
     '@/utils/safe-redirect': safeRedirect,
   }, { window: windowStub });
   return { get errorHandler() { return responseErrorHandler; }, windowStub, get tokenRef() { return tokenRef; }, warnings, errors };

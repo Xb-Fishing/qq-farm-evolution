@@ -74,6 +74,7 @@ test('真实 Axios 入口将点击关联号交给后端，网络错误产生固�
     '@/stores/toast': { useToastStore: () => toast },
     '@/utils/daily-feedback': f.feedback,
     '@/utils/safe-redirect': f.load('utils/safe-redirect.ts'),
+    '@/utils/request-diagnostics': f.load('utils/request-diagnostics.ts'),
   }).default;
   let trace;
   api.defaults.adapter = async (config) => {
@@ -82,11 +83,11 @@ test('真实 Axios 入口将点击关联号交给后端，网络错误产生固�
   };
   await api.get('/api/friends');
   assert.equal(trace, f.feedback.currentFeedbackTrace());
-  api.defaults.adapter = async () => { throw Object.assign(new Error('private-response'), { request: {}, code: 'ECONNABORTED' }); };
+  api.defaults.adapter = async (config) => { throw Object.assign(new Error('private-response'), { config, request: {}, code: 'ECONNABORTED' }); };
   await assert.rejects(api.get('/api/friends'));
   await f.feedback.flushFeedback();
   const events = JSON.parse(f.sent[0].config.body).events;
-  assert.ok(events.some(row => row.category === 'request_timeout' && row.trace === trace));
+  assert.ok(events.some(row => row.category === 'request_timeout' && row.trace === trace && row.operation === 'friend_query' && row.failurePhase === 'transport'));
   assert.doesNotMatch(f.sent[0].config.body, /private-response/);
 });
 

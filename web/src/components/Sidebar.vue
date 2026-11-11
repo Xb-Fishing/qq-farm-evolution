@@ -2,10 +2,11 @@
 import type { Card } from '@/stores/user'
 import { useDateFormat, useIntervalFn, useNow } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import ThemePalette from '@/components/ThemePalette.vue'
 
 import { menuRoutes } from '@/router/menu'
 import { useAccountStore } from '@/stores/account'
@@ -250,6 +251,13 @@ const announcementLoading = ref(false)
 const showSaveAnnouncementConfirm = ref(false)
 const currentAnnouncement = ref<{ content: string, showOnce: boolean, updatedAt: number, shouldShow?: boolean } | null>(null)
 const showThemeDropdown = ref(false)
+const themeTrigger = ref<HTMLButtonElement | null>(null)
+
+function closeThemeDropdown() {
+  showThemeDropdown.value = false
+  void nextTick(() => themeTrigger.value?.focus())
+}
+
 const showTokenDropdown = ref(false)
 const tokenVisible = ref(false)
 const tokenCopied = ref(false)
@@ -644,8 +652,13 @@ async function copyToken() {
         <span class="font-mono">{{ formattedTime }}</span>
         <!-- 主题调色盘按钮 -->
         <button
+          ref="themeTrigger"
           class="h-7 w-7 flex items-center justify-center rounded-lg transition-colors hover:bg-gray-200/60 dark:hover:bg-gray-700/60"
+          type="button"
           title="主题设置"
+          aria-label="主题设置"
+          aria-haspopup="dialog"
+          :aria-expanded="showThemeDropdown"
           @click="showThemeDropdown = !showThemeDropdown"
         >
           <div class="i-carbon-color-palette text-sm" :style="{ color: 'var(--theme-primary)' }" />
@@ -668,35 +681,17 @@ async function copyToken() {
         <span v-if="serverVersion">Core v{{ serverVersion }}</span>
       </div>
 
-      <!-- 主题选择弹出面板 -->
+      <!-- Shared preview keeps sidebar and dialog choices identical. -->
       <div
-        v-show="showThemeDropdown"
-        class="glass-panel absolute bottom-full left-0 right-0 z-50 grid grid-cols-4 mb-2 gap-1.5 rounded-lg p-2"
+        v-if="showThemeDropdown" class="theme-sidebar-palette ui-card-elevated"
+        role="dialog" aria-label="选择界面主题"
       >
-        <button
-          v-for="(t, theme) in appStore.themes"
-          :key="theme"
-          class="group relative flex flex-col items-center justify-center gap-1 rounded-lg p-2 transition-all hover:scale-105"
-          :class="{
-            'ring-2 ring-offset-1': appStore.currentTheme === theme,
-          }"
-          :style="{
-            'background': t.gradient,
-            '--tw-ring-color': t.primary,
-            '--tw-ring-offset-color': 'var(--theme-bg)',
-          }"
-          :title="t.name"
-          @click="appStore.applyTheme(theme as any); showThemeDropdown = false"
-        >
-          <div :class="t.icon" class="text-base text-white" />
-          <span class="text-[10px] text-white font-medium leading-tight">{{ t.name }}</span>
-          <div
-            v-if="appStore.currentTheme === theme"
-            class="absolute right-1 top-1 h-3 w-3 flex items-center justify-center rounded-full bg-white shadow"
-          >
-            <div class="i-carbon-checkmark text-xs" :style="{ color: t.primary }" />
-          </div>
-        </button>
+        <div class="theme-sidebar-heading">
+          <span>界面主题</span><button type="button" aria-label="关闭主题设置" @click="closeThemeDropdown">
+            <span class="i-carbon-close" />
+          </button>
+        </div>
+        <ThemePalette :current="appStore.currentTheme" @select="appStore.applyTheme($event); closeThemeDropdown()" @close="closeThemeDropdown" />
       </div>
     </div>
   </aside>
@@ -949,6 +944,37 @@ async function copyToken() {
 </template>
 
 <style scoped>
+.theme-sidebar-palette {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 50;
+  margin-bottom: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  max-height: calc(100dvh - 160px);
+  overflow-y: auto;
+}
+.theme-sidebar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+.theme-sidebar-heading button {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+.theme-sidebar-heading button:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 2px;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }

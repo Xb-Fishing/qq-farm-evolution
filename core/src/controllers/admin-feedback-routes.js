@@ -87,7 +87,7 @@ function registerAdminFeedbackRoutes({ app, requireAdminToken, feedback = getDai
     for (const item of entries) {
       if (item && ['click', 'client_error'].includes(item.kind)) {
         // Client input cannot forge backend request results or server runtime errors.
-        const event = { kind: item.kind, page: item.page, target: item.target, category: item.category, trace: item.trace };
+        const event = { kind: item.kind, page: item.page, target: item.target, category: item.category, trace: item.trace, operation: item.operation, failurePhase: item.failurePhase };
         try { if (feedback.record(event)) accepted += 1; } catch {}
       }
     }
