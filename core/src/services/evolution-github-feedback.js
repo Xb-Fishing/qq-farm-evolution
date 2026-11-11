@@ -1259,7 +1259,7 @@ function issueDetailKey(detail) {
 }
 
 /** A new user response needs another maintainer reply; elapsed time alone never resolves it. */
-function inactiveRepliedIssue(issue, ownLogins, now, idleMs = REPLIED_ISSUE_IDLE_MS) {
+function inactiveRepliedIssue(issue, ownLogins, now) {
   if (issue.state !== 'open' || issue.locked || issue.pullRequest || issue.commentsTruncated
     || issue.commentCount !== issue.comments.length || !issue.updatedAt) return false;
   const replies = issue.comments.filter(comment => ownLogins.has(comment.author.toLowerCase()) && comment.body.trim());
@@ -1272,7 +1272,7 @@ function inactiveRepliedIssue(issue, ownLogins, now, idleMs = REPLIED_ISSUE_IDLE
   const lastCommentAt = Math.max(...issue.comments.map(comment => Math.max(comment.createdAt, comment.updatedAt)));
   // Issue edits, reopening and other unexplained updates require a new review/reply.
   if (issue.updatedAt > lastCommentAt || issue.updatedAt < latest.createdAt) return false;
-  return now - Math.max(issue.updatedAt, lastCommentAt) >= idleMs;
+  return now - Math.max(issue.updatedAt, lastCommentAt) >= REPLIED_ISSUE_IDLE_MS;
 }
 
 /** Opt-in follow-up policy; every close is checked against fresh remote evidence. */
@@ -1292,8 +1292,7 @@ async function closeInactiveRepliedIssues(options = {}) {
     if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/.test(login)) return { ok: false, reason: auth.reason || 'invalid_response' };
     const ownLogins = new Set([cfg.ownerLogin, login].filter(Boolean));
     const now = options.now ? options.now() : Date.now();
-    const idleMs = cfg.autoCloseFixed ? 0 : REPLIED_ISSUE_IDLE_MS;
-    const candidates = store.issues.filter(issue => inactiveRepliedIssue(issue, ownLogins, now, idleMs))
+    const candidates = store.issues.filter(issue => inactiveRepliedIssue(issue, ownLogins, now))
       .slice(0, MAX_NEW_CAPTURE_ISSUES);
     const closed = [];
     for (const cached of candidates) {
@@ -1303,7 +1302,7 @@ async function closeInactiveRepliedIssues(options = {}) {
         cached.state = 'closed';
         continue;
       }
-      if (!inactiveRepliedIssue(fresh.snapshot, ownLogins, now, idleMs)) continue;
+      if (!inactiveRepliedIssue(fresh.snapshot, ownLogins, now)) continue;
       // A reply (including a request for information) is not a verified resolution.
       // Require the accepted report version, published fix and the actual remote
       // delivery marker. A deleted comment or new feedback must remain pending.

@@ -411,11 +411,19 @@ test('任意维护者回复即使超过七天也不能代替已验证修复', as
   assert.equal(f.api.patches().length, 0);
 });
 
-test('启用已修复关闭后无需等七天，关闭成功必须额外读回', async (t) => {
-  const f = await fixture(t, { now: REPLIED_AT + 1, config: makeConfig({ autoCloseFixed: true }) });
-  assert.deepEqual((await f.close()).closed, [ISSUE]);
-  const patchIndex = f.api.calls.findIndex(call => call.method === 'PATCH');
-  assert.ok(f.api.calls.slice(patchIndex + 1).some(call => call.method === 'GET' && call.apiPath === issuePath(ISSUE)));
+test('已验证修复也必须等待完整七天，两个自动关闭开关都不能缩短等待', async (t) => {
+  for (const autoCloseAfterReply of [true, false]) {
+    const f = await fixture(t, { now: REPLIED_AT + 1, config: makeConfig({ autoCloseFixed: true, autoCloseAfterReply }) });
+    assert.deepEqual((await f.close()).closed, []);
+    assert.equal(f.api.patches().length, 0);
+    f.clock.now = REPLIED_AT + WEEK - 1;
+    assert.deepEqual((await f.close()).closed, []);
+    assert.equal(f.api.patches().length, 0);
+    f.clock.now = REPLIED_AT + WEEK;
+    assert.deepEqual((await f.close()).closed, [ISSUE]);
+    const patchIndex = f.api.calls.findIndex(call => call.method === 'PATCH');
+    assert.ok(f.api.calls.slice(patchIndex + 1).some(call => call.method === 'GET' && call.apiPath === issuePath(ISSUE)));
+  }
 });
 
 test('旧投递回执对应的远端评论已删除时不关闭', async (t) => {

@@ -9,7 +9,11 @@ function registerAdminSuperAdminRoutes({
   checkAccountLimit,
 }) {
   const updater = require('../services/program-update');
-  app.get('/api/super-admin/investigations', requireAdminToken, requireSuperAdminRole, (_req, res) => {
+  const requireStatusViewer = (req, res, next) => {
+    if (!['admin', 'super_admin'].includes(req.currentUser?.role)) return res.status(403).json({ ok: false, error: '需要管理员权限' });
+    next();
+  };
+  const readInvestigations = (_req, res) => {
     try {
       const dataDir = require('../config/runtime-paths').getDataDir();
       const { pending } = require('../services/evolution-no-change-audit').getInvestigationFollowups(dataDir);
@@ -19,6 +23,12 @@ function registerAdminSuperAdminRoutes({
         lastCheckedAt: entry.lastReview?.reviewedAt || 0, conclusion: String(entry.lastReview?.conclusion || '').slice(0, 2000),
         verification: entry.lastReview?.verification || null, needsOwner: entry.mechanism === 'owner_evidence' })) });
     } catch { res.status(500).json({ ok: false, error: '调查记录暂时不可读' }); }
+  };
+  app.get('/api/admin/investigations', requireAdminToken, requireStatusViewer, readInvestigations);
+  app.get('/api/super-admin/investigations', requireAdminToken, requireSuperAdminRole, readInvestigations);
+  app.get('/api/admin/program-update', requireAdminToken, requireStatusViewer, (req, res) => {
+    try { res.json({ ok: true, update: updater.safeState(), access: { canUpdate: req.currentUser.role === 'super_admin' } }); }
+    catch { res.status(500).json({ ok: false, error: '无法读取版本更新状态' }); }
   });
   app.get('/api/super-admin/program-update', requireAdminToken, requireSuperAdminRole, (_req, res) => {
     try { res.json({ ok: true, update: updater.safeState() }); }

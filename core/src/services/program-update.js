@@ -67,7 +67,7 @@ function paneFor(pid) {
     }
     throw new Error('update_requires_existing_tmux');
 }
-function safeState(dataDir = getDataDir()) {
+function safeState(dataDir = getDataDir(), root = ROOT) {
     let s;
     try { s = read(path.join(dataDir, STATE)); } catch (e) { if (e.code !== 'ENOENT') throw e; s = { phase: 'idle' }; }
     const helperAlive = s.workerHost === os.hostname() && identityLive(s.helperPid, s.helperStarttime);
@@ -89,7 +89,7 @@ function safeState(dataDir = getDataDir()) {
                 s = { ...s, phase: 'applied', currentCommit: s.targetCommit, connectionPreserved: true, reason: '更新完成，已核对本轮正式回执', updatedAt: Date.now() };
                 put(path.join(dataDir, STATE), s);
                 if (lockHeld(dataDir) && read(path.join(dataDir, LOCK, 'owner.json')).runId === s.runId) release(dataDir, s.runId);
-                return safeState(dataDir);
+                return safeState(dataDir, root);
             }
         } catch { /* An absent/mismatched receipt cannot prove success. */ }
         // Never trust a previous ready receipt or restart an interrupted update.
@@ -97,8 +97,14 @@ function safeState(dataDir = getDataDir()) {
         put(path.join(dataDir, STATE), s);
         if (lockHeld(dataDir) && read(path.join(dataDir, LOCK, 'owner.json')).runId === s.runId) release(dataDir, s.runId);
     }
-    return { phase: s.phase, runId: s.runId || '', currentCommit: s.currentCommit || currentCommit(), targetCommit: s.targetCommit || '',
-        updatedAt: s.updatedAt || 0, reason: s.reason || '', connectionPreserved: s.connectionPreserved === true, source: 'origin/main' };
+    let running;
+    try { running = currentCommit(root); }
+    catch { return { phase: 'unavailable', currentCommit: '', targetCommit: '', source: 'origin/main', reason: '当前部署没有可读取的 Git 版本，请按现有部署方式更新。' }; }
+    // Historical checks/transactions keep their original baseline on disk. The
+    // status shown to a user always describes this actual running source root.
+    const staleCheck = ['idle', 'current', 'available', 'applied'].includes(s.phase) && s.currentCommit && s.currentCommit !== running;
+    return { phase: staleCheck ? 'idle' : s.phase, runId: s.runId || '', currentCommit: running, targetCommit: staleCheck ? '' : s.targetCommit || '',
+        updatedAt: staleCheck ? 0 : s.updatedAt || 0, reason: staleCheck ? '程序版本已变化，请重新检查上游新版本。' : s.reason || '', connectionPreserved: s.connectionPreserved === true, source: 'origin/main' };
 }
 function currentCommit(root = ROOT) { return cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
 function remoteHeadAsync(root) {
@@ -111,17 +117,17 @@ function remoteHeadAsync(root) {
 }
 async function check({ root = ROOT, dataDir = getDataDir(), readRemoteHead = remoteHeadAsync } = {}) {
     assertTrustedOrigin(root);
-    const status = safeState(dataDir);
+    const status = safeState(dataDir, root);
     if (ACTIVE.has(status.phase)) return status;
     const targetCommit = await readRemoteHead(root);
-    const latest = safeState(dataDir);
+    const latest = safeState(dataDir, root);
     if (ACTIVE.has(latest.phase)) return latest;
     const s = { phase: targetCommit === currentCommit(root) ? 'current' : 'available', currentCommit: currentCommit(root), targetCommit, updatedAt: Date.now() };
     put(path.join(dataDir, STATE), s);
-    return safeState(dataDir);
+    return safeState(dataDir, root);
 }
 function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor } = {}) {
-    assertTrustedOrigin(root); safeState(dataDir);
+    assertTrustedOrigin(root); safeState(dataDir, root);
     const previous = read(path.join(dataDir, STATE));
     if (previous.phase !== 'available') throw new Error('check_update_first');
     const runId = `program-${Date.now()}-${crypto.randomUUID()}`;
@@ -152,7 +158,7 @@ function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolveP
         child.once('error', failQueued);
         child.once('exit', failQueued);
         child.unref();
-        return safeState(dataDir);
+        return safeState(dataDir, root);
     } catch (error) { release(dataDir, runId); throw error; }
 }
 function offlineEnv(env = process.env) {

@@ -11,7 +11,7 @@ async function load() {
   if (loading.value) return
   loading.value = true
   error.value = ''
-  try { const { data } = await api.get('/api/super-admin/investigations'); entries.value = data.investigations }
+  try { const { data } = await api.get('/api/admin/investigations'); entries.value = data.investigations }
   catch { error.value = '调查记录暂时不可读，请稍后刷新' }
   finally { loading.value = false }
 }

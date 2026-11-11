@@ -31,7 +31,7 @@ test('all version endpoints require both authentication and super-admin; no URL 
     const app = { get: (url, ...handlers) => routes.push({ url, handlers }), post: (url, ...handlers) => routes.push({ url, handlers }) };
     const auth = () => {}; const role = () => {};
     require('../src/controllers/admin-super-admin-routes').registerAdminSuperAdminRoutes({ app, requireAdminToken: auth, requireSuperAdminRole: role });
-    const updates = routes.filter(r => r.url.includes('program-update'));
+    const updates = routes.filter(r => r.url.startsWith('/api/super-admin/') && r.url.includes('program-update'));
     assert.equal(updates.length, 3);
     for (const route of updates) { assert.equal(route.handlers[0], auth); assert.equal(route.handlers[1], role); }
     const original = updater.begin; let args;
@@ -176,4 +176,57 @@ test('version checks report no update and never overwrite an update that began d
     finish('b'.repeat(40));
     assert.equal((await pending).phase, 'validating');
     assert.equal(updater.read(path.join(dataDir, 'program-update.json')).targetCommit, 'c'.repeat(40));
+});
+
+test('status projects the actual running revision and invalidates stale latest-version checks without rewriting transaction history', () => {
+    const dir = fixture();
+    cp.execFileSync('git', ['init', '-q', dir]);
+    cp.execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'commit', '--allow-empty', '-qm', 'current deployed source'], { cwd: dir });
+    const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+    const dataDir = path.join(dir, 'data');
+    put(dataDir, 'program-update.json', { phase: 'current', currentCommit: 'a'.repeat(40), targetCommit: 'a'.repeat(40), updatedAt: 12 });
+    const status = updater.safeState(dataDir, dir);
+    assert.equal(status.currentCommit, head); assert.equal(status.targetCommit, ''); assert.equal(status.phase, 'idle');
+    assert.equal(updater.read(path.join(dataDir, 'program-update.json')).currentCommit, 'a'.repeat(40));
+});
+
+test('administrator metadata is visible, ordinary users are denied, and update POSTs remain exclusively super-admin', async t => {
+    const http = require('node:http');
+    const app = require('express')();
+    const roles = require('../src/controllers/admin-route-helpers').createAdminRouteHelpers({});
+    const auth = (req, res, next) => {
+        const role = req.headers['x-fixture-role'];
+        if (!role) return res.status(401).json({ ok: false });
+        req.currentUser = { role }; next();
+    };
+    const originals = { safeState: updater.safeState, check: updater.check, begin: updater.begin };
+    const actions = [];
+    updater.safeState = () => ({ phase: 'current', currentCommit: 'b'.repeat(40) });
+    updater.check = async () => { actions.push('check'); return { phase: 'current' }; };
+    updater.begin = () => { actions.push('install'); return { phase: 'queued' }; };
+    t.after(() => Object.assign(updater, originals));
+    require('../src/controllers/admin-super-admin-routes').registerAdminSuperAdminRoutes({ app, requireAdminToken: auth, requireSuperAdminRole: roles.requireSuperAdminRole });
+    const server = http.createServer(app); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeIdleConnections(); server.close(resolve); }));
+    const port = server.address().port;
+    const request = (pathname, role, method = 'GET') => new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port, path: pathname, method, headers: role ? { 'x-fixture-role': role } : {} }, res => {
+            let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(raw) }));
+        }); req.on('error', reject); req.end();
+    });
+    assert.equal((await request('/api/admin/program-update')).status, 401);
+    assert.equal((await request('/api/admin/program-update', 'user')).status, 403);
+    assert.equal((await request('/api/admin/investigations', 'user')).status, 403);
+    for (const role of ['admin', 'super_admin']) {
+        const response = await request('/api/admin/program-update', role);
+        assert.equal(response.status, 200); assert.equal(response.body.access.canUpdate, role === 'super_admin');
+        assert.equal(response.body.update.currentCommit, 'b'.repeat(40));
+        assert.equal((await request('/api/admin/investigations', role)).status, 200);
+    }
+    assert.deepEqual(actions, [], 'metadata reads never dispatch check/install');
+    for (const action of ['check', 'install']) {
+        assert.equal((await request(`/api/super-admin/program-update/${  action}`, 'admin', 'POST')).status, 403);
+        assert.equal((await request(`/api/super-admin/program-update/${  action}`, 'super_admin', 'POST')).status, 200);
+    }
+    assert.deepEqual(actions, ['check', 'install']);
 });
