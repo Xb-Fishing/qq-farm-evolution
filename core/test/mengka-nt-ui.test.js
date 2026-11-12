@@ -23,10 +23,11 @@ const renderer = vue.createRenderer({
 test('真实账号弹窗呈现萌卡NT入口、专用地址和启动策略；复制地址不发取码或登录请求', async (t) => {
   const requests = [];
   const copies = [];
+  let copyError = false;
   const wx = vue.reactive({ config: {}, resetState() {}, getQRCode() { assert.fail('NT页不应触发微信扫码'); } });
   const stub = { __esModule: true, default: { setup: (_, ctx) => () => vue.h('div', {}, ctx.slots.default?.()) } };
   const globals = { window: { location: { origin: 'fixture-origin' } },
-    localStorage: { getItem: () => null }, navigator: { clipboard: { writeText: async value => copies.push(value) } } };
+    localStorage: { getItem: () => null }, navigator: { clipboard: { writeText: async value => { if (copyError) throw new Error('fixture clipboard denied'); copies.push(value); } } } };
   const load = file => {
     const { descriptor } = compiler.parse(fs.readFileSync(file, 'utf8'), { filename: file });
     const source = compiler.compileScript(descriptor, { id: path.basename(file), inlineTemplate: true }).content;
@@ -53,12 +54,36 @@ test('真实账号弹窗呈现萌卡NT入口、专用地址和启动策略；复
   assert.match(textOf(root), /不是 QQ 密码/);
   assert.match(textOf(root), /手动停止的账号不会被推送拉起/);
   const address = find(root, value => value.tag === 'input');
+  assert.equal(address.props.value, '', 'private deployment address is absent from the default input value');
+  assert.doesNotMatch(textOf(root), /fixture-origin/);
+  assert.match(textOf(root), /请勿放进公开反馈、截图或文档/);
+  const reveal = find(root, value => value.tag === 'button' && textOf(value).trim() === '显示地址');
+  assert.equal(reveal.props['aria-pressed'], false);
+  reveal.props.onClick();
+  await vue.nextTick();
   assert.equal(address.props.value, 'fixture-origin/mengka-nt');
+  assert.equal(reveal.props['aria-pressed'], true);
+  reveal.props.onClick();
+  await vue.nextTick();
+  assert.equal(address.props.value, '', 'explicit hide removes the displayed address again');
   const copy = find(root, value => value.tag === 'button' && textOf(value).trim() === '复制服务器地址');
   assert.ok(copy, '实际渲染的复制按钮必须可操作');
   await copy.props.onClick();
   await vue.nextTick();
   assert.deepEqual(copies, ['fixture-origin/mengka-nt']);
+  assert.equal(address.props.value, '', 'copying never reveals the address in the page');
   assert.match(textOf(root), /已复制服务器地址/);
+  copyError = true;
+  await copy.props.onClick();
+  await vue.nextTick();
+  assert.equal(address.props.value, '', 'clipboard rejection does not expose the private address');
+  assert.match(textOf(root), /请先点击“显示地址”后手动复制/);
+  assert.equal(copies.length, 1);
   assert.ok(requests.every(url => url === '/api/capture/config'));
+  reveal.props.onClick();
+  await vue.nextTick();
+  renderer.render(null, root);
+  renderer.render(vue.h(Modal, { show: true, initialTab: 'mengka_nt' }), root);
+  await vue.nextTick();
+  assert.equal(find(root, value => value.tag === 'input').props.value, '', 'reopening starts private again');
 });
