@@ -117,6 +117,8 @@ function readApprovedCertificate(dataDir) {
     const target = value && typeof value === 'object' ? value.target : null;
     const validation = value && typeof value === 'object' ? value.validation : null;
     const provenance = value && typeof value === 'object' ? value.provenance : null;
+    const published = validation?.kind === 'published-release' && validation.state === 'published'
+        && value.programUpdateId === target?.runId && Array.isArray(validation.checks) && validation.checks.length === 0;
     if (value.version !== 1
         || !Number.isSafeInteger(value.certifiedAt) || value.certifiedAt <= 0
         || !target || typeof target !== 'object'
@@ -126,10 +128,10 @@ function readApprovedCertificate(dataDir) {
         || !SHA64_RE.test(String(target.holdDigest || ''))
         || !String(target.runtimeRoot || '')
         || !validation || typeof validation !== 'object'
-        || validation.state !== 'passed'
+        || (!published && validation.state !== 'passed')
         || !SHA64_RE.test(String(validation.fingerprint || ''))
         || !Array.isArray(validation.checks)
-        || validation.checks.join(',') !== 'backend,frontend'
+        || (!published && validation.checks.join(',') !== 'backend,frontend')
         || !provenance || typeof provenance !== 'object'
         || String(provenance.runId || '') !== String(target.runId || '')
         || !String(provenance.taskRoot || '')
@@ -150,7 +152,7 @@ function readApprovedCertificate(dataDir) {
             holdDigest: String(target.holdDigest),
         },
         validation: {
-            state: 'passed',
+            state: published ? 'published' : 'passed', ...(published ? { kind: 'published-release' } : {}),
             fingerprint: String(validation.fingerprint),
             checks: validation.checks.map(item => String(item)),
         },
@@ -312,7 +314,14 @@ function resolveRoutingStrict(options) {
     }
     if (pending && realpathOrNull(pending.runtimeRoot) === repoRoot) {
         verifyRootIdentity(repoRoot, pending);
-        assertCurrentValidationMatches(dataDir, pending.sourceFingerprint);
+        let release;
+        try { release = JSON.parse(fs.readFileSync(path.join(dataDir, 'program-update-release.json'), 'utf8')); } catch { release = null; }
+        let update;
+        try { update = JSON.parse(fs.readFileSync(path.join(dataDir, 'program-update.json'), 'utf8')); } catch { update = null; }
+        const published = release?.kind === 'published-release' && release.state === 'published'
+            && release.runId === pending.runId && release.commit === pending.commit && release.fingerprint === pending.sourceFingerprint
+            && update?.installOnly === true && update.runId === pending.runId && update.phase === 'applying' && update.targetCommit === pending.commit;
+        if (!published) assertCurrentValidationMatches(dataDir, pending.sourceFingerprint);
         return { action: 'ordinary', reason: 'pending_runtime_bootstrap' };
     }
 

@@ -751,3 +751,22 @@ test.after(() => {
     process.env.FARM_DATA_DIR = originalDataDir;
   }
 });
+
+
+test('published release startup uses its explicit receipt without manufacturing a full validation', () => {
+  const fixture = makeRoutingFixture('release-routing', { certificate: true });
+  try {
+    const original = JSON.parse(fs.readFileSync(fixture.certificateFile, 'utf8'));
+    original.programUpdateId = original.target.runId;
+    original.validation = { kind: 'published-release', state: 'published', fingerprint: original.target.sourceFingerprint, checks: [], checkedAt: 0 };
+    fs.writeFileSync(fixture.certificateFile, JSON.stringify(original));
+    assert.equal(resolveOf(fixture).action, 'dispatch');
+    fs.unlinkSync(fixture.certificateFile);
+    fs.rmSync(path.join(fixture.dataDir, 'evolution-validation.json'), { force: true });
+    fixture.write(fixture.dataDir, 'program-update-release.json', JSON.stringify({ kind: 'published-release', state: 'published', runId: original.target.runId, commit: original.target.commit, fingerprint: original.target.sourceFingerprint }));
+    fixture.write(fixture.dataDir, 'program-update.json', JSON.stringify({ installOnly: true, phase: 'applying', runId: original.target.runId, targetCommit: original.target.commit }));
+    assert.equal(resolveAt(original.target.runtimeRoot, fixture).action, 'ordinary');
+    fixture.write(fixture.dataDir, 'program-update.json', JSON.stringify({ installOnly: true, phase: 'applying', runId: 'other-transaction', targetCommit: original.target.commit }));
+    assert.equal(resolveAt(original.target.runtimeRoot, fixture).action, 'refuse');
+  } finally { cleanup(fixture); }
+});

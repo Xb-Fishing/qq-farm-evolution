@@ -488,10 +488,13 @@ async function main() {
     }
     // 内容验证证据（真实协调器 backend+frontend）：记录必须 passed、全项完成、
     // 且其指纹就是这个源内容——缺失/空/漂移一律停服前拒绝。
-    const summary = validation.getValidationSummary(dataDir);
+    const release = programUpdateId && updateState.installOnly
+      ? require('../src/services/program-update-cache').publishedRelease(dataDir, targetProvenance?.taskRoot || provenance.taskRoot, expectedHead) : null;
+    if (release && release.runId !== record.runId) throw new Error('published_release_run_mismatch');
+    const summary = release || validation.getValidationSummary(dataDir);
     const expectedChecks = fs.existsSync(path.join(targetRoot, 'web', 'package.json'))
       ? 'backend,frontend' : 'backend';
-    if (summary.state !== 'passed' || summary.checks.join(',') !== expectedChecks
+    if ((!release && (summary.state !== 'passed' || summary.checks.join(',') !== expectedChecks))
       || summary.fingerprint !== record.sourceFingerprint) {
       throw new Error('离线回归验证记录缺失/未通过/指纹不符，取消应用');
     }
@@ -511,7 +514,7 @@ async function main() {
     targetRecord = record;
     targetProvenance = provenance;
     targetValidation = {
-      state: summary.state, fingerprint: summary.fingerprint,
+      state: summary.state, ...(release ? { kind: 'published-release' } : {}), fingerprint: summary.fingerprint,
       checks: summary.checks, checkedAt: summary.checkedAt || 0,
     };
   };
@@ -531,14 +534,6 @@ async function main() {
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true, mode: 0o700 });
   const buildLog = path.join(dataDir, 'logs', 'evolve-apply.log');
   const buildRoot = fs.mkdtempSync(path.join(deployRoot, 'tmp', 'evolution-apply.XXXXXX'));
-  if (programUpdateId && updateState.artifactsRoot) {
-    const output = path.join(updateState.artifactsRoot, `helper-web-${Date.now()}`);
-    fs.mkdirSync(output, { mode: 0o700 });
-    fs.symlinkSync(output, path.join(buildRoot, 'dist'), 'dir');
-    const stats = path.join(deployRoot, 'web/stats.html');
-    if (fs.existsSync(stats) || fs.lstatSync(stats, { throwIfNoEntry: false })) throw new Error('helper_stats_destination_occupied');
-    fs.symlinkSync(path.join(updateState.artifactsRoot, 'helper-visualizer-stats.html'), stats);
-  }
   let contextFile = '';
   let wxPreflight = null;
   let stoppingStarted = false;
@@ -567,18 +562,41 @@ async function main() {
     try { fs.chmodSync(receiptFile, 0o600); } catch {}
   };
   try {
-    // 隔离构建（失败不停旧服务）。
-    await new Promise((resolve, reject) => {
-      const out = fs.openSync(buildLog, 'a', 0o600);
-      const child = spawn('npm', ['run', 'build', '--', '--outDir', path.join(buildRoot, 'dist'), '--emptyOutDir'], {
-        cwd: path.join(deployRoot, 'web'),
-        env: { ...process.env, PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH || ''}` },
-        stdio: ['ignore', out, out],
+    // Installation may reuse a previously built, input-bound bundle. Native
+    // evolution still performs its original complete validation and build.
+    const bundleReuse = { prepared: false };
+    if (programUpdateId && updateState.installOnly && updateState.overlay) {
+      fs.symlinkSync(path.join(updateState.overlay.root, 'web-dist'), path.join(buildRoot, 'dist'), 'dir'); bundleReuse.prepared = true;
+    } else if (programUpdateId && updateState.installOnly) {
+      let built;
+      try { built = JSON.parse(fs.readFileSync(path.join(dataDir, 'program-update-public-build.json'), 'utf8')); } catch { built = null; }
+      if (built?.kind === 'published-web-build' && built.commit === expectedHead && fs.existsSync(path.join(built.root, 'index.html'))) {
+        fs.symlinkSync(built.root, path.join(buildRoot, 'dist'), 'dir'); bundleReuse.prepared = true;
+      }
+    }
+    if (!bundleReuse.prepared) {
+      if (programUpdateId && updateState.artifactsRoot) {
+        const output = path.join(updateState.artifactsRoot, `helper-web-${Date.now()}`);
+        fs.mkdirSync(output, { mode: 0o700 });
+        fs.symlinkSync(output, path.join(buildRoot, 'dist'), 'dir');
+        const stats = path.join(deployRoot, 'web/stats.html');
+        if (fs.existsSync(stats) || fs.lstatSync(stats, { throwIfNoEntry: false })) throw new Error('helper_stats_destination_occupied');
+        fs.symlinkSync(path.join(updateState.artifactsRoot, 'helper-visualizer-stats.html'), stats);
+      }
+
+      // 隔离构建（失败不停旧服务）。
+      await new Promise((resolve, reject) => {
+        const out = fs.openSync(buildLog, 'a', 0o600);
+        const child = spawn('npm', ['run', 'build', '--', '--outDir', path.join(buildRoot, 'dist'), '--emptyOutDir'], {
+          cwd: path.join(deployRoot, 'web'),
+          env: { ...process.env, PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH || ''}` },
+          stdio: ['ignore', out, out],
+        });
+        fs.closeSync(out);
+        child.once('error', reject);
+        child.once('exit', code => (code === 0 ? resolve() : reject(new Error(`web 构建退出码 ${code}`))));
       });
-      fs.closeSync(out);
-      child.once('error', reject);
-      child.once('exit', code => (code === 0 ? resolve() : reject(new Error(`web 构建退出码 ${code}`))));
-    });
+    }
     if (!fs.existsSync(path.join(buildRoot, 'dist', 'index.html'))) throw new Error('构建产物缺少 index.html');
 
     // 停止前全量复核：build 耗时数分钟，Bot/pane 身份、归属、部署前提与自主开关
@@ -620,9 +638,9 @@ async function main() {
       rollbackContext.cwd = fs.realpathSync(rollbackContext.cwd);
       rollbackContext.argv[1] = fs.realpathSync(path.resolve(rollbackContext.cwd, rollbackContext.argv[1]));
       rollbackContext.env = require('../src/services/program-update-overlay').pinEnvironment(rollbackContext.env, updateState.overlay, false);
-      oldCommit = git(['rev-parse', 'HEAD'], REPO_ROOT);
-      oldFingerprint = require('../src/services/evolution-validation').logicSnapshot(REPO_ROOT).fingerprint;
-      if (git(['status', '--porcelain'], REPO_ROOT)) throw new Error('rollback_source_not_clean');
+      oldCommit = git(['rev-parse', 'HEAD'], updateState.root || REPO_ROOT);
+      oldFingerprint = require('../src/services/evolution-validation').logicSnapshot(updateState.root || REPO_ROOT).fingerprint;
+      if (git(['status', '--porcelain'], updateState.root || REPO_ROOT)) throw new Error('rollback_source_not_clean');
       physicalProof = await require('../src/runtime/session-physical-proof').capture(dataDir);
     }
     // 隔离候选：Bot 上下文按「被证明的源仓库根（provenance.repoRootReal）→ 目标根」
@@ -720,13 +738,20 @@ async function main() {
     if (ready && targetRoot && targetRecord) {
       writeApprovedCertificate(dataDir, {
         version: 1,
-        certifiedAt: Date.now(),
+        certifiedAt: Date.now(), ...(programUpdateId ? { programUpdateId } : {}),
         target: { ...targetRecord },
         validation: targetValidation,
         provenance: targetProvenance,
         process: { newPid: newBot, newStarttime: processStarttime(newBot) || '',
           adminPort, expectedHead },
       });
+    }
+    if (ready && targetRoot && !(programUpdateId && updateState.installOnly && updateState.overlay)) {
+      try {
+        const file = path.join(dataDir, 'program-update-public-build.json'); const temp = `${file  }.${  process.pid  }.tmp`;
+        fs.writeFileSync(temp, JSON.stringify({ kind: 'published-web-build', commit: expectedHead, root: fs.realpathSync(path.join(deployRoot, 'web/dist')), recordedAt: Date.now() }), { mode: 0o600 });
+        fs.renameSync(temp, file);
+      } catch { /* Optional build reuse cannot change a ready application. */ }
     }
     // 私有上下文用后即删（environ 含凭据，不留存）。
     try { fs.unlinkSync(contextFile); } catch {}
@@ -737,7 +762,7 @@ async function main() {
       try {
         const recovered = await require('../src/services/program-update-recovery').recover({ context: rollbackContext, contextFile, updateState, dataDir,
           panePid: firstPanePid, paneStart: firstPaneStart, tmuxTarget, botPid, newPid: discoveredNewPid, newStart: discoveredNewStart,
-          sessions: wxPreflight?.sessions || [], physicalProof, oldFingerprint, oldRoot: REPO_ROOT, oldCommit,
+          sessions: wxPreflight?.sessions || [], physicalProof, oldFingerprint, oldRoot: updateState.root || REPO_ROOT, oldCommit,
           api: { collectProcesses, processStarttime, panePidOf, isDescendantOf, aliveNonZombie, stopBotTree, waitFor, portFree,
             paneAcceptingCommands, sendRestart, findRestartedBot, holdsSocket, listeningInodes, healthOk, targetArgv,
             logicSnapshot: require('../src/services/evolution-validation').logicSnapshot,

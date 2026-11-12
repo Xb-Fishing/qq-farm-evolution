@@ -8,7 +8,6 @@ const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const { getDataDir } = require('../config/runtime-paths');
 const pub = require('./evolution-publish');
-const validation = require('./evolution-validation');
 const { resolveKnowledgeDir } = require('./evolution-knowledge');
 const versions = require('./program-version');
 const ROOT = path.resolve(__dirname, '../../..');
@@ -87,7 +86,8 @@ function safeState(dataDir = getDataDir(), root = ROOT) {
                 && receipt.newPid === process.pid && receipt.newStarttime === starttime(process.pid)
                 && approved.target?.runId === s.runId && approved.target?.commit === s.targetCommit
                 && approved.target?.runtimeRoot === ROOT && currentCommit() === s.targetCommit
-                && approved.process?.newPid === process.pid && approved.process?.newStarttime === receipt.newStarttime && approved.validation?.state === 'passed'
+                && approved.process?.newPid === process.pid && approved.process?.newStarttime === receipt.newStarttime
+                && (approved.validation?.state === 'passed' || (approved.programUpdateId === s.runId && approved.validation?.kind === 'published-release' && approved.validation?.state === 'published'))
                 && approved.validation?.fingerprint === approved.target?.sourceFingerprint
                 && pub.verifyRunningRuntime({ record: approved.target, repoRoot: ROOT, cwd: path.join(ROOT, 'core'), entry: path.join(ROOT, 'core/client.js'), dataDir }).ok
                 && receipt.sessionPreservation?.verified === true
@@ -153,7 +153,7 @@ function publicState({ dataDir = getDataDir(), root = ROOT, state } = {}) {
         updateAvailable: !!currentVersion && !!latestVersion && status.phase === 'available' && !!status.targetCommit && status.targetCommit !== status.currentCommit,
         updatedAt: status.updatedAt || 0, message: currentVersion ? messages[status.phase] || '' : messages.unavailable };
 }
-function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor } = {}) {
+function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor, ownerPid = process.pid } = {}) {
     assertTrustedOrigin(root); safeState(dataDir, root);
     let previous;
     try { previous = read(path.join(dataDir, STATE)); }
@@ -165,12 +165,12 @@ function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolveP
     acquire(dataDir, runId);
     try {
         if (busyEvolution(dataDir)) throw new Error('evolution_busy');
-        const tmuxTarget = resolvePane(process.pid);
+        const tmuxTarget = resolvePane(ownerPid);
         const artifactsRoot = path.join(resolveKnowledgeDir({ dataDir }), 'program-updates', runId);
         fs.mkdirSync(artifactsRoot, { recursive: true, mode: 0o700 });
         const state = { version: 1, ...previous, phase: 'queued', runId, root, dataDir, artifactsRoot, tmuxTarget,
             workerPid: process.pid, workerStarttime: starttime(process.pid), workerHost: os.hostname(),
-            botPid: process.pid, botStarttime: starttime(process.pid), adminPort: Number(process.env.ADMIN_PORT) || 3007, updatedAt: Date.now() };
+            botPid: ownerPid, botStarttime: starttime(ownerPid), adminPort: Number(process.env.ADMIN_PORT) || 3007, updatedAt: Date.now() };
         put(path.join(dataDir, STATE), state);
         const fd = fs.openSync(path.join(artifactsRoot, 'worker.log'), 'a', 0o600);
         let child;
@@ -234,6 +234,28 @@ function linkDependencies(source, target) {
         fs.symlinkSync(fs.realpathSync(from), to, 'dir');
     }
 }
+async function prepareDependencies({ sourceRoot, taskRoot, artifactsRoot, execute = makeExecutor(artifactsRoot) }) {
+    const cache = require('./program-update-cache');
+    const reuse = cache.reusableDependencies(sourceRoot, taskRoot);
+    if (reuse.reused) {
+        linkDependencies(sourceRoot, taskRoot);
+        for (const [context, root] of reuse.identity.roots) if (fs.realpathSync(path.join(taskRoot, context, 'node_modules')) !== root) throw new Error('dependency_identity_changed');
+        return { root: sourceRoot, reused: true };
+    }
+    for (const relative of ['node_modules', 'core/node_modules', 'web/node_modules']) {
+        const file = path.join(taskRoot, relative); try { if (fs.lstatSync(file).isSymbolicLink()) fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+    const root = path.join(artifactsRoot, 'dependencies'); fs.mkdirSync(root, { mode: 0o700 });
+    for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'core/package.json', 'web/package.json', '.npmrc', 'core/.npmrc', 'web/.npmrc', '.pnpmfile.cjs', '.pnpmfile.js']) {
+        const from = path.join(taskRoot, file);
+        if (!fs.existsSync(from)) continue;
+        const out = path.join(root, file); fs.mkdirSync(path.dirname(out), { recursive: true }); fs.copyFileSync(from, out);
+    }
+    await execute('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], { cwd: root, env: offlineEnv() });
+    linkDependencies(root, taskRoot);
+    return { root, reused: false };
+}
+
 async function runWorker(dataDir, runId) {
     let state = read(path.join(dataDir, STATE));
     if (state.runId !== runId || state.phase !== 'queued' || read(path.join(dataDir, LOCK, 'owner.json')).runId !== runId) throw new Error('stale_update_worker');
@@ -255,25 +277,20 @@ async function runWorker(dataDir, runId) {
         const provenance = pub.createTaskWorkspace({ repoRoot: owner, dataDir: proofDir, runId });
         if (provenance.publicBase !== state.targetCommit) throw new Error('upstream_changed_check_again');
         const taskRoot = provenance.taskRoot;
-        // Always install the target's frozen graph in an isolated directory. Neither
-        // retained root files nor the existing host's dependencies are replaced.
+        // Reuse the matching installed graph; changed inputs install in isolation.
+        // Retained source and the physical host's dependencies are never replaced.
         set('dependencies', { proofDir, taskRoot });
-        for (const relative of ['node_modules', 'core/node_modules', 'web/node_modules']) {
-            const file = path.join(taskRoot, relative); try { if (fs.lstatSync(file).isSymbolicLink()) fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-        }
-        const depRoot = path.join(state.artifactsRoot, 'dependencies'); fs.mkdirSync(depRoot, { mode: 0o700 });
-        for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'core/package.json', 'web/package.json']) {
-            const out = path.join(depRoot, file); fs.mkdirSync(path.dirname(out), { recursive: true }); fs.copyFileSync(path.join(taskRoot, file), out);
-        }
-        await makeExecutor(state.artifactsRoot)('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], { cwd: depRoot, env: offlineEnv() });
-        linkDependencies(depRoot, taskRoot);
-        const execute = makeExecutor(proofDir);
-        set('validating');
-        await validation.runEvolutionValidation({ repoRoot: taskRoot, dataDir: proofDir, execute, env: validationEnv({ owner, taskRoot, artifactsRoot: state.artifactsRoot }), force: true });
-        set('overlay');
-        const overlay = await require('./program-update-overlay').prepareOverlay({ owner, taskRoot, artifactsRoot: state.artifactsRoot, executeFactory: makeExecutor });
+        const cache = require('./program-update-cache');
+        const dependencyPreparation = await prepareDependencies({ sourceRoot: state.root, taskRoot, artifactsRoot: state.artifactsRoot });
+        const depRoot = dependencyPreparation.root;
+        set('dependencies', { dependenciesReused: dependencyPreparation.reused });
+        // Published application updates deploy the owner's release directly.
+        // Developer regression runs belong before publication, not installation.
+        const release = cache.recordPublishedRelease({ dataDir: proofDir, sourceRoot: taskRoot, commit: state.targetCommit, runId });
+        set('overlay', { installOnly: true, release });
+        const overlay = await require('./program-update-overlay').prepareOverlay({ owner, taskRoot, artifactsRoot: state.artifactsRoot, executeFactory: makeExecutor, installOnly: true, runId, dataDir });
         set('preparing');
-        const runtime = pub.prepareRuntimeWorkspace({ repoRoot: owner, runId, commit: state.targetCommit, dataDir: proofDir, validatedSourceRoot: taskRoot });
+        const runtime = pub.prepareRuntimeWorkspace({ repoRoot: owner, runId, commit: state.targetCommit, dataDir: proofDir, validatedSourceRoot: taskRoot, options: { publishedRelease: true } });
         linkDependencies(depRoot, runtime.runtimeRoot);
         const dataLink = path.join(runtime.runtimeRoot, 'core/data');
         if (!fs.lstatSync(dataLink).isSymbolicLink()) throw new Error('runtime_data_not_link');
@@ -282,11 +299,11 @@ async function runWorker(dataDir, runId) {
         const target = { runId, commit: state.targetCommit, runtimeRoot: runtime.runtimeRoot, sourceFingerprint: runtime.logicFingerprint, holdDigest: pub.holdDigest(hold), createdAt: Date.now() };
         pub.recordApplyTarget(proofDir, target);
         const sharedProofBackup = path.join(proofDir, 'previous-shared-records.json');
-        const names = ['evolution-workspace.json', 'evolution-holds.json', 'evolution-validation.json', 'evolution-apply-target.json'];
+        const names = ['evolution-workspace.json', 'evolution-holds.json', 'program-update-release.json', 'evolution-apply-target.json'];
         put(sharedProofBackup, Object.fromEntries(names.map(name => [name, fs.existsSync(path.join(dataDir, name)) ? fs.readFileSync(path.join(dataDir, name), 'utf8') : null])));
         set('applying', { target, overlay, sharedProofBackup });
         for (const name of names) put(path.join(dataDir, name), read(path.join(proofDir, name)));
-        const script = path.join(state.root, 'core/scripts/evolution-apply-process.js');
+        const script = path.join(taskRoot, 'core/scripts/evolution-apply-process.js');
         await new Promise((resolve, reject) => {
             const fd = fs.openSync(path.join(state.artifactsRoot, 'apply.log'), 'a', 0o600);
             const helper = cp.spawn(process.execPath, [script, '--bot-pid', String(state.botPid), '--bot-starttime', state.botStarttime,
@@ -301,7 +318,8 @@ async function runWorker(dataDir, runId) {
         if (receipt.phase !== 'ready' || receipt.expectedHead !== state.targetCommit || receipt.oldPid !== state.botPid
             || receipt.oldStarttime !== state.botStarttime || receipt.programUpdateId !== runId
             || receipt.sessionPreservation?.outcomes?.some(item => item.state !== 'preserved')) throw new Error('apply_receipt_mismatch');
-        set('applied', { currentCommit: state.targetCommit, connectionPreserved: true, reason: '更新完成，原游戏连接已核验保留' });
+        const dispatcherUpdated = upgradeOwnerDispatcher({ owner, oldRoot: state.root, targetRoot: taskRoot, dataDir, runId });
+        set('applied', { dispatcherUpdated, currentCommit: state.targetCommit, connectionPreserved: true, reason: '更新完成，原游戏连接已核验保留' });
     } catch (error) {
         // Raw child output stays in the private log; the API exposes stable stages.
         let receipt;
@@ -313,11 +331,50 @@ async function runWorker(dataDir, runId) {
         throw error;
     } finally { release(dataDir, runId); }
 }
+// Keep the original checkout's startup router compatible after a release switch.
+// Only the unchanged previous router is advanced; user edits are retained.
+function upgradeOwnerDispatcher({ owner, oldRoot, targetRoot, dataDir, runId }) {
+    const relative = 'core/src/runtime/approved-runtime-entry.js';
+    const destination = path.join(owner, relative); const oldFile = path.join(oldRoot, relative); const source = path.join(targetRoot, relative);
+    if (!fs.existsSync(destination) || !fs.existsSync(oldFile) || !fs.existsSync(source)) return false;
+    const current = fs.readFileSync(destination); const next = fs.readFileSync(source);
+    if (current.equals(next)) return true;
+    if (!current.equals(fs.readFileSync(oldFile))) return false;
+    if (cp.execFileSync('git', ['diff', '--cached', '--binary', '--', relative], { cwd: owner }).length) return false;
+    const previousHold = pub.readHoldManifest(dataDir);
+    if (!previousHold || !pub.verifyHoldUnchanged(owner, previousHold).ok) return false;
+    const certificateFile = path.join(dataDir, 'evolution-approved-runtime.json');
+    const certificate = read(certificateFile);
+    if (certificate.programUpdateId !== runId) throw new Error('dispatcher_release_mismatch');
+    const mode = fs.statSync(destination).mode & 0o777;
+    const names = ['evolution-holds.json', 'evolution-apply-target.json', 'evolution-approved-runtime.json', 'evolution-apply-receipt.json'];
+    const backups = names.map(name => [path.join(dataDir, name), fs.readFileSync(path.join(dataDir, name))]);
+    const replace = bytes => { const temp = `${destination  }.${  crypto.randomUUID()  }.tmp`; fs.writeFileSync(temp, bytes, { mode, flag: 'wx' }); fs.chmodSync(temp, mode); fs.renameSync(temp, destination); };
+    try {
+        replace(next);
+        const inspected = require('./evolution-worktree').inspectWorktree(owner);
+        const updated = { ...previousHold, recordedAt: Date.now(), publicBase: { head: inspected.head, remoteMain: certificate.target.commit }, worktree: { ...inspected } };
+        const others = files => files.filter(file => file !== relative).join('\0');
+        if (inspected.head !== previousHold.worktree.head || others(updated.worktree.files) !== others(previousHold.worktree.files)
+            || Object.keys(previousHold.worktree.fileFingerprints).some(file => file !== relative && previousHold.worktree.fileFingerprints[file] !== updated.worktree.fileFingerprints[file])) throw new Error('dispatcher_retained_source_changed');
+        pub.recordHoldManifest(dataDir, updated);
+        certificate.target.holdDigest = pub.holdDigest(updated);
+        certificate.maintenance = { kind: 'startup-router-compatible', recordedAt: Date.now() };
+        pub.recordApplyTarget(dataDir, certificate.target); put(certificateFile, certificate);
+        const receiptFile = path.join(dataDir, 'evolution-apply-receipt.json'); const receipt = read(receiptFile);
+        if (receipt.programUpdateId === runId && receipt.phase === 'ready') put(receiptFile, { ...receipt, holdDigest: certificate.target.holdDigest, maintainedAt: Date.now() });
+        return true;
+    } catch (error) {
+        replace(current);
+        for (const [file, bytes] of backups) { const temp = `${file  }.${  crypto.randomUUID()  }.restore`; fs.writeFileSync(temp, bytes, { mode: 0o600 }); fs.renameSync(temp, file); }
+        throw error;
+    }
+}
 function assertCandidate({ dataDir, runId, proofDir, expectedHead, botPid, botStarttime }) {
     const s = read(path.join(dataDir, STATE));
     if (s.runId !== runId || s.phase !== 'applying' || s.proofDir !== proofDir || s.targetCommit !== expectedHead
         || s.botPid !== botPid || s.botStarttime !== botStarttime || read(path.join(dataDir, LOCK, 'owner.json')).runId !== runId) throw new Error('update_certificate_mismatch');
-    for (const name of ['evolution-workspace.json', 'evolution-holds.json', 'evolution-validation.json', 'evolution-apply-target.json']) {
+    for (const name of ['evolution-workspace.json', 'evolution-holds.json', s.installOnly ? 'program-update-release.json' : 'evolution-validation.json', 'evolution-apply-target.json']) {
         if (sha(JSON.stringify(read(path.join(proofDir, name)))) !== sha(JSON.stringify(read(path.join(dataDir, name))))) throw new Error('update_proof_drift');
     }
     require('./program-update-overlay').verifyOverlay(s.overlay);
@@ -325,9 +382,9 @@ function assertCandidate({ dataDir, runId, proofDir, expectedHead, botPid, botSt
 }
 function restoreSharedProof(dataDir, state) {
     const previous = read(state.sharedProofBackup);
-    for (const name of ['evolution-workspace.json', 'evolution-holds.json', 'evolution-validation.json', 'evolution-apply-target.json']) {
+    for (const name of ['evolution-workspace.json', 'evolution-holds.json', state.installOnly ? 'program-update-release.json' : 'evolution-validation.json', 'evolution-apply-target.json']) {
         if (previous[name] === null) fs.rmSync(path.join(dataDir, name), { force: true });
         else put(path.join(dataDir, name), JSON.parse(previous[name]));
     }
 }
-module.exports = { publicState, validationEnv, offlineEnv, restoreSharedProof, check, begin, safeState, runWorker, lockHeld, assertTrustedOrigin, assertCandidate, starttime, put, read, makeExecutor, linkDependencies };
+module.exports = { upgradeOwnerDispatcher, prepareDependencies, publicState, validationEnv, offlineEnv, restoreSharedProof, check, begin, safeState, runWorker, lockHeld, assertTrustedOrigin, assertCandidate, starttime, put, read, makeExecutor, linkDependencies };

@@ -4,7 +4,7 @@ node_modules/
 core/node_modules/
 web/node_modules/
 
-web/dist/
+web/dist
 web/stats.html
 dist/
 build/
