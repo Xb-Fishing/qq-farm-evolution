@@ -1154,14 +1154,17 @@ test('feasible owner feedback cannot seal a selected plan or unrelated change as
     }
 });
 
-test('a genuinely verified existing implementation can close an issue on its published baseline without a cosmetic diff', async () => {
+test('a verified published implementation is already_addressed and never advertised as a new fix', async () => {
     const f = fixture(); const gh = githubFixture(f, 1);
     f.options.runMain = async () => {
         await f.call('verify_candidate');
         const note = 'Existing published caller verified by current full regression';
         fs.writeFileSync(gh.evidence, JSON.stringify({ verifiedPublishedCaller: true }));
         await gh.review(gh.batch.issues[0], { status: 'fixed', note, nextAction: '', existingCommit: HEAD, implementationFiles: [FILE] });
-        const resolutions = [{ issue: 1, status: 'fixed', fingerprint: gh.batch.issues[0].fingerprint, note }];
+        const rejected = await f.call('accept_result', { decision: 'no_change', summary: note, lessons: [], feedbackReviewed: true, githubResolutions: [{ issue: 1, status: 'fixed', fingerprint: gh.batch.issues[0].fingerprint, note }] });
+        assert.equal(JSON.parse(rejected.content[0].text).state, 'github_issue_review_required');
+        await gh.review(gh.batch.issues[0], { status: 'already_addressed', note, nextAction: '', existingCommit: HEAD, implementationFiles: [FILE] });
+        const resolutions = [{ issue: 1, status: 'already_addressed', fingerprint: null, note }];
         const accepted = await f.call('accept_result', { decision: 'no_change', summary: note, lessons: [], feedbackReviewed: true, githubResolutions: resolutions });
         assert.equal(accepted.isError, false);
         return { decision: 'no_change', summary: note };

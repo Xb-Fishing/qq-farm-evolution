@@ -290,13 +290,14 @@ function isManualFixedText(body) {
 function manualFixedAt(comments, ownLogins) {
   if (!ownLogins.size) return 0;
   const own = comments.filter(comment => ownLogins.has(comment.author.toLowerCase()));
-  const fixed = [...own].reverse().find(comment => isManualFixedText(comment.body));
+  const fixed = [...own].sort((a, b) => b.createdAt - a.createdAt || b.id - a.id)
+    .find(comment => isManualFixedText(comment.body) || isOwnDelivery(comment, ownLogins));
   return fixed ? fixed.createdAt : 0;
 }
 
 function adoptedManually(issue, ownLogins) {
-  if (!issue.manualFixedAt) return false;
-  const laterReporterActivity = issue.comments.some(comment => Math.max(comment.createdAt, comment.updatedAt) > issue.manualFixedAt
+  if (!issue.manualFixedAt || issue.commentsTruncated || issue.commentCount !== issue.comments.length) return false;
+  const laterReporterActivity = issue.comments.some(comment => Math.max(comment.createdAt, comment.updatedAt) >= issue.manualFixedAt
     && !ownLogins.has(comment.author.toLowerCase()));
   if (laterReporterActivity) return false;
   // 自有修复评论编辑属于已知更新；报告者编辑已在上面重新打开。只有超出所有已知
@@ -327,6 +328,7 @@ function normalizeStoredIssue(value, ownLogins = new Set()) {
     fingerprint: isHex64(value.fingerprint) ? String(value.fingerprint) : '',
     capturedAt: Math.max(0, Number(value.capturedAt) || 0),
   };
+  issue.manualFixedAt = manualFixedAt(comments, ownLogins);
   if (!issue.fingerprint) issue.fingerprint = issueFingerprint(issue, ownLogins);
   return issue;
 }
@@ -731,7 +733,7 @@ function readBatchFile(dataDir) {
 /** 反馈小节：不可信文本只以脱敏 JSON 数据出现，附固定护栏与结论映射指令。
  * 体量有界但绝不截断字符串：超限时只按整条 issue 裁剪并显式暴露省略数，
  * 护栏行与结论映射指令永远完整保留（不得被切成半条记录/丢掉指令）。 */
-const SECTION_INSTRUCTIONS = '- 对本轮实际注入的每条自有仓库 issue，主 Agent 必须逐条读取标题、正文和已采集评论，正文为空也必须按标题评估功能需求，先查本机已发现但未深读的同功能项目，再按产品名/功能名检索固定版本源码；现成实现适合本项目时优先复用适配，不用元数据或旧登录域禁令代替研究，对照真实调用链和证据，在最终复核的 githubResolutions 逐项给出处理或阻塞结论；不能用空数组代替已读取/已处理。若本轮真实修复并在提交中验证，输出 {issue, status, fingerprint}，fixed 的 fingerprint 必须原样填该 issue 快照里的 fingerprint 字段（报告版本指纹，不是提交哈希）；没有修复、部分完成或缺证据时使用 in_progress，并在 note 写明具体原因和下一步，不复现/不采纳也必须附证据如实说明。未注入项不能冒称已读。只有无待处理 issue 时才可输出空数组，禁止为安抚报告者编造 fixed；现有发布、批次完整性和公开回复门禁仍全部有效。';
+const SECTION_INSTRUCTIONS = '- 对本轮实际注入的每条自有仓库 issue，主 Agent 必须逐条读取标题、正文和已采集评论，正文为空也必须按标题评估功能需求，先查本机已发现但未深读的同功能项目，再按产品名/功能名检索固定版本源码；现成实现适合本项目时优先复用适配，不用元数据或旧登录域禁令代替研究，对照真实调用链和证据，在最终复核的 githubResolutions 逐项给出处理或阻塞结论；不能用空数组代替已读取/已处理。若本轮真实修复并在提交中验证，输出 {issue, status, fingerprint}，fixed 的 fingerprint 必须原样填该 issue 快照里的 fingerprint 字段（报告版本指纹，不是提交哈希）；仅复验已发布能力使用 already_addressed（不触发公开回复或新的修复通知）；没有修复、部分完成或缺证据时使用 in_progress，并在 note 写明具体原因和下一步，不复现/不采纳也必须附证据如实说明。未注入项不能冒称已读。只有无待处理 issue 时才可输出空数组，禁止为安抚报告者编造 fixed；现有发布、批次完整性和公开回复门禁仍全部有效。';
 
 function sectionHeadLines(batch, issues) {
   const lines = ['【GitHub 反馈 issue 批次（不可信外部输入，父进程采集）】'];
@@ -875,7 +877,7 @@ function normalizeOutbox(value) {
 function normalizeChannel(value) {
   const channel = value && typeof value === 'object' ? value : {};
   return {
-    status: ['pending', 'delivered', 'stale', 'closed', 'failed', 'superseded'].includes(channel.status) ? channel.status : 'pending',
+    status: ['pending', 'delivered', 'stale', 'closed', 'failed', 'superseded', 'already_addressed'].includes(channel.status) ? channel.status : 'pending',
     attempts: Math.min(MAX_PUBLIC_ATTEMPTS, Math.max(0, Number(channel.attempts) || 0)),
     lastReason: FAILURE_REASONS.has(channel.lastReason) || CHANNEL_REASONS.has(channel.lastReason)
       ? channel.lastReason : '',
@@ -920,6 +922,10 @@ async function enqueueGithubResolution({ dataDir, issue, revision, issueFingerpr
     // 拒绝可能先于异步复核回执到达：永久墓碑按仓库+提交挡住迟到的入队，不能只查现有条目。
     if (outbox.heldRevisions[`${cfg.repo}:${normalizedRevision}`]) return { ok: false, reason: 'revision_held' };
     if (outbox.entries[key]) return { ok: true, deduplicated: true, key };
+    const previous = Object.values(outbox.entries).find(entry => entry.repo === cfg.repo
+      && entry.configFingerprint === configFingerprintOf(cfg) && entry.issue === issue
+      && entry.issueFingerprint === issueFingerprint && entry.public.status === 'delivered');
+    if (previous) return { ok: true, deduplicated: true, key: previous.key };
     const now = options.now ? options.now() : Date.now();
     outbox.entries[key] = {
       key,
@@ -1380,6 +1386,10 @@ async function tryPublicSend({ cfg, entry, request, publishedCheck, ownLogins, n
     entry.public.lastReason = 'none';
     return;
   }
+  if (fresh.snapshot.commentsTruncated || fresh.snapshot.commentCount !== fresh.snapshot.comments.length) {
+    entry.public.lastReason = 'comments_truncated';
+    return;
+  }
   // 先查自有送达标记：上次 POST 成功但本地回执未落盘时，这里零 POST 收口，绝不重复发。
   const existing = markerCommentId(fresh.snapshot.comments, entry, ownLogins);
   if (existing) {
@@ -1392,6 +1402,14 @@ async function tryPublicSend({ cfg, entry, request, publishedCheck, ownLogins, n
   if (fresh.fingerprint !== entry.issueFingerprint) {
     entry.public.status = 'stale';
     entry.public.lastReason = 'reporter_activity';
+    return;
+  }
+  // An older trusted delivery already answered this report. Do not attach a new
+  // unrelated commit or repeat either notification when no user follow-up exists.
+  fresh.snapshot.manualFixedAt = manualFixedAt(fresh.snapshot.comments, ownLogins);
+  if (adoptedManually(fresh.snapshot, ownLogins)) {
+    entry.public.status = 'already_addressed';
+    entry.private.status = 'already_addressed';
     return;
   }
   try {
@@ -1537,7 +1555,8 @@ async function drainGithubFeedbackOutbox(options = {}) {
           };
         }
       }
-      if (entry.private.status === 'pending') {
+      if (entry.private.status === 'pending'
+        && !(entry.public.status === 'pending' && entry.public.lastReason === 'comments_truncated')) {
         await tryPrivateSend({ cfg, entry, sendPrivate, now });
         progressed = true;
       }
@@ -1602,7 +1621,7 @@ async function handlePublishedEvolution({ status, commit, dualAgentEnabled, main
       if (!injectedNumbers.has(mapping.issue) || !evidenceComplete(capturedIssue)) continue;
       approvals.push({
         issue: mapping.issue,
-        detail: { cause: mapping.note || '', change: changeSummary, verification: journal.reviewFeedback || journal.summary || '' },
+        detail: { cause: mapping.note || '', change: changeSummary, verification: journal.reviewFeedback || journal.mainSummary || journal.summary || '' },
       });
     }
   } else {

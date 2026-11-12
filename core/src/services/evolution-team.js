@@ -57,7 +57,7 @@ const RECOVERABLE = new Set(['invalid_output', 'invalid_decision', 'cli_spawn', 
   'invalid_envelope', 'verification_failed', 'missing_handoff', 'review_rejected', 'session_failed', 'output_parse']);
 const REVIEW_FAILURES = new Set(['verification_failed', 'missing_handoff', 'review_rejected']);
 // GitHub 反馈 issue 的最终结论只来自主 Agent 最终复核；fixed 是唯一可声称已修复的状态。
-const GITHUB_RESOLUTION_STATUSES = new Set(['fixed', 'not_reproducible', 'wont_fix', 'in_progress', 'invalid']);
+const GITHUB_RESOLUTION_STATUSES = new Set(['fixed', 'already_addressed', 'not_reproducible', 'wont_fix', 'in_progress', 'invalid']);
 
 /**
  * 校验主 Agent 复核输出的 per-issue 反馈结论映射；任何字段不合法都返回 null（调用方

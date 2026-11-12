@@ -26,7 +26,7 @@ const MAX_SNAPSHOT_ENTRIES = 20000;
 const MAX_REVIEW_FLIGHTS = 8;
 const AGENT_TIMEOUT_MS = 15 * 60 * 1000;
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const REVIEW_STATUSES = new Set(['fixed', 'not_reproducible', 'wont_fix', 'in_progress', 'invalid']);
+const REVIEW_STATUSES = new Set(['fixed', 'already_addressed', 'not_reproducible', 'wont_fix', 'in_progress', 'invalid']);
 // 与双 Agent review 阶段同形：额外只允许复核证据字段，approved 为总开关。
 // fingerprint = 被复核 issue 在批次快照里的报告版本指纹（64 位十六进制）。
 const REVIEW_SCHEMA = {

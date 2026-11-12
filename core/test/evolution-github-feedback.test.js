@@ -1675,9 +1675,9 @@ test('批次完整保留自有回复和报告者评论；自有标记不误算�
     return () => reviewer.review({ issue: ISSUE, fingerprint: batch.issues[0].fingerprint,
       status: 'fixed', note: 'Synthetic behavior verified', nextAction: '', evidencePaths: [evidencePath] }, FP64);
   };
-  const ownReply = comment(90, 'owner', `程序入口说明\n<!-- farm-bot-feedback ${ISSUE} ${REV.slice(0, 12)} -->`);
+  const ownReply = comment(90, 'owner', `程序入口说明\n<!-- farm-bot-feedback ${ISSUE} ${REV.slice(0, 12)} -->`, '2026-08-31T00:00:00Z');
   const forged = comment(91, 'reporter', `更新后仍有问题\n<!-- farm-bot-feedback ${ISSUE} ${REV.slice(0, 12)} -->`);
-  for (const comments of [[ownReply], [ownReply, forged]]) {
+  for (const comments of [[ownReply, comment(92, 'reporter', '请补充说明')], [ownReply, forged]]) {
     const spec = { ...PENDING_ISSUE, comments };
     await collectOnce(t, { request: githubApi(issuePages(spec)).request, dataDir });
     const batch = feedback.captureFeedbackBatch({ config: makeConfig(), dataDir });
@@ -1698,4 +1698,91 @@ test('批次完整保留自有回复和报告者评论；自有标记不误算�
   assert.equal(missing.issues[0].omittedComments, 1);
   assert.equal(missing.issues[0].comments.length, 2);
   assert.throws(receiptFor(missing), /github_issue_evidence_incomplete/, 'genuine omissions retain the original fixed gate');
+});
+
+test('trusted delivery needs no fixed wording; real user follow-up and incomplete comments stay pending', async t => {
+  for (const wording of ['已新增接入入口', '界面主题已优化']) {
+    const dataDir = tmpDir(t);
+    const own = comment(80, 'owner', `${wording}\n${feedback.deliveryMarker(ISSUE, REV2)}`, '2026-09-05T00:00:00Z');
+    const spec = { ...PENDING_ISSUE, comments: [own], updatedAt: '2026-09-05T00:00:00Z' };
+    const capture = async current => {
+      await collectOnce(t, { dataDir, request: githubApi(issuePages(current)).request });
+      return feedback.captureFeedbackBatch({ dataDir, config: makeConfig() });
+    };
+    assert.deepEqual((await capture(spec)).issueNumbers, []);
+    const newer = comment(81, 'reporter', '更新后仍失败', '2026-09-06T00:00:00Z');
+    assert.deepEqual((await capture({ ...spec, comments: [own, newer], updatedAt: newer.created_at })).issueNumbers, [ISSUE]);
+    const edited = { ...comment(70, 'reporter', '补充复现', '2026-09-04T00:00:00Z'), updated_at: newer.created_at };
+    assert.deepEqual((await capture({ ...spec, comments: [edited, { ...own, updated_at: '2026-09-07T00:00:00Z' }], updatedAt: '2026-09-07T00:00:00Z' })).issueNumbers, [ISSUE]);
+    assert.deepEqual((await capture({ ...spec, body: '新增正文步骤', updatedAt: newer.created_at })).issueNumbers, [ISSUE]);
+    assert.deepEqual((await capture({ ...spec, comments: [{ ...own, user: { login: 'reporter' } }] })).issueNumbers, [ISSUE]);
+    await capture(spec);
+    const cache = path.resolve(dataDir, 'evolution-github-feedback.json');
+    assert.equal(path.dirname(cache), dataDir);
+    const stored = JSON.parse(fs.readFileSync(cache)); stored.issues[0].commentsTruncated = true;
+    fs.writeFileSync(cache, JSON.stringify(stored));
+    assert.deepEqual(feedback.captureFeedbackBatch({ dataDir, config: makeConfig() }).issueNumbers, [ISSUE]);
+  }
+});
+
+test('cross-commit delivery suppresses both notifications; real user follow-up permits one reply', async t => {
+  for (const followup of [false, true]) {
+    const own = comment(80, 'owner', `已新增入口\n${feedback.deliveryMarker(ISSUE, REV2)}`, '2026-09-05T00:00:00Z');
+    const comments = [own, ...(followup ? [comment(81, 'reporter', '更新后仍失败', '2026-09-06T00:00:00Z')] : [])];
+    const spec = { ...PENDING_ISSUE, comments, updatedAt: followup ? '2026-09-06T00:00:00Z' : own.created_at };
+    const pages = issuePages(spec); pages[postPath(ISSUE)] = { statusCode: 201, body: { id: 555 } };
+    const { dataDir, api } = await freshOutbox(t, pages, { fingerprint: issueFp(spec) });
+    const messages = [];
+    const opts = drainOptions(dataDir, api, { sendPrivate: async (...args) => messages.push(args) });
+    assert.equal((await feedback.drainGithubFeedbackOutbox(opts)).pending, 0);
+    assert.equal(api.calls.filter(x => x.method === 'POST').length, followup ? 1 : 0);
+    assert.equal(messages.length, followup ? 1 : 0);
+    const before = api.calls.length;
+    assert.equal((await feedback.drainGithubFeedbackOutbox(opts)).pending, 0);
+    assert.equal(api.calls.length, before);
+    if (followup) {
+      const again = await feedback.enqueueGithubResolution({ dataDir, issue: ISSUE, revision: 'f'.repeat(40), issueFingerprint: issueFp(spec), source: 'dual_review' }, { config: makeConfig() });
+      assert.equal(again.deduplicated, true);
+    }
+  }
+});
+
+test('baseline review sends no fix notification; native mainSummary supplies verification', async t => {
+  const dataDir = tmpDir(t);
+  const spec = { ...PENDING_ISSUE, updatedAt: '2026-09-01T00:00:00Z' };
+  await collectOnce(t, { dataDir, request: githubApi(issuePages(spec)).request });
+  const batch = feedback.captureFeedbackBatch({ dataDir, config: makeConfig() });
+  const pages = issuePages(spec); pages[postPath(ISSUE)] = { statusCode: 201, body: { id: 555 } };
+  const api = githubApi(pages); const messages = [];
+  const options = drainOptions(dataDir, api, { sendPrivate: async (_, body) => messages.push(body) });
+  const args = { status: 'pending_apply', commit: REV, dualAgentEnabled: true, mainAgent: 'codex', batchSummary: feedback.summarizeBatch(batch),
+    journal: { status: 'completed', decision: 'approve', head: REV, mainSummary: '真实路由回归通过',
+      githubResolutions: [{ issue: ISSUE, status: 'already_addressed', fingerprint: null, note: '仅核验已发布能力' }] } };
+  assert.equal((await feedback.handlePublishedEvolution(args, options)).enqueued, 0);
+  assert.equal(api.calls.length, 0); assert.equal(messages.length, 0);
+  args.journal.githubResolutions = [{ issue: ISSUE, status: 'fixed', fingerprint: batch.issues[0].fingerprint, note: '本轮修正调用者' }];
+  assert.equal((await feedback.handlePublishedEvolution(args, options)).enqueued, 1);
+  assert.match(messages[0], /验证：真实路由回归通过/);
+});
+
+
+test('fresh comment truncation after approval blocks both notifications even when the semantic fingerprint matches', async t => {
+  const original = { ...PENDING_ISSUE, updatedAt: '2026-09-01T00:00:00Z' };
+  const comments = Array.from({ length: 21 }, (_, n) => comment(100 + n, 'owner', `已新增入口\n${feedback.deliveryMarker(ISSUE, REV2)}`, '2026-09-05T00:00:00Z'));
+  const expanded = { ...original, comments, updatedAt: '2026-09-05T00:00:00Z' };
+  assert.equal(issueFp(expanded), issueFp(original));
+  const pages = issuePages(expanded); pages[postPath(ISSUE)] = { statusCode: 201, body: { id: 555 } };
+  const { dataDir, api } = await freshOutbox(t, pages, { fingerprint: issueFp(original) });
+  const messages = [];
+  const opts = drainOptions(dataDir, api, { sendPrivate: async (...args) => messages.push(args) });
+  assert.equal((await feedback.drainGithubFeedbackOutbox(opts)).pending, 1);
+  assert.equal(api.calls.filter(x => x.method === 'POST').length, 0); assert.equal(messages.length, 0);
+  const file = path.resolve(dataDir, 'evolution-github-outbox.json'); assert.equal(path.dirname(file), dataDir);
+  const entry = JSON.parse(fs.readFileSync(file)).entries[`${ISSUE}:${REV}`];
+  assert.equal(entry.public.status, 'pending'); assert.equal(entry.public.lastReason, 'comments_truncated');
+  assert.equal(entry.private.status, 'pending');
+  const recovered = githubApi(issuePages(original, { [postPath(ISSUE)]: { statusCode: 201, body: { id: 556 } } }));
+  assert.equal((await feedback.drainGithubFeedbackOutbox({ ...opts, request: recovered.request })).pending, 0);
+  assert.equal(recovered.calls.filter(x => x.method === 'POST').length, 1);
+  assert.equal(messages.length, 1);
 });

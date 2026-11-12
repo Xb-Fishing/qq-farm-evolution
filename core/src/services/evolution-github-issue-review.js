@@ -6,7 +6,7 @@ const feedback = require('./evolution-github-feedback');
 const { evidenceFiles, auditStillValid } = require('./evolution-no-change-audit');
 
 const PAGE_SIZE = 2000; // JSON escaping still fits the Main tool's reply budget.
-const STATUSES = ['fixed', 'in_progress', 'not_reproducible', 'wont_fix', 'invalid'];
+const STATUSES = ['fixed', 'already_addressed', 'in_progress', 'not_reproducible', 'wont_fix', 'invalid'];
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = reason => { throw new Error(reason); };
 
@@ -79,7 +79,7 @@ function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, sour
             || typeof args.note !== 'string' || !args.note.trim() || args.note.length > 300
             || typeof args.nextAction !== 'string' || args.nextAction.length > 1000
             || (args.status === 'in_progress' && !args.nextAction.trim())) fail('github_issue_review_invalid');
-        if (args.status === 'fixed' && (!batch.complete || issue.commentsTruncated || issue.omittedComments > 0)) fail('github_issue_evidence_incomplete');
+        if (['fixed', 'already_addressed'].includes(args.status) && (!batch.complete || issue.commentsTruncated || issue.omittedComments > 0)) fail('github_issue_evidence_incomplete');
         const evidence = evidenceFiles(args.evidencePaths, { dataDir, knowledgeDir, sourceRoot });
         const receipt = { issue: issue.number, fingerprint: issue.fingerprint, status: args.status,
             note: args.note.trim(), nextAction: args.nextAction.trim(), evidence, sourceFingerprint: fingerprint,
@@ -100,7 +100,8 @@ function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, sour
             const mapping = args.githubResolutions.find(item => item.issue === issue.number);
             if (!receipt || receipt.sourceFingerprint !== tree.fingerprint || !mapping
                 || mapping.status !== receipt.status || mapping.note?.trim() !== receipt.note
-                || (receipt.status === 'fixed' && (mapping.fingerprint !== issue.fingerprint || (!tree.dirty && receipt.existingCommit !== tree.head)))
+                || (receipt.status === 'fixed' && (mapping.fingerprint !== issue.fingerprint || !tree.dirty || receipt.existingCommit))
+                || (receipt.status === 'already_addressed' && (receipt.existingCommit !== tree.head || mapping.fingerprint != null))
                 || !auditStillValid({ fingerprint: tree.fingerprint, checks: [{ evidence: receipt.evidence }] }, tree.fingerprint)) return 'github_issue_review_required';
         }
         for (const receipt of reviews.values()) {
@@ -110,8 +111,8 @@ function createGithubIssueReview({ dataDir, identity, prompt, knowledgeDir, sour
                     || ['missing', 'checkedSources', 'verification', 'releaseCondition'].some(key =>
                         typeof blocker[key] !== 'string' || !blocker[key].trim())) return 'github_implementation_required';
             }
-            if (receipt.status === 'fixed' && (!receipt.implementationFiles.length
-                || receipt.implementationFiles.some(file => typeof file !== 'string' || (receipt.existingCommit === tree.head ? tree.files?.includes(file) : !tree.files?.includes(file)))
+            if (['fixed', 'already_addressed'].includes(receipt.status) && (!receipt.implementationFiles.length
+                || receipt.implementationFiles.some(file => typeof file !== 'string' || (receipt.status === 'already_addressed' ? tree.files?.includes(file) : !tree.files?.includes(file)))
                 || !receipt.implementationFiles.some(file => /^(core\/src|web\/src)\//.test(file)))) return 'github_delivery_unverified';
         }
         if (args.feedbackReviewed === true && (!batch.complete || batch.pendingTotal > issues.length
