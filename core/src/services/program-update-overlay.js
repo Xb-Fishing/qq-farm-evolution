@@ -32,20 +32,23 @@ function verifyPackage(root) {
         if (!fs.lstatSync(full).isFile() || fs.realpathSync(full) !== full || sha(fs.readFileSync(full)) !== entry.sha256) throw new Error('overlay_content_drift');
     }
     const acceptance = read(path.join(root, 'acceptance.json'));
-    if (acceptance.state !== 'passed' || acceptance.fingerprint !== manifest.sourceFingerprint || acceptance.checks?.join(',') !== 'backend,frontend') throw new Error('overlay_acceptance_invalid');
+    const full = acceptance.state === 'passed' && acceptance.checks?.join(',') === 'backend,frontend';
+    const release = acceptance.kind === 'published-release' && acceptance.state === 'published';
+    if ((!full && !release) || acceptance.fingerprint !== manifest.sourceFingerprint) throw new Error('overlay_acceptance_invalid');
     return { manifest, digest: sha(fs.readFileSync(manifestFile)) };
 }
 function verifyOverlay(record) {
     if (!record) return;
-    if (fs.realpathSync(record.link) !== record.previousRoot || verifyPackage(record.previousRoot).digest !== record.previousDigest
-        || verifyPackage(record.root).digest !== record.digest) throw new Error('overlay_changed');
+    const digest = root => record.installOnly ? sha(fs.readFileSync(path.join(root, 'manifest.json'))) : verifyPackage(root).digest;
+    if (fs.realpathSync(record.link) !== record.previousRoot || digest(record.previousRoot) !== record.previousDigest
+        || digest(record.root) !== record.digest) throw new Error('overlay_changed');
 }
 function verifySourceSnapshots(old) {
     if (logicSnapshot(old.privateSourceRoot).fingerprint !== old.sourceFingerprint) throw new Error('overlay_private_source_drift');
     const publicHead = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: old.publicBaseSourceRoot, encoding: 'utf8' }).trim();
     if (publicHead !== old.baselineHead || cp.execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: old.publicBaseSourceRoot, encoding: 'utf8' }).trim()) throw new Error('overlay_public_source_drift');
 }
-async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory }) {
+async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory, installOnly = false, runId = '', dataDir = '' }) {
     const link = path.join(owner, 'tmp/local-bark-reminder');
     if (!fs.existsSync(link)) {
         // An active private preload without the registered contract cannot be dropped.
@@ -56,9 +59,23 @@ async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory }
     const { manifest: old, digest: previousDigest } = verifyPackage(previousRoot);
     if (!old.privateSourceRoot || !old.publicBaseSourceRoot || !Array.isArray(old.privateFiles)) throw new Error('overlay_source_missing');
     verifySourceSnapshots(old);
-    const privateRoot = path.join(path.dirname(taskRoot), 'private');
     const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: taskRoot, encoding: 'utf8' }).trim();
+    if (installOnly && dataDir) {
+        let prepared;
+        try { prepared = read(path.join(dataDir, 'program-update-private-build.json')); } catch { prepared = null; }
+        if (prepared?.commit === head && prepared.previousRoot === previousRoot && prepared.previousDigest === previousDigest) {
+            const built = verifyPackage(prepared.root); verifySourceSnapshots(built.manifest);
+            if (built.digest !== prepared.digest || built.manifest.baselineHead !== head) throw new Error('prepared_bundle_changed');
+            return { link, previousRoot, previousDigest, root: prepared.root, digest: built.digest,
+                privateFingerprint: built.manifest.sourceFingerprint, installOnly: true, prepared: true,
+            };
+        }
+    }
+    const privateRoot = path.join(path.dirname(taskRoot), 'private');
     cp.execFileSync('git', ['worktree', 'add', '--detach', privateRoot, head], { cwd: taskRoot, stdio: 'pipe' });
+    const checkDir = path.join(artifactsRoot, 'private-validation'); fs.mkdirSync(checkDir, { mode: 0o700 });
+    const isolatedData = path.join(checkDir, 'resource-data'); fs.mkdirSync(isolatedData, { mode: 0o700 });
+    require('./evolution-publish').wireRuntimeResources(owner, privateRoot, isolatedData);
     require('./program-update').linkDependencies(taskRoot, privateRoot);
     for (const file of old.privateFiles) {
         const target = within(privateRoot, file); const base = within(old.publicBaseSourceRoot, file); const source = within(old.privateSourceRoot, file);
@@ -78,10 +95,20 @@ async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory }
         fs.chmodSync(target, fs.statSync(source).mode & 0o777);
     }
     verifySourceSnapshots(old);
-    const checkDir = path.join(artifactsRoot, 'private-validation'); fs.mkdirSync(checkDir, { mode: 0o700 });
     const dist = path.join(checkDir, 'packaged-web-dist');
-    const result = await runEvolutionValidation({ repoRoot: privateRoot, dataDir: checkDir, force: true,
-        env: require('./program-update').validationEnv({ owner, taskRoot: privateRoot, artifactsRoot: checkDir }), execute: executeFactory(checkDir, out => fs.cpSync(out, dist, { recursive: true })) });
+    let reused = false;
+    let result;
+    if (installOnly) {
+        const env = { ...require('./program-update').offlineEnv(), PATH: path.dirname(process.execPath) + path.delimiter + process.env.PATH };
+        const changes = cp.execFileSync('git', ['diff', '--name-only', '-z', old.baselineHead, head], { cwd: taskRoot, encoding: 'utf8' }).split('\0').filter(Boolean);
+        const buildNeeded = changes.some(file => file.startsWith('web/') || ['core/package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'docs/CHANGELOG.md'].includes(file));
+        if (buildNeeded) await executeFactory(checkDir)('npm', ['run', 'build', '--', '--outDir', dist, '--emptyOutDir'], { cwd: path.join(privateRoot, 'web'), env });
+        reused = !buildNeeded;
+        result = require('./program-update-cache').recordPublishedRelease({ dataDir: checkDir, sourceRoot: privateRoot, commit: head, runId });
+    } else {
+        result = await runEvolutionValidation({ repoRoot: privateRoot, dataDir: checkDir, force: true,
+            env: require('./program-update').validationEnv({ owner, taskRoot: privateRoot, artifactsRoot: checkDir }), execute: executeFactory(checkDir, out => fs.cpSync(out, dist, { recursive: true })) });
+    }
     const root = path.join(artifactsRoot, `overlay-${head.slice(0, 12)}`); fs.mkdirSync(root, { mode: 0o700 });
     const put = (relative, bytes) => { const target = within(root, relative); fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); fs.writeFileSync(target, bytes, { mode: 0o600 }); };
     const modules = old.modules.map(m => {
@@ -90,15 +117,17 @@ async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory }
     });
     // Old hashed chunks remain available to already open tabs until their reload.
     for (const asset of old.assets) put(asset.file, fs.readFileSync(within(previousRoot, asset.file)));
-    for (const file of walk(dist)) put(path.join('web-dist', file), fs.readFileSync(path.join(dist, file)));
-    const acceptance = fs.readFileSync(path.join(checkDir, 'evolution-validation.json'));
-    put('acceptance.json', acceptance); const preload = fs.readFileSync(path.join(previousRoot, 'preload.cjs')); put('preload.cjs', preload);
+    if (!reused) for (const file of walk(dist)) put(path.join('web-dist', file), fs.readFileSync(path.join(dist, file)));
+    const acceptance = fs.readFileSync(path.join(checkDir, installOnly ? 'program-update-release.json' : 'evolution-validation.json'));
+    put('acceptance.json', acceptance);
+    const preload = fs.readFileSync(path.join(previousRoot, 'preload.cjs'));
+    put('preload.cjs', preload);
     fs.mkdirSync(path.join(root, 'session-host-logs'), { mode: 0o700 });
     const assets = walk(path.join(root, 'web-dist')).map(file => ({ file: path.join('web-dist', file), sha256: sha(fs.readFileSync(path.join(root, 'web-dist', file))) }));
     put('manifest.json', JSON.stringify({ version: 1, localOnly: true, baselineHead: head, sourceFingerprint: result.fingerprint,
         modules, assets, acceptanceSha256: sha(acceptance), privatePreloadSha256: sha(preload), privateFiles: old.privateFiles,
         privateSourceRoot: privateRoot, publicBaseSourceRoot: taskRoot, preparedAt: Date.now() }, null, 2));
-    const record = { link, previousRoot, previousDigest, root, digest: verifyPackage(root).digest, privateFingerprint: result.fingerprint };
+    const record = { link, previousRoot, previousDigest, root, digest: verifyPackage(root).digest, privateFingerprint: result.fingerprint, validationReused: reused, installOnly };
     verifyOverlay(record);
     return record;
 }

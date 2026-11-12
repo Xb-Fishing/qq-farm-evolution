@@ -383,6 +383,11 @@ function validatedModeSource(repoRoot, sourceRoot, commit, dataDir, options) {
   if (!provenance || provenance.taskRoot !== sourceRoot
     || !verifyTaskWorkspace(repoRoot, provenance, { expectedHead: commit, env: options.env }).ok
     || inspectWorktree(sourceRoot, { env: options.env }).dirty) throw publishError('mode_source_unverified');
+  if (options.publishedRelease) {
+    const release = require('./program-update-cache').publishedRelease(dataDir, sourceRoot, commit);
+    if (release.runId !== provenance.runId) throw publishError('release_run_mismatch');
+    return { root: sourceRoot, fingerprint: release.fingerprint };
+  }
   const validation = getValidationSummary(dataDir);
   const checks = fs.existsSync(path.join(sourceRoot, 'web/package.json')) ? 'backend,frontend' : 'backend';
   if (validation.state !== 'passed' || validation.checks.join(',') !== checks
@@ -660,6 +665,7 @@ module.exports = {
   holdDigest,
   realCommonDir,
   createTaskWorkspace,
+  wireRuntimeResources,
   verifyTaskWorkspace,
   prepareRuntimeWorkspace,
   verifyRunningRuntime,

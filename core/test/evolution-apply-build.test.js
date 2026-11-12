@@ -517,7 +517,7 @@ setInterval(() => {}, 1e9);
 // --target-root 全链证明 → 构建/切换都落在运行时根，原库保留物（脏树）逐字节
 // 不动、旁观不受伤、两次连续切换各有独立运行时根。
 // ---------------------------------------------------------------------------
-function buildTargetFixture(t) {
+function buildTargetFixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-apply-target-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'repo');
@@ -528,14 +528,14 @@ function buildTargetFixture(t) {
   fs.mkdirSync(path.join(root, 'core', 'src'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
   fs.mkdirSync(path.join(root, 'web', 'dist'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.gitignore'), 'tmp/\ncore/data/\nweb/dist/\n');
+  fs.writeFileSync(path.join(root, '.gitignore'), 'tmp/\ncore/data/\nweb/dist\n');
   fs.copyFileSync(HELPER_SOURCE, path.join(root, 'core/scripts/evolution-apply-process.js'));
   fs.writeFileSync(path.join(root, 'core/client.js'), BOT_SCRIPT);
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   // helper 的服务依赖经 re-export shim 指回候选仓真实模块（依赖链保持真实，
   // fixture 只提供落点；与 autonomy 子进程夹具同构）。
   fs.mkdirSync(path.join(root, 'core/src/services'), { recursive: true });
-  for (const name of ['evolution-publish', 'evolution-validation', 'evolution-worktree', 'wx-update-preflight', 'program-update', 'program-update-overlay', 'program-update-recovery']) {
+  for (const name of ['evolution-publish', 'evolution-validation', 'evolution-worktree', 'wx-update-preflight', 'program-update', 'program-update-overlay', 'program-update-recovery', 'program-update-cache']) {
     fs.writeFileSync(path.join(root, 'core/src/services', `${name}.js`),
       `module.exports=require(${JSON.stringify(path.join(__dirname, `../src/services/${name}.js`))});\n`);
   }
@@ -548,6 +548,14 @@ function buildTargetFixture(t) {
   fs.writeFileSync(path.join(root, 'web/build.cjs'),
     "const fs=require('fs');let out='dist';for(let i=2;i<process.argv.length;i++){if(process.argv[i]==='--outDir')out=process.argv[i+1];}"
     + "fs.mkdirSync(out,{recursive:true});fs.writeFileSync(require('path').join(out,'index.html'),'rebuilt');\n");
+  if (options.cachedBundle) {
+    fs.appendFileSync(path.join(root, '.gitignore'), '\n/node_modules\n/core/node_modules\n/web/node_modules\n');
+    for (const context of ['', 'core']) fs.writeFileSync(path.join(root, context, 'package.json'), JSON.stringify({ name: context || 'fixture', version: '1.0.0' }));
+    fs.writeFileSync(path.join(root, 'pnpm-lock.yaml'), 'synthetic-lock\n');
+    for (const context of ['', 'core', 'web']) fs.symlinkSync(fs.realpathSync(path.resolve(__dirname, '..', '..', context, 'node_modules')), path.join(root, context, 'node_modules'), 'dir');
+    const build = path.join(root, 'web/build.cjs');
+    fs.writeFileSync(build, "if(process.env.FIXTURE_BUILD_MUST_NOT_RUN==='1')process.exit(71);\n" + fs.readFileSync(build, 'utf8'));
+  }
   fs.writeFileSync(path.join(root, 'web/dist/index.html'), 'old UI');
   const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).trim();
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
@@ -950,8 +958,8 @@ test('夹具隔离回归：生产形态钩子注入下真实 Git 夹具推送仅
 });
 
 
-for (const fails of [true, false, 'late_exit']) test(`independent version update: real tmux ${fails ? 'failed startup restores the old certificate and manager' : 'successful startup publishes the exact new certificate'}`, async t => {
-  const f = buildTargetFixture(t); t.after(() => f.killEvidencePids());
+for (const { fails, cachedBundle = false, published = false } of [{ fails: true }, { fails: false }, { fails: 'late_exit' }, { fails: false, cachedBundle: true, published: true }, { fails: false, published: true }]) test(`independent version update: real tmux ${published ? 'published release ' : ''}${cachedBundle ? 'cached bundle ' : ''}${fails ? 'failed startup restores the old certificate and manager' : 'successful startup publishes the exact new certificate'}`, async t => {
+  const f = buildTargetFixture(t, { cachedBundle }); t.after(() => f.killEvidencePids());
   const publish = require('../src/services/evolution-publish');
   const validation = require('../src/services/evolution-validation');
   const update = require('../src/services/program-update');
@@ -973,7 +981,8 @@ for (const fails of [true, false, 'late_exit']) test(`independent version update
   const head = f.git(['rev-parse', 'HEAD'], provenance.taskRoot); f.git(['push', '-q', 'origin', 'HEAD:main'], provenance.taskRoot);
   const runtime = publish.prepareRuntimeWorkspace({ repoRoot: f.root, dataDir: proof, runId: 'version-target', commit: head });
   publish.recordHoldManifest(proof, manifest);
-  writeValidationRecord(proof, runtime.logicFingerprint);
+  if (published) require('../src/services/program-update-cache').recordPublishedRelease({ dataDir: proof, sourceRoot: provenance.taskRoot, commit: head, runId: 'version-target' });
+  else writeValidationRecord(proof, runtime.logicFingerprint);
   publish.recordApplyTarget(proof, { runId: 'version-target', commit: head, runtimeRoot: runtime.runtimeRoot,
     sourceFingerprint: runtime.logicFingerprint, holdDigest: publish.holdDigest(manifest), createdAt: Date.now() });
   const port = await freePort(), evidence = path.join(f.dataDir, 'bot-evidence.jsonl');
@@ -983,15 +992,30 @@ for (const fails of [true, false, 'late_exit']) test(`independent version update
   const first = readEvidence(evidence)[0], start = helper.processStarttime(first.pid);
   const backupFile = path.join(proof, 'previous-shared-records.json'); update.put(backupFile, backup);
   update.put(path.join(f.dataDir, 'program-update.json'), { runId: 'version-target', phase: 'applying', proofDir: proof,
-    targetCommit: head, botPid: first.pid, botStarttime: start, sharedProofBackup: backupFile, overlay: null });
+    targetCommit: head, botPid: first.pid, botStarttime: start, sharedProofBackup: backupFile, overlay: null, ...(published ? { installOnly: true, root: old.runtimeRoot } : {}) });
   update.put(path.join(f.dataDir, 'program-update-lock/owner.json'), { runId: 'version-target' });
-  for (const name of Object.keys(backup)) update.put(path.join(f.dataDir, name), update.read(path.join(proof, name)));
+  for (const name of Object.keys(backup)) if (!published || name !== 'evolution-validation.json') update.put(path.join(f.dataDir, name), update.read(path.join(proof, name)));
+  if (published) update.put(path.join(f.dataDir, 'program-update-release.json'), update.read(path.join(proof, 'program-update-release.json')));
+  if (cachedBundle) {
+    const bundle = path.join(f.dataDir, 'verified-public-bundle'); fs.mkdirSync(bundle);
+    fs.writeFileSync(path.join(bundle, 'index.html'), 'verified cached UI');
+    update.put(path.join(f.dataDir, 'program-update-public-build.json'), { kind: 'published-web-build', commit: head, root: bundle });
+  }
   const child = spawn(process.execPath, [path.join(old.runtimeRoot, 'core/scripts/evolution-apply-process.js'), '--bot-pid', String(first.pid),
     '--bot-starttime', start, '--expected-head', head, '--tmux-target', f.target, '--data-dir', f.dataDir,
-    '--admin-port', String(port), '--target-root', runtime.runtimeRoot, '--program-update', 'version-target', '--proof-dir', proof], { stdio: ['ignore', 'ignore', 'pipe'] });
+    '--admin-port', String(port), '--target-root', runtime.runtimeRoot, '--program-update', 'version-target', '--proof-dir', proof], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...(cachedBundle ? { FIXTURE_BUILD_MUST_NOT_RUN: '1' } : {}) } });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const code = await new Promise(resolve => child.once('exit', resolve));
-  assert.equal(code, fails ? 1 : 0, stderr);
+  let cacheFailure = '';
+  if (cachedBundle && code !== 0) {
+    const details = {};
+    for (const name of ['evolution-apply-receipt.json', 'evolution-apply-attempt.json']) {
+      const file = path.join(f.dataDir, name); if (fs.existsSync(file)) details[name] = JSON.parse(fs.readFileSync(file));
+    }
+    for (const [label, root] of [['owner', f.root], ['old', old.runtimeRoot], ['target', runtime.runtimeRoot]]) details[label] = f.git(['status', '--porcelain', '--untracked-files=all'], root);
+    cacheFailure = JSON.stringify(details);
+  }
+  assert.equal(code, fails ? 1 : 0, stderr + cacheFailure);
   const receipt = JSON.parse(fs.readFileSync(path.join(f.dataDir, 'evolution-apply-receipt.json')));
   assert.equal(receipt.phase, fails ? 'rolled_back' : 'ready', stderr);
   if (fails) { assert.equal(receipt.restoredCommit, oldProvenance.publicBase); assert.equal(fs.readFileSync(certFile, 'utf8'), certificate); }
@@ -1003,5 +1027,7 @@ for (const fails of [true, false, 'late_exit']) test(`independent version update
   const pane = Number(tmux(['display-message', '-p', '-t', f.target, '#{pane_pid}']));
   assert.equal(helper.isDescendantOf(receipt.newPid, pane), true);
   assert.equal(fs.existsSync(path.join(f.dataDir, 'evolution-apply-context.json')), false);
+  if (cachedBundle) assert.equal(fs.readFileSync(path.join(runtime.runtimeRoot, 'web/dist/index.html'), 'utf8'), 'verified cached UI');
+  if (published) { const applied = JSON.parse(fs.readFileSync(certFile)); assert.equal(applied.validation.kind, 'published-release'); assert.equal(applied.validation.state, 'published'); assert.deepEqual(applied.validation.checks, []); }
   assert.equal(validation.logicSnapshot(old.runtimeRoot).fingerprint, old.logicFingerprint);
 });

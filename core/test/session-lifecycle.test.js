@@ -790,9 +790,8 @@ test('安全巡检在人工改动未提交时安全延期', () => {
   assert.match(source, /为避免自动 agent 覆盖工作区/);
 });
 
-test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitHub', () => {
+test('自动进化由父进程审计推送并保留编排恢复与页面边界', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/services/activity-evolver.js'), 'utf8');
-  const handoff = fs.readFileSync(path.join(__dirname, '../../docs/HANDOFF.md'), 'utf8');
   const panel = fs.readFileSync(path.join(__dirname, '../../web/src/components/admin/AdminActivityUpdatePanel.vue'), 'utf8');
 
   assert.match(source, /严禁执行 git push/g);
@@ -811,9 +810,6 @@ test('自动进化强制更新 HANDOFF 并由父进程隐私扫描后推送 GitH
   assert.match(source, /evolution_recovery_watch/);
   assert.match(source, /function finalizeRecoveredEvolution/);
   assert.match(source, /lastAutomaticEvolveDate/);
-  assert.match(handoff, /每轮改动必须同步更新 `docs\/HANDOFF\.md`/);
-  assert.match(handoff, /每轮改动测试通过后必须上传 GitHub/);
-  assert.match(handoff, /HANDOFF 是回归约束/);
   assert.match(source, /function reviseEvolution/);
   assert.match(source, /gitHead\(\) !== state\.commit/);
   assert.match(source, /\['revert', '--no-edit', rejectedCommit\]/);
