@@ -59,7 +59,11 @@ function busyEvolution(dataDir) {
     } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 function paneFor(pid) {
-    const lines = cp.execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id} #{pane_pid}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    let lines;
+    // A deployment whose tmux cannot even be queried is not confirmable; report
+    // the stable reason instead of the raw spawn error.
+    try { lines = cp.execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id} #{pane_pid}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch { throw new Error('update_requires_existing_tmux'); }
     for (const line of lines.trim().split('\n')) {
         const [pane, ancestor] = line.split(/\s+/); let at = pid;
         for (let n = 0; at > 1 && n < 64; n++) {
@@ -151,7 +155,9 @@ function publicState({ dataDir = getDataDir(), root = ROOT, state } = {}) {
 }
 function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor } = {}) {
     assertTrustedOrigin(root); safeState(dataDir, root);
-    const previous = read(path.join(dataDir, STATE));
+    let previous;
+    try { previous = read(path.join(dataDir, STATE)); }
+    catch (error) { if (error.code === 'ENOENT') throw new Error('check_update_first'); throw error; }
     let versionReady = false;
     try { versionReady = !!versions.parseVersion(JSON.stringify({ version: previous.latestVersion })); } catch {}
     if (!versionReady || previous.phase !== 'available' || previous.currentCommit !== currentCommit(root)) throw new Error('check_update_first');
