@@ -3,6 +3,7 @@ import { ref } from 'vue'
 
 const bridgeUrl = `${window.location.origin}/mengka-nt`
 const copyMessage = ref('')
+const addressVisible = ref(false)
 
 async function copyAddress() {
   try {
@@ -10,7 +11,7 @@ async function copyAddress() {
     copyMessage.value = '已复制服务器地址'
   }
   catch {
-    copyMessage.value = '请选中上方地址手动复制'
+    copyMessage.value = '复制失败，请先点击“显示地址”后手动复制'
   }
 }
 </script>
@@ -26,10 +27,14 @@ async function copyAddress() {
     </ol>
     <div class="space-y-2">
       <label for="mengka-nt-address" class="block font-medium">农场服务器地址</label>
-      <input id="mengka-nt-address" :value="bridgeUrl" readonly class="w-full border border-gray-300 rounded bg-transparent px-3 py-2 text-xs dark:border-gray-600">
-      <button class="rounded bg-blue-600 px-3 py-2 text-white" @click="copyAddress">
+      <input id="mengka-nt-address" :value="addressVisible ? bridgeUrl : ''" placeholder="地址已隐藏，点击复制或显示" readonly class="w-full border border-gray-300 rounded bg-transparent px-3 py-2 text-xs dark:border-gray-600">
+      <button type="button" class="rounded bg-blue-600 px-3 py-2 text-white" @click="copyAddress">
         复制服务器地址
       </button>
+      <button type="button" class="ml-2 rounded border border-gray-300 px-3 py-2 dark:border-gray-600" :aria-pressed="addressVisible" aria-controls="mengka-nt-address" @click="addressVisible = !addressVisible">
+        {{ addressVisible ? '隐藏地址' : '显示地址' }}
+      </button>
+      <p class="text-xs opacity-75">接入地址属于你的部署信息，仅用于自己的插件配置，请勿放进公开反馈、截图或文档。</p>
       <p v-if="copyMessage" role="status" class="text-xs">
         {{ copyMessage }}
       </p>
