@@ -41,6 +41,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
  */
 
 const { toNum, toLong, log } = require('../utils/utils');
+const { strictBudgetRejection, strictServerBusinessError } = require('./operation-error-meta');
 const Long = require('long');
 const { sendMsgAsync, getWs } = require('../utils/network');
 const { types, getRoot } = require('../utils/proto');
@@ -2348,6 +2349,36 @@ function rewardAttemptKeys(action, share, now) {
   if (action === 'shareMilestones') return list(share?.milestones).filter(row => toNum(row.state) === 2 && toNum(share.currentScore) >= toNum(row.threshold)).map(row => `tier:${toNum(row.id)}`);
   return [];
 }
+
+// The logger redacts code keys. Emit only fixed classifications, never error values.
+const MILK_TEA_AUTO_CONTROL_CODES = new Set([
+  'SEASON_WISH_MILK_TEA_CONNECTION_CHANGED', 'SEASON_WISH_MILK_TEA_NOT_READY',
+  'SESSION_CONTROL_UNAVAILABLE', 'SESSION_BAD_SYNC_REPLY',
+]);
+function milkTeaAutoFailureReason(error) {
+  try {
+    if (!error || typeof error !== 'object') return 'check_failed'; // 畸形抛出值（字符串/null 等）不猜原因
+    for (const key of ['isGovernedRejection', 'business', 'isServerBusinessError', 'unknown']) {
+      if (error[key] !== undefined && typeof error[key] !== 'boolean') return 'check_failed';
+    }
+    if (error.unknown === true) return 'check_failed';
+    const budget = strictBudgetRejection(error); // 与 429 升级同一严格口径；标记矛盾即不认
+    if (budget) return budget.reason === 'budget_total' ? 'budget_total' : budget.reason === 'budget_method' ? 'budget_method' : 'check_failed';
+    const serverBusiness = strictServerBusinessError(error);
+    // 声称受治理拒绝却未过严格校验，或本地与服务端业务标记并存：自相矛盾，不猜原因
+    if (error.isGovernedRejection === true || (error.business === true && error.isServerBusinessError === true)) return 'check_failed';
+    if (MILK_TEA_AUTO_CONTROL_CODES.has(error.code)) {
+      return error.isServerBusinessError === true || error.serverErrorCode != null ? 'check_failed' : 'control_unavailable';
+    }
+    // 本地业务协议拒绝（fail() 家族）；与结果未知标记并存按未分类处理
+    if (error.business === true && error.unknown !== true) {
+      return 'business_rejected';
+    }
+    if (serverBusiness) return 'business_rejected'; // 服务端业务拒绝，同样走严格校验口径
+    return 'check_failed';
+  } catch { return 'check_failed'; } // 畸形对象（抛出型 getter 等）不猜原因
+}
+
 async function runAutomaticMilkTea(deps = {}) {
   const nowMs = () => typeof deps.now === 'function' ? deps.now() : Date.now();
   const autoCfg = () => requireAutoConfig(deps);
@@ -2542,7 +2573,7 @@ async function runAutomaticMilkTea(deps = {}) {
     failed = true;
     automaticState.lastMessage = error?.code === 'SEASON_WISH_MILK_TEA_YIELD' ? '已让位于成熟收获或好友抢收' : '本轮检查未完成，已暂停操作，等待下一次复核';
     automaticState.nextCheckAt = error?.code === 'SEASON_WISH_MILK_TEA_YIELD' ? nowMs() + 1000 : Math.max(automaticState.nextCheckAt, nowMs() + 60_000);
-    if (!['SEASON_WISH_MILK_TEA_PAUSED', 'SEASON_WISH_MILK_TEA_YIELD'].includes(error?.code)) log('活动', '奶茶自动化本轮未完成，等待下次状态复核', { module: 'activity', event: 'milk_tea_auto_check', result: 'error', code: String(error?.code || 'read_failed').slice(0, 80) });
+    if (!['SEASON_WISH_MILK_TEA_PAUSED', 'SEASON_WISH_MILK_TEA_YIELD'].includes(error?.code)) log('活动', '奶茶自动化本轮未完成，等待下次状态复核', { module: 'activity', event: 'milk_tea_auto_check', result: 'error', failureReason: milkTeaAutoFailureReason(error) });
     return results;
   } finally {
     if (held) releaseLease(lease);
