@@ -163,20 +163,30 @@ class MiniProgramLoginSession {
     };
   }
 
+  static isValidCode(code) {
+    return typeof code === 'string' && code.length >= 1 && code.length <= 512
+      // Reject C0/C1 controls in untrusted login codes.
+      // eslint-disable-next-line no-control-regex
+      && code.trim().length > 0 && !/[\x00-\x1F\x7F-\x9F]/.test(code);
+  }
+
   /**
    * 请求小程序登录码
    * @returns {{ code, url, image }}
    */
-  static async requestLoginCode() {
+  static async requestLoginCode(options = {}) {
     try {
       const response = await axios.get('https://q.qq.com/ide/devtoolAuth/GetLoginCode', {
         headers: this.getHeaders(),
+        timeout: 10000,
+        signal: options.signal,
       });
       const { code, data } = response.data;
 
       if (+code !== 0) throw new Error('获取登录码失败');
 
       const loginCode = data.code || '';
+      if (!this.isValidCode(loginCode)) throw new Error('Invalid login code');
       const url = `https://h5.qzone.qq.com/qqq/code/${loginCode}?_proxy=1&from=ide`;
       const image = await QRCode.toDataURL(url, {
         width: 300,
@@ -186,7 +196,7 @@ class MiniProgramLoginSession {
 
       return { code: loginCode, url, image };
     } catch (err) {
-      console.error('MP Request Login Code Error:', err.message);
+      console.error('MP Request Login Code Error');
       throw err;
     }
   }
@@ -196,11 +206,13 @@ class MiniProgramLoginSession {
    * @param {string} code - 登录码
    * @returns {{ status: 'Wait'|'OK'|'Used'|'Error', ticket?, uin?, nickname? }}
    */
-  static async queryStatus(code) {
+  static async queryStatus(code, options = {}) {
+    if (!this.isValidCode(code)) throw new Error('Invalid code');
+    code = encodeURIComponent(code);
     try {
       const response = await axios.get(
         `https://q.qq.com/ide/devtoolAuth/syncScanSateGetTicket?code=${code}`,
-        { headers: this.getHeaders() }
+        { headers: this.getHeaders(), timeout: 10000, signal: options.signal }
       );
 
       if (response.status !== 200) return { status: 'Error' };
@@ -222,7 +234,7 @@ class MiniProgramLoginSession {
 
       return { status: 'Error', msg: `Code: ${apiCode}` };
     } catch (err) {
-      console.error('MP Query Status Error:', err.message);
+      console.error('MP Query Status Error');
       throw err;
     }
   }
@@ -232,18 +244,18 @@ class MiniProgramLoginSession {
    * @param {string} ticket
    * @param {string} appid - 默认 '1112386029'
    */
-  static async getAuthCode(ticket, appid = '1112386029') {
+  static async getAuthCode(ticket, appid = '1112386029', options = {}) {
     try {
       const response = await axios.post(
         'https://q.qq.com/ide/login',
         { appid, ticket },
-        { headers: this.getHeaders() }
+        { headers: this.getHeaders(), timeout: 10000, signal: options.signal }
       );
       if (response.status !== 200) return '';
       const { code } = response.data;
       return code || '';
-    } catch (err) {
-      console.error('MP Get Auth Code Error:', err.message);
+    } catch {
+      console.error('MP Get Auth Code Error');
       return '';
     }
   }
