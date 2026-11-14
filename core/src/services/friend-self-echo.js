@@ -5,7 +5,7 @@
  * 触发服务器 LandsNotify 推送。这些"自己造成的变化"被 worker 当成外部
  * 活跃证据（lands_push/fastLane/poll 拉近）会虚增好友活跃度。
  *
- * 铁原则（主 Agent 2026-09-26 两轮审核口径）：
+ * 识别规则：
  * 1. 仅含历史自己的 owner/stealer **绝不**构成回声证据——那是历史状态。
  *    回声必须有：本次写操作 ticket（pending 或已确认）+ ticket 登记时
  *    冻结的写前完整 LandInfo 基线，且完整语义差异全部落在该操作允许

@@ -113,7 +113,7 @@ async function prepareOverlay({ owner, taskRoot, artifactsRoot, executeFactory, 
     const put = (relative, bytes) => { const target = within(root, relative); fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); fs.writeFileSync(target, bytes, { mode: 0o600 }); };
     const modules = old.modules.map(m => {
         const bytes = fs.readFileSync(within(privateRoot, m.file)); put(m.override, bytes);
-        return { ...m, sha256: sha(bytes), baselineSha256: sha(fs.readFileSync(within(taskRoot, m.file))) };
+        return { ...m, sha256: sha(bytes), baselineSha256: fs.existsSync(within(taskRoot, m.file)) ? sha(fs.readFileSync(within(taskRoot, m.file))) : null };
     });
     // Old hashed chunks remain available to already open tabs until their reload.
     for (const asset of old.assets) put(asset.file, fs.readFileSync(within(previousRoot, asset.file)));

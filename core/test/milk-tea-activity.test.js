@@ -66,6 +66,13 @@ const SHOP = 2026110102;
 const FUND = 2026110103;
 const HAPPY = 2026110104;
 
+// 固定营业 UTC 锚（与 milk-tea-operate.test.js 同源，2026-10-20T12:00:00Z）：
+// 默认只读入口的窗口由该锚生成并经 options.now 注入，官方公告结算兜底
+// （2026-11-14T16:00:00Z）相对该锚保持未来，overview 相位断言不随真实墙钟漂移；
+// 读取途中跨最终截止用例保留自身可推进时钟，不经此锚。
+const ANCHOR_NOW_SEC = Math.floor(Date.parse('2026-10-20T12:00:00Z') / 1000);
+const ANCHOR_NOW_MS = ANCHOR_NOW_SEC * 1000;
+
 /** 每个用例取全新服务实例：模块级租约/结束证据随 require 缓存重置。 */
 function freshService() {
   const servicePath = require.resolve('../src/services/milk-tea-activity');
@@ -289,7 +296,7 @@ test('timingOf：营业开始前 / 进行 / 结算 / 最终截止（闭边界）
 test('默认只读入口：缺根仅一次 List 零后续；enabled=false 可读；快照不匹配即停', async () => {
   await loadProto();
   const service = freshService();
-  const start = Math.floor(Date.now() / 1000) - 3600;
+  const start = ANCHOR_NOW_SEC - 3600;
   const end = start + 20 * 86400;
   const rootListed = (extra = {}) => [{ id: ROOT, parentId: 0, enabled: true, ...extra }];
 
@@ -297,6 +304,7 @@ test('默认只读入口：缺根仅一次 List 零后续；enabled=false 可读
   let listCalls = 0; let snapshotCalls = 0; let inventoryCalls = 0;
   await assert.rejects(
     service.getMilkTeaActivity({
+      now: () => ANCHOR_NOW_MS,
       getActivityDiscoveryList: async () => { listCalls += 1; return [{ id: 2026090100, parentId: 0 }]; },
       getActivityGroupSnapshot: async () => { snapshotCalls += 1; return null; },
       getBagItemCounts: async () => { inventoryCalls += 1; return { counts: new Map(), available: true }; },
@@ -310,6 +318,7 @@ test('默认只读入口：缺根仅一次 List 零后续；enabled=false 可读
   // enabled=false：仍在架可读（仅显示未启用，不触发探测）
   listCalls = 0; snapshotCalls = 0;
   const overview = await service.getMilkTeaActivity({
+    now: () => ANCHOR_NOW_MS,
     getActivityDiscoveryList: async () => { listCalls += 1; return rootListed({ enabled: false }); },
     getActivityGroupSnapshot: async () => { snapshotCalls += 1; return { id: ROOT, startTime: start, endTime: end, children: [] }; },
     getBagItemCounts: async () => { inventoryCalls += 1; return { counts: new Map([[1041, 5]]), available: true }; },
@@ -324,6 +333,7 @@ test('默认只读入口：缺根仅一次 List 零后续；enabled=false 可读
   snapshotCalls = 0; inventoryCalls = 0;
   await assert.rejects(
     service.getMilkTeaActivity({
+      now: () => ANCHOR_NOW_MS,
       getActivityDiscoveryList: async () => rootListed(),
       getActivityGroupSnapshot: async () => { snapshotCalls += 1; return { id: 2026090100 }; },
       getBagItemCounts: async () => { inventoryCalls += 1; return { counts: new Map(), available: true }; },
@@ -380,7 +390,7 @@ test('读取途中跨最终截止：跳过库存；成功结束证据保持到�
 test('只读入口：账号未就绪零读取；库存普通失败不伪造状态、不重试', async () => {
   await loadProto();
   const service = freshService();
-  const start = Math.floor(Date.now() / 1000) - 3600;
+  const start = ANCHOR_NOW_SEC - 3600;
   const end = start + 20 * 86400;
   let listCalls = 0;
   await assert.rejects(
@@ -396,6 +406,7 @@ test('只读入口：账号未就绪零读取；库存普通失败不伪造状�
 
   let inventoryCalls = 0;
   const overview = await service.getMilkTeaActivity({
+    now: () => ANCHOR_NOW_MS,
     getActivityDiscoveryList: async () => [{ id: ROOT, parentId: 0 }],
     getActivityGroupSnapshot: async () => ({ id: ROOT, startTime: start, endTime: end, children: [] }),
     getBagItemCounts: async () => {
@@ -493,7 +504,7 @@ test('共享真实GetGroup入口：四类详情可用，私有原始回调保留
     assert.equal(children.get(FUND).details.growthFund.unlocked,true);assert.equal(children.get(HAPPY).details.shareReward.currentScore,20);
     assert.equal(requests,1);assert.ok(Buffer.isBuffer(privateBody));assert.ok(privateBody.equals(Buffer.from(raw)));
     assert.doesNotMatch(JSON.stringify(result),/rawBody|"type":"Buffer"/);
-    const overview=await activity.getMilkTeaActivity({getActivityDiscoveryList:async()=>[{id:ROOT,parentId:0}],getActivityGroupSnapshot:activity.getActivityGroupSnapshot,getBagItemCounts:async()=>({available:true,counts:new Map([[1041,20]])})});
+    const overview=await activity.getMilkTeaActivity({now:()=>ANCHOR_NOW_MS,getActivityDiscoveryList:async()=>[{id:ROOT,parentId:0}],getActivityGroupSnapshot:activity.getActivityGroupSnapshot,getBagItemCounts:async()=>({available:true,counts:new Map([[1041,20]])})});
     assert.equal(overview.summary.level,2);assert.equal(overview.exchangeShop.items[0].costs[0].name,'奶茶券');assert.equal(overview.shareReward.currentScore,20);
   } finally {for(const [p,entry] of previous){if(entry)require.cache[p]=entry;else delete require.cache[p];}}
 });

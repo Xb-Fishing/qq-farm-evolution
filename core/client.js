@@ -10,6 +10,7 @@ const { secureRuntimeDataTree } = require('./src/config/runtime-paths');
 // 所有后续运行文件默认只允许当前系统用户读取；并修正既有数据文件权限。
 process.umask(0o077);
 secureRuntimeDataTree();
+require('./src/runtime/optional-module-provider').start();
 
 const {
     startAdminServer,

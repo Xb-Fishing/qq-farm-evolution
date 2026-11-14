@@ -259,3 +259,14 @@ test('late checks cannot replace a newer check or a completed update transaction
         assert.equal(fs.readFileSync(path.join(dataDir, 'program-update.json'), 'utf8'), expected);
     }
 });
+
+test('an internal published handoff releases only its own pending transaction and never an active or blocked one', () => {
+    for (const scenario of ['own', 'wrong', 'active', 'blocked']) {
+        const dir = fixture(); const repo = path.join(dir, 'repo'); fs.mkdirSync(repo);
+        cp.execFileSync('git', ['init', '-q', repo]); cp.execFileSync('git', ['config', 'user.name', 'fixture'], { cwd: repo }); cp.execFileSync('git', ['config', 'user.email', 'fixture@users.noreply.github.com'], { cwd: repo });
+        fs.mkdirSync(path.join(repo, 'core')); fs.writeFileSync(path.join(repo, 'core/package.json'), JSON.stringify({version:'1.0.0'}));cp.execFileSync('git',['add','.'],{cwd:repo});cp.execFileSync('git',['commit','-qm','fixture'],{cwd:repo});cp.execFileSync('git',['remote','add','origin','https://github.com/Xb-Fishing/qq-farm-evolution.git'],{cwd:repo});
+        const target='b'.repeat(40); put(dir,'activity-evolve-state.json',{status:scenario==='blocked'?'review_blocked':'pending_apply',commit:target,activeRun:scenario==='active'?{pid:123}:null});let spawns=0;
+        const args={root:repo,dataDir:dir,publishedTarget:{commit:target,version:'1.0.1'},sourceCommit:scenario==='wrong'?'c'.repeat(40):target,resolvePane:()=>'%fixture',spawn:()=>{spawns++;const child=new(require('node:events').EventEmitter)();child.unref=()=>{};return child;}};
+        if(scenario==='own'){assert.equal(updater.begin(args).phase,'queued');assert.equal(spawns,1);}else{assert.throws(()=>updater.begin(args),/evolution_busy/);assert.equal(spawns,0);assert.equal(updater.lockHeld(dir),false);}
+    }
+});

@@ -52,8 +52,9 @@ function assertTrustedOrigin(root) {
     if (!['git@github.com:Xb-Fishing/qq-farm-evolution.git', 'https://github.com/Xb-Fishing/qq-farm-evolution.git',
         'https://github.com/Xb-Fishing/qq-farm-evolution'].includes(origin)) throw new Error('untrusted_update_source');
 }
-function busyEvolution(dataDir) {
+function busyEvolution(dataDir, sourceCommit = '') {
     try { const s = read(path.join(dataDir, 'activity-evolve-state.json'));
+        if (/^[a-f0-9]{40}$/.test(sourceCommit) && s.commit === sourceCommit && !s.activeRun && ['pending_apply', 'applying'].includes(s.status)) return false;
         return !!s.activeRun || ['running', 'revising', 'pending_apply', 'applying', 'push_failed', 'review_blocked', 'privacy_blocked_local'].includes(s.status);
     } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
@@ -153,22 +154,25 @@ function publicState({ dataDir = getDataDir(), root = ROOT, state } = {}) {
         updateAvailable: !!currentVersion && !!latestVersion && status.phase === 'available' && !!status.targetCommit && status.targetCommit !== status.currentCommit,
         updatedAt: status.updatedAt || 0, message: currentVersion ? messages[status.phase] || '' : messages.unavailable };
 }
-function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor, ownerPid = process.pid } = {}) {
+function begin({ root = ROOT, dataDir = getDataDir(), spawn = cp.spawn, resolvePane = paneFor, ownerPid = process.pid, publishedTarget = null, sourceCommit = '' } = {}) {
     assertTrustedOrigin(root); safeState(dataDir, root);
     let previous;
-    try { previous = read(path.join(dataDir, STATE)); }
-    catch (error) { if (error.code === 'ENOENT') throw new Error('check_update_first'); throw error; }
+    if (publishedTarget && /^[a-f0-9]{40}$/.test(publishedTarget.commit || '')) previous = { phase: 'available', currentCommit: currentCommit(root), targetCommit: publishedTarget.commit, latestVersion: publishedTarget.version };
+    else {
+        try { previous = read(path.join(dataDir, STATE)); }
+        catch (error) { if (error.code === 'ENOENT') throw new Error('check_update_first'); throw error; }
+    }
     let versionReady = false;
     try { versionReady = !!versions.parseVersion(JSON.stringify({ version: previous.latestVersion })); } catch {}
     if (!versionReady || previous.phase !== 'available' || previous.currentCommit !== currentCommit(root)) throw new Error('check_update_first');
     const runId = `program-${Date.now()}-${crypto.randomUUID()}`;
     acquire(dataDir, runId);
     try {
-        if (busyEvolution(dataDir)) throw new Error('evolution_busy');
+        if (busyEvolution(dataDir, sourceCommit === previous.targetCommit ? sourceCommit : '')) throw new Error('evolution_busy');
         const tmuxTarget = resolvePane(ownerPid);
         const artifactsRoot = path.join(resolveKnowledgeDir({ dataDir }), 'program-updates', runId);
         fs.mkdirSync(artifactsRoot, { recursive: true, mode: 0o700 });
-        const state = { version: 1, ...previous, phase: 'queued', runId, root, dataDir, artifactsRoot, tmuxTarget,
+        const state = { version: 1, ...previous, phase: 'queued', runId, root, dataDir, artifactsRoot, tmuxTarget, sourceCommit: sourceCommit === previous.targetCommit ? sourceCommit : '',
             workerPid: process.pid, workerStarttime: starttime(process.pid), workerHost: os.hostname(),
             botPid: ownerPid, botStarttime: starttime(ownerPid), adminPort: Number(process.env.ADMIN_PORT) || 3007, updatedAt: Date.now() };
         put(path.join(dataDir, STATE), state);
@@ -266,7 +270,7 @@ async function runWorker(dataDir, runId) {
     set('fetching', { workerPid: process.pid, workerStarttime: starttime(process.pid), workerHost: os.hostname() });
     put(path.join(dataDir, LOCK, 'owner.json'), { runId, pid: process.pid, starttime: starttime(process.pid), host: os.hostname() });
     try {
-        if (busyEvolution(dataDir)) throw new Error('evolution_busy');
+        if (busyEvolution(dataDir, state.sourceCommit === state.targetCommit ? state.sourceCommit : '')) throw new Error('evolution_busy');
         assertTrustedOrigin(state.root);
         if (currentCommit(state.root) !== state.currentCommit || starttime(state.botPid) !== state.botStarttime) throw new Error('running_version_changed');
         const owner = pub.ownerStorageRoot(dataDir, state.root);

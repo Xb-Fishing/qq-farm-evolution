@@ -70,7 +70,9 @@ test('unknown stock or quota is not displayed as zero, and large costs do not ro
 
 test('actual default overview includes current bounds using one existing inventory read for all catalog materials', async () => {
   const calls = [];
-  const now = Date.now();
+  // 固定营业 UTC 锚（与 milk-tea-operate.test.js 同源）：默认 overview 的 options.now
+  // 注入固定值，窗口从同一时刻生成，官方公告结算兜底相对该锚保持未来。
+  const now = Math.floor(Date.parse('2026-10-20T12:00:00Z') / 1000) * 1000;
   const start = Math.floor(now / 1000) - 60;
   const end = start + 3600;
   const g = goods({ costs: [{ id: 1041, count: '100' }, { id: 1001, count: '20' }] });

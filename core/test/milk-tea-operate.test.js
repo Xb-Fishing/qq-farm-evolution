@@ -67,7 +67,12 @@ const HAPPY = 2026110104;
 const TICKET = 1041;
 const BOOST = 1042;
 
-const nowSec = () => Math.floor(Date.now() / 1000);
+// 固定营业 UTC 锚：2026-10-20T12:00:00Z（早于官方公告结算兜底 2026-11-14T16:00:00Z，
+// 默认营业窗口整体落在结算前）。默认场景时钟、OPEN_WINDOW、班次/冷却表值与跨界
+// 推进量都由同一锚派生，测试不再随真实墙钟漂移；公告真实午夜边界用例（timingOf
+// 显式时刻断言）继续使用自身的显式时间，不经此锚。
+const ANCHOR_NOW_SEC = Math.floor(Date.parse('2026-10-20T12:00:00Z') / 1000);
+const nowSec = () => ANCHOR_NOW_SEC;
 const hex = value => Buffer.from(value).toString('hex');
 
 function mockModule(filename, exports) {
@@ -552,7 +557,7 @@ test('雇佣：班次/槽位/成员/费用确认/余额逐项前置校验与官�
 });
 
 test('雇佣空位：等级容量减去有效班次，稀疏列表和到期残留在读取与写前校验中一致', async () => {
-  // 注入时钟落后真实墙钟一小时（仍在营业窗口内）：表值与 env.deps.now 同源，避免异步装配跨整秒后未来班次提前到截止
+  // 注入时钟落后固定营业锚一小时（仍在营业窗口内）：表值与 env.deps.now 同源，避免装配耗时推进时钟后未来班次提前到截止
   const fixtureClock = nowSec() - 3600;
   const cases = [
     { name: '一级空列表', level: 1, slots: [], free: [0] },

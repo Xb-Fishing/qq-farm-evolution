@@ -14,6 +14,22 @@ const { createActivityReadCache } = require('../src/controllers/activity-read-ca
 const workerSrc = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
 const rejectionOf = promise => promise.then(() => null, err => err);
 
+// 固定营业 UTC 锚（与 milk-tea-operate.test.js 同源，2026-10-20T12:00:00Z）：
+// 仅在测试依赖适配层为真实 milk-tea service 的三个入口注入固定 now（毫秒），
+// 官方公告结算兜底（2026-11-14T16:00:00Z）相对该锚保持未来；真实
+// service/proto codec/Worker handleApiCall/manager/provider/三路由与两种 wire
+// 序列化全部保持原链路，不全局改 Date。
+const ANCHOR_NOW_MS = Math.floor(Date.parse('2026-10-20T12:00:00Z') / 1000) * 1000;
+function withFixedMilkTeaClock(service) {
+  const now = () => ANCHOR_NOW_MS;
+  return {
+    ...service,
+    getMilkTeaActivity: (options = {}) => service.getMilkTeaActivity({ ...options, now }),
+    queryMilkTeaActivity: (kind, params = {}, deps = {}) => service.queryMilkTeaActivity(kind, params, { ...deps, now }),
+    runManualMilkTeaAction: (action, input = {}, deps = {}) => service.runManualMilkTeaAction(action, input, { ...deps, now }),
+  };
+}
+
 for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structuredClone(value)]) test('festival refusal travels through real Worker, manager, provider and route as a business 400', async () => {
   await loadProto();
   const ws = { readyState: 1 }; const calls = []; const responses = [];
@@ -308,7 +324,7 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
     let ready = true;
     const responses = [];
     const sandbox = { isRunning: true, loginReady: true, friendSyncPaused: false, getWs: () => ws, isConnected: () => ready, sendToMaster: message => responses.push(message), log: () => {}, require: request => {
-      if (request === '../services/milk-tea-activity') return service;
+      if (request === '../services/milk-tea-activity') return withFixedMilkTeaClock(service);
       if (request === '../services/warehouse') return { getBag: async () => ({ items: [{ id: 1042, count: 10 }] }), getBagItems: bag => bag.items };
       if (request === '../services/operation-error-meta') return require('../src/services/operation-error-meta');
       throw new Error(`unexpected worker dependency: ${request}`);
