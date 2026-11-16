@@ -324,13 +324,18 @@ if (require.main === module) {
     await store.fetchMilkTeaActivity('acc-1'); store.clearActivityData();
     assert.equal(store.activityRetired.milkTea, null); store.cancelActivityReads();
   });
-  test('真实默认页面无旧活动/介绍/横幅/请求；挂载与普通刷新仅读奶茶快照', async () => {
+  test('真实默认页面无旧活动/介绍/横幅/请求；奶茶与召回各自有界读取', async () => {
     const api = apiMock(); api.setGet(async () => ({ data: { ok: true, activity: snapshot() } }));
     const page = mountActivityPage(api); await flush();
     assert.doesNotMatch(textOf(page.root), /S3|萌宠|秋祈|稚萌熊熊/);
-    assert.ok(api.calls.get.length >= 1); assert.ok(api.calls.get.every(c => c.url === '/api/activity/milk-tea'));
+    assert.equal(api.calls.get.filter(c => c.url === '/api/activity/milk-tea').length, 1);
+    assert.equal(api.calls.get.filter(c => c.url === '/api/activity/friend-recall').length, 1);
+    assert.equal(api.calls.get.length, 2);
     assert.equal(api.calls.post.length, 0);
     click(buttonsOf(page.root).find(b => textOf(b).trim() === '刷新')); await flush();
+    assert.equal(api.calls.get.filter(c => c.url === '/api/activity/milk-tea').length, 2);
+    assert.equal(api.calls.get.filter(c => c.url === '/api/activity/friend-recall').length, 2);
+    assert.equal(api.calls.get.length, 4);
     assert.equal(api.calls.post.length, 0); render(null, page.root);
   });
 }

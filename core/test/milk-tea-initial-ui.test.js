@@ -28,12 +28,16 @@ test('one initial GET fills actual gameplay and actions; no extra query POST or 
   const text = textOf(page.root);
   for (const value of ['奶茶券：17', '宣传喇叭：2', '甜莓奶茶', '森野甜莓', '当前没有进行中的班次', '工资 40', '可领取', '基金未解锁']) assert.ok(text.includes(value), value);
   assert.doesNotMatch(text, /班次店铺 待确认|资格待确认/);
-  assert.equal(api.calls.get.length, 1); assert.equal(api.calls.post.length, 0);
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/milk-tea').length, 1);
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length, 1);
+  assert.equal(api.calls.get.length, 2); assert.equal(api.calls.post.length, 0);
   click(buttonsOf(page.root).find(b => textOf(b).trim() === '领取收银台')); await vue.nextTick();
   assert.equal(api.calls.post.length, 0, 'opening confirmation is not a write');
   click(buttonsOf(page.root).find(b => textOf(b).trim() === '确认执行')); await flush();
   assert.equal(api.calls.post.length, 1); assert.equal(api.calls.post[0].body.action, 'claimCashier');
-  assert.equal(api.calls.get.length, 2, 'confirmed success refreshes the same bounded overview once');
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/milk-tea').length, 2, 'confirmed success refreshes the same bounded overview once');
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length, 1);
+  assert.equal(api.calls.get.length, 3);
 });
 
 test('an offline account shows the actual error and cannot operate placeholder controls', async () => {

@@ -1,3 +1,4 @@
+const { registerAdminFriendRecallActivityRoutes } = require('./admin-friend-recall-activity-routes');
 const { registerAdminMilkTeaActivityRoutes } = require('./admin-milk-tea-activity-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 const { registerAdminOfficialAnnouncementRoutes } = require('./admin-official-announcement-routes');
@@ -26,6 +27,7 @@ function registerAdminActivityRoutes({
     activityReader: createActivityReadCache(),
   };
 
+  registerAdminFriendRecallActivityRoutes(routeContext);
   registerAdminMilkTeaActivityRoutes(routeContext);
   registerAdminSolarCalendarRoutes(routeContext);
   registerAdminOfficialAnnouncementRoutes(routeContext);

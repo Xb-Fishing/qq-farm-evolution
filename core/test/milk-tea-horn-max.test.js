@@ -320,6 +320,7 @@ test('refreshed inventory supplies the next maximum and stale over-stock selecti
 
 test('real Activity page MAX sends no POST; one confirmed boost keeps its existing GET refresh and uses new inventory', async () => {
   const api = h.apiMock();
+  const milkReads = () => api.calls.get.filter(call => call.url === '/api/activity/milk-tea').length;
   let stock = 7;
   api.setGet(async () => ({ data: { ok: true, activity: activityWithStock(stock) } }));
   api.setPost(async (url, body) => {
@@ -331,12 +332,14 @@ test('real Activity page MAX sends no POST; one confirmed boost keeps its existi
   const page = h.mountActivityPage(api);
   roots.add(page.root);
   await h.waitFor(() => maximum(page.root).props.disabled === false, 'initial activity inventory');
-  assert.equal(api.calls.get.length, 1);
+  assert.equal(milkReads(), 1);
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length, 1);
   h.click(maximum(page.root));
   await h.vue.nextTick();
   await h.flush();
   assert.equal(Number(quantityValue(page.root)), 7);
-  assert.equal(api.calls.get.length, 1, 'MAX must not refresh');
+  assert.equal(milkReads(), 1, 'MAX must not refresh');
+  assert.equal(api.calls.get.length, 2, 'MAX does not refresh either activity');
   assert.equal(api.calls.post.length, 0, 'MAX must not query or operate');
   setQuantity(page.root, 2);
   await h.vue.nextTick();
@@ -344,21 +347,24 @@ test('real Activity page MAX sends no POST; one confirmed boost keeps its existi
   await h.vue.nextTick();
   assert.equal(api.calls.post.length, 0);
   h.click(button(page.root, '确认执行'));
-  await h.waitFor(() => api.calls.get.length === 2 && quantity(page.root).props.max === 5
+  await h.waitFor(() => milkReads() === 2 && quantity(page.root).props.max === 5
     && maximum(page.root).props.disabled === false, 'successful boost refresh');
   assert.equal(api.calls.post.length, 1);
-  assert.ok(api.calls.get.every(call => call.url === '/api/activity/milk-tea'));
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length, 1);
+  assert.equal(api.calls.get.length, 3);
   h.click(maximum(page.root));
   await h.vue.nextTick();
   assert.equal(Number(quantityValue(page.root)), 5);
   assert.equal(api.calls.post.length, 1);
   stock = 101;
   h.click(button(page.root, '刷新活动'));
-  await h.waitFor(() => api.calls.get.length === 3 && quantity(page.root).props.max === 100
+  await h.waitFor(() => milkReads() === 3 && quantity(page.root).props.max === 100
     && maximum(page.root).props.disabled === false, 'manual inventory refresh');
   h.click(maximum(page.root));
   await h.vue.nextTick();
   assert.equal(Number(quantityValue(page.root)), 100);
   assert.equal(api.calls.post.length, 1, 'refresh and the next MAX add no query or boost');
   assert.equal(api.calls.post[0].accountId, 'acc-1');
+  assert.equal(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length, 1);
+  assert.equal(api.calls.get.length, 4);
 });

@@ -3437,6 +3437,8 @@ void [
 ];
 
 module.exports = {
+  FRIEND_RECALL_ROOT_ACTIVITY_ID: 2026111800,
+  FRIEND_RECALL_ACTIVITY_ID: 2026111801,
   ...bearActivity,
   ...seasonWishActivities,
   ...milkTeaActivity,

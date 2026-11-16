@@ -2,17 +2,20 @@
 import type { MilkTeaQueryKind } from '@/stores/activity'
 import { storeToRefs } from 'pinia'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import FriendRecallActivityPanel from '@/components/activity/FriendRecallActivityPanel.vue'
 import GameUpdatePanel from '@/components/activity/GameUpdatePanel.vue'
 import FestivalSignInPanel from '@/components/activity/FestivalSignInPanel.vue'
-// 上一期 BearActivityPanel 已退役；只保留历史迁移定位，默认页面仅挂载当前奶茶面板。
+// 上一期 BearActivityPanel 已退役；只保留历史迁移定位，默认页面挂载当前奶茶面板与故友重逢规则。
 import MilkTeaActivityPanel from '@/components/activity/MilkTeaActivityPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useActivityStore } from '@/stores/activity'
+import { useFriendRecallStore } from '@/stores/friend-recall'
 import { useToastStore } from '@/stores/toast'
 
 const accountStore = useAccountStore()
 const activityStore = useActivityStore()
+const friendRecallStore = useFriendRecallStore()
 const toast = useToastStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { milkTeaActivity, milkTeaLoading, milkTeaError, milkTeaOperating, milkTeaQueries } = storeToRefs(activityStore)
@@ -48,8 +51,10 @@ const retiredKinds = computed(() => milkTeaRetired.value ? ['milkTea'] as const 
 const hasVisibleActivity = computed(() => !milkTeaRetired.value)
 let viewGeneration = 0
 async function refreshAll() {
-  if (currentAccountId.value)
-    await activityStore.fetchMilkTeaActivity(String(currentAccountId.value))
+  if (currentAccountId.value) {
+    const id = String(currentAccountId.value)
+    await Promise.allSettled([activityStore.fetchMilkTeaActivity(id), friendRecallStore.refresh(id)])
+  }
 }
 function isSilentReadResult(result: any) {
   return result?.retired === true || result?.unavailable === true || result?.cancelled === true
@@ -123,6 +128,7 @@ async function recheck(kind: 'milkTea') {
 onBeforeUnmount(() => {
   activityViewAlive = false
   ++viewGeneration
+  friendRecallStore.cancel()
   activityStore.cancelClaimAll()
   activityStore.cancelActivityReads()
 })
@@ -131,11 +137,13 @@ watch(currentAccountId, () => {
   ++viewGeneration
   operationFeedback.value = null
   showActivityManagement.value = false
+  friendRecallStore.bind(String(currentAccountId.value || ''))
   activityStore.clearActivityData()
   refreshAll()
-})
+}, { flush: 'sync' })
 // 进入页面先同步清扫已过期的落地快照（零请求，不展示过期缓存），再正常刷新
 onMounted(() => {
+  friendRecallStore.bind(String(currentAccountId.value || ''))
   activityStore.sweepExpiredActivities()
   refreshAll()
 })
@@ -174,6 +182,7 @@ onMounted(() => {
     <template v-else>
       <nav class="activity-nav" aria-label="活动快速导航">
         <a v-if="!milkTeaRetired" href="#milk-shop">奶茶小店</a>
+        <a v-if="friendRecallStore.activity?.available" href="#friend-recall">故友重逢</a>
         <a href="#festival-sign-in">节日签到与节令日历</a>
       </nav>
       <div v-if="milkTeaError && !milkTeaRetired" class="act-alert act-alert-error" role="alert">
@@ -237,9 +246,10 @@ onMounted(() => {
         </div>
       </section>
       <MilkTeaActivityPanel v-if="!milkTeaRetired" :key="String(currentAccountId)" :activity="milkTeaActivity" :loading="milkTeaLoading" :operating="milkTeaOperating || (claimAllRunning ? 'claimAll' : '')" :queries="milkTeaQueries" @refresh="refreshMilkTea" @query="queryMilkTea" @operate="operateMilkTea" />
+      <FriendRecallActivityPanel :activity="friendRecallStore.activity" :loading="friendRecallStore.loading" :error="friendRecallStore.error" @refresh="friendRecallStore.refresh(String(currentAccountId))" />
       <GameUpdatePanel :key="`update-${currentAccountId}`" :account-id="String(currentAccountId || '')" />
       <FestivalSignInPanel :key="`festival-${currentAccountId}`" :account-id="String(currentAccountId)" />
-      <p v-if="!hasVisibleActivity" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
+      <p v-if="!hasVisibleActivity && !friendRecallStore.activity?.available" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
         当前奶茶活动已结束；节日签到仍可在上方独立查询。
       </p>
       <div v-if="retiredKinds.length" class="text-sm text-gray-500 dark:text-gray-400">
