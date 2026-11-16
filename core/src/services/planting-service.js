@@ -574,7 +574,7 @@ async function plantPrioritized2x2Crops(emptyLandIds, lands, accountId) {
  * 在指定地块种植指定种子
  * @param {number} seedId - 种子 ID
  * @param {number[]} landIds - 地块 ID 列表
- * @param {object} options - { maxPlantCount }
+ * @param {object} options - { maxPlantCount, stopOnError }
  * @returns {{ planted, plantedLandIds, occupiedLandIds }} 种植结果
  */
 async function plantSeeds(seedId, landIds, options = {}) {
@@ -612,6 +612,7 @@ async function plantSeeds(seedId, landIds, options = {}) {
       }
     } catch (err) {
       logWarn('种植', `土地#${landId} 失败: ${err.message}`);
+      if (options.stopOnError === true) break;
     }
     if (ids.length > 1) await pauseSeconds(getPlantDelaySeconds(accountId));
   }
@@ -711,7 +712,7 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
     );
     if (maxCount <= 0) continue;
 
-    const plantResult = await plantSeeds(seed.seedId, remainingIds, { maxPlantCount: maxCount });
+    const plantResult = await plantSeeds(seed.seedId, remainingIds, { maxPlantCount: maxCount, stopOnError: true });
     const occupiedIds = (Array.isArray(plantResult.occupiedLandIds) ? plantResult.occupiedLandIds : [])
       .map(Number).filter(id => id > 0);
     const plantedIds = (Array.isArray(plantResult.plantedLandIds) ? plantResult.plantedLandIds : [])
@@ -733,6 +734,7 @@ async function plantFromBagSeeds(emptyLandIds, accountId = getCurrentAccountId()
         module: 'farm', event: '种植种子', result: 'partial_bag_failure',
         seedId: seed.seedId, requested: maxCount, planted: plantResult.planted
       });
+      break;
     }
   }
 

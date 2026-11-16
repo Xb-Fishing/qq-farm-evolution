@@ -107,7 +107,8 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
     assert.equal(config.isSeedItem(id), false);
     assert.equal(config.getPlantBySeedId(id), undefined);
   }
-  const originalItems = items.filter(x => ![22254, 42254].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
+  // The item-only pasture seed is independently covered by bag-seed-safety.test.js.
+  const originalItems = items.filter(x => ![22254, 42254, 20040].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
     && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id) && !oilTeaItems.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
