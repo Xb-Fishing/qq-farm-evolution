@@ -1,5 +1,5 @@
 'use strict';
-// 当前奶茶活动真实 store/SFC 渲染夹具；网络完全替身。
+// 当前生产加载器与显式退役奶茶历史夹具；网络完全替身。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -32,6 +32,8 @@ function assertWriteInsidePrivateDir(target) {
 
 // 候选源码指纹：全部用例（含失败路径）结束后内容与权限不得被夹具改变
 const CANDIDATE_SOURCES = [
+  path.resolve(__dirname, 'fixtures/retired-milk-tea-store.ts'),
+  path.resolve(__dirname, 'fixtures/RetiredMilkTeaView.vue'),
   path.join(repoRoot, 'web', 'src', 'stores', 'activity.ts'),
   path.join(repoRoot, 'web', 'src', 'views', 'Activity.vue'),
   path.join(repoRoot, 'web', 'src', 'components', 'activity', 'MilkTeaActivityPanel.vue'),
@@ -263,7 +265,29 @@ function storeHarness(timing = {}) {
   return { store, api, accountState };
 }
 
-function mountActivityPage(api, sharedPinia) {
+// Explicit fixed history fixture; never used as the current production store.
+function historicalStoreHarness(timing = {}) {
+  const api = apiMock();
+  const accountState = { currentAccountId: 'acc-1' };
+  const resolve = (spec) => {
+    if (spec === 'vue')
+      return vue;
+    if (spec === 'pinia')
+      return pinia;
+    if (spec === '@/api')
+      return { __esModule: true, default: api.instance };
+    if (spec === '@/stores/account')
+      return { useAccountStore: () => accountState };
+    return undefined;
+  };
+  const mod = evaluateModule(
+    fs.readFileSync(path.resolve(__dirname, 'fixtures/retired-milk-tea-store.ts'), 'utf8'), resolve, 'activity.ts', timing,
+  );
+  const store = mod.useActivityStore(pinia.createPinia());
+  return { store, api, accountState };
+}
+
+function mountActivityPage(api, sharedPinia, historical = false) {
   const toastLog = [];
   const testPinia = sharedPinia || pinia.createPinia();
   pinia.setActivePinia(testPinia);
@@ -274,6 +298,8 @@ function mountActivityPage(api, sharedPinia) {
   }));
   const stubComponent = { render: () => null };
   const resolve = (spec) => {
+    if (historical && spec === '@/stores/activity')
+      return evaluateModule(fs.readFileSync(path.resolve(__dirname, 'fixtures/retired-milk-tea-store.ts'), 'utf8'), resolve, 'retired-activity.ts');
     if (spec === 'vue')
       return vue;
     if (spec === 'vue-router')
@@ -289,7 +315,7 @@ function mountActivityPage(api, sharedPinia) {
     return undefined;
   };
   accountRef = vue.toRef(useAccountStore(testPinia), 'currentAccountId');
-  const Activity = compileSfcModule(path.join(WEB, 'src/views/Activity.vue'), resolve);
+  const Activity = compileSfcModule(historical ? path.resolve(__dirname, 'fixtures/RetiredMilkTeaView.vue') : path.join(WEB, 'src/views/Activity.vue'), resolve);
   const root = makeNode('root');
   livePageRoots.push(root); // 套件收尾统一卸载（含用例失败路径）
   render(vue.h(Activity), root);
@@ -297,13 +323,15 @@ function mountActivityPage(api, sharedPinia) {
 }
 
 
+function mountHistoricalActivityPage(api, sharedPinia) { return mountActivityPage(api, sharedPinia, true); }
+
 function snapshot(extra = {}) {
   return { title: '奶茶热销中', timing: { endTime: 0, phase: 'open' }, summary: {}, rules: [], ...extra };
 }
-module.exports = { vue, pinia, WEB, compileSfcModule, evaluateModule, render, makeNode, textOf, findAll, buttonsOf, click, flush, waitFor, storeHarness, mountActivityPage, apiMock, deferred, snapshot, privateDir, assertWriteInsidePrivateDir, isInsideOrEqualDir, fingerprintsBefore, fingerprintOf };
+module.exports = { vue, pinia, WEB, compileSfcModule, evaluateModule, render, makeNode, textOf, findAll, buttonsOf, click, flush, waitFor, storeHarness, historicalStoreHarness, mountActivityPage, mountHistoricalActivityPage, apiMock, deferred, snapshot, privateDir, assertWriteInsidePrivateDir, isInsideOrEqualDir, fingerprintsBefore, fingerprintOf };
 if (require.main === module) {
-  test('unavailable 撤下奶茶活动；普通刷新/一键零新增读写；手动重查仅一次', async () => {
-    const { store, api } = storeHarness();
+  test('历史奶茶：unavailable 撤下奶茶活动；普通刷新/一键零新增读写；手动重查仅一次', async () => {
+    const { store, api } = historicalStoreHarness();
     api.setGet(async () => ({ data: { ok: false, unavailable: true } }));
     await store.fetchMilkTeaActivity('acc-1');
     await store.fetchMilkTeaActivity('acc-1'); await store.runClaimAll('acc-1');
@@ -314,8 +342,8 @@ if (require.main === module) {
     assert.equal(api.calls.get.length, 2); assert.equal(store.activityRetired.milkTea, null);
     store.cancelActivityReads();
   });
-  test('未知截止、enabled=false、普通失败与空状态不冒充下架；切号清除归属', async () => {
-    const { store, api } = storeHarness();
+  test('历史奶茶：未知截止、enabled=false、普通失败与空状态不冒充下架；切号清除归属', async () => {
+    const { store, api } = historicalStoreHarness();
     for (const data of [{ ok: true, activity: snapshot({ enabled: false }) }, { ok: false, error: 'offline' }, { ok: true, activity: null }]) {
       api.setGet(async () => ({ data }));
       await store.fetchMilkTeaActivity('acc-1'); assert.equal(store.activityRetired.milkTea, null);
@@ -324,9 +352,9 @@ if (require.main === module) {
     await store.fetchMilkTeaActivity('acc-1'); store.clearActivityData();
     assert.equal(store.activityRetired.milkTea, null); store.cancelActivityReads();
   });
-  test('真实默认页面无旧活动/介绍/横幅/请求；奶茶与召回各自有界读取', async () => {
+  test('历史奶茶：真实默认页面无旧活动/介绍/横幅/请求；奶茶与召回各自有界读取', async () => {
     const api = apiMock(); api.setGet(async () => ({ data: { ok: true, activity: snapshot() } }));
-    const page = mountActivityPage(api); await flush();
+    const page = mountHistoricalActivityPage(api); await flush();
     assert.doesNotMatch(textOf(page.root), /S3|萌宠|秋祈|稚萌熊熊/);
     assert.equal(api.calls.get.filter(c => c.url === '/api/activity/milk-tea').length, 1);
     assert.equal(api.calls.get.filter(c => c.url === '/api/activity/friend-recall').length, 1);
@@ -340,7 +368,7 @@ if (require.main === module) {
   });
 }
 
-if (require.main === module) test('夹具写边界：越界零创建零写，合法可写；权限选择真实不同值并恢复', () => {
+if (require.main === module) test('历史奶茶：夹具写边界：越界零创建零写，合法可写；权限选择真实不同值并恢复', () => {
   const count = { mkdir:0, write:0 };
   const write = (target, content) => { const dest=assertWriteInsidePrivateDir(target); count.mkdir++;fs.mkdirSync(path.dirname(dest),{recursive:true});count.write++;fs.writeFileSync(dest,content); };
   const source=CANDIDATE_SOURCES[0], before=fingerprintOf(source);

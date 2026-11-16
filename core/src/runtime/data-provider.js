@@ -68,7 +68,7 @@ function createDataProvider(deps) {
 
     return {
         getGamePanelReadScope: (ref) => {
-            const id = resolveAccountId(ref), account = findAccount(id), worker = workers[id];
+            const id = resolveAccountId(ref); const account = findAccount(id); const worker = workers[id];
             if (!account || !worker || worker.status?.connection?.connected !== true) throw new Error('账号连接状态未知');
             if (!panelWorkerIds.has(worker)) panelWorkerIds.set(worker, ++panelWorkerSequence);
             const facts = worker.process?.sessionFacts;
@@ -248,11 +248,8 @@ function createDataProvider(deps) {
         getGameUpdateEvidence: (ref, options) => callWorkerApi(resolveAccountId(ref), 'getGameUpdateEvidence', options || {}, { _timeoutMs: 120000 }),
         getActivityGroupSnapshot: (ref, activityId, uid = '') => callWorkerApi(resolveAccountId(ref), 'getActivityGroupSnapshot', activityId, uid),
         // 奶茶热销中（S4）：默认只读快照 + 显式查询 + 面板手动操作
-        getMilkTeaActivity: (ref) => callWorkerApi(resolveAccountId(ref), 'getMilkTeaActivity'),
         getSolarCalendar: (ref) => callWorkerApi(resolveAccountId(ref), 'getSolarCalendar'),
         operateSolarCalendar: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateSolarCalendar', action, input),
-        queryMilkTeaActivity: (ref, kind, params) => callWorkerApi(resolveAccountId(ref), 'queryMilkTeaActivity', kind, params),
-        operateMilkTea: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMilkTea', action, input),
         // S3 萌宠 / 秋祈良愿 / 快乐不独享已随 S4 轮换下架（2026-10-15 退役）：
         // getBearActivity/getWishActivity/getHappyShareActivity/operatePetDiary/
         // operateSeasonWish 转发与对应 Worker case 一并移除，旧链路不可达。

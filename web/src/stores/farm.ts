@@ -13,6 +13,7 @@ export interface Land {
   plantImage?: string
   status: string
   matureInSec: number
+  matureAtSec?: number
   phaseStartTime?: number
   phaseEndTime?: number
   needWater?: boolean
@@ -47,22 +48,25 @@ export const useFarmStore = defineStore('farm', () => {
     return currentId === String(accountId)
   }
 
-  async function fetchLands(accountId: string) {
+  async function fetchLands(accountId: string, errorFeedback: 'global' | 'consumer' = 'global') {
     if (!accountId)
-      return
+      return false
     const requestedId = String(accountId)
     const sequence = ++landsReadSequence
     loading.value = true
     try {
       const { data } = await api.get('/api/lands', {
+        errorFeedback,
         headers: { 'x-account-id': accountId },
       })
       if (sequence !== landsReadSequence || !isCurrentAccount(requestedId))
-        return
+        return false
       if (data && data.ok) {
         lands.value = data.data.lands || []
         summary.value = data.data.summary || {}
+        return true
       }
+      return false
     }
     finally {
       if (sequence === landsReadSequence && isCurrentAccount(requestedId))
@@ -169,9 +173,21 @@ export const useFarmStore = defineStore('farm', () => {
   }
 
   return {
-    lands, summary, seeds, loading,
-    dogSkillGiftPendingCount, dogSkillGiftLoading, dogSkillGiftError,
-    clearFarmData, fetchLands, fetchSeeds, fetchDogSkillGiftStatus, claimDogSkillGifts,
-    operate, fertilizeLand, removePlant, removeAllPlants,
+    lands,
+    summary,
+    seeds,
+    loading,
+    dogSkillGiftPendingCount,
+    dogSkillGiftLoading,
+    dogSkillGiftError,
+    clearFarmData,
+    fetchLands,
+    fetchSeeds,
+    fetchDogSkillGiftStatus,
+    claimDogSkillGifts,
+    operate,
+    fertilizeLand,
+    removePlant,
+    removeAllPlants,
   }
 })

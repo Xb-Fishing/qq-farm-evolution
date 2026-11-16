@@ -5,6 +5,12 @@ import { currentFeedbackTrace, recordClientFailure } from '@/utils/daily-feedbac
 import { requestOperation } from '@/utils/request-diagnostics'
 import { resolveSafeRedirect } from '@/utils/safe-redirect'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    errorFeedback?: 'global' | 'consumer'
+  }
+}
+
 const tokenRef = useStorage('admin_token', '')
 const accountIdRef = useStorage('current_account_id', '')
 
@@ -46,6 +52,7 @@ api.interceptors.response.use((response) => {
 
   const toast = useToastStore()
 
+  const consumerFeedback = error.config?.errorFeedback === 'consumer'
   const operation = requestOperation(error.config?.method, error.config?.url)
   if (error.response) {
     const backendError = String(error.response.data?.error || error.response.data?.message || '')
@@ -67,14 +74,18 @@ api.interceptors.response.use((response) => {
       if (backendError === '账号未运行' || backendError === 'API Timeout' || backendError === 'Request Timeout') {
         return Promise.reject(error)
       }
-      toast.error(`服务器错误 ${error.response.status} ${error.response.statusText}`)
+      if (!consumerFeedback)
+        toast.error(`服务器错误 ${error.response.status} ${error.response.statusText}`)
     }
     else {
-      toast.error(backendError || `请求失败（${error.response.status}）`)
+      if (!consumerFeedback)
+        toast.error(backendError || `请求失败（${error.response.status}）`)
     }
   }
   else if (error.request) {
     recordClientFailure(error.code === 'ECONNABORTED' ? 'request_timeout' : 'network_error', { operation, failurePhase: 'transport' })
+    if (consumerFeedback)
+      return Promise.reject(error)
     if (error.code === 'ECONNABORTED') {
       showNetworkToast('请求超时，请稍后重试')
     }
@@ -83,7 +94,8 @@ api.interceptors.response.use((response) => {
     }
   }
   else {
-    toast.error(`错误: ${error.message}`)
+    if (!consumerFeedback)
+      toast.error(`错误: ${error.message}`)
   }
 
   return Promise.reject(error)

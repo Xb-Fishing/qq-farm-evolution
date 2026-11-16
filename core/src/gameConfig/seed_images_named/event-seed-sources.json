@@ -47,6 +47,17 @@
         "core/src/gameConfig/ItemInfo.json",
         "core/src/gameConfig/solar-calendar.json"
       ]
+    },
+    {
+      "repositoryAlias": "public-reference-2",
+      "commit": "545bbcfd209546ffc1594e65cd6d32d30137cddd",
+      "description": "固定客户端提取快照：牧草种子与牧草逐行配置及同逻辑资产专属图片；来源等级与哈希见本表登记，不冒称官方CDN实测。",
+      "files": [
+        "core/src/gameConfig/Plant.json",
+        "core/src/gameConfig/ItemInfo.json",
+        "core/src/gameConfig/seed_images_named/seed_images/20040.png",
+        "core/src/gameConfig/seed_images_named/seed_images/7001.png"
+      ]
     }
   ],
   "entries": [
@@ -2022,6 +2033,34 @@
       "sha256": "894fbefbbc0696f7cad299928cf284475c50065d0b962985110bb2136f92a150",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 20040,
+      "file": "20040_Crop_40_Seed.png",
+      "assetName": "Crop_40",
+      "kind": "seed",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "545bbcfd209546ffc1594e65cd6d32d30137cddd",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/20040.png",
+      "gitBlob": "a385b7213c40b9b9487005ef139a0dd7744bd73e",
+      "sha256": "501456ce9d53293847e9277f598a7c10585f1568d5ae469cfe1d08ae50bd7a5f",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 7001,
+      "file": "7001_Crop_40_Fruit.png",
+      "assetName": "Crop_40",
+      "kind": "fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "545bbcfd209546ffc1594e65cd6d32d30137cddd",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/7001.png",
+      "gitBlob": "a385b7213c40b9b9487005ef139a0dd7744bd73e",
+      "sha256": "501456ce9d53293847e9277f598a7c10585f1568d5ae469cfe1d08ae50bd7a5f",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
@@ -2250,5 +2289,44 @@
       "itemDisplayLevel": 41
     },
     "note": "当前自然背包的三个果实 ID 与官方逐行配置交叉；仅采纳目标行，不由编号推断。size null 复用同版已核验客户端单格默认及锚点，非未知种子的全局回退。黄金果实只补物品索引，不增加 Plant 或自动出售资格。"
+  },
+  "reviewedPasturePlantMapping": {
+    "reviewedAt": "2026-11-17",
+    "sourceGrade": "reviewed_public_client_snapshot",
+    "repositoryAlias": "public-reference-2",
+    "sourceCommit": "545bbcfd209546ffc1594e65cd6d32d30137cddd",
+    "configSources": [
+      {
+        "name": "Plant",
+        "sourcePath": "core/src/gameConfig/Plant.json",
+        "gitBlob": "46057ed01131733857292031c0c4ffd2fcde2eeb",
+        "sha256": "a36cc0a4ff813b1a536f48a277c6142da9b084d7e50f022b249df90437fbcf90"
+      },
+      {
+        "name": "ItemInfo",
+        "sourcePath": "core/src/gameConfig/ItemInfo.json",
+        "gitBlob": "4efa5e008fc617556d558f3acc0af59728ffb41f",
+        "sha256": "b69d10841b69a5b5cb7e94948d950319dce6038b10079982ac7365845006a659"
+      }
+    ],
+    "mapping": {
+      "seedId": 20040,
+      "plantId": 1020040,
+      "fruitId": 7001,
+      "fruitCount": 20,
+      "size": 1,
+      "sourceSize": null
+    },
+    "anchors": [
+      20516,
+      25995,
+      21625,
+      26030,
+      20435,
+      21072
+    ],
+    "sizeEvidence": "reviewed_client_default_single_plot",
+    "sizeRule": "复用既有已核客户端missing/null默认单格规则；本固定新版六个单格锚点逐行size:null，23个非默认四格仍显式size:2；仅为本条已匹配seed/plant/fruit登记size:1，不构成未知种子全局回退。",
+    "sellingPolicy": "7001新快照type6/sells1001:5与较早type101无售价有版本差异。保留官方当前元数据，但本地auto_sell=false保护动物口粮；普通果实出售策略不变。"
   }
 }

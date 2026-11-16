@@ -594,3 +594,30 @@ test('5006 不影响既有种子映射与通用回退集合', () => {
   assert.equal(getItemById(26030)?.name, '月下美人种子');
   assert.equal(getPlantBySeedId(26030)?.name, '月下美人');
 });
+
+test('7001 牧草为受保护口粮且不入种子；20040 已核验单格映射与专属图', () => {
+  assert.equal(getItemById(7001)?.name, '牧草');
+  assert.equal(getItemById(7001)?.type, 6);
+  assert.equal(getItemById(7001)?.auto_sell, false);
+  const quote = require('../src/services/manual-commerce').bagItemQuote(7001, [{ id: 7001, uid: 1, count: 5 }]);
+  assert.equal(quote.sellable, true);
+  assert.equal(quote.price, '5');
+  assert.equal(quote.priceId, 1001);
+  assert.notEqual(getItemById(7001)?.can_use, 1);
+  assert.notEqual(getItemById(7001)?.interaction_type, 'use');
+  assert.equal(isSeedItem(7001), false);
+  assert.equal(getPlantBySeedId(7001), undefined);
+  const seeds = getBagSeedsFromItems([{ id: 7001, count: 5 }, { id: 20040, count: 2 }, { id: 20001, count: 3 }]);
+  assert.deepEqual(seeds.map(seed => seed.seedId).sort((a, b) => a - b), [20001, 20040]);
+  const grass = seeds.find(seed => seed.seedId === 20040);
+  assert.equal(grass.name, '牧草种子');
+  assert.equal(grass.plantSize, 1);
+  assert.equal(grass.mappingStatus, 'mapped');
+  assert.equal(getPlantBySeedId(20040).id, 1020040);
+  assert.match(getItemImageById(20040), /20040_Crop_40_Seed\.png$/);
+  assert.equal(seeds.find(seed => seed.seedId === 20001).mappingStatus, 'mapped');
+  const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
+  const audit = auditBagSeedCoverage([{ id: 7001, count: 5 }, { id: 20040, count: 2 }], seeds);
+  assert.equal(audit.issues.some(issue => issue.itemId === 7001), false);
+  assert.equal(audit.issues.some(issue => issue.itemId === 20040), false);
+});

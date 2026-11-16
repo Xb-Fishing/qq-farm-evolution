@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import MilkTeaAutomationSettings from '@/components/settings/MilkTeaAutomationSettings.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -12,19 +11,6 @@ interface AutomationSettings {
     harvest: boolean
     plant: boolean
     task: boolean
-    milk_tea_auto_rewards: boolean
-    milk_tea_auto_seeds?: boolean
-    milk_tea_auto_work?: boolean
-    milk_tea_auto_upgrade?: boolean
-    milk_tea_work_interaction_type?: number
-    milk_tea_seed_policy?: {
-      targetSeedIds: number[]
-      targetStock: number
-      coinReserve: string
-      coinDailyLimit: string
-      ticketReserve: string
-      ticketDailyLimit: string
-    }
     sell: boolean
     friend: boolean
     farm_push: boolean
@@ -153,7 +139,6 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.harvest" label="自动收菜" />
         <BaseSwitch v-model="settings.automation.plant" label="自动种菜" />
         <BaseSwitch v-model="settings.automation.task" label="自动做任务" />
-        <BaseSwitch v-model="settings.automation.milk_tea_auto_rewards" label="奶茶自动领奖（满额收银、快乐值）" />
         <BaseSwitch v-model="settings.automation.sell" label="自动卖果实" />
         <BaseSwitch v-model="settings.automation.friend" label="自动好友互动" />
         <BaseSwitch v-model="settings.automation.farm_push" label="推送触发巡田" />
@@ -161,10 +146,10 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.fertilizer_gift" label="自动填充化肥" />
         <BaseSwitch v-model="settings.automation.fertilizer_buy_organic" label="自动购买有机化肥" />
         <BaseSwitch v-model="settings.automation.fertilizer_buy_normal" label="自动购买无机化肥" />
-        <div class="w-fit max-w-full inline-flex items-center gap-1.5">
+        <div class="max-w-full w-fit inline-flex items-center gap-1.5">
           <BaseSwitch v-model="settings.automation.mystery_shop_auto_buy" label="自动购买神秘商人商品" />
           <button
-            class="h-7 w-7 inline-grid shrink-0 place-items-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+            class="inline-grid h-7 w-7 shrink-0 place-items-center rounded-md text-gray-400 transition hover:bg-gray-100 dark:text-gray-500 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
             type="button"
             title="设置允许使用的货币"
             aria-label="设置神秘商人自动购买"
@@ -177,50 +162,72 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.golden_bug_clear" label="自动清除黄金虫" />
       </div>
 
-      <MilkTeaAutomationSettings v-model:automation="settings.automation" :account-id="currentAccountId" :template-mode="templateMode" />
-
       <Transition name="fade">
         <div v-if="mysteryShopSettingsVisible" class="fixed inset-0 z-50 grid place-items-center bg-gray-950/45 p-4 backdrop-blur-[2px]" @click.self="mysteryShopSettingsVisible = false">
-          <div class="w-full max-w-lg overflow-hidden border border-gray-200 rounded-2xl bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+          <div class="max-w-lg w-full overflow-hidden border border-gray-200 rounded-2xl bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
             <div class="flex items-start justify-between border-b border-gray-100 px-6 py-5 dark:border-gray-700">
               <div>
                 <div class="flex items-center gap-2">
-                  <span class="h-8 w-8 inline-grid place-items-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">
+                  <span class="inline-grid h-8 w-8 place-items-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">
                     <span class="i-carbon-store text-lg" />
                   </span>
-                  <h3 class="text-lg text-gray-900 font-semibold dark:text-gray-100">神秘商人自动购买</h3>
+                  <h3 class="text-lg text-gray-900 font-semibold dark:text-gray-100">
+                    神秘商人自动购买
+                  </h3>
                 </div>
-                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">选择自动购买时可以使用的货币。</p>
+                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                  选择自动购买时可以使用的货币。
+                </p>
               </div>
-              <button class="h-8 w-8 inline-grid shrink-0 place-items-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200" type="button" aria-label="关闭" @click="mysteryShopSettingsVisible = false">
+              <button class="inline-grid h-8 w-8 shrink-0 place-items-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200" type="button" aria-label="关闭" @click="mysteryShopSettingsVisible = false">
                 <span class="i-carbon-close text-xl" />
               </button>
             </div>
-            <div class="space-y-2 px-6 py-5">
+            <div class="px-6 py-5 space-y-2">
               <div class="flex items-center justify-between gap-4 border border-gray-200 rounded-xl px-4 py-3 dark:border-gray-700">
-                <div class="flex min-w-0 items-center gap-3">
-                  <span class="h-9 w-9 inline-grid shrink-0 place-items-center rounded-full bg-yellow-50 text-yellow-600 dark:bg-yellow-900/25 dark:text-yellow-300"><span class="i-carbon-currency-dollar text-lg" /></span>
-                  <div><div class="text-sm text-gray-800 font-medium dark:text-gray-100">金币</div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">允许使用金币自动购买</div></div>
+                <div class="min-w-0 flex items-center gap-3">
+                  <span class="inline-grid h-9 w-9 shrink-0 place-items-center rounded-full bg-yellow-50 text-yellow-600 dark:bg-yellow-900/25 dark:text-yellow-300"><span class="i-carbon-currency-dollar text-lg" /></span>
+                  <div>
+                    <div class="text-sm text-gray-800 font-medium dark:text-gray-100">
+                      金币
+                    </div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      允许使用金币自动购买
+                    </div>
+                  </div>
                 </div>
                 <BaseSwitch v-model="settings.automation.mystery_shop_allow_gold" />
               </div>
               <div class="flex items-center justify-between gap-4 border border-gray-200 rounded-xl px-4 py-3 dark:border-gray-700">
-                <div class="flex min-w-0 items-center gap-3">
-                  <span class="h-9 w-9 inline-grid shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/25 dark:text-blue-300"><span class="i-carbon-ticket text-lg" /></span>
-                  <div><div class="text-sm text-gray-800 font-medium dark:text-gray-100">点券</div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">允许使用点券自动购买</div></div>
+                <div class="min-w-0 flex items-center gap-3">
+                  <span class="inline-grid h-9 w-9 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/25 dark:text-blue-300"><span class="i-carbon-ticket text-lg" /></span>
+                  <div>
+                    <div class="text-sm text-gray-800 font-medium dark:text-gray-100">
+                      点券
+                    </div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      允许使用点券自动购买
+                    </div>
+                  </div>
                 </div>
                 <BaseSwitch v-model="settings.automation.mystery_shop_allow_coupon" />
               </div>
               <div class="flex items-center justify-between gap-4 border border-gray-200 rounded-xl px-4 py-3 dark:border-gray-700">
-                <div class="flex min-w-0 items-center gap-3">
-                  <span class="h-9 w-9 inline-grid shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-900/25 dark:text-emerald-300"><span class="i-carbon-crop-health text-lg" /></span>
-                  <div><div class="text-sm text-gray-800 font-medium dark:text-gray-100">金豆豆</div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">允许使用金豆豆自动购买</div></div>
+                <div class="min-w-0 flex items-center gap-3">
+                  <span class="inline-grid h-9 w-9 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-900/25 dark:text-emerald-300"><span class="i-carbon-crop-health text-lg" /></span>
+                  <div>
+                    <div class="text-sm text-gray-800 font-medium dark:text-gray-100">
+                      金豆豆
+                    </div><div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      允许使用金豆豆自动购买
+                    </div>
+                  </div>
                 </div>
                 <BaseSwitch v-model="settings.automation.mystery_shop_allow_gold_bean" />
               </div>
             </div>
             <div class="flex justify-end border-t border-gray-100 bg-gray-50/70 px-6 py-4 dark:border-gray-700 dark:bg-gray-900/20">
-              <BaseButton class="min-w-24" size="sm" @click="mysteryShopSettingsVisible = false">完成</BaseButton>
+              <BaseButton class="min-w-24" size="sm" @click="mysteryShopSettingsVisible = false">
+                完成
+              </BaseButton>
             </div>
           </div>
         </div>
@@ -241,7 +248,7 @@ const mysteryShopSettingsVisible = ref(false)
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400">
               <span class="text-amber-700 font-semibold dark:text-amber-300">仅微信账号可用。</span>
-              微信登录凭据会始终约 25-35 分钟滚动保活，在线时不会换 Code、不会重启。本开关只控制真实断线后的自动换 Code 与重登；QQ 账号会跳过。
+              微信登录凭据会持续检查，并按服务端有效期决定续期，在线时不会换 Code、不会重启。本开关只控制真实断线后的自动换 Code 与重登；QQ 账号会跳过。
             </p>
           </div>
 
@@ -297,21 +304,21 @@ const mysteryShopSettingsVisible = ref(false)
             </div>
             <button
               type="button"
-              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-600"
               @click="addKickoutValidMinutes(360)"
             >
               +6小时
             </button>
             <button
               type="button"
-              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-600"
               @click="addKickoutValidMinutes(1440)"
             >
               +24小时
             </button>
             <button
               type="button"
-              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-600"
               @click="settings.kickoutRelogin.validUntil = ''"
             >
               不限期

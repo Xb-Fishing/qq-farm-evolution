@@ -141,17 +141,27 @@ test('bag seed safety through real DTO, planting entry points and Plant codec', 
       assert.equal(state.calls.length, 3);
       assert.equal(bounded.planted, 2);
     });
-    await t.test('20040 is item-only with real audit footprint/icon gaps and zero automatic Plant', async () => {
+    await t.test('verified pasture seed uses ordinary single plots without shop fallback', async () => {
       reset([{ id: 20040, count: 2 }]);
-      const info = config.getItemById(20040);
-      assert.equal(info?.name, '牧草种子');
+      assert.equal(config.getPlantBySeedId(20040)?.size, 1);
+      const result = await planting.plantFromBagSeeds([1, 2]);
+      assert.equal(result.totalPlanted, 2);
+      assert.deepEqual(state.calls, [{ seedId: 20040, landIds: [1] }, { seedId: 20040, landIds: [2] }]);
+      assert.equal(state.shopCalls, 0);
+    });
+    await t.test('synthetic item-only seed retains real audit gaps and zero automatic Plant', async () => {
+      const unknownId = 940040;
+      config.registerRuntimeItem(unknownId, { name: '合成未知占地种子', type: 5, interaction_type: 'plant', evidence: 'synthetic item-only fixture; not production evidence' });
+      reset([{ id: unknownId, count: 2 }]);
+      const info = config.getItemById(unknownId);
+      assert.equal(info?.name, '合成未知占地种子');
       assert.equal(info.type, 5);
-      assert.equal(config.isSeedItem(20040), true);
-      assert.equal(config.getPlantBySeedId(20040), undefined);
-      assert.equal(config.getSeedImageBySeedId(20040), '');
+      assert.equal(config.isSeedItem(unknownId), true);
+      assert.equal(config.getPlantBySeedId(unknownId), undefined);
+      assert.equal(config.getSeedImageBySeedId(unknownId), '');
       const seeds = warehouse.getBagSeedsFromItems(state.items);
       assert.equal(seeds.length, 1);
-      assert.equal(seeds[0].name, '牧草种子');
+      assert.equal(seeds[0].name, '合成未知占地种子');
       assert.equal(seeds[0].plantSize, 0);
       assert.equal(seeds[0].mappingStatus, 'item_only');
       assert.deepEqual(auditBagSeedCoverage(state.items, seeds).issues.map(issue => issue.kind).sort(),

@@ -12,10 +12,10 @@ const { createDataProvider } = require('../src/runtime/data-provider');
 const { registerAdminMilkTeaActivityRoutes } = require('../src/controllers/admin-milk-tea-activity-routes');
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
 const { createMilkTeaRequestFeedbackStore, dayKeyOf, normalizeRecord } = require('../src/services/milk-tea-request-feedback');
-const { feedbackContext } = require('../src/services/daily-feedback');
 const { EventEmitter } = require('node:events');
 const { createFeedbackMiddleware } = require('../src/controllers/admin-feedback-routes');
-const workerSrc = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
+// Historical leaf route/API budget behavior; current parent/provider/Worker retirement has separate tests.
+const workerSrc = fs.readFileSync(path.join(__dirname, 'fixtures/RetiredMilkTeaView.vue'), 'utf8');
 const rejectionOf = promise => promise.then(() => null, err => err);
 
 // 固定营业 UTC 锚（与 milk-tea-operate.test.js 同源，2026-10-20T12:00:00Z）：
@@ -113,10 +113,14 @@ function buildBudgetFlowHarness(wire = value => JSON.parse(JSON.stringify(value)
       throw new Error(`unexpected worker dependency: ${request}`);
     } };
   const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));
-  {
-    proc.send = message => { proc.sent.push(message); if (message.type === 'api_call') Promise.resolve().then(async () => { await entry.handleApiCall(wire(message)); proc.emitMessage(wire(responses.at(-1))); }); };
-  }
+  proc.send = message => { proc.sent.push(message); if (message.type === 'api_call') Promise.resolve().then(async () => { await entry.handleApiCall(wire(message)); proc.emitMessage(wire(responses.at(-1))); }); };
   const provider = createDataProvider({ getAccounts: () => ({ accounts: [{ id: 'acct-1' }] }), callWorkerApi: manager.callWorkerApi });
+  // Explicit historical forwarding only; the current production provider has no such members.
+  Object.assign(provider, {
+    getMilkTeaActivity: ref => manager.callWorkerApi(ref, 'getMilkTeaActivity'),
+    queryMilkTeaActivity: (ref, kind, params) => manager.callWorkerApi(ref, 'queryMilkTeaActivity', kind, params),
+    operateMilkTea: (ref, action, input) => manager.callWorkerApi(ref, 'operateMilkTea', action, input),
+  });
   provider.getStatus = () => ({ connection: { connected: true } }); provider.isAccountRunning = async () => true;
   const sidecarData = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'milk-sidecar-'));
   const sidecarStore = createMilkTeaRequestFeedbackStore({ dataDir: sidecarData });
@@ -131,7 +135,7 @@ function buildBudgetFlowHarness(wire = value => JSON.parse(JSON.stringify(value)
   const genericRecords = [];
   const middleware = createFeedbackMiddleware({ hasAdminToken: () => true, feedback: { record: row => genericRecords.push(row) } });
   const invoke = async (url, body, { trace, aborted = false } = {}) => {
-    let status = 200; let data; let finished = 0;
+    let data; let finished = 0;
     const res = new EventEmitter(); res.statusCode = 200;
     res.status = function(value) { this.statusCode = value; return this; };
     res.json = value => { data = value; return res; };

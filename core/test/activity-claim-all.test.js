@@ -1,9 +1,10 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 'use strict';
 // 当前活动沿真实 store / SFC 入口回归；退役活动不再参与领取计划。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./activity-availability.test');
-const { storeHarness, snapshot, deferred, flush, mountActivityPage, apiMock, buttonsOf, click, textOf, render } = h;
+const { historicalStoreHarness, snapshot, deferred, flush, mountHistoricalActivityPage, apiMock, buttonsOf, click, textOf, render } = h;
 const before = { currentScore: 10, daily: { claimedCount: 0, claimLimit: 1, rewardClaimed: false }, milestones: [{ state: 1, threshold: 20 }] };
 const after = { currentScore: 30, daily: { claimedCount: 1, claimLimit: 1, rewardClaimed: true }, milestones: [{ state: 2, threshold: 20 }] };
 function ready(api) {
@@ -13,7 +14,7 @@ function ready(api) {
 }
 
 test('一键包含独立首次分享，好友包次数已满也不阻止每日奖励，成功后重读再领档位', async () => {
-  const { store, api } = storeHarness(); let reads = 0;
+  const { store, api } = historicalStoreHarness(); let reads = 0;
   api.setGet(async () => ({ data: { ok: true, activity: snapshot({ shareReward: {
     currentScore: 30, daily: { rewardClaimed: ++reads > 1, firstShareAwarded: reads > 2, claimedCount: 5, claimLimit: 5 },
     milestones: [{ id: 1, state: 2, threshold: 20 }],
@@ -26,7 +27,7 @@ test('一键包含独立首次分享，好友包次数已满也不阻止每日�
 
 test('首次分享已被领取的零写拒绝会刷新后继续档位，未知结果则停止', async () => {
   for (const already of [true, false]) {
-    const { store, api } = storeHarness(); let read = 0;
+    const { store, api } = historicalStoreHarness(); let read = 0;
     api.setGet(async () => ({ data: { ok: true, activity: snapshot({ shareReward: { currentScore: 30, daily: { rewardClaimed: true, firstShareAwarded: ++read > 1 }, milestones: [{ id: 1, threshold: 20, state: 2 }] } }) } }));
     api.setPost(async (_url, body) => {
       if (body.action === 'shareFirst') {
@@ -42,7 +43,7 @@ test('首次分享已被领取的零写拒绝会刷新后继续档位，未知�
 });
 
 test('一键真实store：每日→重读→档位→收尾；再次运行不重放成功项', async () => {
-  const { store, api } = storeHarness(); ready(api);
+  const { store, api } = historicalStoreHarness(); ready(api);
   assert.equal((await store.runClaimAll('acc-1')).successCount, 2);
   assert.deepEqual(api.calls.post.map(c => c.body.action), ['shareDaily', 'shareMilestones']);
   api.setGet(async () => ({ data: { ok: true, activity: snapshot({ shareReward: { ...after, milestones: [{ state: 3, threshold: 20 }] } }) } }));
@@ -52,14 +53,14 @@ test('一键真实store：每日→重读→档位→收尾；再次运行不重
 
 test('一键无资格、读取普通失败、非严格ok和空快照均零写', async () => {
   for (const data of [{ ok: true, activity: snapshot() }, { ok: false }, { ok: 'true', activity: snapshot({ shareReward: before }) }, { ok: true, activity: null }]) {
-    const { store, api } = storeHarness(); api.setGet(async () => ({ data }));
+    const { store, api } = historicalStoreHarness(); api.setGet(async () => ({ data }));
     await store.runClaimAll('acc-1'); assert.equal(api.calls.post.length, 0); assert.equal(store.claimAllRunning, false); store.cancelActivityReads();
   }
 });
 
 test('一键每日未知/fulfilled但ok=false/抛错停止依赖领取；不重试、保留明细', async () => {
   for (const fail of [{ ok: false, outcome: 'unknown' }, { ok: false, error: 'failed' }, new Error('transport')]) {
-    const { store, api } = storeHarness(); ready(api);
+    const { store, api } = historicalStoreHarness(); ready(api);
     api.setPost(async () => { if (fail instanceof Error) throw fail; return { data: fail }; });
     const result = await store.runClaimAll('acc-1');
     assert.equal(result.ok, false); assert.equal(api.calls.post.length, 1);
@@ -69,7 +70,7 @@ test('一键每日未知/fulfilled但ok=false/抛错停止依赖领取；不重�
 
 test('一键部分成功、刷新fulfilled失败、不以旧资格继续；资格拒绝显式跳过', async () => {
   for (const mode of ['refresh', 'milestone', 'precondition']) {
-    const { store, api } = storeHarness(); let reads = 0;
+    const { store, api } = historicalStoreHarness(); let reads = 0;
     api.setGet(async () => { const current = ++reads; return { data: mode === 'refresh' && current > 1 ? { ok: false, error: 'offline' } : { ok: true, activity: snapshot({ shareReward: current > 1 ? after : before }) } }; });
     api.setPost(async (_url, body) => {
       if (mode === 'precondition') throw Object.assign(new Error('already claimed'), { response: { status: 400, data: { code: 'SEASON_WISH_MILK_TEA_CLAIMED', error: '已领' } } });
@@ -84,7 +85,7 @@ test('一键部分成功、刷新fulfilled失败、不以旧资格继续；资�
 });
 
 test('一键与单项互斥；取消/切号后旧finally不释放新操作、不继续写', async () => {
-  const { store, api, accountState } = storeHarness(); ready(api);
+  const { store, api, accountState } = historicalStoreHarness(); ready(api);
   const gate = deferred(); api.setPost(() => gate.promise);
   const first = store.runClaimAll('acc-1'); await flush();
   assert.match((await store.runClaimAll('acc-1')).error, /进行中/);
@@ -100,7 +101,7 @@ test('一键与单项互斥；取消/切号后旧finally不释放新操作、不
 
 test('快照/六查询按key隔离loading；卸载、账号往返的迟到成功/失败/异常不回填', async () => {
   for (const mode of ['success', 'ordinary', 'exception']) {
-    const { store, api, accountState } = storeHarness(); const gate = deferred(); api.setPost(() => gate.promise);
+    const { store, api, accountState } = historicalStoreHarness(); const gate = deferred(); api.setPost(() => gate.promise);
     const old = store.runMilkTeaQuery('rank', 'acc-1', { page: 1 });
     api.setPost(async () => ({ data: { ok: true, data: { recipes: [] } } }));
     await store.runMilkTeaQuery('workshop', 'acc-1'); assert.equal(store.milkTeaQueries.rank.loading, true); assert.equal(store.milkTeaQueries.workshop.loading, false);
@@ -115,7 +116,7 @@ test('快照/六查询按key隔离loading；卸载、账号往返的迟到成功
 
 function clockHarness() {
   let now = 1000000; const timers = []; const cleared = [];
-  const h = storeHarness({ Date: { now: () => now }, setTimeout: (fn, delay) => { const t = { fn, delay }; timers.push(t); return t; }, clearTimeout: t => cleared.push(t) });
+  const h = historicalStoreHarness({ Date: { now: () => now }, setTimeout: (fn, delay) => { const t = { fn, delay }; timers.push(t); return t; }, clearTimeout: t => cleared.push(t) });
   return { ...h, timers, cleared, setNow: value => { now = value; } };
 }
 test('真实timer：普通失败保留截止，提前回调重排、旧所有者不破坏新timer、到期零请求撤下', async () => {
@@ -155,14 +156,14 @@ test('过期同步拦写和重进；重查不合法/非严格ok均保持下架',
 });
 
 test('实际页面点击一键到达store；结果逐项渲染；卸载取消迟到提示和后续刷新', async () => {
-  const api = apiMock(); ready(api); const page = mountActivityPage(api); await flush();
+  const api = apiMock(); ready(api); const page = mountHistoricalActivityPage(api); await flush();
   // 页面初读不计入 runner 的资格序列
   ready(api); click(buttonsOf(page.root).find(b => textOf(b).includes('一键领取'))); await flush(); await flush();
   assert.deepEqual(api.calls.post.map(c => c.body.action), ['shareDaily', 'shareMilestones']);
   assert.match(textOf(page.root), /快乐值每日领取/);
   render(null, page.root);
   for (const mode of ['success', 'ordinary', 'exception']) {
-    const api = apiMock(); ready(api); const page = mountActivityPage(api); await flush(); const gate = deferred(); api.setPost(() => gate.promise);
+    const api = apiMock(); ready(api); const page = mountHistoricalActivityPage(api); await flush(); const gate = deferred(); api.setPost(() => gate.promise);
     click(buttonsOf(page.root).find(b => textOf(b).includes('一键领取'))); await flush();
     const reads = api.calls.get.length; render(null, page.root);
     if (mode === 'exception') gate.reject(new Error('late')); else gate.resolve({ data: { ok: mode === 'success' } });
@@ -172,7 +173,7 @@ test('实际页面点击一键到达store；结果逐项渲染；卸载取消迟
 
 test('快照迟到成功/普通失败/异常：账号往返与卸载重进后零回填；旧finally不清新loading', async () => {
   for (const mode of ['success','ordinary','exception']) {
-    const {store,api,accountState}=storeHarness();const old=deferred();api.setGet(()=>old.promise);
+    const {store,api,accountState}=historicalStoreHarness();const old=deferred();api.setGet(()=>old.promise);
     const pending=store.fetchMilkTeaActivity('acc-1');store.cancelActivityReads();store.clearActivityData();accountState.currentAccountId='acc-2';store.clearActivityData();accountState.currentAccountId='acc-1';
     const next=deferred();api.setGet(()=>next.promise);const current=store.fetchMilkTeaActivity('acc-1');
     if(mode==='exception')old.reject(new Error('late'));else old.resolve({data:{ok:mode==='success',activity:snapshot({title:'stale'})}});

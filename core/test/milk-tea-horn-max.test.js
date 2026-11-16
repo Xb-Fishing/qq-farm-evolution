@@ -1,3 +1,4 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 'use strict';
 
 const test = require('node:test');
@@ -329,7 +330,7 @@ test('real Activity page MAX sends no POST; one confirmed boost keeps its existi
     stock -= body.input.count;
     return { data: { ok: true, action: 'boost', message: '喇叭已使用' } };
   });
-  const page = h.mountActivityPage(api);
+  const page = h.mountHistoricalActivityPage(api);
   roots.add(page.root);
   await h.waitFor(() => maximum(page.root).props.disabled === false, 'initial activity inventory');
   assert.equal(milkReads(), 1);

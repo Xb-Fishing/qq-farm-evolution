@@ -235,6 +235,8 @@ test('过期鹊桥专属 UI 与自动例行入口已停用，历史协议解析�
 
   assert.doesNotMatch(workerSource, /runQixi|startQixi|qixi_activity_/);
   assert.doesNotMatch(activityViewSource, /QixiActivityPanel|鹊桥寄情/);
-  assert.match(activityViewSource, /BearActivityPanel|S3 萌宠/);
+  assert.match(activityViewSource, /FriendRecallActivityPanel/);
+  assert.match(activityViewSource, /FestivalSignInPanel/);
+  assert.doesNotMatch(activityViewSource, /MilkTeaActivityPanel|fetchMilkTeaActivity/);
   assert.doesNotMatch(workerSource, /case 'getQixiActivity'/);
 });

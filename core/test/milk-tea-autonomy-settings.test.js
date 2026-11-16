@@ -10,7 +10,7 @@ const listeners = new Set();
 document.addEventListener = (_event, callback) => listeners.add(callback);
 document.removeEventListener = (_event, callback) => listeners.delete(callback);
 test.after(() => { assert.equal(listeners.size, 0); document.addEventListener = previousAdd; document.removeEventListener = previousRemove; });
-async function fixture(t) {
+async function historicalFixture(t) {
   const account = vue.ref('synthetic-settings');
   const alerts = []; const calls = [];
   const saved = { automation: { task: false, milk_tea_auto_rewards: false } };
@@ -35,7 +35,7 @@ async function fixture(t) {
   const composition = evaluateModule(fs.readFileSync(path.join(WEB, 'src/composables/settings/useAutomationSettings.ts'), 'utf8'), resolve);
   const testPinia = pinia.createPinia(); pinia.setActivePinia(testPinia);
   const store = settingModule.useSettingStore(); await store.fetchSettings(account.value);
-  const Tab = compileSfcModule(path.join(WEB, 'src/components/settings/AutomationSettingsTab.vue'), resolve);
+  const Tab = loadHistoricalAutomation(resolve);
   const root = makeNode('root'); let control;
   const Page = { setup() {
     control = composition.useAutomationSettings({ currentAccountId: account, showAlert: (...args) => alerts.push(args) }); control.syncLocalAutomationSettings();
@@ -53,7 +53,7 @@ async function toggle(f, label, value) { const node = checkbox(f.root, label); i
 function input(f, label, value) { const parent = findAll(f.root, row => row.tag === 'label' && textOf(row).trim() === label)[0]; assert.ok(parent, label); const node = findAll(parent, row => row.tag === 'input')[0]; node.props.onInput({ target: { value } }); }
 
 test('real account component, composition and Pinia store save and reload new policies without ordinary tasks', async t => {
-  const f = await fixture(t);
+  const f = await historicalFixture(t);
   for (const label of ['自动购买活动种子', '自动班次工作（互动与工资）', '自动升级店铺']) await toggle(f, label, true);
   await toggle(f, '森野甜莓种子', true); await toggle(f, '森野黄金芽种子', true);
   click(button(f.root, '展开高级预算')); await vue.nextTick(); input(f, '奶茶券每日上限', '8000');
@@ -69,7 +69,7 @@ test('real account component, composition and Pinia store save and reload new po
 });
 test('ordinary response failure and rejected save show failure and release loading, never false success', async t => {
   for (const mode of ['response', 'throw']) {
-    const f = await fixture(t); f.api.fail = true;
+    const f = await historicalFixture(t); f.api.fail = true;
     if (mode === 'throw') f.api.post = async () => { throw new Error('synthetic transport reject'); };
     await toggle(f, '自动升级店铺', true); click(button(f.root, '保存自动控制')); await flush();
     assert.equal(f.control.automationSaving.value, false); assert.ok(f.alerts.some(row => row[1] === 'danger')); assert.equal(f.alerts.some(row => row[0] === '自动控制设置已保存'), false);
@@ -77,7 +77,7 @@ test('ordinary response failure and rejected save show failure and release loadi
   }
 });
 test('save captures all milk authorization before awaiting; later local mutations need another save', async t => {
-  const f = await fixture(t); f.api.pending = deferred();
+  const f = await historicalFixture(t); f.api.pending = deferred();
   await toggle(f, '自动购买活动种子', true); await toggle(f, '森野甜莓种子', true);
   click(button(f.root, '保存自动控制')); await vue.nextTick();
   assert.equal(f.control.automationSaving.value, true);
@@ -91,11 +91,11 @@ test('save captures all milk authorization before awaiting; later local mutation
   assert.equal(payload.milk_tea_seed_policy.coinDailyLimit, '240000');
 });
 test('invalid budgets block saving and unmount/account change invalidates a pending save notification', async t => {
-  const invalid = await fixture(t); await toggle(invalid, '自动购买活动种子', true);
+  const invalid = await historicalFixture(t); await toggle(invalid, '自动购买活动种子', true);
   invalid.control.localAutomationSettings.value.automation.milk_tea_seed_policy.coinDailyLimit = '-1';
   click(button(invalid.root, '保存自动控制')); await flush(); assert.equal(invalid.calls.length, 0); assert.ok(invalid.alerts.some(row => row[1] === 'danger')); render(null, invalid.root);
   for (const mode of ['unmount', 'account']) {
-    const f = await fixture(t); f.api.pending = deferred(); await toggle(f, '自动升级店铺', true);
+    const f = await historicalFixture(t); f.api.pending = deferred(); await toggle(f, '自动升级店铺', true);
     click(button(f.root, '保存自动控制')); await vue.nextTick(); assert.equal(f.control.automationSaving.value, true);
     if (mode === 'unmount') render(null, f.root); else f.account.value = 'synthetic-settings-other';
     await vue.nextTick(); f.api.pending.resolve(); await flush(); assert.equal(f.alerts.length, 0); assert.equal(f.calls.length, 1, 'stale save cannot start the subsequent automation request');
@@ -125,7 +125,7 @@ test('backend account/default-plan persistence deeply clones policies and invali
 });
 
 test('recommended full automation preserves targets and independent custom budgets through real group save/reload', async t => {
-  const f = await fixture(t);
+  const f = await historicalFixture(t);
   const auto = f.control.localAutomationSettings.value.automation;
   auto.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
   auto.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' };
@@ -145,7 +145,7 @@ test('recommended full automation preserves targets and independent custom budge
 });
 
 test('old save finally cannot clear a new account read loading owner', async t => {
-  const f = await fixture(t); f.api.pending = deferred();
+  const f = await historicalFixture(t); f.api.pending = deferred();
   await toggle(f, '自动升级店铺', true); click(button(f.root, '保存自动控制')); await vue.nextTick();
   f.account.value = 'synthetic-next-read'; await vue.nextTick();
   const fresh = deferred(); f.api.get = () => fresh.promise;
@@ -167,7 +167,7 @@ test('real settings component renders absent or partial legacy policy without a 
 });
 
 test('real settings payload, route and provider publish milk authorization as one complete snapshot', async t => {
-  const f = await fixture(t); const backend = require('../src/models/store');
+  const f = await historicalFixture(t); const backend = require('../src/models/store');
   const id = f.account.value; const snapshots = []; let revision = 0;
   backend.applyConfigSnapshot({ automation: { milk_tea_auto_seeds: false, milk_tea_auto_work: false, milk_tea_auto_upgrade: false, milk_tea_seed_policy: { targetSeedIds: [20525], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '240000', ticketReserve: '8000', ticketDailyLimit: '0' } } }, { persist: false, accountId: id });
   const provider = require('../src/runtime/data-provider').createDataProvider({ store: backend, workers: {}, globalLogs: [], accountLogs: [],
@@ -225,3 +225,15 @@ test('real settings payload, route and provider publish milk authorization as on
   await provider.setAutomation(id, 'milk_tea_control', { ...before, milk_tea_auto_seeds: false });
   assert.equal(backend.getAutomation(id).milk_tea_auto_seeds, false); assert.equal(snapshots.length, broadcasts + 1);
 });
+
+// Historical milk authorization UI, pinned to the retired d609585e fixture.
+// Current ordinary settings still compile the production SFC.
+function loadHistoricalAutomation(resolve) {
+  const fixture = fs.readFileSync(path.join(__dirname, 'fixtures/RetiredMilkTeaView.vue'), 'utf8');
+  const source = fixture.split('<retired-automation>\n')[1]?.split('\n</retired-automation>')[0];
+  assert.ok(source, 'explicit historical automation source');
+  const target = path.join(h.privateDir, 'HistoricalAutomationSettings.vue');
+  h.assertWriteInsidePrivateDir(target);
+  fs.writeFileSync(target, source);
+  return compileSfcModule(target, resolve);
+}

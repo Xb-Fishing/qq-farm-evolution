@@ -1,8 +1,9 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./activity-availability.test');
-const { WEB, vue, compileSfcModule, render, makeNode, buttonsOf, textOf, findAll, click, flush, mountActivityPage, apiMock, deferred, snapshot } = h;
+const { WEB, vue, compileSfcModule, render, makeNode, buttonsOf, textOf, findAll, click, flush, mountHistoricalActivityPage, apiMock, deferred, snapshot } = h;
 const path = require('node:path');
 const activeRoots = [];
 test.after(() => { for (const root of activeRoots) render(null, root); });
@@ -38,7 +39,7 @@ test('真实面板渲染全部说明玩法；null/缺省数值均不崩溃、不
 test('实际页面六个查询按钮到store；挂载/普通刷新无这些请求、无翻页轮询', async () => {
   const api = apiMock(); api.setGet(async () => ({ data: { ok: true, activity: snapshot() } }));
   api.setPost(async (_url, body) => ({ data: { ok: true, kind: body.kind, data: {} } }));
-  const page = mountActivityPage(api); activeRoots.push(page.root); await flush(); assert.equal(api.calls.post.length, 0);
+  const page = mountHistoricalActivityPage(api); activeRoots.push(page.root); await flush(); assert.equal(api.calls.post.length, 0);
   for (const label of ['查询店铺与收银台','查询雇佣候选','查询工坊与果实','查询我的工作','查询指定页排行','查询销量日志']) { click(button(page.root, label)); await flush(); }
   assert.deepEqual(api.calls.post.map(c => c.body.kind), ['shop','hireList','workshop','work','rank','sales']);
   assert.deepEqual(api.calls.post.map(c => c.body.params), [{},{durationId:1},{},{},{page:1},{}]);
@@ -126,7 +127,7 @@ test('雇佣确认期间空位被占用或读取失败会撤销确认，不提�
 test('实际页面确认到store；切号往返/卸载后迟到写成功、普通失败和异常无提示无刷新', async () => {
   for (const mode of ['success','ordinary','exception']) {
     const api = apiMock(); api.setGet(async()=>({data:{ok:true,activity:snapshot()}}));
-    const page = mountActivityPage(api); activeRoots.push(page.root); await flush(); const gate=h.deferred(); api.setPost(()=>gate.promise);
+    const page = mountHistoricalActivityPage(api); activeRoots.push(page.root); await flush(); const gate=h.deferred(); api.setPost(()=>gate.promise);
     click(button(page.root,'领取每日快乐值')); await vue.nextTick(); click(button(page.root,'确认执行')); await flush(); assert.equal(api.calls.post[0].body.action,'shareDaily');
     page.accountRef.value='acc-2'; await flush(); page.accountRef.value='acc-1'; await flush(); const reads=api.calls.get.length;
     if(mode==='exception') gate.reject(new Error('late')); else gate.resolve({data:{ok:mode==='success'}});
@@ -327,7 +328,7 @@ function mountRewardPage(postHandler, activity = snapshot()) {
   const api = apiMock();
   api.setGet(async () => ({ data: { ok: true, activity } }));
   api.setPost(postHandler);
-  const page = mountActivityPage(api);
+  const page = mountHistoricalActivityPage(api);
   activeRoots.push(page.root);
   return { api, page };
 }
@@ -433,7 +434,7 @@ test('活动到期后的迟到成功回复不泄漏奖励且不新增读取', as
     const api = apiMock();
     api.setGet(async () => ({ data: { ok: true, activity: snapshot({ timing: { endTime: Math.floor(now / 1000) + 5, phase: 'open' } }) } }));
     api.setPost(() => gate.promise);
-    const page = mountActivityPage(api); activeRoots.push(page.root);
+    const page = mountHistoricalActivityPage(api); activeRoots.push(page.root);
     await flush();
     click(button(page.root, '领取每日快乐值')); await vue.nextTick();
     click(button(page.root, '确认执行')); await flush();

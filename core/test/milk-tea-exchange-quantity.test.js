@@ -1,3 +1,4 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -133,7 +134,7 @@ test('actual page refreshes remaining allowance after a confirmed exchange throu
   const api = h.apiMock();
   api.setGet(async () => ({ data: { ok: true, activity: activity([row({ purchasedCount: purchased })]) } }));
   api.setPost(async (_url, body) => { assert.equal(body.action, 'exchange'); purchased += body.input.count; return { data: { ok: true, action: 'exchange' } }; });
-  const page = h.mountActivityPage(api); roots.push(page.root); await h.flush();
+  const page = h.mountHistoricalActivityPage(api); roots.push(page.root); await h.flush();
   set(page.root, '甜莓种子兑换数量', 2); await h.vue.nextTick();
   h.click(button(page.root, '确认兑换 甜莓种子 × 2')); await h.vue.nextTick();
   assert.equal(api.calls.post.length, 0);

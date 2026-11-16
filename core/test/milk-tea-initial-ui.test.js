@@ -1,7 +1,8 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./activity-availability.test');
-const { vue, render, textOf, buttonsOf, click, flush, mountActivityPage, apiMock, snapshot, storeHarness, deferred } = h;
+const { vue, render, textOf, buttonsOf, click, flush, mountHistoricalActivityPage, apiMock, snapshot, historicalStoreHarness, deferred } = h;
 const roots = [];
 test.after(() => { for (const root of roots) render(null, root); });
 function initialState() {
@@ -24,7 +25,7 @@ function initialState() {
 test('one initial GET fills actual gameplay and actions; no extra query POST or automatic write', async () => {
   const api = apiMock(); api.setGet(async () => ({ data: { ok: true, activity: initialState() } }));
   api.setPost(async () => ({ data: { ok: true, message: '领取已确认' } }));
-  const page = mountActivityPage(api); roots.push(page.root); await flush();
+  const page = mountHistoricalActivityPage(api); roots.push(page.root); await flush();
   const text = textOf(page.root);
   for (const value of ['奶茶券：17', '宣传喇叭：2', '甜莓奶茶', '森野甜莓', '当前没有进行中的班次', '工资 40', '可领取', '基金未解锁']) assert.ok(text.includes(value), value);
   assert.doesNotMatch(text, /班次店铺 待确认|资格待确认/);
@@ -42,7 +43,7 @@ test('one initial GET fills actual gameplay and actions; no extra query POST or 
 
 test('an offline account shows the actual error and cannot operate placeholder controls', async () => {
   const api = apiMock(); api.setGet(async () => ({ data: { ok: false, error: '账号未运行，请先启动账号' } }));
-  const page = mountActivityPage(api); roots.push(page.root); await flush();
+  const page = mountHistoricalActivityPage(api); roots.push(page.root); await flush();
   assert.match(textOf(page.root), /账号未运行/);
   for (const label of ['领取工资', '查询我的工作', '查询工坊与果实']) {
     const button = buttonsOf(page.root).find(b => textOf(b).trim() === label);
@@ -52,7 +53,7 @@ test('an offline account shows the actual error and cannot operate placeholder c
 });
 
 test('partial detail failure preserves proven data and shows its real refresh error', async () => {
-  const f = storeHarness(); const good = initialState();
+  const f = historicalStoreHarness(); const good = initialState();
   f.api.setGet(async () => ({ data: { ok: true, activity: good } }));
   await f.store.fetchMilkTeaActivity('acc-1');
   assert.ok(f.store.milkTeaQueries.workshop.data, 'a successful initial overview must fill workshop state');
@@ -66,7 +67,7 @@ test('partial detail failure preserves proven data and shows its real refresh er
 });
 
 test('an explicit query owns its result when a slower initial overview returns afterward', async () => {
-  const f = storeHarness(); const overview = deferred();
+  const f = historicalStoreHarness(); const overview = deferred();
   f.api.setGet(() => overview.promise);
   const loading = f.store.fetchMilkTeaActivity('acc-1');
   f.api.setPost(async () => ({ data: { ok: true, data: { level: 7, pendingRewards: [] } } }));
@@ -78,7 +79,7 @@ test('an explicit query owns its result when a slower initial overview returns a
 });
 
 test('account lifecycle and not-open snapshots do not retain earlier gameplay choices', async () => {
-  const f = storeHarness(); f.api.setGet(async () => ({ data: { ok: true, activity: initialState() } }));
+  const f = historicalStoreHarness(); f.api.setGet(async () => ({ data: { ok: true, activity: initialState() } }));
   await f.store.fetchMilkTeaActivity('acc-1');
   const gate = deferred(); f.api.setGet(() => gate.promise); const old = f.store.fetchMilkTeaActivity('acc-1');
   f.accountState.currentAccountId = 'acc-2'; f.store.clearActivityData();

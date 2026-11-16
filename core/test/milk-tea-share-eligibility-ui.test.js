@@ -1,10 +1,11 @@
+// Historical retired milk-tea behavior. Current page/store retirement is tested separately.
 'use strict';
 // 快乐值档位（shareMilestones）严格资格 UI：复用 activity-availability 的真实 SFC/page/store 夹具，
 // 网络完全替身；全部断言针对真实渲染树与真实 store 行为。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./activity-availability.test');
-const { WEB, vue, compileSfcModule, render, makeNode, buttonsOf, textOf, findAll, click, flush, mountActivityPage, apiMock, snapshot } = h;
+const { WEB, vue, compileSfcModule, render, makeNode, buttonsOf, textOf, findAll, click, flush, mountHistoricalActivityPage, apiMock, snapshot } = h;
 const path = require('node:path');
 
 const activeRoots = [];
@@ -28,7 +29,7 @@ test('未知分享状态（缺失/空对象/分数缺失/档位非数组）一�
     ['空对象', snapshot(share(undefined, undefined))],
     ['分数缺失', snapshot(share(null, [{ id: 5, threshold: 80, state: 2 }]))],
     ['档位非数组', snapshot(share(140, 'x'))],
-    ...[NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1].map(score => [String(score), snapshot(share(score, [{ id: 5, threshold: 0, state: 2 }]))]),
+    ...[Number.NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1].map(score => [String(score), snapshot(share(score, [{ id: 5, threshold: 0, state: 2 }]))]),
   ];
   for (const [label, activity] of cases) {
     const { root, events } = mountPanel(activity);
@@ -50,7 +51,7 @@ test('畸形档位（id/threshold/state 非法）显示待确认且不判可领�
     { id: 5, threshold: -1, state: 2 },
     { id: 5, threshold: null, state: 2 },
     { id: 5, threshold: 1.5, state: 2 },
-    ...[NaN, Infinity, -1, 0, 99].map(state => ({ id: 5, threshold: 80, state })),
+    ...[Number.NaN, Infinity, -1, 0, 99].map(state => ({ id: 5, threshold: 80, state })),
     { id: 5, threshold: 80, state: '2' },
     { id: 5, threshold: 80 },
     null,
@@ -222,7 +223,7 @@ test('真实页面：业务拒绝和传输未知结果均不自动重试；手�
       if (!succeed && failure === 'unknown') throw new Error('synthetic transport timeout');
       return { data: succeed ? { ok: true, message: '领取成功' } : { ok: false, error: '合成业务拒绝' } };
     });
-    const page = mountActivityPage(api); activeRoots.push(page.root); await flush();
+    const page = mountHistoricalActivityPage(api); activeRoots.push(page.root); await flush();
     click(button(page.root, '领取快乐值档位')); await vue.nextTick();
     click(button(page.root, '确认执行')); await flush(); await flush();
     assert.equal(api.calls.post.length, 1, `${failure} 不得自动重试`);
@@ -243,7 +244,7 @@ test('真实页面：确认期间切账号撤销并清理；卸载重进不残�
   const api = apiMock();
   api.setGet(async () => ({ data: { ok: true, activity: snapshot(eligibleShare()) } }));
   api.setPost(async () => ({ data: { ok: true, message: '领取成功' } }));
-  const page = mountActivityPage(api); activeRoots.push(page.root); await flush();
+  const page = mountHistoricalActivityPage(api); activeRoots.push(page.root); await flush();
   click(button(page.root, '领取快乐值档位')); await vue.nextTick();
   assert.equal(dialogsOf(page.root).length, 1);
   page.accountRef.value = 'acc-2'; await flush(); await flush();
@@ -254,7 +255,7 @@ test('真实页面：确认期间切账号撤销并清理；卸载重进不残�
   const api2 = apiMock();
   api2.setGet(async () => ({ data: { ok: true, activity: snapshot(eligibleShare()) } }));
   api2.setPost(async () => ({ data: { ok: true, message: '领取成功' } }));
-  const second = mountActivityPage(api2); activeRoots.push(second.root); await flush();
+  const second = mountHistoricalActivityPage(api2); activeRoots.push(second.root); await flush();
   assert.equal(dialogsOf(second.root).length, 0, '重进不残留旧确认');
   assert.equal(api2.calls.post.length, 0);
   click(button(second.root, '领取快乐值档位')); await vue.nextTick();

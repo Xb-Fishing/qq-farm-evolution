@@ -64,16 +64,16 @@ test('actual panel renders five sections, text-only long input, loading/error an
     h.render(h.vue.h(Panel, { activity: { available: false }, loading: false, error: '' }), root); assert.doesNotMatch(h.textOf(root), /故友重逢/);
   } finally { h.render(null, root); }
 });
-test('actual Activity view mounts recall alongside independent milk tea and cancels on unmount', async () => {
+test('current Activity view mounts recall without retired milk tea and cancels on unmount', async () => {
   const api = h.apiMock(); api.setGet(async url => ({ data: { ok: true, activity: url.includes('friend-recall') ? dto(null) : h.snapshot() } }));
   const page = h.mountActivityPage(api);
   try {
     await h.flush(); await h.vue.nextTick(); assert.match(h.textOf(page.root), /故友重逢/);
     assert.ok(api.calls.get.some(call => call.url === '/api/activity/friend-recall'));
-    assert.ok(api.calls.get.some(call => call.url === '/api/activity/milk-tea'));
+    assert.equal(api.calls.get.some(call => call.url.includes('milk-tea')), false);
     assert.equal(api.calls.post.length, 0);
     h.click(h.buttonsOf(page.root).find(button => h.textOf(button).trim() === '刷新')); await h.flush();
-    assert.ok(api.calls.get.filter(call => call.url === '/api/activity/milk-tea').length >= 2);
+    assert.ok(api.calls.get.filter(call => call.url === '/api/activity/friend-recall').length >= 2);
   } finally { h.render(null, page.root); }
 });
 
@@ -96,7 +96,7 @@ test('deadline remains account-bound across B and failed A reentry; expiry abort
   store.bind('synthetic-b'); assert.equal(store.activity, null); store.cancel(); assert.equal(timers.size, 0);
 });
 
-test('actual page cancels delayed recall on account changes and unmount, while milk tea keeps refreshing', async () => {
+test('current page cancels delayed recall on account changes and unmount with zero retired reads', async () => {
   const api = h.apiMock(); const pending = []; const signals = [];
   api.setGet((url, config) => {
     if (url.includes('friend-recall')) {
@@ -117,6 +117,6 @@ test('actual page cancels delayed recall on account changes and unmount, while m
     h.render(null, page.root); assert.equal(signals[2].aborted, true);
     pending[2].resolve({ data: { ok: true, activity: dto(null) } }); await h.flush();
     assert.equal(store.activity, null); assert.equal(store.loading, false);
-    assert.equal(page.toastLog.length, 0); assert.ok(api.calls.get.filter(call => call.url.includes('milk-tea')).length >= 3);
+    assert.equal(page.toastLog.length, 0); assert.equal(api.calls.get.filter(call => call.url.includes('milk-tea')).length, 0);
   } finally { h.render(null, page.root); }
 });

@@ -678,7 +678,8 @@ async function sellAllFruits() {
       // 新核验活动植物的映射只证明作物身份；仅有活动条件售价时，
       // 尚未具备自动出售资格，不能因补齐 Plant 就开始尝试出售。
       const conditionalSaleOnly = info?.evidence && info.sell_cond && !info.sells;
-      if (isFruitItemId(id) && count > 0 && !conditionalSaleOnly) {
+      // A verified crop mapping does not authorize selling retained activity feed.
+      if (isFruitItemId(id) && count > 0 && !conditionalSaleOnly && info?.auto_sell !== false) {
         fruits.push(item);
       }
     }

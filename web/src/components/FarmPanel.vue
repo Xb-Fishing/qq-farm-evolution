@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import type { FertilizePlan } from '@/stores/manual-fertilize'
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import LandCard from '@/components/LandCard.vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useFarmStore } from '@/stores/farm'
+import { useManualFertilizeStore } from '@/stores/manual-fertilize'
 import { useStatusStore } from '@/stores/status'
 import { getLandPresentation } from '@/utils/land-presentation'
 
@@ -16,9 +19,73 @@ const { lands, summary, loading, dogSkillGiftPendingCount, dogSkillGiftLoading, 
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const { status, loading: statusLoading, realtimeConnected, currentStatusReady } = storeToRefs(statusStore)
 
-const operating = ref(false)
-const farmLoaded = ref(false)
 const confirmVisible = ref(false)
+const operating = ref(false)
+const manualFertilize = useManualFertilizeStore()
+const fertilizerPlan = ref<FertilizePlan | null>(null)
+const fertilizerMessage = ref('')
+const fertilizerProgress = computed(() => manualFertilize.progress[currentAccountId.value])
+const fertilizerActive = computed(() => !!fertilizerProgress.value?.active)
+const actionsBusy = computed(() => operating.value || fertilizerActive.value)
+let pageAlive = true
+let fertilizerTrigger: HTMLElement | null = null
+const fertilizerReady = () => !!currentAccount.value?.running && !!currentStatusReady.value && !!status.value?.connection?.connected
+function cancelFertilizer() {
+  fertilizerPlan.value = null
+  nextTick(() => fertilizerTrigger?.focus())
+}
+function prepareFertilizer(event: MouseEvent) {
+  if (actionsBusy.value || confirmVisible.value)
+    return
+  fertilizerTrigger = event.currentTarget as HTMLElement
+  fertilizerMessage.value = ''
+  if (!fertilizerReady()) {
+    fertilizerMessage.value = '账号离线或连接未就绪，请先登录并连接游戏'
+    return
+  }
+  const plan = manualFertilize.prepare(currentAccountId.value, lands.value)
+  if (!plan.targets.length) {
+    fertilizerMessage.value = '没有可施肥的生长主地块（空地、成熟、枯死、锁定及未知作物不参与）'
+    return
+  }
+  fertilizerPlan.value = plan
+  nextTick(() => document.querySelector<HTMLElement>('.confirm-modal button')?.focus())
+}
+async function executeFertilizer() {
+  const plan = fertilizerPlan.value
+  if (!plan || actionsBusy.value || !fertilizerReady()) {
+    cancelFertilizer()
+    return
+  }
+  if (!manualFertilize.matches(plan, currentAccountId.value, lands.value)) {
+    fertilizerMessage.value = '账号或目标作物已变化，请重新确认'
+    cancelFertilizer()
+    return
+  }
+  cancelFertilizer()
+  await manualFertilize.run(plan, {
+    accountId: () => currentAccountId.value,
+    lands: () => lands.value,
+    alive: () => pageAlive,
+    ready: fertilizerReady,
+    refresh: id => farmStore.fetchLands(id, 'consumer'),
+  })
+  if (pageAlive && currentAccountId.value === plan.accountId)
+    nextTick(() => fertilizerTrigger?.focus())
+}
+watch(currentAccountId, (_id, oldId) => {
+  fertilizerMessage.value = ''
+  cancelFertilizer()
+  if (oldId)
+    manualFertilize.stop(oldId, '账号已切换，已停止后续地块')
+}, { flush: 'sync' })
+watch(lands, () => {
+  if (fertilizerPlan.value && !manualFertilize.matches(fertilizerPlan.value, currentAccountId.value, lands.value)) {
+    fertilizerMessage.value = '目标作物已变化，请重新确认'
+    cancelFertilizer()
+  }
+}, { deep: true, flush: 'sync' })
+const farmLoaded = ref(false)
 const selectedLandId = ref<number | null>(null)
 const farmCanvas = ref<HTMLCanvasElement | null>(null)
 const farmViewport = ref<HTMLElement | null>(null)
@@ -48,7 +115,7 @@ const confirmConfig = ref({
 })
 
 async function executeOperate() {
-  if (!currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
     return
 
   const config = confirmConfig.value
@@ -77,7 +144,7 @@ async function executeOperate() {
 }
 
 function handleOperate(opType: string) {
-  if (!currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
     return
 
   const confirmMap: Record<string, string> = {
@@ -101,7 +168,7 @@ function handleOperate(opType: string) {
 }
 
 function handleRemoveAllPlants() {
-  if (!currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
     return
 
   confirmConfig.value = {
@@ -121,7 +188,7 @@ function getLandActionName(land: any) {
 }
 
 function handleLandFertilize(land: any) {
-  if (!currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
     return
 
   confirmConfig.value = {
@@ -137,7 +204,7 @@ function handleLandFertilize(land: any) {
 }
 
 function handleLandRemove(land: any) {
-  if (!currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
     return
 
   confirmConfig.value = {
@@ -161,7 +228,7 @@ const operations = [
 ]
 
 async function refresh() {
-  if (currentAccountId.value) {
+  if (currentAccountId.value && !fertilizerActive.value) {
     const acc = currentAccount.value
     if (!acc)
       return
@@ -185,8 +252,15 @@ async function refresh() {
 }
 
 async function claimDogSkillGifts() {
-  if (currentAccountId.value)
+  if (!currentAccountId.value || actionsBusy.value || fertilizerPlan.value)
+    return
+  operating.value = true
+  try {
     await farmStore.claimDogSkillGifts(currentAccountId.value)
+  }
+  finally {
+    operating.value = false
+  }
 }
 
 const showInitialLoading = computed(() =>
@@ -208,8 +282,10 @@ function handleDocumentPointerDown(event: PointerEvent) {
 }
 
 function handleDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape')
+  if (event.key === 'Escape') {
     selectedLandId.value = null
+    cancelFertilizer()
+  }
 }
 
 function getLandAnchorId(land: any) {
@@ -256,8 +332,12 @@ function updateFarmStageSize() {
   farmStageWidth.value = Math.min(availableWidth, FARM_CANVAS_WIDTH, availableHeight * FARM_CANVAS_WIDTH / FARM_CANVAS_HEIGHT)
 }
 
-function getLandTextureUrl(land: any) { return getLandPresentation(land).textureUrl }
-function shouldRotateLandTexture(land: any) { return getLandPresentation(land).rotate }
+function getLandTextureUrl(land: any) {
+  return getLandPresentation(land).textureUrl
+}
+function shouldRotateLandTexture(land: any) {
+  return getLandPresentation(land).rotate
+}
 
 function loadCanvasImage(src: string) {
   const cached = imageCache.get(src)
@@ -278,13 +358,15 @@ let canvasDrawRevision = 0
 async function drawFarmCanvas() {
   const revision = ++canvasDrawRevision
   await nextTick()
-  if (revision !== canvasDrawRevision) return
+  if (revision !== canvasDrawRevision)
+    return
   const context = farmCanvas.value?.getContext('2d')
   if (!context)
     return
   context.clearRect(0, 0, FARM_CANVAS_WIDTH, FARM_CANVAS_HEIGHT)
   const field = await loadCanvasImage('/game-config/scene_images/farm-field-base.png').catch(() => null)
-  if (revision !== canvasDrawRevision || !farmCanvas.value) return
+  if (revision !== canvasDrawRevision || !farmCanvas.value)
+    return
   if (field) {
     const fieldWidth = FARM_CANVAS_WIDTH * FIELD_BACKGROUND_SCALE
     const fieldHeight = FARM_CANVAS_HEIGHT * FIELD_BACKGROUND_SCALE
@@ -300,7 +382,8 @@ async function drawFarmCanvas() {
   const visibleLands = displayLands.value
     .sort((a, b) => getCanvasPosition(a).y - getCanvasPosition(b).y)
   const textures = await Promise.all(visibleLands.map(land => loadCanvasImage(getLandTextureUrl(land)).catch(() => null)))
-  if (revision !== canvasDrawRevision || !farmCanvas.value) return
+  if (revision !== canvasDrawRevision || !farmCanvas.value)
+    return
   visibleLands.forEach((land, index) => {
     if (selectedLandId.value === Number(land?.id))
       return
@@ -390,6 +473,8 @@ onMounted(() => {
   drawFarmCanvas()
 })
 onUnmounted(() => {
+  pageAlive = false
+  manualFertilize.stop(currentAccountId.value, '页面已离开，已停止后续地块')
   pause()
   pauseRefresh()
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
@@ -402,7 +487,7 @@ onUnmounted(() => {
   <div
     class="space-y-4"
     :class="{
-      'farm-panel-modal-open': confirmVisible,
+      'farm-panel-modal-open': confirmVisible || !!fertilizerPlan,
       'farm-has-selected-land': selectedLandId !== null,
     }"
   >
@@ -414,12 +499,15 @@ onUnmounted(() => {
           土地详情
         </h3>
         <div class="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+          <BaseButton :disabled="actionsBusy" class="col-span-3 min-h-11" @click="prepareFertilizer">
+            一键施肥（有机）
+          </BaseButton>
           <button
             v-for="op in operations"
             :key="op.type"
             class="flex items-center justify-center gap-1.5 rounded px-3 py-2 text-sm text-white transition disabled:cursor-not-allowed disabled:opacity-50"
             :class="op.color"
-            :disabled="operating"
+            :disabled="actionsBusy"
             @click="handleOperate(op.type)"
           >
             <div :class="op.icon" />
@@ -428,7 +516,7 @@ onUnmounted(() => {
           </button>
           <button
             class="flex items-center justify-center gap-1.5 rounded bg-red-600 px-3 py-2 text-sm text-white transition disabled:cursor-not-allowed hover:bg-red-700 disabled:opacity-50"
-            :disabled="operating"
+            :disabled="actionsBusy"
             @click="handleRemoveAllPlants"
           >
             <div class="i-carbon-trash-can" />
@@ -437,6 +525,20 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div v-if="fertilizerMessage || fertilizerProgress" class="px-4 py-3 text-sm space-y-2" role="status" aria-live="polite">
+        <p v-if="fertilizerMessage">
+          {{ fertilizerMessage }}
+        </p>
+        <template v-if="fertilizerProgress">
+          <p>有机肥：已确认请求 {{ fertilizerProgress.confirmed }} / {{ fertilizerProgress.total }} 次。{{ fertilizerProgress.reason }}</p>
+          <p v-if="fertilizerProgress.refreshError">
+            {{ fertilizerProgress.refreshError }}
+          </p>
+          <BaseButton v-if="fertilizerActive" class="min-h-11" variant="secondary" @click="manualFertilize.stop(currentAccountId)">
+            停止后续地块
+          </BaseButton>
+        </template>
+      </div>
       <div
         v-if="dogSkillGiftPendingCount > 0"
         class="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
@@ -446,8 +548,8 @@ onUnmounted(() => {
           待拾取同气连枝礼包 ×{{ dogSkillGiftPendingCount }}
         </div>
         <button
-          class="rounded bg-amber-600 px-3 py-1.5 text-white disabled:opacity-50 hover:bg-amber-700"
-          :disabled="dogSkillGiftLoading"
+          class="rounded bg-amber-600 px-3 py-1.5 text-white hover:bg-amber-700 disabled:opacity-50"
+          :disabled="dogSkillGiftLoading || actionsBusy"
           @click="claimDogSkillGifts"
         >
           {{ dogSkillGiftLoading ? '拾取中…' : '拾取' }}
@@ -540,6 +642,14 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <ConfirmModal
+      :show="!!fertilizerPlan"
+      title="确认一键施肥（有机）"
+      :message="`使用有机肥，对 ${fertilizerPlan?.targets.length || 0} 个生长主地块每块调用一次，最多 ${fertilizerPlan?.targets.length || 0} 次。实际消耗及成熟变化以游戏结果为准。可停止后续地块；已派发请求需等待结果，不自动重试。`"
+      @confirm="executeFertilizer"
+      @close="cancelFertilizer"
+      @cancel="cancelFertilizer"
+    />
     <ConfirmModal
       :show="confirmVisible"
       :title="confirmConfig.title"

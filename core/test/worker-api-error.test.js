@@ -11,7 +11,6 @@ const { createWorkerManager } = require('../src/runtime/worker-manager');
 const { createDataProvider } = require('../src/runtime/data-provider');
 const { registerAdminMilkTeaActivityRoutes } = require('../src/controllers/admin-milk-tea-activity-routes');
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
-const workerSrc = fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
 const rejectionOf = promise => promise.then(() => null, err => err);
 
 // 固定营业 UTC 锚（与 milk-tea-operate.test.js 同源，2026-10-20T12:00:00Z）：
@@ -58,7 +57,8 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
     assert.equal(status, 400); assert.equal(body.code, 'FESTIVAL_INELIGIBLE'); assert.deepEqual(calls, ['GetSolarTermsV2']);
   } finally { cleanup(); for (const [file, value] of old) { if (value) require.cache[file] = value; else delete require.cache[file]; } }
 });
-function extractWorkerApiSource() {
+function extractWorkerApiSource(historical = false) {
+  const workerSrc = historical ? fs.readFileSync(path.join(__dirname, 'fixtures/RetiredMilkTeaView.vue'), 'utf8') : fs.readFileSync(path.join(__dirname, '../src/core/worker.js'), 'utf8');
   const start = workerSrc.indexOf('const FRIEND_PANEL_ENTRY_METHODS = new Set([');
   assert.ok(start >= 0, 'FRIEND_PANEL_ENTRY_METHODS exists in worker.js');
   const end = workerSrc.indexOf('// ==================== 每日礼包总览', start);
@@ -329,9 +329,13 @@ for (const wire of [value => JSON.parse(JSON.stringify(value)), value => structu
       if (request === '../services/operation-error-meta') return require('../src/services/operation-error-meta');
       throw new Error(`unexpected worker dependency: ${request}`);
     } };
-    const entry = new vm.Script(extractWorkerApiSource()).runInContext(vm.createContext(sandbox));
+    const entry = new vm.Script(extractWorkerApiSource(true)).runInContext(vm.createContext(sandbox));
     proc.send = msg => { proc.sent.push(msg); if(msg.type === 'api_call') Promise.resolve().then(async()=>{ await entry.handleApiCall(wire(msg)); proc.emitMessage(wire(responses.at(-1))); }); };
     const provider = createDataProvider({ getAccounts:()=>({accounts:[{id:'acct-1'}]}), callWorkerApi:manager.callWorkerApi });
+    // Explicit retired provider forwarding, absent from current production.
+    Object.assign(provider, { getMilkTeaActivity: ref => manager.callWorkerApi(ref, 'getMilkTeaActivity'),
+      queryMilkTeaActivity: (ref, kind, params) => manager.callWorkerApi(ref, 'queryMilkTeaActivity', kind, params),
+      operateMilkTea: (ref, action, input) => manager.callWorkerApi(ref, 'operateMilkTea', action, input) });
     provider.getStatus = () => ({ connection: { connected: true } }); provider.isAccountRunning = async()=>true;
     const routes = new Map(); const reader = createActivityReadCache();
     registerAdminMilkTeaActivityRoutes({ app: { get:(url,fn)=>routes.set(url,fn), post:(url,fn)=>routes.set(url,fn) }, provider, activityReader:reader, getAccountIdFromRequest:()=> 'acct-1', canAccessAccount:()=>true, sendProviderError:(res,err)=>res.status(502).json({ok:false,error:err.message}) });

@@ -69,7 +69,7 @@ function completeConfig(quietEnabled = false) {
   };
 }
 
-async function mountPage(t, config = completeConfig()) {
+async function mountPage(t, config = completeConfig(), historical = false) {
   const calls = [];
   const notifications = [];
   let stored = { exists: true, enabled: true, updatedAt: 1, config: clone(config) };
@@ -92,6 +92,7 @@ async function mountPage(t, config = completeConfig()) {
     },
   };
   const Page = compileSfcModule(path.join(WEB, 'src/components/settings/DefaultPlanSettingsTab.vue'), spec => {
+    if (historical && /AutomationSettingsTab\.vue$/.test(spec)) return { __esModule: true, default: loadHistoricalAutomation(child => child === '@/api' ? { __esModule: true, default: api } : child === 'vue' ? vue : undefined) };
     if (spec === 'vue') return vue;
     if (spec === '@/api') return { __esModule: true, default: api };
     return undefined;
@@ -150,7 +151,7 @@ async function setSwitch(page, label, value) {
 test('dedicated milk rewards switch saves and remounts without enabling ordinary tasks', async t => {
   const config = completeConfig();
   config.automation.milk_tea_auto_rewards = false;
-  const page = await mountPage(t, config);
+  const page = await mountPage(t, config, true);
   click(button(page.root, '自动控制')); await vue.nextTick();
   await setSwitch(page, '奶茶自动领奖（满额收银、快乐值）', true);
   const saved = await save(page);
@@ -290,7 +291,7 @@ for (const failure of ['response', 'throw']) {
 }
 
 test('milk seed/work/upgrade preferences and exact budgets survive real default-plan save and remount', async t => {
-  const page = await mountPage(t, completeConfig()); await section(page, '自动控制');
+  const page = await mountPage(t, completeConfig(), true); await section(page, '自动控制');
   for (const label of ['自动购买活动种子', '自动班次工作（互动与工资）', '自动升级店铺', '森野甜莓种子']) await setSwitch(page, label, true);
   click(button(page.root, '展开高级预算')); await vue.nextTick();
   await setInput(page, '奶茶券每日上限', '0');
@@ -306,7 +307,7 @@ test('full milk preset and separate hire budget survive default-plan reload and 
   const config = completeConfig();
   config.automation.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
   config.automation.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' };
-  const page = await mountPage(t, config); await section(page, '自动控制');
+  const page = await mountPage(t, config, true); await section(page, '自动控制');
   click(button(page.root, '推荐全自动（保留目标与额度）')); await vue.nextTick();
   const saved = await save(page);
   assert.equal(saved.automation.milk_tea_auto_craft, true); assert.equal(saved.automation.milk_tea_auto_hire, true);
@@ -397,4 +398,16 @@ for (const failure of ['response', 'throw']) {
     assert.equal(retained.intervals.farmMin, 13);
     assert.equal(retained.intervals.helpMin, 30, 'reloaded draft must come from the stored config, not the unsaved edit');
   });
+}
+
+// Historical milk authorization UI, pinned to the retired d609585e fixture.
+// Current ordinary settings still compile the production SFC.
+function loadHistoricalAutomation(resolve) {
+  const fixture = fs.readFileSync(path.join(__dirname, 'fixtures/RetiredMilkTeaView.vue'), 'utf8');
+  const source = fixture.split('<retired-automation>\n')[1]?.split('\n</retired-automation>')[0];
+  assert.ok(source, 'explicit historical automation source');
+  const target = path.join(h.privateDir, 'HistoricalAutomationSettings.vue');
+  h.assertWriteInsidePrivateDir(target);
+  fs.writeFileSync(target, source);
+  return compileSfcModule(target, resolve);
 }

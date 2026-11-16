@@ -973,8 +973,8 @@ function pauseRemainMsNow() {
     return Math.max(0, getPauseRemainMs(process.env.FARM_ACCOUNT_ID || ''));
 }
 
-function nextActivityRewardsAt(now = Date.now()) {
-    return require('../services/milk-tea-activity').automaticMilkTeaWakeAt(now);
+function nextActivityRewardsAt() {
+    return Infinity; // The expired season has no automatic deadline.
 }
 
 async function runUnifiedTick() {
@@ -1032,17 +1032,8 @@ async function runUnifiedTick() {
     const shouldHelp = now >= nextHelpRunAt;
     const shouldSteal = stealAt > 0 && now >= stealAt;
 
-    // 任一奶茶自动化开关（免费领奖/购种/班次工作/升级）都可唤醒统一活动调度；
-    // 其余成熟/好友/HOT/治理/登录链不受这些开关影响。
-    const milkTeaAutoOn = autoConfig.milk_tea_auto_rewards === true
-        || autoConfig.milk_tea_auto_seeds === true
-        || autoConfig.milk_tea_auto_work === true
-        || autoConfig.milk_tea_auto_upgrade === true
-        || autoConfig.milk_tea_auto_craft === true
-        || autoConfig.milk_tea_auto_hire === true
-        || autoConfig.milk_tea_auto_open === true
-        || autoConfig.milk_tea_auto_boost === true;
-    const shouldActivity = milkTeaAutoOn && now >= nextActivityRewardsAt(now);
+    // Retired season flags are retained as inert preferences only.
+    const shouldActivity = false;
     if (!shouldFarm && !shouldHelp && !shouldSteal && !shouldActivity && !stealIsImminent(1500)) return;
 
     if (!autoConfig.friend_steal) {
@@ -1060,15 +1051,7 @@ async function runUnifiedTick() {
     if (shouldFarm) await runFarmTick(autoConfig);
     if (pauseRemainMsNow() > 0) return;
     if (shouldHelp) await runHelpTick(autoConfig);
-    if (shouldActivity && loginReady && !friendSyncPaused && pauseRemainMsNow() <= 0) {
-        await require('../services/milk-tea-activity').runAutomaticMilkTea({
-            isReady: () => loginReady && !friendSyncPaused,
-            canRun: () => !ownHarvestIsDue() && !ownHarvestIsImminent(OWN_HARVEST_RESERVE_MS) && !stealIsDue() && !stealIsImminent(1500),
-            // 真实仓库背包读取（购种预算/库存缺口依赖），非测试桩
-            getBag,
-            getBagItems,
-        });
-    }
+
 }
 
 function scheduleUnifiedNextTick() {
@@ -1799,41 +1782,11 @@ async function handleApiCall(msg) {
                 result = await getActivityGroupSnapshot(args[0], args[1]);
                 break;
             }
-            case 'getMilkTeaActivity': {
-                const { getMilkTeaActivity } = require('../services/milk-tea-activity');
-                const { getBag, getBagItems } = require('../services/warehouse');
-                // 活动段入口防护：未登录就绪/连接不在位一律在触达读取前拒绝（零上游）
-                result = await getMilkTeaActivity({
-                    includeGameplay: true,
-                    deps: { getBag, getBagItems, isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() },
-                });
-                break;
-            }
             case 'getSolarCalendar':
             case 'operateSolarCalendar': {
                 const service = require('../services/solar-calendar');
                 const deps = { isReady: () => loginReady && getWs()?.readyState === 1, getConnection: () => getWs() };
                 result = method === 'getSolarCalendar' ? await service.getSolarCalendar(deps) : await service.operateSolarCalendar(args[0], args[1] || {}, deps);
-                break;
-            }
-            case 'queryMilkTeaActivity': {
-                const { queryMilkTeaActivity } = require('../services/milk-tea-activity');
-                const { getBag, getBagItems } = require('../services/warehouse');
-                result = await queryMilkTeaActivity(args[0], args[1] || {}, {
-                    getBag, getBagItems,
-                    isReady: () => loginReady && getWs()?.readyState === 1,
-                    getConnection: () => getWs(),
-                });
-                break;
-            }
-            case 'operateMilkTea': {
-                const { runManualMilkTeaAction } = require('../services/milk-tea-activity');
-                const { getBag, getBagItems } = require('../services/warehouse');
-                result = await runManualMilkTeaAction(args[0], args[1] || {}, {
-                    getBag, getBagItems,
-                    isReady: () => loginReady && getWs()?.readyState === 1,
-                    getConnection: () => getWs(),
-                });
                 break;
             }
             // S3 萌宠 / 秋祈良愿 / 快乐不独享（getBearActivity/getWishActivity/
@@ -1923,9 +1876,7 @@ async function handleApiCall(msg) {
         error = err.message;
         // 业务码元数据优先；否则尝试严格预算拒绝元数据（governed/stage，
         // 2026-10-30 奶茶 502 定位修复），二者按白名单互斥、附加属性不回传。
-        errorMeta = collectPetDiaryErrorMeta(err)
-            || (['getMilkTeaActivity', 'queryMilkTeaActivity', 'operateMilkTea'].includes(method)
-                ? require('../services/operation-error-meta').collectOperationErrorMeta(err) : null);
+        errorMeta = collectPetDiaryErrorMeta(err);
     }
 
     if (isFriendSync) {
@@ -2169,11 +2120,6 @@ function bindWorkerReadyEvents() {
     // 收获后自动出售
     if (onFarmHarvested) networkEvents.off('farmHarvested', onFarmHarvested);
     onFarmHarvested = async (event = {}) => {
-        // Local dirty flag only: the existing activity scheduler merges a wake
-        // at least 60s later. Never craft inside the harvest/priority chain.
-        if (getAutomation().milk_tea_auto_craft === true) {
-            try { require('../services/milk-tea-activity').markMilkTeaMaterialsDirty(); } catch { /* harvest remains independent */ }
-        }
         if (event.quietPriority || pauseRemainMsNow() > 0) { deferOwnHarvestSale(); return; }
         if (harvestSellRunning) return;
         if (!getAutomation().sell) return;
