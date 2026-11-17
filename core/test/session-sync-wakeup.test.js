@@ -118,7 +118,7 @@ function deadlineFixture(mode) {
     Atomics: { load: Atomics.load, store: Atomics.store, wait: (_header, _index, _value, remaining) => {
       waits.push(remaining); now += 3000; return now < 15000 ? 'ok' : 'timed-out';
     } } }, { filename });
-  const bridge = module.exports.createSessionBusinessBridge({ port, gate, initialFacts: { sequence: 1, game: { connectionEpoch: 1, userState: {}, status: {}, clock: {} } },
+  const bridge = module.exports.createSessionBusinessBridge({ port, gate, initialFacts: { sequence: 1, host: { hostId: 'synthetic-wakeup-host' }, game: { connectionEpoch: 1, userState: {}, status: {}, clock: {} } },
     onControlFailure: detail => { faults.push(detail); gate.suspend(); } }); gate.activate();
   return { bridge, gate, faults, waits, posts: () => posts };
 }

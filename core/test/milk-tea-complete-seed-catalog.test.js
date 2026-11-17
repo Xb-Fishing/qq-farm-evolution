@@ -18,7 +18,7 @@ test('complete registered seed targets, including experience mushroom and more t
 });
 test('static catalog covers all configured seeds without consulting any provider or requiring a fake account', () => {
   const routes = new Map(); const provider = new Proxy({}, { get() { throw Error('static catalog must never consult game provider'); } });
-  require('../src/controllers/admin-milk-tea-activity-routes').registerAdminMilkTeaActivityRoutes({ app: { get: (url, handler) => routes.set(url, handler), post() {} }, provider });
+  require('./fixtures/admin-milk-tea-activity-routes').registerAdminMilkTeaActivityRoutes({ app: { get: (url, handler) => routes.set(url, handler), post() {} }, provider });
   let body; routes.get('/api/activity/milk-tea/seed-catalog')({}, { json(value) { body = value; } });
   assert.equal(body.ok, true); assert.equal(body.seeds.length, config.getAllSeeds().length);
   assert.equal(body.seeds.find(seed => seed.id === 20523).name, '经验蘑菇种子');

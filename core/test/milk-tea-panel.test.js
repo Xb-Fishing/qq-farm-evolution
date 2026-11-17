@@ -9,7 +9,7 @@ const activeRoots = [];
 test.after(() => { for (const root of activeRoots) render(null, root); });
 function queries() { return Object.fromEntries(['shop','hireList','workshop','work','rank','sales'].map(k => [k, { data: null, loading: false, error: '' }])); }
 function mountPanel(activity, query = queries()) {
-  const Panel = compileSfcModule(path.join(WEB, 'src/components/activity/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
+  const Panel = compileSfcModule(path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
   const events = []; const root = makeNode('root'); activeRoots.push(root);
   render(vue.h(Panel, { activity, queries: query, onQuery: (...args) => events.push(['query', ...args]), onOperate: (...args) => events.push(['operate', ...args]) }), root);
   return { root, events };

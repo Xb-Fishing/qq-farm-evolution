@@ -28,6 +28,7 @@ async function throughBridge(error) {
   const filename = path.resolve(__dirname, '../src/runtime/session-business-bridge.js');
   const module = { exports: {} }; const port = new EventEmitter(); const faults = [];
   const collaborators = {
+    './ranch-scene-binding': require('../src/runtime/ranch-scene-binding'),
     'node:events': { EventEmitter }, 'node:perf_hooks': require('node:perf_hooks'),
     // Only VM-created request envelopes need the host Object prototype. The
     // actual error/reply codec and bridge rejection path remain unchanged.
@@ -45,7 +46,7 @@ async function throughBridge(error) {
   };
   const bridge = module.exports.createSessionBusinessBridge({ port,
     gate: { operation: () => ({ connectionEpoch: 1 }), setAuthorityProvider() {} },
-    initialFacts: { sequence: 1, game: { connectionEpoch: 1, userState: {}, status: {}, clock: {} } },
+    initialFacts: { sequence: 1, host: { hostId: 'synthetic-ranch-host' }, game: { connected: true, connectionEpoch: 1, userState: {}, status: {}, clock: {} } },
     onControlFailure: value => faults.push(value),
   });
   try {

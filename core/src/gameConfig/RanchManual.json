@@ -1,0 +1,1528 @@
+{
+  "animals": [
+    {
+      "id": 60001,
+      "name": "鸡",
+      "cub_item_id": 60001,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060001,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060001,
+        "count": 5
+      },
+      "max_produce_count": 1
+    },
+    {
+      "id": 60002,
+      "name": "鸭",
+      "cub_item_id": 60002,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060002,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060002,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60003,
+      "name": "鹅",
+      "cub_item_id": 60003,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060003,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060003,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60004,
+      "name": "兔子",
+      "cub_item_id": 60004,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060004,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060004,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60005,
+      "name": "火鸡",
+      "cub_item_id": 60005,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060005,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060005,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60006,
+      "name": "天竺鼠",
+      "cub_item_id": 60006,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060006,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060006,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60007,
+      "name": "乌龟",
+      "cub_item_id": 60007,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060007,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060007,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60008,
+      "name": "松鼠",
+      "cub_item_id": 60008,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060008,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060008,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60009,
+      "name": "刺猬",
+      "cub_item_id": 60009,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060009,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060009,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60010,
+      "name": "鼹鼠",
+      "cub_item_id": 60010,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060010,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060010,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60011,
+      "name": "考拉",
+      "cub_item_id": 60011,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060011,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060011,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60012,
+      "name": "狐狸",
+      "cub_item_id": 60012,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060012,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060012,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70001,
+      "name": "羊",
+      "cub_item_id": 70001,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070001,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070001,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70002,
+      "name": "牛",
+      "cub_item_id": 70002,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070002,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070002,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70003,
+      "name": "驴",
+      "cub_item_id": 70003,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070003,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070003,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70004,
+      "name": "迷你猪",
+      "cub_item_id": 70004,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070004,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070004,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70005,
+      "name": "马",
+      "cub_item_id": 70005,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070005,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070005,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70006,
+      "name": "水牛",
+      "cub_item_id": 70006,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070006,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070006,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70007,
+      "name": "骆驼",
+      "cub_item_id": 70007,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070007,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070007,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70008,
+      "name": "牦牛",
+      "cub_item_id": 70008,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070008,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070008,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70009,
+      "name": "鸵鸟",
+      "cub_item_id": 70009,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070009,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070009,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70010,
+      "name": "梅花鹿",
+      "cub_item_id": 70010,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070010,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070010,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70011,
+      "name": "浣熊",
+      "cub_item_id": 70011,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070011,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070011,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 70012,
+      "name": "羊驼",
+      "cub_item_id": 70012,
+      "husbandry_type": "棚",
+      "product_item": {
+        "id": 2070012,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1070012,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60013,
+      "name": "豪猪",
+      "cub_item_id": 60013,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060013,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060013,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60014,
+      "name": "龙猫",
+      "cub_item_id": 60014,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060014,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060014,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60015,
+      "name": "孔雀",
+      "cub_item_id": 60015,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060015,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060015,
+        "count": 30
+      },
+      "max_produce_count": 2
+    },
+    {
+      "id": 60016,
+      "name": "貂",
+      "cub_item_id": 60016,
+      "husbandry_type": "窝",
+      "product_item": {
+        "id": 2060016,
+        "count": 1
+      },
+      "byproduct_item": {
+        "id": 1060016,
+        "count": 30
+      },
+      "max_produce_count": 2
+    }
+  ],
+  "facilities": [
+    {
+      "facility_id": 6001001,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 1,
+      "capacity": 3
+    },
+    {
+      "facility_id": 6001002,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 2,
+      "capacity": 4
+    },
+    {
+      "facility_id": 6001003,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 3,
+      "capacity": 5
+    },
+    {
+      "facility_id": 6001004,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 4,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6001005,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 5,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6001006,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 6,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6001007,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 7,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6001008,
+      "name": "窝",
+      "module_type": "MODULE_TYPE_RANCH_COOP",
+      "level": 8,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6002001,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 1,
+      "capacity": 3
+    },
+    {
+      "facility_id": 6002002,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 2,
+      "capacity": 4
+    },
+    {
+      "facility_id": 6002003,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 3,
+      "capacity": 5
+    },
+    {
+      "facility_id": 6002004,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 4,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6002005,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 5,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6002006,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 6,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6002007,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 7,
+      "capacity": 6
+    },
+    {
+      "facility_id": 6002008,
+      "name": "棚",
+      "module_type": "MODULE_TYPE_RANCH_SHED",
+      "level": 8,
+      "capacity": 6
+    },
+    {
+      "facility_id": 7001001,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 1,
+      "capacity": 100
+    },
+    {
+      "facility_id": 7001002,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 2,
+      "capacity": 150
+    },
+    {
+      "facility_id": 7001003,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 3,
+      "capacity": 560
+    },
+    {
+      "facility_id": 7001004,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 4,
+      "capacity": 1100
+    },
+    {
+      "facility_id": 7001005,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 5,
+      "capacity": 1800
+    },
+    {
+      "facility_id": 7001006,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 6,
+      "capacity": 2900
+    },
+    {
+      "facility_id": 7001007,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 7,
+      "capacity": 5200
+    },
+    {
+      "facility_id": 7001008,
+      "name": "牧草机",
+      "module_type": "MODULE_TYPE_FEED_MACHINE",
+      "level": 8,
+      "capacity": 8000
+    }
+  ],
+  "items": [
+    {
+      "id": 1002,
+      "name": "点券",
+      "type": 2
+    },
+    {
+      "id": 1005,
+      "name": "金豆豆",
+      "type": 2
+    },
+    {
+      "id": 1102,
+      "name": "牧场经验",
+      "type": 3
+    },
+    {
+      "id": 1007,
+      "name": "金券",
+      "type": 102
+    },
+    {
+      "id": 1008,
+      "name": "松果",
+      "type": 2
+    },
+    {
+      "id": 7001,
+      "name": "牧草",
+      "type": 6
+    },
+    {
+      "id": 7002,
+      "name": "便便",
+      "type": 108
+    },
+    {
+      "id": 7003,
+      "name": "无机罐头容器",
+      "type": 2
+    },
+    {
+      "id": 7004,
+      "name": "有机罐头容器",
+      "type": 2
+    },
+    {
+      "id": 60001,
+      "name": "鸡",
+      "type": 105
+    },
+    {
+      "id": 60002,
+      "name": "鸭",
+      "type": 105
+    },
+    {
+      "id": 60003,
+      "name": "鹅",
+      "type": 105
+    },
+    {
+      "id": 60004,
+      "name": "兔子",
+      "type": 105
+    },
+    {
+      "id": 60005,
+      "name": "火鸡",
+      "type": 105
+    },
+    {
+      "id": 60006,
+      "name": "天竺鼠",
+      "type": 105
+    },
+    {
+      "id": 60007,
+      "name": "乌龟",
+      "type": 105
+    },
+    {
+      "id": 60008,
+      "name": "松鼠",
+      "type": 105
+    },
+    {
+      "id": 60009,
+      "name": "刺猬",
+      "type": 105
+    },
+    {
+      "id": 60010,
+      "name": "鼹鼠",
+      "type": 105
+    },
+    {
+      "id": 60011,
+      "name": "考拉",
+      "type": 105
+    },
+    {
+      "id": 60012,
+      "name": "狐狸",
+      "type": 105
+    },
+    {
+      "id": 60013,
+      "name": "豪猪",
+      "type": 105
+    },
+    {
+      "id": 60014,
+      "name": "龙猫",
+      "type": 105
+    },
+    {
+      "id": 60015,
+      "name": "孔雀",
+      "type": 105
+    },
+    {
+      "id": 60016,
+      "name": "貂",
+      "type": 105
+    },
+    {
+      "id": 70001,
+      "name": "羊",
+      "type": 105
+    },
+    {
+      "id": 70002,
+      "name": "牛",
+      "type": 105
+    },
+    {
+      "id": 70003,
+      "name": "驴",
+      "type": 105
+    },
+    {
+      "id": 70004,
+      "name": "迷你猪",
+      "type": 105
+    },
+    {
+      "id": 70005,
+      "name": "马",
+      "type": 105
+    },
+    {
+      "id": 70006,
+      "name": "水牛",
+      "type": 105
+    },
+    {
+      "id": 70007,
+      "name": "骆驼",
+      "type": 105
+    },
+    {
+      "id": 70008,
+      "name": "牦牛",
+      "type": 105
+    },
+    {
+      "id": 70009,
+      "name": "鸵鸟",
+      "type": 105
+    },
+    {
+      "id": 70010,
+      "name": "梅花鹿",
+      "type": 105
+    },
+    {
+      "id": 70011,
+      "name": "浣熊",
+      "type": 105
+    },
+    {
+      "id": 70012,
+      "name": "羊驼",
+      "type": 105
+    },
+    {
+      "id": 1060001,
+      "name": "鸡蛋",
+      "type": 107
+    },
+    {
+      "id": 1060002,
+      "name": "鸭蛋",
+      "type": 107
+    },
+    {
+      "id": 1060003,
+      "name": "鹅蛋",
+      "type": 107
+    },
+    {
+      "id": 1060004,
+      "name": "小兔崽",
+      "type": 107
+    },
+    {
+      "id": 1060005,
+      "name": "火鸡蛋",
+      "type": 107
+    },
+    {
+      "id": 1060006,
+      "name": "天竺鼠崽",
+      "type": 107
+    },
+    {
+      "id": 1060007,
+      "name": "小乌龟",
+      "type": 107
+    },
+    {
+      "id": 1060008,
+      "name": "松鼠崽",
+      "type": 107
+    },
+    {
+      "id": 1060009,
+      "name": "刺猬崽",
+      "type": 107
+    },
+    {
+      "id": 1060010,
+      "name": "鼹鼠崽",
+      "type": 107
+    },
+    {
+      "id": 1060011,
+      "name": "考拉崽",
+      "type": 107
+    },
+    {
+      "id": 1060012,
+      "name": "狐狸崽",
+      "type": 107
+    },
+    {
+      "id": 1060013,
+      "name": "豪猪崽",
+      "type": 107
+    },
+    {
+      "id": 1060014,
+      "name": "龙猫崽",
+      "type": 107
+    },
+    {
+      "id": 1060015,
+      "name": "孔雀毛",
+      "type": 107
+    },
+    {
+      "id": 1060016,
+      "name": "貂崽",
+      "type": 107
+    },
+    {
+      "id": 1070001,
+      "name": "羊毛",
+      "type": 107
+    },
+    {
+      "id": 1070002,
+      "name": "牛奶",
+      "type": 107
+    },
+    {
+      "id": 1070003,
+      "name": "驴崽",
+      "type": 107
+    },
+    {
+      "id": 1070004,
+      "name": "迷你猪崽",
+      "type": 107
+    },
+    {
+      "id": 1070005,
+      "name": "马奶",
+      "type": 107
+    },
+    {
+      "id": 1070006,
+      "name": "水牛奶",
+      "type": 107
+    },
+    {
+      "id": 1070007,
+      "name": "骆驼奶",
+      "type": 107
+    },
+    {
+      "id": 1070008,
+      "name": "牦牛毛",
+      "type": 107
+    },
+    {
+      "id": 1070009,
+      "name": "鸵鸟崽",
+      "type": 107
+    },
+    {
+      "id": 1070010,
+      "name": "梅花鹿崽",
+      "type": 107
+    },
+    {
+      "id": 1070011,
+      "name": "浣熊崽",
+      "type": 107
+    },
+    {
+      "id": 1070012,
+      "name": "羊驼崽",
+      "type": 107
+    },
+    {
+      "id": 2060001,
+      "name": "鸡",
+      "type": 106
+    },
+    {
+      "id": 2060002,
+      "name": "鸭",
+      "type": 106
+    },
+    {
+      "id": 2060003,
+      "name": "鹅",
+      "type": 106
+    },
+    {
+      "id": 2060004,
+      "name": "兔",
+      "type": 106
+    },
+    {
+      "id": 2060005,
+      "name": "火鸡",
+      "type": 106
+    },
+    {
+      "id": 2060006,
+      "name": "天竺鼠",
+      "type": 106
+    },
+    {
+      "id": 2060007,
+      "name": "乌龟",
+      "type": 106
+    },
+    {
+      "id": 2060008,
+      "name": "松鼠",
+      "type": 106
+    },
+    {
+      "id": 2060009,
+      "name": "刺猬",
+      "type": 106
+    },
+    {
+      "id": 2060010,
+      "name": "鼹鼠",
+      "type": 106
+    },
+    {
+      "id": 2060011,
+      "name": "考拉",
+      "type": 106
+    },
+    {
+      "id": 2060012,
+      "name": "狐狸",
+      "type": 106
+    },
+    {
+      "id": 2060013,
+      "name": "豪猪",
+      "type": 106
+    },
+    {
+      "id": 2060014,
+      "name": "龙猫",
+      "type": 106
+    },
+    {
+      "id": 2060015,
+      "name": "孔雀",
+      "type": 106
+    },
+    {
+      "id": 2060016,
+      "name": "貂",
+      "type": 106
+    },
+    {
+      "id": 2070001,
+      "name": "羊",
+      "type": 106
+    },
+    {
+      "id": 2070002,
+      "name": "牛",
+      "type": 106
+    },
+    {
+      "id": 2070003,
+      "name": "驴",
+      "type": 106
+    },
+    {
+      "id": 2070004,
+      "name": "迷你猪",
+      "type": 106
+    },
+    {
+      "id": 2070005,
+      "name": "马",
+      "type": 106
+    },
+    {
+      "id": 2070006,
+      "name": "水牛",
+      "type": 106
+    },
+    {
+      "id": 2070007,
+      "name": "骆驼",
+      "type": 106
+    },
+    {
+      "id": 2070008,
+      "name": "牦牛",
+      "type": 106
+    },
+    {
+      "id": 2070009,
+      "name": "鸵鸟",
+      "type": 106
+    },
+    {
+      "id": 2070010,
+      "name": "梅花鹿",
+      "type": 106
+    },
+    {
+      "id": 2070011,
+      "name": "浣熊",
+      "type": 106
+    },
+    {
+      "id": 2070012,
+      "name": "羊驼",
+      "type": 106
+    }
+  ],
+  "goods": [
+    {
+      "id": 10001,
+      "shop_id": 6,
+      "item_id": 7001,
+      "price_id": 1007,
+      "one_buy_count": 999
+    },
+    {
+      "id": 10002,
+      "shop_id": 5,
+      "item_id": 60001,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10003,
+      "shop_id": 5,
+      "item_id": 60002,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10004,
+      "shop_id": 5,
+      "item_id": 60003,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10005,
+      "shop_id": 5,
+      "item_id": 60004,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10006,
+      "shop_id": 5,
+      "item_id": 60005,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10007,
+      "shop_id": 5,
+      "item_id": 60006,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10008,
+      "shop_id": 5,
+      "item_id": 70001,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10009,
+      "shop_id": 5,
+      "item_id": 70002,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10010,
+      "shop_id": 5,
+      "item_id": 60007,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10011,
+      "shop_id": 5,
+      "item_id": 60008,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10012,
+      "shop_id": 5,
+      "item_id": 70003,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10013,
+      "shop_id": 5,
+      "item_id": 70004,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10014,
+      "shop_id": 5,
+      "item_id": 60009,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10015,
+      "shop_id": 5,
+      "item_id": 60010,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10016,
+      "shop_id": 5,
+      "item_id": 70005,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10017,
+      "shop_id": 5,
+      "item_id": 70006,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10018,
+      "shop_id": 5,
+      "item_id": 60011,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10019,
+      "shop_id": 5,
+      "item_id": 60012,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10020,
+      "shop_id": 5,
+      "item_id": 70007,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10021,
+      "shop_id": 5,
+      "item_id": 70008,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10022,
+      "shop_id": 5,
+      "item_id": 60013,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10023,
+      "shop_id": 5,
+      "item_id": 60014,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10024,
+      "shop_id": 5,
+      "item_id": 70009,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10025,
+      "shop_id": 5,
+      "item_id": 70010,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10026,
+      "shop_id": 5,
+      "item_id": 60015,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10027,
+      "shop_id": 5,
+      "item_id": 60016,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10028,
+      "shop_id": 5,
+      "item_id": 70011,
+      "price_id": 1007,
+      "one_buy_count": 99
+    },
+    {
+      "id": 10029,
+      "shop_id": 5,
+      "item_id": 70012,
+      "price_id": 1007,
+      "one_buy_count": 99
+    }
+  ],
+  "levels": [
+    {
+      "level": 1,
+      "exp": 0
+    },
+    {
+      "level": 2,
+      "exp": 300
+    },
+    {
+      "level": 3,
+      "exp": 700
+    },
+    {
+      "level": 4,
+      "exp": 1300
+    },
+    {
+      "level": 5,
+      "exp": 2200
+    },
+    {
+      "level": 6,
+      "exp": 3300
+    },
+    {
+      "level": 7,
+      "exp": 5300
+    },
+    {
+      "level": 8,
+      "exp": 7500
+    },
+    {
+      "level": 9,
+      "exp": 10000
+    },
+    {
+      "level": 10,
+      "exp": 23800
+    },
+    {
+      "level": 11,
+      "exp": 37800
+    },
+    {
+      "level": 12,
+      "exp": 52000
+    },
+    {
+      "level": 13,
+      "exp": 66400
+    },
+    {
+      "level": 14,
+      "exp": 81000
+    },
+    {
+      "level": 15,
+      "exp": 95800
+    },
+    {
+      "level": 16,
+      "exp": 110800
+    },
+    {
+      "level": 17,
+      "exp": 126000
+    },
+    {
+      "level": 18,
+      "exp": 141400
+    },
+    {
+      "level": 19,
+      "exp": 157000
+    },
+    {
+      "level": 20,
+      "exp": 172800
+    },
+    {
+      "level": 21,
+      "exp": 188800
+    },
+    {
+      "level": 22,
+      "exp": 208200
+    },
+    {
+      "level": 23,
+      "exp": 228400
+    },
+    {
+      "level": 24,
+      "exp": 250100
+    },
+    {
+      "level": 25,
+      "exp": 272000
+    },
+    {
+      "level": 26,
+      "exp": 294000
+    },
+    {
+      "level": 27,
+      "exp": 316300
+    },
+    {
+      "level": 28,
+      "exp": 339100
+    },
+    {
+      "level": 29,
+      "exp": 362200
+    },
+    {
+      "level": 30,
+      "exp": 385600
+    },
+    {
+      "level": 31,
+      "exp": 409500
+    },
+    {
+      "level": 32,
+      "exp": 433700
+    },
+    {
+      "level": 33,
+      "exp": 466000
+    },
+    {
+      "level": 34,
+      "exp": 501000
+    },
+    {
+      "level": 35,
+      "exp": 539300
+    },
+    {
+      "level": 36,
+      "exp": 581700
+    },
+    {
+      "level": 37,
+      "exp": 629000
+    },
+    {
+      "level": 38,
+      "exp": 677700
+    },
+    {
+      "level": 39,
+      "exp": 743200
+    },
+    {
+      "level": 40,
+      "exp": 817700
+    },
+    {
+      "level": 41,
+      "exp": 894600
+    },
+    {
+      "level": 42,
+      "exp": 990100
+    },
+    {
+      "level": 43,
+      "exp": 1097500
+    },
+    {
+      "level": 44,
+      "exp": 1206400
+    },
+    {
+      "level": 45,
+      "exp": 1317700
+    },
+    {
+      "level": 46,
+      "exp": 1432500
+    },
+    {
+      "level": 47,
+      "exp": 1553600
+    },
+    {
+      "level": 48,
+      "exp": 1684000
+    },
+    {
+      "level": 49,
+      "exp": 1822200
+    },
+    {
+      "level": 50,
+      "exp": 1970500
+    },
+    {
+      "level": 51,
+      "exp": 2142300
+    },
+    {
+      "level": 52,
+      "exp": 2321500
+    },
+    {
+      "level": 53,
+      "exp": 2511800
+    },
+    {
+      "level": 54,
+      "exp": 2714500
+    },
+    {
+      "level": 55,
+      "exp": 2919000
+    },
+    {
+      "level": 56,
+      "exp": 3125200
+    },
+    {
+      "level": 57,
+      "exp": 3333300
+    },
+    {
+      "level": 58,
+      "exp": 3546400
+    },
+    {
+      "level": 59,
+      "exp": 3762300
+    },
+    {
+      "level": 60,
+      "exp": 3985200
+    },
+    {
+      "level": 61,
+      "exp": 4214300
+    },
+    {
+      "level": 62,
+      "exp": 4446800
+    },
+    {
+      "level": 63,
+      "exp": 4690900
+    },
+    {
+      "level": 64,
+      "exp": 4939400
+    },
+    {
+      "level": 65,
+      "exp": 5222000
+    }
+  ]
+}

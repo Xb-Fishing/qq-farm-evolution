@@ -14,8 +14,8 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { feedbackContext, TRACE_RE } = require('./daily-feedback');
-const { getDataDir } = require('../config/runtime-paths');
+const { feedbackContext, TRACE_RE } = require('../../src/services/daily-feedback');
+const { getDataDir } = require('../../src/config/runtime-paths');
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_DAY_ROWS = 2000;

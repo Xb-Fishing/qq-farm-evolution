@@ -511,10 +511,24 @@ function onTaskInfoNotify(payload) {
 
 // ---- 生命周期 ----
 
+function onRanchSceneRestored() {
+  if (!taskSystemInitialized || !isAutomationOn('task')) return;
+  taskScheduler.setTimeoutTask('ranch_task_refresh', 1500, refreshTaskAfterRanch);
+}
+async function refreshTaskAfterRanch() {
+  if (!taskSystemInitialized || !isAutomationOn('task')) return;
+  const timing = require('../utils/behavior');
+  if (timing.ownHarvestIsDue() || timing.ownHarvestIsImminent(10000) || timing.stealIsDue() || timing.stealIsImminent(3000)) {
+    taskScheduler.setTimeoutTask('ranch_task_refresh', 10000, refreshTaskAfterRanch); return;
+  }
+  await checkAndClaimTasks();
+}
+
 function initTaskSystem() {
   cleanupTaskSystem();
   taskSystemInitialized = true;
   networkEvents.on('taskInfoNotify', onTaskInfoNotify);
+  networkEvents.on('ranchSceneRestored', onRanchSceneRestored);
   taskScheduler.setTimeoutTask('task_init_bootstrap', 15000, checkAndClaimTasks);
 }
 
@@ -522,6 +536,7 @@ function cleanupTaskSystem() {
   taskSystemInitialized = false;
   pendingTaskClaim = null;
   networkEvents.off('taskInfoNotify', onTaskInfoNotify);
+  networkEvents.off('ranchSceneRestored', onRanchSceneRestored);
   taskScheduler.clearAll();
   checking = false;
 }
@@ -650,6 +665,7 @@ async function onTaskClaimTimer() {
 }
 function bindTaskSessionState() {
   if (taskSystemInitialized) networkEvents.on('taskInfoNotify', onTaskInfoNotify);
+  taskScheduler.bindTimeoutTask('ranch_task_refresh', refreshTaskAfterRanch);
   taskScheduler.bindTimeoutTask('task_claim_debounce', onTaskClaimTimer);
   taskScheduler.bindTimeoutTask('task_init_bootstrap', checkAndClaimTasks);
 }

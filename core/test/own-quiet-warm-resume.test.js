@@ -18,17 +18,20 @@ test('warm activation replaces a restored quiet-until timer with the preserved o
   let marked = 0;
   let unifiedCalls = 0;
   let watchClears = 0;
+  let ranchStarts = 0;
   const sandbox = vm.createContext({ require: name => { assert.equal(name, '../services/fertilizer-watch'); return { retireFertilizerWatchMode: () => { watchClears++; } }; }, Date, loginReady: true, unifiedSchedulerRunning: true,
     ownHarvestArmedFor: dueAt, ownHarvestRetryAttempt: 4, ownHarvestDueAt: () => dueAt,
     getAutomation: () => ({ farm: true, harvest: true }), OWN_HARVEST_ACT_DELAY_MS: [30, 80],
     randInt: min => min, markOwnHarvestDueAt: value => { marked = value; }, onTimer_own_harvest_guard() {},
     scheduleUnifiedNextTick: () => { unifiedCalls++; },
+    startRanchAutomationTimer: () => { ranchStarts++; },
     workerScheduler: { has: name => tasks.has(name), clear: name => tasks.delete(name),
       setTimeoutTask: (name, delay) => tasks.set(name, { dueAt: now + delay }) },
   });
   vm.runInContext([actual('setOwnHarvestGuardTimer'), actual('armOwnHarvestGuard'), `const refresh = ${refresh};`].join('\n'), sandbox);
   vm.runInContext('refresh()', sandbox);
   assert.equal(marked, dueAt);
+  assert.equal(ranchStarts, 1);
   assert.ok(Math.abs(tasks.get('own_harvest_guard').dueAt - (dueAt + 30)) < 100);
   assert.ok(tasks.get('own_harvest_guard').dueAt < quietUntil);
   assert.equal(sandbox.ownHarvestRetryAttempt, 0); assert.equal(unifiedCalls, 1);

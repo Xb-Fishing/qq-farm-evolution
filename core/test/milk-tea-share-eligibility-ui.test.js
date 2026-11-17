@@ -12,7 +12,7 @@ const activeRoots = [];
 test.after(() => { for (const root of activeRoots) render(null, root); });
 function queries() { return Object.fromEntries(['shop', 'hireList', 'workshop', 'work', 'rank', 'sales'].map(k => [k, { data: null, loading: false, error: '' }])); }
 function mountPanel(activity, query = queries()) {
-  const Panel = compileSfcModule(path.join(WEB, 'src/components/activity/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
+  const Panel = compileSfcModule(path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
   const events = []; const root = makeNode('root'); activeRoots.push(root);
   render(vue.h(Panel, { activity, queries: query, onQuery: (...args) => events.push(['query', ...args]), onOperate: (...args) => events.push(['operate', ...args]) }), root);
   return { root, events };
@@ -155,7 +155,7 @@ test('活动未开始/已结束不准领取快乐值档位并给出原因', asyn
 });
 
 test('读取/操作期间禁用；确认期间分数、档位、阶段、加载或操作状态变化撤销旧确认', async () => {
-  const Panel = compileSfcModule(path.join(WEB, 'src/components/activity/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
+  const Panel = compileSfcModule(path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue'), spec => spec === 'vue' ? vue : undefined);
   // loading / operating 禁用
   for (const extra of [{ loading: true }, { operating: 'shareMilestones' }]) {
     const root = makeNode('root'); activeRoots.push(root);

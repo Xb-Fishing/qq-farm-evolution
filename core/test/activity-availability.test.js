@@ -36,7 +36,7 @@ const CANDIDATE_SOURCES = [
   path.resolve(__dirname, 'fixtures/RetiredMilkTeaView.vue'),
   path.join(repoRoot, 'web', 'src', 'stores', 'activity.ts'),
   path.join(repoRoot, 'web', 'src', 'views', 'Activity.vue'),
-  path.join(repoRoot, 'web', 'src', 'components', 'activity', 'MilkTeaActivityPanel.vue'),
+  path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue'),
 ];
 function fingerprintOf(file) {
   const stat = fs.statSync(file);
@@ -96,6 +96,8 @@ function compileSfcModule(absPath, resolve) {
       target = path.join(WEB, 'src', spec.slice(2));
     else if (spec.startsWith('.'))
       target = path.resolve(path.dirname(absPath), spec);
+    if (spec === '@/components/activity/MilkTeaActivityPanel.vue') target = path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue');
+    if (spec === '@/components/settings/MilkTeaAutomationSettings.vue') target = path.join(__dirname, 'fixtures/MilkTeaAutomationSettings.vue');
     if (target) {
       if (fs.existsSync(target) && target.endsWith('.vue')) {
         const child = { exports: {} };

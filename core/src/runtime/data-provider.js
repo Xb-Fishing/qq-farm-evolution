@@ -240,6 +240,14 @@ function createDataProvider(deps) {
         buyMysteryShopGoods: (ref, npcId) => callWorkerApi(resolveAccountId(ref), 'buyMysteryShopGoods', npcId),
         abandonMysteryShop: (ref) => callWorkerApi(resolveAccountId(ref), 'abandonMysteryShop'),
 
+        getRanchState: (ref, view, shopId) => callWorkerApi(resolveAccountId(ref), 'getRanchState', view, shopId, { _timeoutMs: 25000 }),
+        getRanchAutomation: ref => callWorkerApi(resolveAccountId(ref), 'getRanchAutomation'),
+        setRanchAutomation: (ref, value) => callWorkerApi(resolveAccountId(ref), 'setRanchAutomation', value),
+        prepareRanchAction: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'prepareRanchAction', action, input, { _timeoutMs: 25000 }),
+        operateRanch: (ref, id) => callWorkerApi(resolveAccountId(ref), 'operateRanch', id, { _timeoutMs: 25000 }),
+        cancelRanchAction: (ref, id) => callWorkerApi(resolveAccountId(ref), 'cancelRanchAction', id),
+        acknowledgeRanch: (ref, id) => callWorkerApi(resolveAccountId(ref), 'acknowledgeRanch', id),
+
         // ========== Activity ==========
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),

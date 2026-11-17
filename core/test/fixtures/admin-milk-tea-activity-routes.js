@@ -16,12 +16,12 @@ const {
   getAuthorizedAccountId,
   requireConnectedAccount,
   sendActivityUnavailable,
-} = require('./admin-activity-route-helpers');
-const { createActivityReadCache, ACTIVITY_UPSTREAM_CACHE_MS } = require('./activity-read-cache');
-const { strictBudgetRejection } = require('../services/operation-error-meta');
-const { beginMilkTeaRequestFeedback } = require('../services/milk-tea-request-feedback');
+} = require('../../src/controllers/admin-activity-route-helpers');
+const { createActivityReadCache, ACTIVITY_UPSTREAM_CACHE_MS } = require('../../src/controllers/activity-read-cache');
+const { strictBudgetRejection } = require('../../src/services/operation-error-meta');
+const { beginMilkTeaRequestFeedback } = require('./milk-tea-request-feedback');
 
-const { QUERY_KINDS, MANUAL_ACTIONS } = require('../services/milk-tea-activity');
+const { QUERY_KINDS, MANUAL_ACTIONS } = require('../../src/services/milk-tea-activity');
 
 // 严格本地预算拒绝（budget_total/budget_method，零发送可证）→ 429 + 固定本地码。
 // 与服务端业务码（400）区分；缓存保留、不自动重试。普通错误仍走 502。
@@ -65,7 +65,7 @@ function registerAdminMilkTeaActivityRoutes({
   // Static catalog: authenticated by the existing /api gate, no account or
   // game RPC is needed (including when configuring a default-plan template).
   app.get('/api/activity/milk-tea/seed-catalog', (req, res) => {
-    const config = require('../config/gameConfig');
+    const config = require('../../src/config/gameConfig');
     const seeds = config.getAllSeeds().map(seed => ({
       id: Number(seed.seedId), name: config.getItemById(seed.seedId)?.name || `${seed.name}种子`,
       requiredLevel: seed.requiredLevel, image: seed.image || '',

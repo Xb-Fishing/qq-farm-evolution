@@ -55,6 +55,8 @@ function createHarness(name) {
   } };
   const store = { getWirePauseRemainMs: () => pauseMs, getDeviceProtocolForAccount: () => null };
   const replacements = {
+    'node:crypto': require('node:crypto'),
+    '../runtime/ranch-scene-binding': require('../src/runtime/ranch-scene-binding'),
     'node:perf_hooks': { performance: { now: () => now - baseNow } }, 'node:buffer': { Buffer }, 'node:events': EventEmitter, 'node:process': localProcess, ws: Socket,
     '../config/config': { CONFIG: config }, '../services/ace-service': { AceService: class { constructor() { throw new Error('Unexpected ACE initialization'); } } },
     '../services/scheduler': { createScheduler: namespace => { assert.equal(namespace, 'network'); return scheduler; } },

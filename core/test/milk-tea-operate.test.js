@@ -43,7 +43,7 @@ function assertWriteInsidePrivateDir(target) {
 
 const CANDIDATE_SOURCES = [
   path.join(repoRoot, 'core', 'src', 'services', 'milk-tea-activity.js'),
-  path.join(repoRoot, 'core', 'src', 'controllers', 'admin-milk-tea-activity-routes.js'),
+  path.join(__dirname, 'fixtures/admin-milk-tea-activity-routes.js'),
   path.join(repoRoot, 'core', 'src', 'services', 'activity.js'),
   path.join(repoRoot, 'core', 'src', 'services', 'pet-diary-operate.js'),
   path.join(repoRoot, 'core', 'src', 'services', 'season-wish-operate.js'),
@@ -56,7 +56,7 @@ function fingerprintOf(file) {
 const fingerprintsBefore = new Map(CANDIDATE_SOURCES.map(file => [file, fingerprintOf(file)]));
 
 const { loadProto, types } = require('../src/utils/proto');
-const { registerAdminMilkTeaActivityRoutes } = require('../src/controllers/admin-milk-tea-activity-routes');
+const { registerAdminMilkTeaActivityRoutes } = require('./fixtures/admin-milk-tea-activity-routes');
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
 
 const ROOT = 2026110100;

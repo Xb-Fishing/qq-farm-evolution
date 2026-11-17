@@ -1,3 +1,4 @@
+const { registerAdminRanchRoutes } = require('./admin-ranch-routes');
 const { registerAdminFriendRecallActivityRoutes } = require('./admin-friend-recall-activity-routes');
 const { registerAdminMugeActivityRoutes } = require('./admin-muge-activity-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
@@ -30,6 +31,7 @@ function registerAdminActivityRoutes({
 
   registerAdminFriendRecallActivityRoutes(routeContext);
   registerAdminMugeActivityRoutes(routeContext);
+  registerAdminRanchRoutes(routeContext);
   registerAdminSolarCalendarRoutes(routeContext);
   registerAdminOfficialAnnouncementRoutes(routeContext);
   registerAdminGameUpdateRoutes(routeContext);

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const h = require('./activity-availability.test');
 const roots = [];
-const files = [__filename, path.join(h.WEB, 'src/components/activity/MilkTeaActivityPanel.vue')];
+const files = [__filename, path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue')];
 const fingerprint = () => files.map(file => ({ mode: fs.statSync(file).mode & 0o777,
   sha: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
 const before = fingerprint();

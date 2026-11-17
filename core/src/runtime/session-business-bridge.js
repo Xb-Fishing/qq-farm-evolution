@@ -92,21 +92,40 @@ function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailur
     operation.connectionEpoch ??= readFacts().game.connectionEpoch;
     return sync('command', method, args);
   }
-  function sendMsgAsync(service, method, body, timeout, options) {
+  function dispatchRequest(service, method, body, timeout, options, restore = false) {
     if (!syncHealthy) return Promise.reject(controlFailure);
     const operation = gate.operation();
     if (!operation || operation.preparation) return Promise.reject(Object.assign(new Error('Business authority is not active'), { code: 'SESSION_EPOCH_RETIRED' }));
     const id = ++sequence;
     operation.connectionEpoch ??= readFacts().game.connectionEpoch;
     operation.configRevision ??= appliedRevision;
+    let configRevision = operation.configRevision;
+    if (restore) {
+      const current = readFacts();
+      if (service !== 'gamepb.globalscenepb.GlobalSceneService' || method !== 'PlayerSceneLogin'
+        || require('../services/ranch-codec').decode('PlayerSceneLoginRequest', body).global_scene_id !== 1
+        || current.game.connectionEpoch !== operation.connectionEpoch)
+        return Promise.reject(Object.assign(new Error('Farm scene restoration authority changed'), { code: 'SESSION_CONNECTION_CHANGED' }));
+      // Only the fixed non-economic scene1 restoration may use the new policy revision.
+      configRevision = current.game.configRevision;
+    }
     const args = { service, method, body: Buffer.from(body || []), timeout, options,
-      configRevision: operation.configRevision, connectionEpoch: operation.connectionEpoch };
+      configRevision, connectionEpoch: operation.connectionEpoch };
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject, method: `${service}.${method}` });
       try { port.postMessage({ kind: 'business_request', id, sequence: id, body: encode(args) }); }
       catch (error) { pending.delete(id); reject(error); }
     });
   }
+  const scene = require('./ranch-scene-binding').bindRanchScene({
+    send: dispatchRequest,
+    identity: () => ({ key: `${facts.host.hostId}:${facts.game.connectionEpoch}:${facts.game.loginEpoch}`,
+      connected: facts.game.connected === true, level: facts.game.userState?.level || 0, revision: facts.game.configRevision }),
+    profile: () => query('network.getRequestProfile'),
+    urgent: () => query('governor.urgentModeActive'),
+    onFarmRestored: () => networkEvents.emit('ranchSceneRestored'),
+  });
+  const sendMsgAsync = (...args) => scene.send(...args);
   const networkEvents = new EventEmitter();
   const add = networkEvents.on;
   const wrappers = new Map();
@@ -130,6 +149,8 @@ function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailur
     isConnected: () => readFacts().game.readyState === 1 && facts.game.socketPresent,
     connect: (code, callback) => { onReady = callback; return command('network.connect', [code]); },
     sendMsgAsync,
+    withRanchScene: (callback, options) => scene.run(callback, options),
+    getRanchSceneState: () => scene.snapshot(),
     sendMsg: async (service, method, body, callback, timeout, options) => {
       try { const value = await sendMsgAsync(service, method, body, timeout, options); callback?.(null, value.body, value.meta); }
       catch (error) { callback?.(error); }
@@ -179,6 +200,7 @@ function createSessionBusinessBridge({ port, gate, initialFacts, onControlFailur
     // reconnect. Local queries must not silently relabel the event's authority.
     return gate.runEvent(`transport:${event.name}`, async () => {
       const args = decode(event.args, { lookupType });
+      if (!scene.acceptsEvent(event.name)) return;
       if (event.name === 'initialBagNeeded') {
         try {
           const warehouse = require('../services/warehouse');

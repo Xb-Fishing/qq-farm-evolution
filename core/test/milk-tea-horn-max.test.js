@@ -13,14 +13,14 @@ const h = require('./activity-availability.test');
 const isolatedDataDir = process.env.FARM_DATA_DIR;
 assert.equal(isolatedDataDir, h.privateDir);
 
-const componentFile = path.join(h.WEB, 'src/components/activity/MilkTeaActivityPanel.vue');
+const componentFile = path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue');
 const guarded = [
   __filename,
   componentFile,
   path.join(h.WEB, 'src/stores/activity.ts'),
   path.join(h.WEB, 'src/views/Activity.vue'),
   path.resolve(__dirname, '../src/services/milk-tea-activity.js'),
-  path.resolve(__dirname, '../src/controllers/admin-milk-tea-activity-routes.js'),
+  path.resolve(__dirname, './fixtures/admin-milk-tea-activity-routes.js'),
   path.resolve(__dirname, 'activity-availability.test.js'),
 ];
 const fingerprints = guarded.map(h.fingerprintOf);

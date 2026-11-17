@@ -9,9 +9,9 @@ const { loadProto, types } = require('../src/utils/proto');
 const { createScheduler, getSchedulerRegistrySnapshot } = require('../src/services/scheduler');
 const { createWorkerManager } = require('../src/runtime/worker-manager');
 const { createDataProvider } = require('../src/runtime/data-provider');
-const { registerAdminMilkTeaActivityRoutes } = require('../src/controllers/admin-milk-tea-activity-routes');
+const { registerAdminMilkTeaActivityRoutes } = require('./fixtures/admin-milk-tea-activity-routes');
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
-const { createMilkTeaRequestFeedbackStore, dayKeyOf, normalizeRecord } = require('../src/services/milk-tea-request-feedback');
+const { createMilkTeaRequestFeedbackStore, dayKeyOf, normalizeRecord } = require('./fixtures/milk-tea-request-feedback');
 const { EventEmitter } = require('node:events');
 const { createFeedbackMiddleware } = require('../src/controllers/admin-feedback-routes');
 // Historical leaf route/API budget behavior; current parent/provider/Worker retirement has separate tests.

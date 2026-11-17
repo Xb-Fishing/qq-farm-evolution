@@ -8,7 +8,7 @@ function mount({ templateMode = false, selected = [], readCatalog = async () => 
   const account = vue.ref(templateMode ? 'default-plan' : 'synthetic-a'); const calls = [];
   const model = vue.ref({milk_tea_auto_seeds:true,milk_tea_seed_policy:{targetSeedIds:selected,targetStock:24,coinReserve:'1000000',coinDailyLimit:'240000',ticketReserve:'8000',ticketDailyLimit:'0'}});
   const api={ async get(url,options){calls.push({url,options});return {data:url.endsWith('/seed-catalog')?{ok:true,seeds:await readCatalog()}:{ok:true,activity:await readShop(options?.headers?.['x-account-id'])}};} };
-  const Panel=compileSfcModule(path.join(WEB,'src/components/settings/MilkTeaAutomationSettings.vue'),spec=>spec==='vue'?vue:spec==='@/api'?{__esModule:true,default:api}:undefined);
+  const Panel=compileSfcModule(path.join(__dirname, 'fixtures/MilkTeaAutomationSettings.vue'),spec=>spec==='vue'?vue:spec==='@/api'?{__esModule:true,default:api}:undefined);
   const root=makeNode('root');roots.push(root);render(vue.h({setup:()=>()=>vue.h(Panel,{accountId:account.value,templateMode,automation:model.value,'onUpdate:automation':value=>{model.value=value;}})}),root);
   return {root,model,account,calls};
 }

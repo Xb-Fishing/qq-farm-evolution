@@ -63,7 +63,7 @@ function consumer(relative, name, globals) {
 test('real notification consumer applies explicit zero and leaves omitted balances alone', () => {
   const state = { gold: 123, exp: 456, level: 1 };
   const notify = consumer('utils/network.js', 'handleNotify', {
-    Buffer, types: proto.types, userState: state, sessionTransportHooks: null,
+    Buffer, types: proto.types, userState: state, sessionTransportHooks: null, ranchSceneControl: null, process: { env: {} },
     hasOwn: own, toNum: Number, log: () => {}, updateStatusGold: () => {},
     updateStatusLevel: () => {}, recordOperation: () => {},
   });

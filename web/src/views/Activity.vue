@@ -5,6 +5,7 @@ import FestivalSignInPanel from '@/components/activity/FestivalSignInPanel.vue'
 import FriendRecallActivityPanel from '@/components/activity/FriendRecallActivityPanel.vue'
 import GameUpdatePanel from '@/components/activity/GameUpdatePanel.vue'
 import MugeActivityPanel from '@/components/activity/MugeActivityPanel.vue'
+import RanchPanel from '@/components/activity/RanchPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useActivityStore } from '@/stores/activity'
@@ -64,11 +65,18 @@ onMounted(() => {
     </div>
     <template v-else>
       <nav class="activity-nav" aria-label="活动快速导航">
+        <a href="#ranch">牧场经营</a>
         <a v-if="mugeStore.activity?.available" href="#muge">牧歌初启</a>
         <a v-if="friendRecallStore.activity?.available" href="#friend-recall">故友重逢</a>
         <a href="#festival-sign-in">节日签到与节令日历</a>
       </nav>
-      <MugeActivityPanel :activity="mugeStore.activity" :loading="mugeStore.loading" :error="mugeStore.error" @refresh="mugeStore.refresh(String(currentAccountId))" />
+      <RanchPanel :account-id="String(currentAccountId)" />
+      <details class="rounded-lg bg-white p-3 dark:bg-gray-800">
+        <summary class="cursor-pointer text-sm">
+          牧歌初启活动说明
+        </summary>
+        <MugeActivityPanel :activity="mugeStore.activity" :loading="mugeStore.loading" :error="mugeStore.error" @refresh="mugeStore.refresh(String(currentAccountId))" />
+      </details>
       <FriendRecallActivityPanel :activity="friendRecallStore.activity" :loading="friendRecallStore.loading" :error="friendRecallStore.error" @refresh="friendRecallStore.refresh(String(currentAccountId))" />
       <GameUpdatePanel :key="`update-${currentAccountId}`" :account-id="String(currentAccountId || '')" />
       <FestivalSignInPanel :key="`festival-${currentAccountId}`" :account-id="String(currentAccountId)" />

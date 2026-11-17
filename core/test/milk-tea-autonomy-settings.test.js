@@ -156,7 +156,7 @@ test('old save finally cannot clear a new account read loading owner', async t =
 });
 
 test('real settings component renders absent or partial legacy policy without a crash or invented zero budget', () => {
-  const Component = compileSfcModule(path.join(WEB, 'src/components/settings/MilkTeaAutomationSettings.vue'), spec => spec === 'vue' ? vue : spec === '@/api' ? { __esModule: true, default: { get: async () => ({ data: { ok: true, seeds: [] } }) } } : undefined);
+  const Component = compileSfcModule(path.join(__dirname, 'fixtures/MilkTeaAutomationSettings.vue'), spec => spec === 'vue' ? vue : spec === '@/api' ? { __esModule: true, default: { get: async () => ({ data: { ok: true, seeds: [] } }) } } : undefined);
   for (const policy of [undefined, {}, { targetSeedIds: null, targetStock: 3 }]) {
     const root = makeNode('root');
     try {

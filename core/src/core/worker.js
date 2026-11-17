@@ -339,6 +339,19 @@ function startDailyRoutineTimer() {
     workerScheduler.setIntervalTask('daily_routine_interval', 60000, onTimer_daily_routine_interval);
 }
 
+function canRunRanchAutomation() {
+    return isRunning && loginReady && !friendSyncPaused && pauseRemainMsNow() <= 0;
+}
+async function onTimer_ranch_automation() {
+    if (!canRunRanchAutomation()) return;
+    await require('../services/ranch-service').runRanchAutomation();
+}
+function startRanchAutomationTimer() {
+    require('../services/ranch-service').bindRanchAutomation(canRunRanchAutomation);
+    if (!loginReady || workerScheduler.has('ranch_automation')) return;
+    workerScheduler.setIntervalTask('ranch_automation', 30000, onTimer_ranch_automation);
+}
+
 // 神秘商人可能在登录后的任意时间出现；登录后先检查，并持续短周期探测。
 function stopMysteryShopAutoBuyTimer() {
     workerScheduler.clear('mystery_shop_auto_buy_initial');
@@ -1513,7 +1526,8 @@ async function handleApiCall(msg) {
     let errorMeta = null;
 
     if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
-        || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence') {
+        || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence'
+        || ['getRanchState', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({
@@ -1769,6 +1783,23 @@ async function handleApiCall(msg) {
                 // 只读双箱快照：60s 缓存 + 在途合并，面板刷新不穿透腾讯；无领取动作。
                 const { getEmailSnapshot } = require('../services/email');
                 result = await getEmailSnapshot(args[0] || {});
+                break;
+            }
+            case 'getRanchState':
+            case 'prepareRanchAction':
+            case 'operateRanch':
+            case 'cancelRanchAction':
+            case 'getRanchAutomation':
+            case 'setRanchAutomation':
+            case 'acknowledgeRanch': {
+                const ranch = require('../services/ranch-service');
+                if (method === 'getRanchAutomation') result = await ranch.getRanchAutomation();
+                else if (method === 'setRanchAutomation') result = await ranch.setRanchAutomation(args[0]);
+                else if (method === 'getRanchState') result = await ranch.getRanchState(args[0], args[1]);
+                else if (method === 'prepareRanchAction') result = await ranch.prepareRanchAction(args[0], args[1]);
+                else if (method === 'operateRanch') result = await ranch.operateRanch(args[0]);
+                else if (method === 'cancelRanchAction') result = await ranch.cancelRanchAction(args[0]);
+                else result = await ranch.acknowledgeRanch(args[0]);
                 break;
             }
             case 'getGameUpdateEvidence': {
@@ -2215,6 +2246,7 @@ async function onLoginReady() {
     // 启动每日定时器
     startDailyRoutineTimer();
     startMysteryShopAutoBuyTimer();
+    startRanchAutomationTimer();
 
     syncStatus();
 }
@@ -2353,6 +2385,8 @@ function onTimer_ws_error_cleanup() {
             }
 
 function bindWorkerSessionState() {
+    require('../services/ranch-service').bindRanchAutomation(canRunRanchAutomation);
+    workerScheduler.bindIntervalTask('ranch_automation', onTimer_ranch_automation);
     workerScheduler.bindTimeoutTask('sentinel_strike', runSentinelStrike);
     workerScheduler.bindTimeoutTask('sentinel_pre_enter', onSentinelPreEnterTimer);
     bindWorkerNetworkEvents();
@@ -2381,6 +2415,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
     onSentinelPreEnterTimer = require('../services/business-state').wrapBusinessFunction('worker:sentinelPreEnter', onSentinelPreEnterTimer);
     module.exports.sessionRuntime = {
         refreshRewardsSchedule: () => {
+            startRanchAutomationTimer();
             // Active rewardSchedule scope, never the checkpoint preparation gate.
             require('../services/fertilizer-watch').retireFertilizerWatchMode();
             if (unifiedSchedulerRunning) {

@@ -372,6 +372,28 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
     return sendWithContext(serviceName, methodName, bodyBytes, createSendContext(methodName, callback));
 }
 
+let ranchSceneControl;
+let ranchSocket;
+let ranchSocketEpoch = 0;
+const ranchProcessIdentity = require('node:crypto').randomUUID();
+function getRanchSceneControl() {
+    if (!ranchSceneControl) ranchSceneControl = require('../runtime/ranch-scene-binding').bindRanchScene({
+        send: (service, method, body, timeout, options) => sendMsgAsync(service, method, body, timeout, options),
+        identity: () => {
+            const current = getWs();
+            if (current !== ranchSocket) { ranchSocket = current; ranchSocketEpoch++; }
+            return { key: `${ranchProcessIdentity}:${ranchSocketEpoch}`, connected: isConnected(), level: userState.level, revision: 0 };
+        },
+        profile: () => requestGovernor.getRequestProfile(), urgent: () => requestGovernor.urgentModeActive(),
+        onFarmRestored: () => networkEvents.emit('ranchSceneRestored'),
+    });
+    return ranchSceneControl;
+}
+function sendSceneAwareRpc(service, method, body, timeout, options) {
+    if (process.env.FARM_SESSION_ROLE === 'host') return sendMsgAsync(service, method, body, timeout, options);
+    return getRanchSceneControl().send(service, method, body, timeout, options);
+}
+
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
@@ -503,6 +525,9 @@ function handleNotify(msg) {
         const type = event.message_type || '';
         const eventBody = event.body;
         try { sessionTransportHooks?.onRawNotify?.(type, eventBody); } catch { /* Preserve canonical notify handling. */ }
+
+        if (process.env.FARM_SESSION_ROLE !== 'host' && ranchSceneControl && type.includes('TaskInfoNotify')
+            && !ranchSceneControl.acceptsEvent('taskInfoNotify')) return;
 
         // 被踢下线
         if (type.includes('Kickout')) {
@@ -1074,7 +1099,9 @@ function getAceStatus() {
 module.exports = {
     setSessionTransportHooks,
     connect, reconnect, cleanup, stopNetwork, getWs, isConnected,
-    sendMsg, sendMsgAsync,
+    sendMsg, sendMsgAsync: sendSceneAwareRpc,
+    withRanchScene: (callback, options) => getRanchSceneControl().run(callback, options),
+    getRanchSceneState: () => getRanchSceneControl().snapshot(),
     getUserState,
     getWsErrorState,
     getAceStatus,
