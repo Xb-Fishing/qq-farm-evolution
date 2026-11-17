@@ -80,14 +80,25 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
   function unresolved(data) {
     return data.lastOperation && ['pending', 'unknown', 'partial'].includes(visibleOperation(data.lastOperation).outcome);
   }
+  async function stage(name, kind, callback) {
+    try { return await callback(); }
+    catch (failure) {
+      // Only local fixed labels leave this boundary; upstream text and payloads stay private.
+      if (failure && typeof failure === 'object') {
+        failure.ranchStage ||= name; failure.ranchFailureKind ||= kind;
+      }
+      throw failure;
+    }
+  }
   async function rpc(routeName, payload = {}) {
     const route = codec.ROUTES[routeName]; if (!route) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场请求');
-    const response = await network.sendMsgAsync(route.service, route.method, codec.encode(route.request, payload), 2500);
-    return codec.decode(route.reply, response.body);
+    const wire = await stage(routeName, 'encode', () => codec.encode(route.request, payload));
+    const response = await stage(routeName, 'request', () => network.sendMsgAsync(route.service, route.method, wire, 2500));
+    return stage(routeName, 'decode', () => codec.decode(route.reply, response.body));
   }
   async function loadRaw(initial, view = 'animals', shopId = '5') {
     let cells;
-    if (initial) cells = codec.decode('SceneData', initial).homestead_cells;
+    if (initial) cells = (await stage('scene_data', 'decode', () => codec.decode('SceneData', initial))).homestead_cells;
     if (!cells) cells = await rpc('cells');
     if (!Number.isInteger(cells.grid_width) || cells.grid_width <= 0 || !Number.isInteger(cells.grid_height) || cells.grid_height <= 0)
       throw error('RANCH_RESPONSE_MISMATCH', '牧场地块信息未完整提供');
@@ -115,13 +126,13 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
   }
   async function withScene(callback) {
     if (typeof network.withRanchScene !== 'function') throw error('RANCH_CONNECTION_UPDATE_REQUIRED', '当前连接尚未支持牧场，请更新程序后重试');
-    return network.withRanchScene(callback, { maxCalls: 10 });
+    return stage('scene', 'request', () => network.withRanchScene(callback, { maxCalls: 10 }));
   }
   async function getState(view = 'animals', shopId = '5') {
     if (!['animals', 'shop', 'tasks'].includes(view)) throw error('RANCH_INVALID_ARGUMENT', '牧场页面无效');
     return withScene(async ({ initial, assertCurrent }) => {
       const raw = await loadRaw(initial, view, shopId); assertCurrent();
-      const snapshot = model.normalizeState(raw, now());
+      const snapshot = await stage('state', 'normalize', () => model.normalizeState(raw, now()));
       const data = read(); data.lastObservedAt = now(); data.lastObservedOperationId = data.lastOperation?.id || null; save(data);
       return { ...snapshot, view, lastOperation: visibleOperation(data.lastOperation) };
     });
@@ -296,8 +307,14 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
     try { return { ok: true, data: await callback() }; }
     catch (failure) {
       const known = /^RANCH_[A-Z_]{1,64}$/.test(failure.code || '') || LOCAL_CODES.has(failure.code);
-      return { ok: false, code: known ? (failure.code.startsWith('RANCH_') ? failure.code : `RANCH_${failure.code}`) : 'RANCH_READ_FAILED',
-        error: known ? failure.message : '牧场读取暂时失败，请稍后重试', sceneRecoveryRequired: failure.sceneRecoveryRequired === true };
+      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', bag: '背包', shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理' };
+      const failureStage = Object.hasOwn(labels, failure.ranchStage) ? failure.ranchStage : 'unknown';
+      const failureKind = ['encode', 'request', 'decode', 'normalize'].includes(failure.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
+      if (!known) {
+        try { require('../utils/utils').logWarn('牧场', '牧场读取失败', { module: 'ranch', event: 'ranch_read_failed', failureStage, failureKind }); } catch { /* Diagnostics cannot change request results. */ }
+      }
+      return { ok: false, failureStage, failureKind, code: known ? (failure.code.startsWith('RANCH_') ? failure.code : `RANCH_${failure.code}`) : 'RANCH_READ_FAILED',
+        error: known ? failure.message : `牧场${labels[failureStage] || '读取'}失败，请稍后重试`, sceneRecoveryRequired: failure.sceneRecoveryRequired === true };
     }
   }
   async function automate() {

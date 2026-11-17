@@ -23,7 +23,7 @@ function fixture() {
   ];
   const network = {
     getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
-    withRanchScene: async callback => callback({ assertCurrent() {} }),
+    withRanchScene: async callback => callback({ initial: f.initial, assertCurrent() {} }),
     sendMsgAsync: async (service, method, wire) => {
       calls.push(method);
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
@@ -149,4 +149,24 @@ test('automation is opt-in, shares durable intent and budget, stops after config
   assert.equal(prepared.ok, true);
   await next.setAutomation({ ...config, enabled: false });
   assert.equal((await next.execute(prepared.data.id)).code, 'RANCH_AUTOMATION_PAUSED'); assert.equal(f.writes, 1);
+});
+
+test('first scene payload is decoded through the real codec without a redundant AllCells read', async () => {
+  const f = fixture();
+  f.initial = codec.encode('SceneData', { homestead_cells: { grid_width: 10, grid_height: 10, facilities: [] } });
+  const result = await f.service.getState();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.data.facilities.length, 0);
+  assert.deepEqual(f.calls, ['GetBag']);
+  assert.equal(f.writes, 0);
+});
+test('malformed first scene data identifies its decoding stage without exposing wire contents', async () => {
+  const f = fixture(); f.initial = Buffer.from([0x12, 0x7f]);
+  const result = await f.service.getState();
+  assert.equal(result.code, 'RANCH_READ_FAILED');
+  assert.equal(result.failureStage, 'scene_data');
+  assert.equal(result.failureKind, 'decode');
+  assert.equal(result.error, '牧场场景数据失败，请稍后重试');
+  assert.equal(JSON.stringify(result).includes('out of range'), false);
+  assert.equal(f.calls.length, 0); assert.equal(f.writes, 0);
 });
