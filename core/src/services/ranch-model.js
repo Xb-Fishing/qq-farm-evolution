@@ -28,6 +28,19 @@ function decimal(value, label = '数量') {
     return number.toString();
 }
 
+function signedMetadata(value, label) {
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) fail('INVALID_ARGUMENT', `${label}必须是安全整数`);
+    if (!['number', 'string', 'bigint'].includes(typeof value) || !/^-?\d+$/.test(String(value))) fail('INVALID_ARGUMENT', `${label}无效`);
+    const number = BigInt(value);
+    if (number < -(1n << 63n) || number > MAX) fail('INVALID_ARGUMENT', `${label}超出范围`);
+    return number.toString();
+}
+function optionalTime(value, label) {
+    // An unset timer is not an inventory amount. Keep its sentinel unavailable.
+    if (String(value) === '-1') return null;
+    return decimal(value ?? 0, label);
+}
+
 function positiveId(value, label = 'ID') {
     const id = decimal(value, label);
     if (id === '0') fail('INVALID_ARGUMENT', `${label}必须大于零`);
@@ -46,7 +59,7 @@ function itemDto(item) {
     const numericId = Number(id);
     const fallback = Number.isSafeInteger(numericId) ? config.getItemById(numericId) : null;
     const image = Number.isSafeInteger(numericId) ? config.getItemImageById(numericId) : '';
-    return { id, count: decimal(item.count), name: items.get(id)?.name || fallback?.name || `物品${id}`, ...(image ? { image } : {}) };
+    return { id, count: decimal(item.count, '物品数量'), name: items.get(id)?.name || fallback?.name || `物品${id}`, ...(image ? { image } : {}) };
 }
 
 function bagEntries(bag) {
@@ -60,7 +73,7 @@ function balance(bag, id) {
     let total = 0n; let locked = 0n;
     for (const item of bagEntries(bag)) {
         if (positiveId(item.id) !== id) continue;
-        const count = BigInt(decimal(item.count));
+        const count = BigInt(decimal(item.count, '物品数量'));
         total += count;
         if (item.is_locked === true || item.locked === true) locked += count;
     }
@@ -119,11 +132,11 @@ function normalizeState(raw, nowMs = Date.now()) {
         if (ranch && positiveId(ranch.ranch_inst_id) !== id) fail('RANCH_RESPONSE_MISMATCH', '栏舍ID不匹配');
         return { id, facilityId: String(row.facility_id), name: config?.name || `设施${row.facility_id}`, moduleType: row.module_type,
             level: row.level, capacity: row.capacity, state: row.state, active: row.state === 1,
-            upgradeState: row.upgrade_state, upgradeEndTime: decimal(row.upgrade_end_time ?? 0),
+            upgradeState: row.upgrade_state, upgradeEndTime: optionalTime(row.upgrade_end_time, '设施升级时间'),
             feed: row.feed_machine ? { count: row.feed_machine.feed_count, consumeRate: row.feed_machine.consume_rate,
-                remainingSec: decimal(row.feed_machine.remaining_secs ?? 0), status: row.feed_machine.status } : null,
+                remainingSec: optionalTime(row.feed_machine.remaining_secs, '饲料剩余时间'), status: row.feed_machine.status } : null,
             ranch: ranch ? { capacity: ranch.capacity, count: ranch.animal_count, husbandryType: ranch.husbandry_type,
-                grass: ranch.grass ? { amount: decimal(ranch.grass.amount), emptyAtMs: decimal(ranch.grass.empty_at_ms) } : null,
+                grass: ranch.grass ? { amount: decimal(ranch.grass.amount), emptyAtMs: optionalTime(ranch.grass.empty_at_ms, '牧草耗尽时间') } : null,
                 animals: (ranch.animals || []).map(animal => {
                     const animalId = positiveId(animal.animal_id); const cfg = animals.get(animalId);
                     return { id: positiveCount(animal.animal_inst_id), ranchId: id, animalId, slot: animal.slot_index,
@@ -132,15 +145,15 @@ function normalizeState(raw, nowMs = Date.now()) {
                         canFeed: animal.can_feed === true, canRelease: animal.can_donate === true,
                         grassBlocked: animal.grass_blocked === true, producing: animal.producing === true, limitedCanUsed: animal.limited_can_used === true,
                         produceCount: animal.produce_count, maxProduceCount: cfg?.max_produce_count ?? null,
-                        infantReadyAtMs: decimal(animal.infant_ready_at_ms ?? 0), growReadyAtMs: decimal(animal.grow_ready_at_ms ?? 0),
-                        produceReadyAtMs: decimal(animal.produce_ready_at_ms ?? 0), matureReadyAtMs: decimal(animal.mature_ready_at_ms ?? 0),
+                        infantReadyAtMs: optionalTime(animal.infant_ready_at_ms, '动物阶段时间'), growReadyAtMs: optionalTime(animal.grow_ready_at_ms, '动物阶段时间'),
+                        produceReadyAtMs: optionalTime(animal.produce_ready_at_ms, '动物阶段时间'), matureReadyAtMs: optionalTime(animal.mature_ready_at_ms, '动物阶段时间'),
                         mutation: animal.mutation || null };
                 }),
                 shelves: (ranch.shelves || []).map(shelf => ({ slot: shelf.slot_index, remaining: decimal(shelf.total_remain), canCollect: shelf.can_collect === true,
                     products: (shelf.lots || []).map(lot => itemDto({ id: lot.item_id, count: lot.remain_num })) })),
                 hazards: (ranch.hazards || []).map(hazard => ({ id: positiveId(hazard.hazard_id), type: hazard.hazard_type })) } : null };
     });
-    const inventory = entries.map(item => ({ ...itemDto(item), uid: decimal(item.uid ?? 0), locked: item.is_locked === true || item.locked === true,
+    const inventory = entries.map(item => ({ ...itemDto(item), uid: signedMetadata(item.uid ?? 0, '物品实例标识'), locked: item.is_locked === true || item.locked === true,
         type: items.get(String(item.id))?.type || 0, animalId: cubs.has(String(item.id)) ? String(cubs.get(String(item.id)).id) : null,
         husbandryType: cubs.has(String(item.id)) ? (cubs.get(String(item.id)).husbandry_type === '窝' ? 1 : 2) : null,
         sellPrices: (item.show?.sells || []).map(itemDto), product: item.item_detail?.ranch_product || null }));

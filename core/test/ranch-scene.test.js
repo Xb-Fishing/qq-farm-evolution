@@ -100,3 +100,16 @@ test('intent persistence failure sends zero requests; a retained recovery marker
   assert.equal(restored.scene.snapshot().recoveryRequired, true);
   await restored.scene.recover(); assert.equal(restored.scene.snapshot().scene, 1);
 });
+
+test('scene-entry rejection keeps the existing farm connection and does not enter ranch gameplay', async () => {
+  const calls = []; let callbacks = 0;
+  const f = fixture({ send: async (_s, method, body) => {
+    assert.equal(method, 'PlayerSceneLogin');
+    const id = codec.decode('PlayerSceneLoginRequest', body).global_scene_id; calls.push(id);
+    if (id === 2) throw Object.assign(new Error('synthetic server rejection'), { isServerBusinessError: true, serverErrorCode: 1045002 });
+    return { body: codec.encode('PlayerSceneLoginReply', { global_scene_id: 1, farm_scene_ext_data: Buffer.from([1]) }) };
+  } });
+  await assert.rejects(f.scene.run(async () => { callbacks++; }), { code: 'RANCH_SESSION_UPDATE_REQUIRED' });
+  assert.equal(callbacks, 0); assert.deepEqual(calls, [2, 1]);
+  assert.equal(f.scene.snapshot().scene, 1); assert.equal(f.scene.snapshot().recoveryRequired, false);
+});

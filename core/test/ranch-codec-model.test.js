@@ -153,3 +153,26 @@ test('clean targets known own hazards; tasks batch only qualified ordinary rewar
     assert.throws(() => model.planAction('clean', {}, raw, NOW), /没有/);
     for (const unsupported of ['sell', 'feed', 'upgrade', 'useCan', 'claimIllustrated']) assert.throws(() => model.planAction(unsupported, {}, raw, NOW), /不支持/);
 });
+
+test('signed item-instance identifiers and unset timers do not become inventory quantities', () => {
+    const raw = fixture();
+    // Independent protobuf writer: Item field 6 is a signed identifier.
+    const itemWire = protobuf.Writer.create().uint32(8).int64(60001).uint32(16).int64(5)
+        .uint32(48).int64('-9223372036854775808').finish();
+    raw.bag.physical_items[0] = codec.decode('Item', itemWire);
+    raw.cells.facilities[0].upgrade_end_time = '-1';
+    raw.cells.facilities[0].ranch.grass = { amount: '0', empty_at_ms: '-1' };
+    raw.cells.facilities[0].ranch.animals[0].produce_ready_at_ms = '-1';
+    raw.cells.facilities[1].feed_machine.remaining_secs = '-1';
+    const state = model.normalizeState(raw, NOW);
+    assert.equal(state.inventory[0].uid, '-9223372036854775808');
+    assert.equal(state.inventory[0].count, '5');
+    assert.equal(state.facilities[0].upgradeEndTime, null);
+    assert.equal(state.facilities[0].ranch.grass.emptyAtMs, null);
+    assert.equal(state.animals[0].produceReadyAtMs, null);
+    assert.equal(state.facilities[1].feed.remainingSec, null);
+    raw.bag.physical_items[0].count = '-1';
+    assert.throws(() => model.normalizeState(raw, NOW), /物品数量必须是非负整数/);
+    raw.bag.physical_items[0].count = '5';raw.cells.facilities[0].upgrade_end_time = '-2';
+    assert.throws(() => model.normalizeState(raw, NOW), /设施升级时间必须是非负整数/);
+});

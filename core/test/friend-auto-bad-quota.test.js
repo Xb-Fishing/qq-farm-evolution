@@ -20,7 +20,8 @@ const utils = require('../src/utils/utils');
 
 const deps = autoBad.__depsForTests;
 const qdeps = autoBadQuota.__depsForTests;
-let fakeClock = Date.now();
+const FIXTURE_TIME = Date.parse('2030-01-15T04:00:00Z'); // Beijing noon, independent of test launch time.
+let fakeClock = FIXTURE_TIME;
 const restores = [];
 
 function applyStub(targetDeps, overrides = {}) {
@@ -99,7 +100,7 @@ function setup(overrides = {}) {
   autoBadQuota.resetForTests();
   fs.rmSync(path.join(process.env.FARM_DATA_DIR, 'auto-bad-quota'), { recursive: true, force: true });
   friendActivity.resetForTest();
-  fakeClock = Date.now();
+  fakeClock = FIXTURE_TIME;
   stub(overrides);
   stubQuota();
   autoBad.startAutoBadLoop();
@@ -275,7 +276,7 @@ test('时钟偏差：排程延迟按服务器钟计算，不用 resumeAt - 本�
   autoBad.stopAutoBadLoop();
   autoBadQuota.resetForTests();
   friendActivity.resetForTest();
-  fakeClock = Date.now();
+  fakeClock = FIXTURE_TIME;
   stub({ badRemaining: () => 0 });
   stubQuota({ serverNow: () => fakeClock + skew });
   autoBad.startAutoBadLoop();
@@ -358,6 +359,9 @@ test('stop/start 当日不忘；进程重启（重建模块）读回当日闸门
   delete require.cache[requirePath];
   delete require.cache[quotaPath];
   const freshQuota = require(quotaPath);
+  const restoredClock = freshQuota.__depsForTests.serverNow;
+  freshQuota.__depsForTests.serverNow = () => fakeClock;
+  restores.push(() => { freshQuota.__depsForTests.serverNow = restoredClock; });
   const freshBad = require(requirePath);
   assert.ok(freshQuota.activePause(), '重启后读回当日闸门（磁盘状态）');
   const freshDeps = freshBad.__depsForTests;

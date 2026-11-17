@@ -140,7 +140,17 @@ function createGameSceneCoordinator(options) {
       await context.run(active, async () => {
         checkOwner(active);
         save(0); changed = true; scene = 0;
-        const reply = options.decodeScene((await send(SCENE_SERVICE, SCENE_METHOD, options.encodeScene(2), rpcMs)).body);
+        let response;
+        try { response = await send(SCENE_SERVICE, SCENE_METHOD, options.encodeScene(2), rpcMs); }
+        catch (failure) {
+          if (failure.isServerBusinessError === true && failure.serverErrorCode === 1045002) {
+            throw Object.assign(new Error('当前游戏连接暂未开放牧场，农场连接已保留；待下次正常登录后再检查'), {
+              code: 'RANCH_SESSION_UPDATE_REQUIRED', isServerBusinessError: true, serverErrorCode: 1045002,
+            });
+          }
+          throw failure;
+        }
+        const reply = options.decodeScene(response.body);
         if (Number(reply.global_scene_id) !== 2 || !reply.big_farm_scene_ext_data?.length)
           throw sceneError('RANCH_SCENE_UNAVAILABLE', '牧场场景暂不可用或尚未开启');
         scene = 2;

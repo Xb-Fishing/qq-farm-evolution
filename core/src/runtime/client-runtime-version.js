@@ -1,7 +1,6 @@
 const CLIENT_VERSION_RE = /^\d+(?:\.\d+){2,4}_\d{8}$/;
-// Owner confirmed the current official UI version 1.16.3.8 on 2026-11-08;
-// build tag agrees with reviewed client metadata (public-reference-2 @ 0e80007be156).
-const VERIFIED_CLIENT_VERSION = '1.16.3.8_20261028';
+// Current official UI version agrees with reviewed platform build metadata.
+const VERIFIED_CLIENT_VERSION = '1.17.0.4_20261117';
 function validClientVersion(value) { return typeof value === 'string' && value.length <= 64 && CLIENT_VERSION_RE.test(value); }
 function compareClientVersions(a, b) {
   const parts = value => { const [version, date] = value.split('_'); return [...version.split('.').map(BigInt), ...Array(5 - version.split('.').length).fill(0n), BigInt(date)]; };

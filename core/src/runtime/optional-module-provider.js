@@ -23,7 +23,7 @@ function load() {
 function start() {
   const provider = load();
   if (!provider) return false;
-  if (typeof provider.start !== 'function' || provider.start(ROOT, process.env.FARM_WORKER === '1' ? 'business' : 'manager') !== true) throw new Error('module_provider_unavailable');
+  if (typeof provider.start !== 'function' || provider.start(ROOT, process.env.FARM_WORKER === '1' || process.env.FARM_SESSION_BUSINESS === '1' ? 'business' : 'manager') !== true) throw new Error('module_provider_unavailable');
   return true;
 }
 function attach(module) {

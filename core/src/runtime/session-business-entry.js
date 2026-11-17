@@ -1,4 +1,5 @@
 const { parentPort, workerData } = require('node:worker_threads');
+if (workerData?.sessionBusiness && process.env.FARM_SESSION_BUSINESS === '1') require('./optional-module-provider').start();
 const { encode, decode } = require('./session-codec');
 const { createBusinessGate } = require('./business-gate');
 const state = require('../services/business-state');

@@ -12,7 +12,7 @@ test('strict version envelope rejects unrelated data, stale changed versions and
  for(const value of [{...envelope(),accountId:'other'},{...envelope(),platform:'qq'},{...envelope(),schema:2},{...envelope(),serverUrl:'untrusted'},{...envelope(),revision:-1},{...envelope(),clientVersion:'arbitrary'}]) assert.throws(()=>prepareClientRuntime(value,context),/校验/);
  assert.throws(()=>prepareClientRuntime(envelope(1,'1.17.0.1_20261108'),context),{code:'SESSION_CLIENT_VERSION_STALE'});
  assert.equal(prepareClientRuntime(undefined,context),null);
- assert.equal(prepareClientRuntime(envelope(21),{...context,currentVersion:'1.17.0.1_20261108'}).apply,false,'server upgrade is not downgraded');
+ assert.equal(prepareClientRuntime(envelope(21),{...context,currentVersion:'1.18.0.1_20300101'}).apply,false,'server upgrade is not downgraded');
  assert.ok(compareClientVersions('1.16.3.8_20261028',old)>0);assert.equal(compareClientVersions('1.16.3_20261028','1.16.3.0_20261028'),0);
 });
 async function adapterFixture(savedVersion=old){

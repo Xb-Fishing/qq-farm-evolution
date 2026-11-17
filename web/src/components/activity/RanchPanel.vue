@@ -168,7 +168,7 @@ defineExpose({ refresh })
             </h3>
             <template v-if="facility.feed">
               <p class="my-2 text-sm">
-                牧草机 {{ facility.feed.count }} / {{ facility.capacity }} · 剩余约 {{ Math.ceil(Number(facility.feed.remainingSec) / 60) }} 分钟
+                牧草机 {{ facility.feed.count }} / {{ facility.capacity }} · <span v-if="facility.feed.remainingSec != null">剩余约 {{ Math.ceil(Number(facility.feed.remainingSec) / 60) }} 分钟</span><span v-else>当前未提供计时</span>
               </p>
               <div class="flex flex-wrap items-center gap-2">
                 <input v-model="quantities[`grass-${facility.id}`]" class="ranch-quantity" type="number" min="1" :max="cap(ranch.state.grass, facility.capacity - facility.feed.count)" :aria-label="`${facility.name}补草数量`" placeholder="1">

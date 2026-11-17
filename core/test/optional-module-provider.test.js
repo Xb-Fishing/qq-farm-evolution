@@ -13,3 +13,16 @@ test('local provider loads in a normal process and selects only the matching upd
  put('program-update.json',{phase:'applying',target:{runtimeRoot:'/different/runtime'},overlay:{previousRoot:previous,root:next}});const unrelated=new Module(mod.filename);assert.equal(provider.attach(unrelated),true);assert.equal(unrelated.exports.label,'old');
  put('previous/preload.cjs','tampered');assert.throws(()=>provider.start(),/module_provider_changed/);
 });
+
+test('a real business Worker starts the registered core provider before loading state domains', async () => {
+ const { Worker } = require('node:worker_threads');
+ const body = `module.exports={start:(root,role)=>{require('node:worker_threads').parentPort.postMessage({kind:'fixture_provider_started',role,stateAlreadyLoaded:!!require.cache[require('node:path').join(root,'core/src/services/business-state.js')]});return true;},attach:()=>true};`;
+ const loader=put('worker-provider/preload.cjs',body);put('worker-provider/manifest.json',{privatePreloadSha256:sha(body)});
+ put('local-module-provider.json',{version:1,packageRoot:path.dirname(loader)});put('program-update.json',{phase:'idle'});
+ const worker=new Worker(path.join(appRoot,'core/src/runtime/session-business-entry.js'),{workerData:{sessionBusiness:true},env:{...process.env,FARM_DATA_DIR:root,FARM_SESSION_BUSINESS:'1',FARM_WORKER:''}});
+ worker.on('error',()=>{});
+ try {
+  const result=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('provider start was not observed')),4000);worker.on('message',value=>{if(value.kind==='fixture_provider_started'){clearTimeout(timer);resolve(value);}});worker.once('error',error=>{clearTimeout(timer);reject(error);});});
+  assert.equal(result.role,'business');assert.equal(result.stateAlreadyLoaded,false);
+ } finally {await worker.terminate();}
+});
