@@ -1,4 +1,5 @@
 const { registerAdminFriendRecallActivityRoutes } = require('./admin-friend-recall-activity-routes');
+const { registerAdminMugeActivityRoutes } = require('./admin-muge-activity-routes');
 const { registerAdminActivityUpdateRoutes } = require('./admin-activity-update-routes');
 const { registerAdminOfficialAnnouncementRoutes } = require('./admin-official-announcement-routes');
 const { createActivityReadCache } = require('./activity-read-cache');
@@ -28,6 +29,7 @@ function registerAdminActivityRoutes({
   };
 
   registerAdminFriendRecallActivityRoutes(routeContext);
+  registerAdminMugeActivityRoutes(routeContext);
   registerAdminSolarCalendarRoutes(routeContext);
   registerAdminOfficialAnnouncementRoutes(routeContext);
   registerAdminGameUpdateRoutes(routeContext);
