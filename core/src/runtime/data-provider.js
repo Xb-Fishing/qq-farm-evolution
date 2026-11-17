@@ -76,6 +76,7 @@ function createDataProvider(deps) {
             return JSON.stringify([id, bindingIdentity(account), panelWorkerIds.get(worker),
                 facts?.host?.hostId || '', facts?.game?.connectionEpoch || '', facts?.game?.loginEpoch || '', facts?.business?.epoch || '']);
         },
+        feedDog: (ref, request) => callWorkerApi(resolveAccountId(ref), 'feedDog', request),
         getDogReadPanel: (ref) => callWorkerApi(resolveAccountId(ref), 'getDogReadPanel'),
         getCollectionReadPanel: (ref) => callWorkerApi(resolveAccountId(ref), 'getCollectionReadPanel'),
         prepareWxRestart: deps.prepareWxRestart,
@@ -93,6 +94,10 @@ function createDataProvider(deps) {
             return {
                 ...buildDefaultStatus(id),
                 ...normalizeStatusForPanel(worker.status, id, worker.name),
+                sessionUpgrade: worker.process?.persistentSession ? {
+                    requiresRescan: worker.process.sessionFacts?.game?.requestPolicy?.supported !== true,
+                    requestPolicy: worker.process.sessionFacts?.game?.requestPolicy || null,
+                } : null,
                 wsError: worker.wsError || null
             };
         },
@@ -181,7 +186,7 @@ function createDataProvider(deps) {
         doFarmOp: (ref, op) => callWorkerApi(resolveAccountId(ref), 'doFarmOp', op),
         buyFertilizer: (ref, type, count) => callWorkerApi(resolveAccountId(ref), 'buyFertilizer', type, count),
         checkAndBuyFertilizer: (ref, opts) => callWorkerApi(resolveAccountId(ref), 'checkAndBuyFertilizer', opts),
-        fertilizeLand: (ref, landId) => callWorkerApi(resolveAccountId(ref), 'fertilizeLand', landId),
+        fertilizeLand: (ref, landId, fertilizerType = 'organic') => callWorkerApi(resolveAccountId(ref), 'fertilizeLand', landId, fertilizerType),
         removePlant: (ref, landId) => callWorkerApi(resolveAccountId(ref), 'removePlant', landId),
         removeAllPlants: (ref) => callWorkerApi(resolveAccountId(ref), 'removeAllPlants'),
         getShopInfo: (ref, shopId) => callWorkerApi(resolveAccountId(ref), 'getShopInfo', shopId),
@@ -283,7 +288,9 @@ function createDataProvider(deps) {
             const id = resolveAccountId(ref);
             if (!id) throw new Error('Missing x-account-id');
             const s = settings && typeof settings === 'object' ? settings : {};
+            if (s.requestPolicy !== undefined) require('../services/request-policy').validateRequestPolicy(s.requestPolicy);
             const patch = {
+                requestPolicy: s.requestPolicy,
                 plantingStrategy: s.plantingStrategy !== undefined ? s.plantingStrategy : s.strategy,
                 preferredSeedId: s.preferredSeedId !== undefined ? s.preferredSeedId : s.seedId,
                 prioritize2x2Crops: s.prioritize2x2Crops,
@@ -313,6 +320,7 @@ function createDataProvider(deps) {
                 scheduleAutoCodeRefresh(id);
             }
             return {
+                requestPolicy: store.getConfigSnapshot(id).requestPolicy,
                 strategy: store.getPlantingStrategy(id),
                 preferredSeed: store.getPreferredSeed(id),
                 prioritize2x2Crops: store.getPrioritize2x2Crops(id),

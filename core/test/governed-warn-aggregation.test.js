@@ -235,10 +235,10 @@ test('guarded fixture operations reject traversal and symlink escape before prim
   assert.equal(primitiveCounts.write, before.write + 2);
 });
 
-test('fixed seven entries times two strict categories cap 14 signatures without identity or error text', t => {
+test('fixed seven entries times three strict categories cap 21 signatures without identity or error text', t => {
   const h = makeHarness(t); const a = h.aggregation;
   const entries = [...a.GOVERNED_WARN_ENTRIES]; const reasons = [...a.GOVERNED_WARN_REASONS];
-  assert.equal(entries.length, 7); assert.equal(reasons.length, 2);
+  assert.equal(entries.length, 7); assert.equal(reasons.length, 3);
   for (const entry of entries) for (const reason of reasons) {
     const result = a.noteGovernedWarn(entry, reason, { now: h.clock.now, gid: 81001, message: 'not retained' });
     assert.equal(result.mode, 'first');
@@ -248,8 +248,8 @@ test('fixed seven entries times two strict categories cap 14 signatures without 
     assert.equal(a.noteGovernedWarn('enter_visit', `unknown-${  i}`).handled, false);
   }
   const rows = a.getGovernedWarnRowsForTests();
-  assert.equal(Object.keys(rows).length, 14);
-  assert.equal(h.state.logs.filter(r => r.event === 'governed_warn_aggregated').length, 14);
+  assert.equal(Object.keys(rows).length, 21);
+  assert.equal(h.state.logs.filter(r => r.event === 'governed_warn_aggregated').length, 21);
   for (const row of Object.values(rows)) assert.deepEqual(Object.keys(row).sort(), ['firstAt', 'lastAt', 'lastEmitAt', 'pending']);
   assert.ok(!JSON.stringify(rows).includes('81001'));
   assert.ok(!JSON.stringify(rows).includes('not retained'));

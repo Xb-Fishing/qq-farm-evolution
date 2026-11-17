@@ -86,7 +86,7 @@ function wireHarness() {
     clientSeq: 1, nextRequestId: 0, requestGeneration: 0, requestsStopping: false, networkStopped: false,
     activeRequests: new Map(), performance: { now: () => 0 }, pendingCallbacks: new Map(),
     prepareMsgBody: async () => Buffer.from('synthetic'), encodeMsg: (_service, _method, encoded) => encoded,
-    requestGovernor: { checkRequest: () => { governed++; return { allowed: true }; }, recordSent: () => { recorded++; } },
+    userState: { gid: 42 }, requestGovernor: { isFriendRequest: () => false, checkRequest: () => { governed++; return { allowed: true }; }, recordSent: () => { recorded++; } },
     networkScheduler: { setTimeoutTask: (key, delay, fn) => timers.set(key, fn), clear: key => timers.delete(key) },
     isConnected: () => true, log() {}, GOVERNED_BUDGET_REASONS: new Set(), sessionTransportHooks: null,
   };
@@ -176,7 +176,8 @@ for (const pausedAtStartup of [false, true]) test(`daily routines catch up after
   let paused = pausedAtStartup; let day = 'synthetic-day-one'; let tick;
   const runs = [];
   const ctx = {
-    loginReady: true, lastDailyRunDate: '', stopDailyRoutineTimer() {},
+    loginReady: true, friendSyncPaused: false, lastDailyRunDate: '', stopDailyRoutineTimer() {},
+    require: name => { assert.equal(name, '../services/manual-commerce'); return { runDogAutoFeeding: async () => {} }; },
     getLocalDateKey: () => day, pauseRemainMsNow: () => paused ? 60_000 : 0,
     runDailyRoutines: async () => { if (!paused) runs.push(day); },
     runBadOnceOnStartup: async () => {},

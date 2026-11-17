@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FertilizePlan } from '@/stores/manual-fertilize'
+import type { FertilizePlan, FertilizerType } from '@/stores/manual-fertilize'
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -34,7 +34,7 @@ function cancelFertilizer() {
   fertilizerPlan.value = null
   nextTick(() => fertilizerTrigger?.focus())
 }
-function prepareFertilizer(event: MouseEvent) {
+function prepareFertilizer(event: MouseEvent, fertilizerType: FertilizerType = 'organic') {
   if (actionsBusy.value || confirmVisible.value)
     return
   fertilizerTrigger = event.currentTarget as HTMLElement
@@ -43,7 +43,7 @@ function prepareFertilizer(event: MouseEvent) {
     fertilizerMessage.value = '账号离线或连接未就绪，请先登录并连接游戏'
     return
   }
-  const plan = manualFertilize.prepare(currentAccountId.value, lands.value)
+  const plan = manualFertilize.prepare(currentAccountId.value, lands.value, fertilizerType)
   if (!plan.targets.length) {
     fertilizerMessage.value = '没有可施肥的生长主地块（空地、成熟、枯死、锁定及未知作物不参与）'
     return
@@ -499,7 +499,10 @@ onUnmounted(() => {
           土地详情
         </h3>
         <div class="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-          <BaseButton :disabled="actionsBusy" class="col-span-3 min-h-11" @click="prepareFertilizer">
+          <BaseButton :disabled="actionsBusy" class="col-span-3 min-h-11" @click="prepareFertilizer($event, 'normal')">
+            一键施肥（普通）
+          </BaseButton>
+          <BaseButton :disabled="actionsBusy" class="col-span-3 min-h-11" @click="prepareFertilizer($event, 'organic')">
             一键施肥（有机）
           </BaseButton>
           <button
@@ -530,7 +533,7 @@ onUnmounted(() => {
           {{ fertilizerMessage }}
         </p>
         <template v-if="fertilizerProgress">
-          <p>有机肥：已确认请求 {{ fertilizerProgress.confirmed }} / {{ fertilizerProgress.total }} 次。{{ fertilizerProgress.reason }}</p>
+          <p>{{ fertilizerProgress.fertilizerType === 'normal' ? '普通肥' : '有机肥' }}：已确认请求 {{ fertilizerProgress.confirmed }} / {{ fertilizerProgress.total }} 次。{{ fertilizerProgress.reason }}</p>
           <p v-if="fertilizerProgress.refreshError">
             {{ fertilizerProgress.refreshError }}
           </p>
@@ -644,8 +647,8 @@ onUnmounted(() => {
 
     <ConfirmModal
       :show="!!fertilizerPlan"
-      title="确认一键施肥（有机）"
-      :message="`使用有机肥，对 ${fertilizerPlan?.targets.length || 0} 个生长主地块每块调用一次，最多 ${fertilizerPlan?.targets.length || 0} 次。实际消耗及成熟变化以游戏结果为准。可停止后续地块；已派发请求需等待结果，不自动重试。`"
+      :title="`确认一键施肥（${fertilizerPlan?.fertilizerType === 'normal' ? '普通' : '有机'}）`"
+      :message="`使用${fertilizerPlan?.fertilizerType === 'normal' ? '普通肥' : '有机肥'}，对 ${fertilizerPlan?.targets.length || 0} 个生长主地块每块调用一次，最多 ${fertilizerPlan?.targets.length || 0} 次。实际消耗及成熟变化以游戏结果为准。可停止后续地块；已派发请求需等待结果，不自动重试。`"
       @confirm="executeFertilizer"
       @close="cancelFertilizer"
       @cancel="cancelFertilizer"

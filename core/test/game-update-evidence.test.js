@@ -105,7 +105,7 @@ test('stable game changes persist unreviewed across ordinary scans, failures and
 test('authorized routes and real provider/Worker switch keep snapshots read-only, gate disconnected accounts and pass sufficient IPC timeout', async () => {
   const handlers = new Map(); const calls = []; let allowed = true; let connected = true;
   const provider = { getStatus: () => ({ connection: { connected } }), getEmailSnapshot: async id => { calls.push(id); return { boxes: {} }; }, getGameUpdateEvidence: async () => ({ sources: {} }) };
-  require('../src/controllers/admin-game-update-routes').registerAdminGameUpdateRoutes({ app: { get: (p, f) => handlers.set(p, f) }, provider,
+  require('../src/controllers/admin-game-update-routes').registerAdminGameUpdateRoutes({ app: { get: (p, f) => handlers.set(p, f), post: (p, f) => handlers.set(p, f) }, provider,
     getAccountIdFromRequest: req => req.account, canAccessAccount: () => allowed, sendProviderError: (_res, e) => { throw e; } });
   const res = { code: 200, status(code) { this.code = code; return this; }, json(value) { this.value = value; return this; } };
   allowed = false; await handlers.get('/api/activity/emails')({ account: 'fixture' }, res); assert.equal(res.code, 403); assert.equal(calls.length, 0);

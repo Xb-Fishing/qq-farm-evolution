@@ -140,7 +140,7 @@ function writeJournal(owner, value) {
   } finally { fs.rmSync(temp, { force: true }); }
 }
 function definitelyUnsent(error) {
-  return error?.isGovernedRejection === true && ['budget_total', 'budget_method'].includes(error.governedReason)
+  return error?.isGovernedRejection === true && ['budget_total', 'budget_method', 'budget_friend'].includes(error.governedReason)
     && error.business !== true && error.isServerBusinessError !== true && error.serverErrorCode == null
     && error.unknown !== true && error.code == null;
 }
@@ -313,11 +313,75 @@ async function guardedBagSale(request) {
     return replies.length === 1 ? replies[0] : replies;
   });
 }
+// Feeding shares the existing durable declaration, mutex and connection ownership.
+async function guardedDogFeeding(request, options = {}) {
+  assertConfirmation(request);
+  const itemId = Number(assertPositiveInt(request.itemId, '狗粮', 90006));
+  if (![90004, 90005, 90006].includes(itemId)) throw fail('请选择现有狗粮', 'COMMERCE_ARGS');
+  if (request.count !== 1) throw fail('本地每次投喂 1 份', 'COMMERCE_ARGS');
+  const owner = ownership();
+  const allowed = () => options.automatic !== true || (require('../models/store').getAutomation().dog_auto_feed === true
+    && require('../models/store').getPauseRemainMs() <= 0 && !require('./own-quiet-priority').isActive());
+  return exclusive(async () => {
+    if (!allowed()) throw fail('自动喂狗已暂停', 'COMMERCE_OWNER');
+    const panel = require('./game-panel-readonly');
+    const before = await panel.getDogReadPanel();
+    if (!allowed()) throw fail('自动喂狗已暂停', 'COMMERCE_OWNER');
+    if (options.automatic === true && before.protectionKnown && before.protectionSeconds >= 6 * 3600)
+      return { skipped: true, reason: 'protection_sufficient' };
+    const food = before.foods.find(row => row.id === itemId);
+    if (!before.feedingEnabled || !food?.canFeed || food.quoteFingerprint !== request.quoteFingerprint)
+      throw fail('狗粮、容量或守卫犬状态已变化，请刷新后确认', 'COMMERCE_STALE');
+    const payload = { itemId, count: 1, quote: request.quoteFingerprint };
+    const reply = await guardedWrite(owner, ['bag:dog-feed'], payload, request.operationId, async () => {
+      if (!allowed()) throw fail('自动喂狗已暂停', 'COMMERCE_OWNER');
+      const { types } = require('../utils/proto');
+      const { body } = await require('../utils/network').sendMsgAsync('gamepb.dogpb.DogService', 'AddFood',
+        types.AddFoodRequest.encode({ item_id: itemId, count: 1 }).finish());
+      if (!owner.valid()) throw fail('投喂后连接已变化，结果需核对', 'COMMERCE_OWNER');
+      const raw = types.AddFoodReply.decode(body);
+      const remaining = Number(raw.protect_time);
+      const after = await panel.getDogReadPanel();
+      if (!owner.valid()) throw fail('对账期间连接已变化，结果需核对', 'COMMERCE_OWNER');
+      const elapsed = Math.ceil(Math.max(0, after.fetchedAt - before.fetchedAt) / 1000) + 2;
+      const expected = before.protectionSeconds + food.durationSeconds;
+      const afterFood = after.foods.find(row => row.id === itemId);
+      const confirmed = after.feedingEnabled && after.currentDogId === before.currentDogId
+        && after.capacitySeconds === before.capacitySeconds && afterFood
+        && BigInt(afterFood.countDec) === BigInt(food.countDec) - 1n
+        && Number.isSafeInteger(remaining) && remaining <= before.capacitySeconds
+        && remaining >= expected - elapsed && remaining <= expected + 2
+        && after.protectionSeconds >= remaining - elapsed && after.protectionSeconds <= remaining + 2;
+      return { confirmed, remainingSeconds: remaining, itemId, count: 1, state: after };
+    }, result => result.confirmed === true, () => {
+      require('./warehouse').invalidatePanelBagCache(); require('./dog-skill-gifts').invalidatePanelDogInfoCache();
+    });
+    if (!reply.replayed && owner.valid()) require('../utils/utils').log('守卫犬', '已投喂 1 份狗粮，库存与护卫时长已核对', {
+      module: 'activity', event: 'activity_confirmed', action: 'dog_feed', count: 1, result: 'ok',
+    });
+    return reply;
+  });
+}
+let nextDogAutoAt = 0;
+async function runDogAutoFeeding() {
+  const store = require('../models/store');
+  if (store.getAutomation().dog_auto_feed !== true || store.getPauseRemainMs() > 0 || Date.now() < nextDogAutoAt
+    || active || require('./own-quiet-priority').isActive()) return;
+  nextDogAutoAt = Date.now() + (12 + Math.random() * 3) * 60000;
+  const state = await require('./game-panel-readonly').getDogReadPanel();
+  if (!state.feedingEnabled || state.protectionSeconds >= 6 * 3600) return;
+  const food = state.foods.filter(row => row.canFeed).sort((a, b) => a.durationSeconds - b.durationSeconds)[0];
+  if (!food) return;
+  return guardedDogFeeding({ itemId: food.id, count: 1, quoteFingerprint: food.quoteFingerprint,
+    operationId: crypto.randomUUID() }, { automatic: true });
+}
 if (process.env.FARM_SESSION_BUSINESS === '1') {
   const { wrapBusinessFunction } = require('./business-state');
+  runDogAutoFeeding = wrapBusinessFunction('commerce:dog-auto', runDogAutoFeeding); // eslint-disable-line no-func-assign
+  guardedDogFeeding = wrapBusinessFunction('commerce:dog', guardedDogFeeding); // eslint-disable-line no-func-assign
   guardedMallPurchase = wrapBusinessFunction('commerce:mall', guardedMallPurchase); // eslint-disable-line no-func-assign
   guardedShopPurchase = wrapBusinessFunction('commerce:shop', guardedShopPurchase); // eslint-disable-line no-func-assign
   guardedBagSale = wrapBusinessFunction('commerce:sale', guardedBagSale); // eslint-disable-line no-func-assign
 }
-module.exports = { guardedMallPurchase, guardedShopPurchase, guardedBagSale, decimalOf, assertPositiveInt,
+module.exports = { runDogAutoFeeding, guardedDogFeeding, guardedMallPurchase, guardedShopPurchase, guardedBagSale, decimalOf, assertPositiveInt,
   quoteFingerprint, shopGoodsQuote, shopPanelFields, bagItemQuote, bagSaleQuote, walletBalance, commerceAccountKey, ownership, MAX_COUNT_PER_ORDER };

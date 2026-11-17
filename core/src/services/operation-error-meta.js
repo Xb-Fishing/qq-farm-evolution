@@ -15,7 +15,7 @@
  *    的兼容放行判定与诊断分类共用，不放宽到文案匹配。
  */
 
-const BUDGET_REASONS = new Set(['budget_total', 'budget_method']);
+const BUDGET_REASONS = new Set(['budget_total', 'budget_method', 'budget_friend']);
 const BUDGET_STAGES = new Set(['list', 'group', 'precondition', 'write']);
 
 /** 严格本地预算拒绝：null = 不是（含任何冲突标记的普通/业务/未知错误）。 */

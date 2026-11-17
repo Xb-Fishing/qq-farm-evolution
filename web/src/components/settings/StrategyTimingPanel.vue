@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
 
 interface StrategyTimingSettings {
+  requestPolicy?: import('@/stores/setting').RequestPolicy
   plantOrderRandom: boolean
   plantDelaySeconds: number
   stealDelaySeconds: number
@@ -30,6 +33,24 @@ interface StrategyTimingSettings {
 
 const settings = defineModel<StrategyTimingSettings>('settings', { required: true })
 
+const showDisableConfirmation = ref(false)
+let active = true
+onBeforeUnmount(() => { active = false; showDisableConfirmation.value = false })
+const policy = computed({
+  get: () => settings.value.requestPolicy || { enabled: true, total60s: 80, friend60s: 80, method60s: 30 },
+  set: value => { settings.value = { ...settings.value, requestPolicy: value } },
+})
+function budgetModel(key: 'total60s' | 'friend60s' | 'method60s') {
+  return computed({ get: () => policy.value[key], set: (value: number | string) => { policy.value = { ...policy.value, [key]: Number(value) } } })
+}
+const totalBudget = budgetModel('total60s')
+const friendBudget = budgetModel('friend60s')
+const methodBudget = budgetModel('method60s')
+function disableBudgets() {
+  if (!active) return
+  policy.value = { ...policy.value, enabled: false }
+  showDisableConfirmation.value = false
+}
 type IntervalKey = keyof StrategyTimingSettings['intervals']
 
 function intervalModel(key: IntervalKey) {
@@ -114,6 +135,26 @@ async function restartAccount() {
 
 <template>
   <div class="space-y-3">
+    <section class="border border-slate-200 rounded-xl bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 class="font-semibold">通信预算</h4>
+          <p class="text-xs text-slate-500 dark:text-slate-400">按账号共享 60 秒窗口；好友阈值统计所有好友 RPC，包含查询和操作。</p>
+        </div>
+        <span :class="policy.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'" class="text-sm font-medium">{{ policy.enabled ? '设置：本地限流开启' : '设置：本地限流关闭' }}</span>
+      </div>
+      <div class="grid gap-3 sm:grid-cols-3">
+        <BaseInput v-model.number="totalBudget" type="number" min="1" max="10000" label="总请求 / 60 秒" />
+        <BaseInput v-model.number="friendBudget" type="number" min="1" max="10000" label="好友请求 / 60 秒" />
+        <BaseInput v-model.number="methodBudget" type="number" min="1" max="10000" label="单接口 / 60 秒" />
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <BaseButton v-if="policy.enabled" variant="danger" size="sm" @click="showDisableConfirmation = true">完全解除本地限速</BaseButton>
+        <BaseButton v-else variant="secondary" size="sm" @click="policy = { ...policy, enabled: true }">恢复本地限流</BaseButton>
+      </div>
+      <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">保存设置后应用。旧连接需更新后支持新预算（微信重新扫码，QQ 更新登录码并重启）；概览会显示是否需要更新连接。阈值不构成账号安全保证。</p>
+    </section>
+    <ConfirmModal :show="showDisableConfirmation" type="danger" title="完全解除本地限速" confirm-text="确认解除" message="将关闭本账号的总请求、好友请求、单接口预算和异常降速。这可能不可量化地提高账号被限制或封禁的风险。游戏服务器限制、每日额度、静默、权限及成熟收获优先级仍然生效。确认后还需保存设置。" @confirm="disableBudgets" @cancel="showDisableConfirmation = false" @close="showDisableConfirmation = false" />
     <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
       <BaseInput
         v-model.number="farmMin"

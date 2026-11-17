@@ -1,3 +1,4 @@
+const { DEFAULT_REQUEST_POLICY, normalizeRequestPolicy, validateRequestPolicy } = require('../services/request-policy');
 const process = require('node:process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -256,6 +257,7 @@ const DEFAULT_AUTOMATION = {
     friend_bad: false,
     friend_golden_bug: false,
     task: true,
+    dog_auto_feed: false,
     milk_tea_auto_rewards: false,
     // 奶茶自主动作（购种/班次工作/升级/制作/雇佣/开店/喇叭）独立开关，默认全关；
     // 策略见 milk_tea_seed_policy / milk_tea_hire_policy
@@ -387,6 +389,7 @@ const DEFAULT_PLANT_BLACKLIST = [20002, 26739, 20059, 20065, 20064, 20060, 20061
 
 /** 默认账号配置 */
 const DEFAULT_ACCOUNT_CONFIG = {
+    requestPolicy: DEFAULT_REQUEST_POLICY,
     automation: DEFAULT_AUTOMATION,
     autoCodeRefresh: {
         enabled: false,
@@ -610,7 +613,7 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
             auto[key] = normalizeFertilizerLandTypes(srcAuto[key], DEFAULT_FERTILIZER_LAND_TYPES);
             continue;
         }
-        if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
+        if (['dog_auto_feed', 'milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
             auto[key] = srcAuto[key] === true;
             continue;
         }
@@ -645,6 +648,7 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
             enabled: config.autoCodeRefresh && config.autoCodeRefresh.enabled === true,
             intervalMinutes: Math.max(1, Math.min(1440, Number(config.autoCodeRefresh && config.autoCodeRefresh.intervalMinutes) || 60))
         },
+        requestPolicy: normalizeRequestPolicy(config.requestPolicy),
         intervals: { ...config.intervals || DEFAULT_ACCOUNT_CONFIG.intervals },
         friendQuietHours: { ...config.friendQuietHours || DEFAULT_ACCOUNT_CONFIG.friendQuietHours },
         kickoutRelogin: { ...config.kickoutRelogin || DEFAULT_ACCOUNT_CONFIG.kickoutRelogin },
@@ -737,12 +741,14 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
     const input = raw && typeof raw === 'object' ? raw : {};
     const cfg = cloneAccountConfig(fallbackConfig || DEFAULT_ACCOUNT_CONFIG);
 
+    cfg.requestPolicy = normalizeRequestPolicy(input.requestPolicy, cfg.requestPolicy);
+
     // 合并自动化配置
     if (input.automation && typeof input.automation === 'object') {
         for (const [key, value] of Object.entries(input.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(key)) continue;
 
-            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
+            if (['dog_auto_feed', 'milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
                 cfg.automation[key] = value === true;
             } else if (key === 'milk_tea_seed_policy') {
                 cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
@@ -911,6 +917,7 @@ function pickDefaultPlanConfig(raw) {
         plantingStrategy: cfg.plantingStrategy,
         preferredSeedId: cfg.preferredSeedId,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
+        requestPolicy: { ...cfg.requestPolicy },
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
         stealDelaySeconds: cfg.stealDelaySeconds,
@@ -1284,6 +1291,7 @@ function getConfigSnapshot(accountId) {
         preferredSeedId: cfg.preferredSeedId,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
         friendBadRetryDate: String(cfg.friendBadRetryDate || ''),
+        requestPolicy: { ...cfg.requestPolicy },
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
         kickoutRelogin: { ...cfg.kickoutRelogin },
@@ -1313,11 +1321,12 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     const accountId = opts.accountId;
     const base = getAccountConfigSnapshot(accountId);
     const cfg = normalizeAccountConfig(base, accountFallbackConfig);
+    if (patch.requestPolicy !== undefined) cfg.requestPolicy = normalizeRequestPolicy(patch.requestPolicy, cfg.requestPolicy);
 
     if (patch.automation && typeof patch.automation === 'object') {
         for (const [key, value] of Object.entries(patch.automation)) {
             if (cfg.automation[key] === undefined) continue;
-            if (['milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
+            if (['dog_auto_feed', 'milk_tea_auto_seeds', 'milk_tea_auto_work', 'milk_tea_auto_upgrade', 'milk_tea_auto_craft', 'milk_tea_auto_hire', 'milk_tea_auto_open', 'milk_tea_auto_boost'].includes(key)) {
                 cfg.automation[key] = value === true;
             } else if (key === 'milk_tea_seed_policy') {
                 cfg.automation[key] = milkTeaPolicy.normalizeSeedPolicy(value, cfg.automation[key]);
@@ -1959,6 +1968,7 @@ function getUserDefaultAccountPlan(username) {
 }
 
 function setUserDefaultAccountPlan(username, rawConfig, options = {}) {
+    if (rawConfig?.requestPolicy !== undefined) validateRequestPolicy(rawConfig.requestPolicy);
     const key = String(username || '').trim();
     if (!key) throw new Error('Missing username');
     const previousPlan = globalConfig.userDefaultAccountPlans[key];

@@ -75,6 +75,7 @@ test('the real adapter refuses business before login and rechecks login/policy a
   const filename = path.resolve(__dirname, '../src/runtime/session-game-adapter.js'); const native = createRequire(filename); const module = { exports: {} };
   const account = { id: 'synthetic-adapter', platform: 'wx', credentialGeneration: 'synthetic-grant' };
   const state = {}; const socket = { readyState: 1 }; let hooks; let ready; let sent = 0; let encoding;
+  let requestPolicy = { enabled: true, total60s: 80, friend60s: 80, method60s: 30 };
   const network = { setSessionTransportHooks: value => { hooks = value; }, networkEvents: new EventEmitter(),
     getWs: () => socket, isConnected: () => true, getUserState: () => state, getWsErrorState: () => ({}), getAceStatus: () => ({}),
     connect: (_code, callback) => { ready = callback; }, stopNetwork: () => {},
@@ -82,8 +83,9 @@ test('the real adapter refuses business before login and rechecks login/policy a
   // connect starts from no socket, then the fixture exposes an OPEN socket.
   let socketPresent = false; network.getWs = () => socketPresent ? socket : null;
   const replacements = { '../utils/network': network, '../services/stats': {}, '../services/status': { setStatusPlatform: () => {}, setRecordGoldExpHook: () => {}, statusData: {} },
-    '../services/request-governor': {}, '../models/store': { getAccounts: () => ({ accounts: [account] }),
-      applyConfigSnapshot: () => {}, getFriendQuietHours: () => ({ idleProtectionEnabled: true }) },
+    '../services/request-governor': require('../src/services/request-governor'), '../models/store': { getAccounts: () => ({ accounts: [account] }),
+      getConfigSnapshot: () => ({ requestPolicy }),
+      applyConfigSnapshot: config => { if (config.requestPolicy) requestPolicy = config.requestPolicy; }, getFriendQuietHours: () => ({ idleProtectionEnabled: true }) },
     '../utils/idle-protection': { getIdleProtectionUntil: () => 0 },
     '../utils/utils': { setLogHook: () => {}, getServerClockSnapshot: () => ({}) },
     '../utils/proto': { loadProto: async () => {} }, '../config/config': { CONFIG: {} } };
@@ -102,5 +104,10 @@ test('the real adapter refuses business before login and rechecks login/policy a
     await assert.rejects(stale, { code: 'SESSION_CONFIG_CHANGED' }); assert.equal(sent, 0);
     encoding = null; const fresh = { ...args, configRevision: adapter.snapshot().configRevision };
     assert.deepEqual((await adapter.request(fresh, () => {})).body, Buffer.from('ok')); assert.equal(sent, 1);
+    const changed = { enabled: false, total60s: 140, friend60s: 60, method60s: 45 };
+    adapter.syncConfig({ requestPolicy: changed });
+    assert.equal(adapter.snapshot().requestPolicy.supported, true);
+    assert.equal(adapter.snapshot().requestPolicy.enabled, false);
+    assert.equal(adapter.query('governor.getRequestProfile').policy.friend60s, 60);
   } finally { adapter.dispose(); }
 });

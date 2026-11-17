@@ -1167,7 +1167,7 @@ function definitelyUnsent(err) {
   // emitted by the network budget gate before WS.send. Neither error text nor
   // business/timeout/session errors prove that a write was never transmitted.
   return err.isGovernedRejection === true
-    && ['budget_total', 'budget_method'].includes(err.governedReason)
+    && ['budget_total', 'budget_method', 'budget_friend'].includes(err.governedReason)
     && err.business !== true && err.isServerBusinessError !== true
     && err.serverErrorCode == null && err.unknown !== true && err.code == null;
 }
@@ -2363,7 +2363,7 @@ function milkTeaAutoFailureReason(error) {
     }
     if (error.unknown === true) return 'check_failed';
     const budget = strictBudgetRejection(error); // 与 429 升级同一严格口径；标记矛盾即不认
-    if (budget) return budget.reason === 'budget_total' ? 'budget_total' : budget.reason === 'budget_method' ? 'budget_method' : 'check_failed';
+    if (budget) return ['budget_total', 'budget_method', 'budget_friend'].includes(budget.reason) ? budget.reason : 'check_failed';
     const serverBusiness = strictServerBusinessError(error);
     // 声称受治理拒绝却未过严格校验，或本地与服务端业务标记并存：自相矛盾，不猜原因
     if (error.isGovernedRejection === true || (error.business === true && error.isServerBusinessError === true)) return 'check_failed';

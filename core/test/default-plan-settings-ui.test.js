@@ -93,7 +93,8 @@ async function mountPage(t, config = completeConfig(), historical = false) {
   };
   const Page = compileSfcModule(path.join(WEB, 'src/components/settings/DefaultPlanSettingsTab.vue'), spec => {
     if (historical && /AutomationSettingsTab\.vue$/.test(spec)) return { __esModule: true, default: loadHistoricalAutomation(child => child === '@/api' ? { __esModule: true, default: api } : child === 'vue' ? vue : undefined) };
-    if (spec === 'vue') return vue;
+    // Only browser CSS transition hooks are replaced; real modal template and handlers remain.
+    if (spec === 'vue') return { ...vue, Transition: (_props, { slots }) => slots.default?.() };
     if (spec === '@/api') return { __esModule: true, default: api };
     return undefined;
   });
@@ -411,3 +412,45 @@ function loadHistoricalAutomation(resolve) {
   fs.writeFileSync(target, source);
   return compileSfcModule(target, resolve);
 }
+
+test('request thresholds survive mixed draft save and fresh mount; disabling requires explicit risk confirmation', async t => {
+  const page = await mountPage(t, completeConfig());
+  await setInput(page, '总请求 / 60 秒', 123);
+  await setInput(page, '好友请求 / 60 秒', 41);
+  await setInput(page, '单接口 / 60 秒', 37);
+  click(button(page.root, '完全解除本地限速')); await flush();
+  assert.match(textOf(page.root), /不可量化.*风险/);
+  assert.equal(page.calls.filter(call => call.method === 'put').length, 0, 'opening confirmation cannot save');
+  click(button(page.root, '取消')); await flush();
+  assert.equal((await save(page)).requestPolicy.enabled, true);
+  click(button(page.root, '完全解除本地限速')); await flush();
+  click(button(page.root, '确认解除')); await flush();
+  await section(page, '自动控制');
+  await setSwitch(page, '自动做任务', true);
+  const saved = await save(page);
+  assert.deepEqual(saved.requestPolicy, { enabled: false, total60s: 123, friend60s: 41, method60s: 37 });
+  assert.equal(saved.automation.task, true);
+  await page.reload();
+  assert.match(textOf(page.root), /设置：本地限流关闭/);
+  assert.equal(input(page.root, '好友请求 / 60 秒').props.value, 41);
+  click(button(page.root, '恢复本地限流')); await flush();
+  assert.equal((await save(page)).requestPolicy.enabled, true);
+});
+
+
+test('account switch removes the risk dialog and an old confirmation cannot disable the new account draft', async t => {
+  const Component = compileSfcModule(path.join(WEB, 'src/components/settings/StrategySettingsTab.vue'), spec => spec === 'vue'
+    ? { ...vue, Transition: (_props, { slots }) => slots.default?.() } : undefined);
+  const account = vue.ref('synthetic-A');
+  const draft = vue.ref({ ...completeConfig(), requestPolicy: { enabled: true, total60s: 80, friend60s: 80, method60s: 30 } });
+  const Wrapper = { setup: () => () => vue.h(Component, { currentAccountId: account.value, currentAccountName: account.value,
+    settings: draft.value, 'onUpdate:settings': value => { draft.value = value; }, loading: false, saving: false,
+    plantingStrategyOptions: [], preferredSeedOptions: [], bagFallbackStrategyOptions: [], strategyPreviewLabel: null,
+    bagSeeds: [], sortedBagSeeds: [], unplannedBagSeeds: [], bagSeedsLoading: false, bagSeedsError: null }) };
+  const root = makeNode('root'); t.after(() => render(null, root)); render(vue.h(Wrapper), root);
+  click(button(root, '完全解除本地限速')); await flush(); const oldConfirm = button(root, '确认解除');
+  account.value = 'synthetic-B'; draft.value = { ...completeConfig(), requestPolicy: { enabled: true, total60s: 70, friend60s: 60, method60s: 30 } };
+  await flush(); assert.doesNotMatch(textOf(root), /不可量化地提高/);
+  click(oldConfirm); await flush();
+  assert.equal(draft.value.requestPolicy.enabled, true); assert.equal(draft.value.requestPolicy.total60s, 70);
+});

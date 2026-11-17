@@ -83,11 +83,11 @@ test('真实store准备零POST，过滤所有不合格地块，2x2仅主地一�
   const run = h.store.run(plan, h.context);
   assert.equal(h.posts.length, 1);
   assert.equal(h.posts[0][0], '/api/land/fertilize');
-  assert.deepEqual(h.posts[0][1], { landId: 1 });
+  assert.deepEqual(h.posts[0][1], { landId: 1, fertilizerType: 'organic' });
   assert.deepEqual(h.posts[0][2].headers, { 'x-account-id': 'A' });
   assert.equal(await h.store.run(plan, h.context), false);
   first.resolve(success()); await run;
-  assert.deepEqual(h.posts.map(x => x[1]), [{ landId: 1 }, { landId: 2 }]);
+  assert.deepEqual(h.posts.map(x => x[1]), [{ landId: 1, fertilizerType: 'organic' }, { landId: 2, fertilizerType: 'organic' }]);
   assert.deepEqual(h.delays, [350]);
   assert.deepEqual(h.reads, ['A']);
   assert.equal(h.store.progress.A.confirmed, 2);
@@ -301,7 +301,7 @@ test('真实共享API拦截器+Axios离线adapter：切号不能覆盖已确认A
   assert.equal(requests.length, 1);
   assert.equal(requests[0].headers.get('x-account-id'), 'A');
   assert.equal(requests[0].headers.get('Content-Type'), 'application/json');
-  assert.deepEqual(JSON.parse(requests[0].data), { landId: 1 });
+  assert.deepEqual(JSON.parse(requests[0].data), { landId: 1, fertilizerType: 'organic' });
   assert.equal(store.progress.A.confirmed, 1); assert.equal(refreshes, 0);
 });
 
@@ -471,4 +471,40 @@ test('batch final land read opts into consumer feedback while ordinary refresh k
   await farm.fetchLands('A', 'consumer'); await farm.fetchLands('A');
   assert.deepEqual(requests.map(r => r.config.errorFeedback), ['consumer', 'global']);
   assert.deepEqual(requests.map(r => r.config.headers), [{ 'x-account-id': 'A' }, { 'x-account-id': 'A' }]);
+});
+
+
+test('normal uses the shared batch, 350ms pacing and confirmed-only progress; malformed plans send nothing', async () => {
+  const h = harness();
+  const plan = h.store.prepare('A', h.state.lands, 'normal');
+  assert.equal(plan.fertilizerType, 'normal');
+  h.reply(async () => { if (h.posts.length === 2) throw new Error('unknown write outcome'); return success(); });
+  await h.store.run(plan, h.context);
+  assert.deepEqual(h.posts.map(p => p[1]), [{ landId: 1, fertilizerType: 'normal' }, { landId: 2, fertilizerType: 'normal' }]);
+  assert.deepEqual(h.delays, [350]);
+  assert.equal(h.store.progress.A.fertilizerType, 'normal');
+  assert.equal(h.store.progress.A.confirmed, 1);
+  assert.match(h.store.progress.A.reason, /结果未知.*不自动重试/);
+  assert.deepEqual(h.reads, ['A']);
+  assert.equal(await h.store.run({ ...plan, fertilizerType: 'invalid' }, h.context), false);
+  assert.equal(h.posts.length, 2);
+});
+
+test('real normal confirmation and stop share the organic in-flight mutex without claiming maturity', async () => {
+  const h = harness(); const p = mountPanel(h); const pending = deferred();
+  h.reply(() => pending.promise);
+  try {
+    await p.press('一键施肥（普通）');
+    assert.match(textOf(p.root), /确认一键施肥（普通）/);
+    assert.match(textOf(p.root), /使用普通肥，对 2 个生长主地块每块调用一次/);
+    assert.equal(h.posts.length, 0);
+    await p.press('取消'); assert.equal(h.posts.length, 0);
+    await p.press('一键施肥（普通）'); await p.press('确定');
+    assert.deepEqual(h.posts[0][1], { landId: 1, fertilizerType: 'normal' });
+    assert.ok(buttonsOf(p.root).find(n => textOf(n).trim() === '一键施肥（有机）').props.disabled);
+    await p.press('停止后续地块'); pending.resolve(success()); await flush(); await flush();
+    assert.equal(h.posts.length, 1); assert.equal(h.store.progress.A.confirmed, 1);
+    assert.match(textOf(p.root), /普通肥：已确认请求 1 \/ 2 次/);
+    assert.ok(!textOf(p.root).includes('催熟成功'));
+  } finally { pending.resolve(success()); p.unmount(); }
 });

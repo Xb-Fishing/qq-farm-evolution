@@ -38,6 +38,7 @@ function createGameSceneCoordinator(options) {
   function save(value) { options.save?.({ version: 1, identity: connection, scene: value, updatedAt: now() }); }
   function profileAllows(calls, sceneCalls = 2) {
     const profile = options.profile?.();
+    if (profile?.policySupported === true && profile.enabled === false) return true;
     if (!profile || !Number.isFinite(profile.totalLimit) || !Number.isFinite(profile.windowCount)) return false;
     const top = profile.top || [];
     const found = top.find(item => item.method === `${SCENE_SERVICE}.${SCENE_METHOD}`);

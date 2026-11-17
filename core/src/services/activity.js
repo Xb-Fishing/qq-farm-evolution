@@ -2309,6 +2309,7 @@ async function claimQingmeiSeeds() {
   }
   if (claimedCount > 0) markQingmeiClaimedToday();
 
+  require('./automation-observability').logActivityAction('qingmei_seed', claimedCount);
   activityLogger.info('领取青梅种子完成', {
     event: 'qingmei_seed_claim',
     itemId: QINGMEI_SEED_ITEM_ID,
@@ -2412,6 +2413,7 @@ async function brewAndSellQingmeiWine(options = {}) {
   await delay(HELU_DRAW_REFRESH_DELAY_MS);
   const afterMaterialCount = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID);
 
+  require('./automation-observability').logActivityAction('qingmei_wine', sell.gold);
   activityLogger.info('青梅酿售卖完成', {
     event: 'qingmei_wine_sell',
     beforeMaterialCount,
@@ -2623,6 +2625,7 @@ async function claimSeasonPassportRewards() {
   const result = normalizeSeasonClaimResult(await claimSeasonRewardsRaw());
   const after = await getSeasonPassport();
 
+  require('./automation-observability').logActivityAction('season_passport', result.rewards.length);
   activityLogger.info('荷风游记领取成功', {
     event: 'season_passport_claim',
     beforeLevel: before.currentLevel,
@@ -2657,6 +2660,7 @@ async function claimSolarTermsReward(termId = 0) {
   const result = normalizeSolarTermsClaimResult(await claimSolarTermsRaw(resolvedTermId));
   const after = await getSolarTermsInfo();
 
+  require('./automation-observability').logActivityAction('solar_terms', result.rewards.length);
   activityLogger.info('节令小札领取成功', {
     event: 'solar_terms_claim',
     termId: resolvedTermId,
@@ -2922,6 +2926,7 @@ async function claimStarRecordRewards() {
   const rewards = (result?.rewards || []).map(normalizeCoreItem).filter(item => item.itemId > 0);
   const after = await getStarActivity();
 
+  require('./automation-observability').logActivityAction('star_record', rewards.filter(item => Number(item.itemCount) > 0).length);
   activityLogger.info('观星礼录领取成功', {
     event: 'star_record_claim',
     recordIds,

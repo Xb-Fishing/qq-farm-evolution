@@ -651,7 +651,7 @@ function realGovernedSender(governor, state) {
   const from = src.indexOf('function sendMsgAsync('); const to = src.indexOf('// ============ 消息处理', from);
   assert.ok(from > 0 && to > from);
   const timers = new Map();
-  const sandbox = { requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
+  const sandbox = { userState: { gid: 42 }, requestGovernor: governor, GOVERNED_BUDGET_REASONS: new Set(['budget_total', 'budget_method']),
     process: { env: { FARM_ACCOUNT_ID: 'synthetic-budget-account' } },
     getStoreModule: () => ({ getWirePauseRemainMs: () => 0 }), sessionAuthorityError: () => null,
     ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, pendingCallbacks: new Map(), clientSeq: 1, nextRequestId: 0, Date,

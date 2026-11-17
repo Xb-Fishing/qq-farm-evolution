@@ -10,6 +10,7 @@ interface AutomationSettings {
     farm: boolean
     harvest: boolean
     plant: boolean
+    dog_auto_feed?: boolean
     task: boolean
     sell: boolean
     friend: boolean
@@ -139,6 +140,7 @@ const mysteryShopSettingsVisible = ref(false)
         <BaseSwitch v-model="settings.automation.harvest" label="自动收菜" />
         <BaseSwitch v-model="settings.automation.plant" label="自动种菜" />
         <BaseSwitch v-model="settings.automation.task" label="自动做任务" />
+        <BaseSwitch v-model="settings.automation.dog_auto_feed" label="自动喂狗（不足 6 小时补 1 份现有狗粮）" />
         <BaseSwitch v-model="settings.automation.sell" label="自动卖果实" />
         <BaseSwitch v-model="settings.automation.friend" label="自动好友互动" />
         <BaseSwitch v-model="settings.automation.farm_push" label="推送触发巡田" />

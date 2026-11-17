@@ -8,7 +8,7 @@ const { getItemById, getItemImageById } = require('../config/gameConfig');
 const catalog = require('../gameConfig/UpdateCatalog.json');
 
 // Deliberately separate from dogpb: its legacy scalar names have conflicting
-// semantics. Reading these fields must not authorize feeding or change callers.
+// semantics. Feeding separately rechecks this fresh state and the Bag before a write.
 class ReadPresenceRoot extends protobuf.Root {
   resolveAll() {
     const preserve = node => {
@@ -25,6 +25,8 @@ root.resolveAll();
 const type = name => root.lookupType(`gamepb.panelreadpb.${name}`);
 const metadata = new Map(catalog.series.flatMap(group => group.items.map(item => [String(item.id), { ...item, seriesName: group.name }])));
 const own = (value, key) => Object.hasOwn(value, key);
+// Official FoodCfg.time in seconds; never infer bowl capacity from item names.
+const DOG_FOOD_SECONDS = { 90004: 86400, 90005: 259200, 90006: 432000 };
 function decimal(value, fallback = '0') {
   const text = value == null ? fallback : String(value);
   if (!/^(?:0|[1-9][0-9]*)$/.test(text) || BigInt(text) > 9223372036854775807n) throw new Error('游戏状态数值无效');
@@ -90,18 +92,32 @@ async function getDogReadPanel() {
   const dogs = reply.dogs.map(row => ({ id: identifier(row.id), name: row.name || `守卫犬 ${row.id}`, levelDec: decimal(row.level) }));
   const currentId = own(reply, 'current_dog_id') ? decimal(reply.current_dog_id) : null;
   const fetchedAt = recordEvidence('dog', request, body, reply, replyType);
+  const protectionSeconds = Number(decimal(reply.protection_seconds));
+  const capacitySeconds = Number(decimal(reply.capacity_seconds));
+  const protectionKnown = Number.isSafeInteger(protectionSeconds) && Number.isSafeInteger(capacitySeconds)
+    && capacitySeconds > 0 && protectionSeconds <= capacitySeconds;
   // Only Bag supplies inventory. Dog reply food.field_3 is not a quantity.
   let foodInventoryKnown = false, foods = [], inventoryError = '';
   try {
     const warehouse = require('./warehouse');
     const items = warehouse.getBagItems(await warehouse.getBag());
-    foods = [90004, 90005, 90006].map(id => ({ id, name: getItemById(id)?.name || `狗粮 ${id}`, image: getItemImageById(id) || '',
-      countDec: items.filter(row => Number(row.id) === id).reduce((sum, row) => sum + BigInt(decimal(row.count)), 0n).toString() }));
+    const available = items.filter(row => row.locked !== true && row.is_locked !== true
+      && (!Number(row.expire_time) || Number(row.expire_time) > Date.now() / 1000));
+    foods = [90004, 90005, 90006].map(id => ({ id, durationSeconds: DOG_FOOD_SECONDS[id], name: getItemById(id)?.name || `狗粮 ${id}`, image: getItemImageById(id) || '',
+      countDec: available.filter(row => Number(row.id) === id).reduce((sum, row) => sum + BigInt(decimal(row.count)), 0n).toString() }));
     foodInventoryKnown = true;
   } catch { inventoryError = '狗粮库存读取失败，数量未知'; }
-  return { fetchedAt, dogs, currentDogName: currentId === null ? '当前守卫犬未知' : currentId === '0' ? '未选择守卫犬' : dogs.find(row => String(row.id) === currentId)?.name || `守卫犬 ${currentId}`,
+  const feedingEnabled = protectionKnown && foodInventoryKnown && currentId !== null && currentId !== '0'
+    && dogs.some(dog => String(dog.id) === currentId);
+  if (foodInventoryKnown) foods = foods.map(food => ({ ...food,
+    quoteFingerprint: crypto.createHash('sha256').update(JSON.stringify([currentId, capacitySeconds, food.id, food.countDec])).digest('hex'),
+    canFeed: feedingEnabled && BigInt(food.countDec) > 0n && protectionSeconds + food.durationSeconds <= capacitySeconds,
+  }));
+  return { fetchedAt, dogs, currentDogId: currentId, currentDogName: currentId === null ? '当前守卫犬未知' : currentId === '0' ? '未选择守卫犬' : dogs.find(row => String(row.id) === currentId)?.name || `守卫犬 ${currentId}`,
     pendingGiftCountDec: decimal(reply.pending_gift_count), foodInventoryKnown, foods, inventoryError,
-    protectionKnown: false, feedingEnabled: false, feedingReason: '护卫时长、容量及投喂调用仍在核实，请在游戏内喂食' };
+    protectionKnown, protectionSeconds: protectionKnown ? protectionSeconds : null, capacitySeconds: protectionKnown ? capacitySeconds : null,
+    feedingEnabled, feedingReason: feedingEnabled ? '每次投喂 1 份现有狗粮；不购买、不溢出服务端容量。'
+      : !protectionKnown ? '本次未返回有效护卫容量，请刷新守卫犬状态' : !foodInventoryKnown ? inventoryError : '请先在游戏内选择已拥有的守卫犬' };
 }
 
 if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
@@ -109,4 +125,4 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   getCollectionReadPanel = wrapBusinessFunction('services/game-panel-readonly.js:getCollectionReadPanel', getCollectionReadPanel);
   getDogReadPanel = wrapBusinessFunction('services/game-panel-readonly.js:getDogReadPanel', getDogReadPanel);
 }
-module.exports = { getCollectionReadPanel, getDogReadPanel };
+module.exports = { getCollectionReadPanel, getDogReadPanel, DOG_FOOD_SECONDS };

@@ -242,6 +242,8 @@ async function performLoad() {
     resolved.VisitLeaveRequest = newRoot.lookupType('gamepb.visitpb.LeaveRequest');
     resolved.VisitLeaveReply = newRoot.lookupType('gamepb.visitpb.LeaveReply');
     resolved.BriefDogInfo = newRoot.lookupType('gamepb.visitpb.BriefDogInfo');
+    resolved.AddFoodRequest = newRoot.lookupType('gamepb.dogpb.AddFoodRequest');
+    resolved.AddFoodReply = newRoot.lookupType('gamepb.dogpb.AddFoodReply');
     resolved.GetDogInfoRequest = newRoot.lookupType('gamepb.dogpb.GetDogInfoRequest');
     resolved.GetDogInfoReply = newRoot.lookupType('gamepb.dogpb.GetDogInfoReply');
     resolved.ClaimSkillGiftsRequest = newRoot.lookupType('gamepb.dogpb.ClaimSkillGiftsRequest');

@@ -62,6 +62,7 @@ function createStrategySettings() {
     plantOrderRandom: true,
     plantDelaySeconds: 2,
     intervals: { farmMin: 8, farmMax: 12, helpMin: 30, helpMax: 35, stealMin: 25, stealMax: 30 },
+    requestPolicy: { enabled: true, total60s: 80, friend60s: 80, method60s: 30 },
     friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
   }
 }
@@ -73,6 +74,7 @@ function createAutomationSettings() {
       harvest: false,
       plant: false,
       task: false,
+  dog_auto_feed: false,
       milk_tea_auto_rewards: false,
       milk_tea_auto_seeds: false,
       milk_tea_auto_work: false,
@@ -134,6 +136,7 @@ function applyPlan(data: any) {
   strategySettings.value = {
     ...createStrategySettings(),
     ...config,
+    requestPolicy: { ...createStrategySettings().requestPolicy, ...(config.requestPolicy || {}) },
     intervals: { ...createStrategySettings().intervals, ...(config.intervals || {}) },
     friendQuietHours: { ...createStrategySettings().friendQuietHours, ...(config.friendQuietHours || {}) },
     bagSeedPriority: Array.isArray(config.bagSeedPriority) ? [...config.bagSeedPriority] : [],

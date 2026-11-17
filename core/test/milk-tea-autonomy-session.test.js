@@ -20,7 +20,7 @@ test('actual old adapter and old store pass new policy to real business Workers,
   const network = { setSessionTransportHooks() {}, networkEvents: new EventEmitter(), getWs: () => null, isConnected: () => false,
     getUserState: () => ({}), getWsErrorState: () => ({}), getAceStatus: () => ({}), connect: () => { connects++; }, stopNetwork: () => { stops++; },
     sendMsgAsync: () => { writes++; throw new Error('No game requests allowed in the host configuration fixture'); } };
-  const methods = new Proxy({}, { get: (_target, key) => key === 'getStats' ? () => ({}) : () => undefined });
+  const methods = new Proxy({}, { get: (_target, key) => ['getStats', 'getRequestProfile'].includes(key) ? () => ({}) : () => undefined });
   Object.assign(network, { pauseAceReports() {}, resumeAceReports() {}, cleanup() {}, getBreakerState: () => ({}), getRequestProfile: () => ({}), buildLoginDeviceInfo: () => ({}), buildWebSocketHeaders: () => ({}), extractServerClientVersion: () => '' });
   const replacements = { '../utils/network': network, '../services/stats': methods, '../services/status': { setStatusPlatform() {}, setRecordGoldExpHook() {}, statusData: {} },
     '../services/request-governor': methods, '../models/store': { ...oldStore, getAccounts: () => ({ accounts: [account] }) },

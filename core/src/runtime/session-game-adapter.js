@@ -73,6 +73,7 @@ async function createSessionGameAdapter({ account, onRevoked = () => {}, onMaste
     const socket = network.getWs();
     if (socket && socket !== lastSocket) { lastSocket = socket; connectionEpoch++; }
     return { connectionEpoch, loginEpoch, configRevision, loginReadyAt, firstLoginReadyAt, loginCredentialGeneration,
+      requestPolicy: { supported: true, ...governor.getRequestProfile().policy },
       clientVersion: CONFIG.clientVersion, platform: CONFIG.platform,
       sessionGeneration: account.sessionGeneration, connected: loginReady && network.isConnected(),
       terminal: stopped || terminationPending,
@@ -91,6 +92,7 @@ async function createSessionGameAdapter({ account, onRevoked = () => {}, onMaste
     if (identity !== policyIdentity) { policyIdentity = identity; configRevision++; }
     const patch = { ...config }; delete patch.knownFriendGids; delete patch.__clientRuntime;
     store.applyConfigSnapshot(patch, { persist: false, accountId: account.id });
+    governor.configurePolicy(store.getConfigSnapshot(account.id).requestPolicy);
     if (clientRuntime?.apply) updateRuntimeConfig({ clientVersion: clientRuntime.clientVersion });
     if (clientRuntime) Object.assign(clientRuntimeState, clientRuntime.nextState);
     if (store.getFriendQuietHours(account.id).idleProtectionEnabled !== true) idle.setIdleProtectionUntil(0);

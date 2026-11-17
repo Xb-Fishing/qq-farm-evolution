@@ -40,3 +40,7 @@ message DogFood {
     int64 duration = 2;
     int32 count = 3;
 }
+
+// Confirmed DogService.AddFood layout. Time is remaining seconds, not an epoch.
+message AddFoodRequest { int64 item_id = 1; int64 count = 2; }
+message AddFoodReply { int64 protect_time = 1; }

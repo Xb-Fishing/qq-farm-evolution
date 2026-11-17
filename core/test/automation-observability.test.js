@@ -168,3 +168,13 @@ test('动作文件拒绝越界/符号链接，部分末行不吞下一条；只�
   assert.equal(fs.existsSync(unknown), true);
   assert.equal(fs.statSync(current).mode & 0o777, 0o600);
 });
+
+test('activity projection rejects empty, replayed and unknown results', () => {
+  for (const meta of [
+    { action: 'solar_claim', count: 0, result: 'ok' },
+    { action: 'solar_claim', count: 1, result: 'unknown' },
+    { action: 'solar_claim', count: 1, result: 'ok', replayed: true },
+    { action: 'query', count: 1, result: 'ok' },
+  ]) assert.equal(observe.actionFromLog('ignored', { module: 'activity', event: 'activity_confirmed', ...meta }), null);
+  assert.match(observe.actionFromLog('ignored', { module: 'activity', event: 'activity_confirmed', action: 'solar_season', count: 1, result: 'ok' }).message, /季度图鉴.*领取奖励/);
+});

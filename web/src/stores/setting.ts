@@ -24,6 +24,7 @@ export interface AutomationConfig {
   farm_push?: boolean
   land_upgrade?: boolean
   friend?: boolean
+  dog_auto_feed?: boolean
   task?: boolean
   milk_tea_auto_rewards?: boolean
   milk_tea_auto_seeds?: boolean
@@ -118,7 +119,11 @@ export interface AutoCodeRefreshConfig {
   intervalMinutes: number
 }
 
+export interface RequestPolicy { enabled: boolean, total60s: number, friend60s: number, method60s: number }
+const defaultRequestPolicy = (): RequestPolicy => ({ enabled: true, total60s: 80, friend60s: 80, method60s: 30 })
+
 export interface SettingsState {
+  requestPolicy: RequestPolicy
   plantingStrategy: string
   preferredSeedId: number
   prioritize2x2Crops: boolean
@@ -195,6 +200,7 @@ export const useSettingStore = defineStore('setting', () => {
     bagSeedFallbackStrategy: 'level',
     autoAcceptFriendMinLevel: 0,
     intervals: {},
+    requestPolicy: defaultRequestPolicy(),
     friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
     kickoutRelogin: createDefaultKickoutRelogin(),
     automation: {},
@@ -231,6 +237,7 @@ export const useSettingStore = defineStore('setting', () => {
       bagSeedFallbackStrategy: 'level',
       autoAcceptFriendMinLevel: 0,
       intervals: {},
+      requestPolicy: defaultRequestPolicy(),
       friendQuietHours: { enabled: false, start: '23:00', end: '07:00', minSleepMinutes: 1, maxSleepMinutes: 120, wakeBeforeMinutes: 66, watchlistWakeBeforeMinutes: 122, pauseUntil: '', idleProtectionEnabled: false },
       kickoutRelogin: createDefaultKickoutRelogin(),
       automation: {},
@@ -269,6 +276,7 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.preferredSeedId = d.preferredSeedId || d.preferredSeed || 0
         settings.value.prioritize2x2Crops = d.prioritize2x2Crops === true
         settings.value.intervals = d.intervals || {}
+        settings.value.requestPolicy = { ...defaultRequestPolicy(), ...(d.requestPolicy || {}) }
         settings.value.friendQuietHours = {
           enabled: false,
           start: '23:00',
@@ -319,37 +327,47 @@ export const useSettingStore = defineStore('setting', () => {
       return { ok: false, error: '未选择账号' }
     // Freeze the user's complete authorization at the save click. Editing the
     // form while the first request is pending must not authorize unsaved policy.
-    const automationSnapshot = newSettings.automation ? JSON.parse(JSON.stringify(newSettings.automation)) : null
+    const settingsSnapshot = JSON.parse(JSON.stringify(newSettings))
+    const automationSnapshot = settingsSnapshot.automation || null
     const requestId = ++fetchRequestId
     loading.value = true
+    const accountRequest = {
+      headers: { 'x-account-id': accountId },
+      transformRequest: [(body: unknown, headers: Record<string, string>) => {
+        if (requestId !== fetchRequestId || !isCurrentAccount(accountId) || !isStillActive())
+          throw Object.assign(new Error('账号或设置页面已变化，已取消尚未发送的保存'), { code: 'ERR_CANCELED' })
+        headers['x-account-id'] = accountId
+        headers['Content-Type'] = 'application/json'
+        return JSON.stringify(body)
+      }],
+    }
     try {
       const settingsPayload = {
-        plantingStrategy: newSettings.plantingStrategy,
-        preferredSeedId: newSettings.preferredSeedId,
-        prioritize2x2Crops: newSettings.prioritize2x2Crops === true,
-        bagSeedPriority: newSettings.bagSeedPriority ?? [],
-        bagSeedKnownIds: newSettings.bagSeedKnownIds ?? [],
-        bagSeedFallbackStrategy: newSettings.bagSeedFallbackStrategy ?? 'level',
-        autoAcceptFriendMinLevel: newSettings.autoAcceptFriendMinLevel ?? 0,
-        autoCodeRefresh: newSettings.autoCodeRefresh,
-        intervals: newSettings.intervals,
-        friendQuietHours: newSettings.friendQuietHours,
-        kickoutRelogin: newSettings.kickoutRelogin,
-        stealDelaySeconds: newSettings.stealDelaySeconds ?? 0,
-        plantOrderRandom: newSettings.plantOrderRandom ?? false,
-        plantDelaySeconds: newSettings.plantDelaySeconds ?? 0,
-        fertilizerBuyOrganicCount: newSettings.fertilizerBuyOrganicCount ?? 10,
-        fertilizerBuyOrganicThresholdHours: newSettings.fertilizerBuyOrganicThresholdHours ?? 10,
-        fertilizerBuyNormalCount: newSettings.fertilizerBuyNormalCount ?? 10,
-        fertilizerBuyNormalThresholdHours: newSettings.fertilizerBuyNormalThresholdHours ?? 10,
-        fertilizerBuyCheckIntervalMinutes: newSettings.fertilizerBuyCheckIntervalMinutes ?? 30,
-        goldenBugKeepCount: newSettings.goldenBugKeepCount ?? 0,
-        goldenBugRoundLimit: newSettings.goldenBugRoundLimit ?? 24,
+        plantingStrategy: settingsSnapshot.plantingStrategy,
+        preferredSeedId: settingsSnapshot.preferredSeedId,
+        prioritize2x2Crops: settingsSnapshot.prioritize2x2Crops === true,
+        bagSeedPriority: settingsSnapshot.bagSeedPriority ?? [],
+        bagSeedKnownIds: settingsSnapshot.bagSeedKnownIds ?? [],
+        bagSeedFallbackStrategy: settingsSnapshot.bagSeedFallbackStrategy ?? 'level',
+        autoAcceptFriendMinLevel: settingsSnapshot.autoAcceptFriendMinLevel ?? 0,
+        autoCodeRefresh: settingsSnapshot.autoCodeRefresh,
+        requestPolicy: settingsSnapshot.requestPolicy,
+        intervals: settingsSnapshot.intervals,
+        friendQuietHours: settingsSnapshot.friendQuietHours,
+        kickoutRelogin: settingsSnapshot.kickoutRelogin,
+        stealDelaySeconds: settingsSnapshot.stealDelaySeconds ?? 0,
+        plantOrderRandom: settingsSnapshot.plantOrderRandom ?? false,
+        plantDelaySeconds: settingsSnapshot.plantDelaySeconds ?? 0,
+        fertilizerBuyOrganicCount: settingsSnapshot.fertilizerBuyOrganicCount ?? 10,
+        fertilizerBuyOrganicThresholdHours: settingsSnapshot.fertilizerBuyOrganicThresholdHours ?? 10,
+        fertilizerBuyNormalCount: settingsSnapshot.fertilizerBuyNormalCount ?? 10,
+        fertilizerBuyNormalThresholdHours: settingsSnapshot.fertilizerBuyNormalThresholdHours ?? 10,
+        fertilizerBuyCheckIntervalMinutes: settingsSnapshot.fertilizerBuyCheckIntervalMinutes ?? 30,
+        goldenBugKeepCount: settingsSnapshot.goldenBugKeepCount ?? 0,
+        goldenBugRoundLimit: settingsSnapshot.goldenBugRoundLimit ?? 24,
       }
 
-      const settingsResult = await api.post('/api/settings/save', settingsPayload, {
-        headers: { 'x-account-id': accountId },
-      })
+      const settingsResult = await api.post('/api/settings/save', settingsPayload, accountRequest)
 
       if (settingsResult.data?.ok !== true)
         return { ok: false, error: settingsResult.data?.error || '设置保存失败' }
@@ -366,9 +384,7 @@ export const useSettingStore = defineStore('setting', () => {
         }
         if (Object.keys(milkControl).length)
           automationPayload.milk_tea_control = milkControl
-        const automationResult = await api.post('/api/automation', automationPayload, {
-          headers: { 'x-account-id': accountId },
-        })
+        const automationResult = await api.post('/api/automation', automationPayload, accountRequest)
         if (automationResult.data?.ok !== true)
           return { ok: false, error: automationResult.data?.error || '自动控制保存失败' }
       }

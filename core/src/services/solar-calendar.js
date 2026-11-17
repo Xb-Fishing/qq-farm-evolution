@@ -85,6 +85,8 @@ async function operateSolarCalendar(action, input = {}, deps = {}) {
         : reply.correct === true ? updated?.quiz_claimed === true && granted.length > 0
           : updated?.quiz_wrong_today === true;
     if (!updated || Number(updated.id) !== input.id || !confirmed) return { ok: false, outcome: 'unknown', message: '回包未确认结果，请重新查询核对，不会自动重试' };
+    if (granted.length > 0 && (action !== 'answer' || reply.correct === true))
+      require('./automation-observability').logActivityAction(`solar_${action}`, granted.length);
     return { ok: true, correct: action === 'answer' ? reply.correct === true : undefined, rewards: granted, message: action === 'answer' ? (reply.correct ? '回答正确，奖励已领取' : '本次回答不正确，请按活动规则稍后再试') : '奖励已领取' };
   } finally { busy = false; }
 }

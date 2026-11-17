@@ -113,3 +113,12 @@ test('scene-entry rejection keeps the existing farm connection and does not ente
   assert.equal(callbacks, 0); assert.deepEqual(calls, [2, 1]);
   assert.equal(f.scene.snapshot().scene, 1); assert.equal(f.scene.snapshot().recoveryRequired, false);
 });
+
+test('disabled communication budgets permit ranch admission but preserve harvest priority', async () => {
+  const f = fixture({ profile: () => ({ policySupported: true, enabled: false, totalLimit: 1, perMethodLimit: 1, windowCount: 100, top: [] }) });
+  await f.scene.run(async () => ({ ok: true }));
+  assert.deepEqual(f.calls.map(call => call.id), [2, 1]);
+  f.setUrgent(true); const before = f.calls.length;
+  await assert.rejects(f.scene.run(async () => {}), { code: 'RANCH_FARM_PRIORITY' });
+  assert.equal(f.calls.length, before);
+});

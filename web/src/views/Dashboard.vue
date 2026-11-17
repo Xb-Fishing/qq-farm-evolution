@@ -876,6 +876,16 @@ useIntervalFn(updateCountdowns, 1000)
 </script>
 
 <template>
+  <div v-if="currentStatusReady && status?.requestProfile?.policySupported" class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-slate-100 px-4 py-3 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" role="status">
+    <strong :class="status.requestProfile.enabled ? '' : 'text-red-600 dark:text-red-400'">当前连接通信限流：{{ status.requestProfile.enabled ? '已开启' : '已关闭' }}</strong>
+    <span>近 60 秒结算 {{ status.requestProfile.windowCount }} 次 · 好友 {{ status.requestProfile.friendCount }} 次</span>
+    <span v-if="status.requestProfile.watchModeActive">热点窗口：总量/好友 ×1.5，进门/读地 ×{{ status.requestProfile.watchModeBoost }}</span>
+    <span v-if="status.requestProfile.enabled">总预算 {{ status.requestProfile.effectiveTotalLimit }} · 好友 {{ status.requestProfile.effectiveFriendLimit }} · 单接口 {{ status.requestProfile.perMethodLimit }}</span>
+  </div>
+  <div v-if="currentStatusReady && status?.sessionUpgrade?.requiresRescan" class="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-xl bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
+    <p>更新已保留旧游戏连接。新通信控制需要重新建立连接后生效。{{ currentAccount?.platform === 'wx' ? '请为此账号重新扫码，新授权会替换旧连接。' : '请更新登录码后重启此账号。' }}</p>
+    <BaseButton v-if="currentAccount?.platform === 'wx'" variant="secondary" @click="rescanFromHome">重新扫码并更新连接</BaseButton>
+  </div>
   <div class="flex flex-col gap-5 pt-1 md:pt-2">
     <div
       v-if="slowdownActive"

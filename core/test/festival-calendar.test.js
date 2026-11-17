@@ -68,3 +68,28 @@ test('missing claim flags or rewards never report a confirmed award; proto3 fals
     else { assert.equal(result.outcome, 'unknown'); assert.equal(result.ok, false); }
   }
 });
+
+test('confirmed festival rewards flow through the real log observer into today events once; queries, wrong answers and unknown outcomes do not', async () => {
+  const utils = require('../src/utils/utils');
+  const observer = require('../src/services/automation-observability');
+  const events = require('../src/services/daily-events');
+  const account = 'festival-event-fixture';
+  utils.setLogHook((tag, message, warn, meta) => observer.observeAutomationLog(account, tag, message, warn, meta));
+  try {
+    const f = fixture();
+    await getSolarCalendar(f.deps);
+    assert.equal(events.getTodayEvents(account).length, 0);
+    await operateSolarCalendar('claim', { id: 401 }, f.deps);
+    assert.equal(events.getTodayEvents(account).length, 1);
+    assert.match(events.getTodayEvents(account)[0].message, /节日签到.*领取奖励/);
+    const read = f.deps.sendMsgAsync;
+    f.deps.sendMsgAsync = async (service, method, body) => method === 'GetSolarTermsV2' ? read(service, method, body)
+      : { body: types[`${method}Reply`].encode({ correct: false, updated_event: { id: 401, quiz_wrong_today: true } }).finish() };
+    const result = await operateSolarCalendar('answer', { id: 401, optionIndex: 0, expectedQuestion: '重阳节又被称为什么节？' }, f.deps);
+    assert.equal(result.correct, false);
+    assert.equal(events.getTodayEvents(account).length, 1);
+    f.deps.sendMsgAsync = read; f.setUnknown();
+    await operateSolarCalendar('season', { id: 4 }, f.deps);
+    assert.equal(events.getTodayEvents(account).length, 1);
+  } finally { utils.setLogHook(null); }
+});

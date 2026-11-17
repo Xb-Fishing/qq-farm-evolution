@@ -20,6 +20,7 @@ interface BagSeedItem {
 }
 
 interface StrategySettings {
+  requestPolicy?: import('@/stores/setting').RequestPolicy
   plantingStrategy: string
   preferredSeedId: number
   prioritize2x2Crops: boolean
@@ -172,7 +173,7 @@ const settings = defineModel<StrategySettings>('settings', { required: true })
         />
       </div>
 
-      <StrategyTimingPanel v-model:settings="settings" />
+      <StrategyTimingPanel :key="String(currentAccountId)" v-model:settings="settings" />
 
       <div class="flex justify-end gap-2 border-t pt-3 dark:border-gray-700">
         <BaseButton

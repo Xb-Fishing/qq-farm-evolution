@@ -14,6 +14,7 @@ const defaultAutomation = {
   harvest: false,
   plant: false,
   task: false,
+  dog_auto_feed: false,
   milk_tea_auto_rewards: false,
   milk_tea_auto_seeds: false,
   milk_tea_auto_work: false,

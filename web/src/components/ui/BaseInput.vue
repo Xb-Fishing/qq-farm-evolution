@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
 
 const props = defineProps<{
   type?: string
@@ -15,6 +15,7 @@ const emit = defineEmits<{
   (e: 'clear'): void
 }>()
 const [model, modelModifiers] = defineModel<string | number>()
+const inputId = useId()
 const showPassword = ref(false)
 const inputType = computed(() => {
   if (props.type === 'password' && showPassword.value) {
@@ -33,11 +34,12 @@ function updateModel(event: Event) {
 
 <template>
   <div class="flex flex-col gap-1.5">
-    <label v-if="label" class="text-sm text-gray-700 font-medium dark:text-gray-300">
+    <label v-if="label" :for="inputId" class="text-sm text-gray-700 font-medium dark:text-gray-300">
       {{ label }}
     </label>
     <div class="relative">
       <input
+        :id="inputId"
         :value="model"
         :type="inputType"
         :placeholder="placeholder"

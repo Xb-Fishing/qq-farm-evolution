@@ -16,12 +16,26 @@ const ACTIONS = {
   '解锁土地': 'land', '升级土地': 'land',
   sell_success: 'warehouse', sell_done: 'warehouse',
   '神秘商人自动购买': 'shop', '帮助好友': 'friend', '照顾好友': 'friend', '在线自动捣乱': 'friend',
-  '放置黄金虫': 'friend', '自动同意好友': 'friend', milk_tea_operate: 'activity',
+  '放置黄金虫': 'friend', '自动同意好友': 'friend', milk_tea_operate: 'activity', activity_confirmed: 'activity',
 };
 const MILK_ACTIONS = { createShop: '创建店铺', renameShop: '修改店名', hire: '雇佣',
   hireSetting: '调整雇佣设置', claimCashier: '领取营业收益', boost: '加速营业', upgrade: '升级店铺',
   craft: '制作奶茶', claimWages: '领取工资', interact: '完成互动', exchange: '兑换商品',
   fundClaim: '领取基金奖励', shareDaily: '领取每日分享奖励', shareFirst: '领取首次分享奖励', shareMilestones: '领取快乐值奖励' };
+const ACTIVITY_ACTIONS = {
+  dog_feed: '守卫犬：投喂狗粮',
+  solar_claim: '节日签到：领取奖励', solar_answer: '节日答题：答对并领取奖励', solar_season: '季度图鉴：领取奖励',
+  qingmei_seed: '青梅活动：领取种子', qingmei_wine: '青梅活动：售出青梅酿',
+  season_passport: '荷风游记：领取奖励', solar_terms: '节令小札：领取奖励', star_record: '观星礼录：领取奖励',
+};
+// Call only after a positive action is confirmed, never for a query or replay.
+function logActivityAction(action, count) {
+  if (!Object.hasOwn(ACTIVITY_ACTIONS, action) || !(Number(count) > 0)) return false;
+  require('../utils/utils').log('活动', ACTIVITY_ACTIONS[action], {
+    module: 'activity', event: 'activity_confirmed', action, count: Number(count), result: 'ok',
+  });
+  return true;
+}
 const queryTimes = new Map();
 const CONTROL_LABELS = {
   farm: '农场巡查', harvest: '自动收获', plant: '自动种植', task: '任务领奖', sell: '自动出售',
@@ -64,6 +78,8 @@ function actionFromLog(message, meta = {}) {
     : event === '神秘商人自动购买' ? meta.result !== 'success'
       : event === 'milk_tea_operate' ? !(meta.result === 'ok' || (meta.action === 'interact' && meta.result === 'gameplay_lose'))
         : meta.result !== 'ok') return null;
+  if (event === 'activity_confirmed' && (!Object.hasOwn(ACTIVITY_ACTIONS, meta.action)
+    || !(Number(meta.count) > 0) || meta.replayed === true)) return null;
   if (event === 'vip_daily_gift' && (!Array.isArray(meta.vipTypes) || !meta.vipTypes.length)) return null;
   if (event === '购买化肥' && meta.automationAction !== true) return null;
   if (['开启化肥礼包', '购买化肥', '施肥', '常规施肥', '多季节施肥', '放置黄金虫', '自动同意好友', 'email_rewards', 'mall_free_gifts', '领取活跃奖励', '神秘商人自动购买'].includes(event)
@@ -86,6 +102,7 @@ function actionFromLog(message, meta = {}) {
   if (event === '自动同意好友') summary = `已同意 ${Number(meta.count)} 个好友申请`;
   if (event === '放置黄金虫') summary = `已放置黄金虫 ${Number(meta.count)} 只`;
   if (event === 'sell_done') summary = `已提交出售 ${Number(meta.soldCount)} 个果实，金币收益尚未确认`;
+  if (event === 'activity_confirmed') summary = ACTIVITY_ACTIONS[meta.action];
   if (event === 'milk_tea_operate') {
     if (!Object.hasOwn(MILK_ACTIONS, meta.action)) return null;
     if (meta.action === 'hire' && !(Number(meta.successCount) > 0)) return null;
@@ -127,4 +144,4 @@ function logAutomationQuery(category, message) {
   } catch { return false; }
 }
 
-module.exports = { actionFromLog, observeAutomationLog, logAutomationQuery, snapshotAutomationConfig, logAutomationConfigChanges };
+module.exports = { logActivityAction, actionFromLog, observeAutomationLog, logAutomationQuery, snapshotAutomationConfig, logAutomationConfigChanges };

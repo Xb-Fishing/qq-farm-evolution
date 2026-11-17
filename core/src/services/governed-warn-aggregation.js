@@ -31,7 +31,7 @@ const GOVERNED_WARN_ENTRIES = new Set([
     'enter_autobad',      // friend-visit visitFriendForAutoBad 进门 catch
 ]);
 // 严格预算类别白名单：请求治理器仅以这两种 reason 拒绝请求。
-const GOVERNED_WARN_REASONS = new Set(['budget_total', 'budget_method']);
+const GOVERNED_WARN_REASONS = new Set(['budget_total', 'budget_method', 'budget_friend']);
 
 // 只识别本地严格标记及固定预算类别；不读取错误文案、不依赖传输模块。
 function getGovernedRejectionInfo(err) {

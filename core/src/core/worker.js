@@ -70,6 +70,7 @@ const {
     getAvailableSeeds,
     runFarmOperation,
     runFertilizerByConfig,
+    NORMAL_FERTILIZER_ID,
     ORGANIC_FERTILIZER_ID,
     fertilize,
     removePlant,
@@ -1155,6 +1156,8 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
         persist: false,
         accountId
     });
+    if (process.env.FARM_SESSION_BUSINESS !== '1')
+        require('../services/request-governor').configurePolicy(require('../models/store').getConfigSnapshot(accountId).requestPolicy);
     try { if (observedConfig) automationObservation.logAutomationConfigChanges(observedConfig, getAutomation()); }
     catch { /* Keep the existing application and scheduling path. */ }
     if (getFriendQuietHours().idleProtectionEnabled !== true) setIdleProtectionUntil(0);
@@ -1554,6 +1557,9 @@ async function handleApiCall(msg) {
 
     try {
         switch (method) {
+            case 'feedDog':
+                result = await require('../services/manual-commerce').guardedDogFeeding(args[0]);
+                break;
             case 'getDogReadPanel':
                 result = await require('../services/game-panel-readonly').getDogReadPanel();
                 break;
@@ -1846,26 +1852,33 @@ async function handleApiCall(msg) {
                 result = getSchedulerRegistrySnapshot();
                 break;
             case 'fertilizeLand': {
+                const fertilizerType = args[1] === undefined ? 'organic' : args[1];
+                if (fertilizerType !== 'normal' && fertilizerType !== 'organic') {
+                    error = '无效的肥料类型';
+                    break;
+                }
+                const fertilizerId = fertilizerType === 'normal' ? NORMAL_FERTILIZER_ID : ORGANIC_FERTILIZER_ID;
+                const fertilizerName = fertilizerType === 'normal' ? '普通肥料' : '有机肥料';
                 const landId = Number(args[0]) || 0;
                 if (!landId) {
                     error = '无效的土地ID';
                 } else {
-                    log('施肥', `正在对土地 ${  landId  } 使用有机肥料催熟`, {
-                        module: 'farm', event: '催熟', landId
+                    log('施肥', `正在对土地 ${  landId  } 使用${fertilizerName}施肥`, {
+                        module: 'farm', event: '施肥', fertilizerType, landId
                     });
-                    const fertilizeCount = await fertilize([landId], ORGANIC_FERTILIZER_ID);
+                    const fertilizeCount = await fertilize([landId], fertilizerId);
                     if (fertilizeCount > 0) {
-                        log('施肥', `土地 ${  landId  } 催熟成功`, {
-                            module: 'farm', event: '催熟', result: 'ok', landId
+                        log('施肥', `土地 ${  landId  } 施肥请求已确认`, {
+                            module: 'farm', event: '施肥', result: 'ok', fertilizerType, landId
                         });
                         result = { success: true, count: fertilizeCount };
                     } else {
-                        log('施肥', `土地 ${  landId  } 催熟失败，可能有机肥料不足`, {
-                            module: 'farm', event: '催熟', result: 'error', landId
+                        log('施肥', `土地 ${  landId  } 施肥结果未确认，请查看游戏实际结果`, {
+                            module: 'farm', event: '施肥', result: 'error', fertilizerType, landId
                         });
                         result = { success: false, count: 0 };
                     }
-                    // 面板催熟同时变更土地与背包化肥数量
+                    // 面板施肥同时变更土地与背包化肥数量
                     require('../services/farm-land-analyzer').invalidatePanelLandsCache();
                     require('../services/warehouse').invalidatePanelBagCache();
                 }
@@ -2095,6 +2108,7 @@ function syncStatus() {
         : { active: false, remainSec: 0, recommendedDelaySec: 0 };
     // 兼容旧面板字段：新机制不再存在整号硬熔断。
     stats.breaker = { active: false, remainSec: 0 };
+    stats.requestProfile = require('../services/request-governor').getRequestProfile();
     const protectionUntil = getFriendQuietHours().idleProtectionEnabled === true
         ? getIdleProtectionUntil(now) : 0;
     stats.idleProtection = {
@@ -2314,6 +2328,7 @@ function onMysteryShopTimer() {
 // Named timer bindings are stable across business versions.
 function onTimer_daily_routine_interval() {
         if (!loginReady || pauseRemainMsNow() > 0) return;
+        if (!friendSyncPaused) void require('../services/manual-commerce').runDogAutoFeeding().catch(() => null);
         const today = getLocalDateKey();
         if (today === lastDailyRunDate) return;
         lastDailyRunDate = today;

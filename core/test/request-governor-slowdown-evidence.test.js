@@ -102,6 +102,7 @@ function loadGovernorInVm({ loggerModule, dailyEventsModule }) {
         filename: governorPath,
     })(
         name => {
+            if (name === './request-policy') return require('../src/services/request-policy');
             if (name === './logger') return loggerModule;
             if (name === './daily-events') return dailyEventsModule;
             throw new Error(`unexpected require: ${name}`);

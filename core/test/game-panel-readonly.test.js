@@ -24,11 +24,11 @@ test('collection default reader sends only category one, preserves exact counts 
   assert.equal(result.items[0].name, '菇菇氧'); assert.equal(result.items[0].star, 0); assert.equal(result.items[0].ownedCountDec, '9007199254740993'); assert.equal(result.currentScore, 0); assert.equal(result.writesEnabled, false);
   const stored = evidence('collections'); assert.equal(stored.schemaRoundtrip, true); assert.equal(stored.decoded.details[0].collections[0].is_new, false); assert.equal(stored.decoded.details[0].current_score, 0); assert.equal(Buffer.from(stored.replyBase64, 'base64').equals(collectionBody([collection()])), true);
 });
-test('dog reader keeps disputed time unknown and reads inventory exclusively from Bag', async () => {
+test('dog reader decodes proven remaining time and capacity and reads inventory exclusively from Bag', async () => {
   const f = fixture(dogBody()), result = await f.getDogReadPanel();
   assert.deepEqual(f.calls, [{ service: 'gamepb.dogpb.DogService', method: 'GetDogInfo', hex: '' }, { method: 'Bag' }]);
-  assert.equal(result.currentDogName, '测试犬'); assert.equal(result.foods[0].countDec, '7'); assert.equal(result.foods[1].countDec, '9007199254740993'); assert.equal(result.foods[2].countDec, '0'); assert.equal(result.protectionKnown, false); assert.equal(result.feedingEnabled, false); assert.equal(result.pendingGiftCountDec, '0');
-  const stored = evidence('dog'); assert.equal(stored.decoded.field_3, '123456'); assert.equal(stored.decoded.field_4, '2592000'); assert.equal(stored.decoded.foods[0].field_3, '999'); assert.equal(stored.schemaRoundtrip, true);
+  assert.equal(result.currentDogName, '测试犬'); assert.equal(result.foods[0].countDec, '7'); assert.equal(result.foods[1].countDec, '9007199254740993'); assert.equal(result.foods[2].countDec, '0'); assert.equal(result.protectionKnown, true); assert.equal(result.protectionSeconds, 123456); assert.equal(result.capacitySeconds, 2592000); assert.equal(result.feedingEnabled, true); assert.equal(result.pendingGiftCountDec, '0');
+  const stored = evidence('dog'); assert.equal(stored.decoded.protection_seconds, '123456'); assert.equal(stored.decoded.capacity_seconds, '2592000'); assert.equal(stored.decoded.foods[0].field_3, '999'); assert.equal(stored.schemaRoundtrip, true);
 });
 test('missing category, repeated collection and malformed dog replies fail without fallback writes', async () => {
   await assert.rejects(fixture(Buffer.alloc(0)).getCollectionReadPanel(), /未返回/); await assert.rejects(fixture(collectionBody([collection(), collection()])).getCollectionReadPanel(), /重复/); await assert.rejects(fixture(Buffer.alloc(0)).getDogReadPanel(), /不完整/);
@@ -37,7 +37,7 @@ test('missing category, repeated collection and malformed dog replies fail witho
 function routeFixture() {
   const routes = new Map(), calls = []; let scope = 'one', connected = true, allowed = true, gate;
   const state = { fetchedAt: 1, items: [], displays: [], currentScore: 0, claimedScore: 0, writesEnabled: false };
-  require('../src/controllers/admin-game-update-routes').registerAdminGameUpdateRoutes({ app: { get: (url, handler) => routes.set(url, handler) }, getAccountIdFromRequest: req => req.accountId, canAccessAccount: () => allowed, sendProviderError: (res, error) => res.json({ ok: false, error: error.message }), provider: { getStatus: () => ({ connection: { connected } }), getGamePanelReadScope: () => scope, getCollectionReadPanel: async id => { calls.push(id); if (gate) return gate; return state; }, getDogReadPanel: async id => { calls.push(id); return { dogs: [] }; } } });
+  require('../src/controllers/admin-game-update-routes').registerAdminGameUpdateRoutes({ app: { get: (url, handler) => routes.set(url, handler), post: (url, handler) => routes.set(url, handler) }, getAccountIdFromRequest: req => req.accountId, canAccessAccount: () => allowed, sendProviderError: (res, error) => res.json({ ok: false, error: error.message }), provider: { getStatus: () => ({ connection: { connected } }), getGamePanelReadScope: () => scope, getCollectionReadPanel: async id => { calls.push(id); if (gate) return gate; return state; }, getDogReadPanel: async id => { calls.push(id); return { dogs: [] }; } } });
   async function query(accountId = 'synthetic-query') { const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; } }; await routes.get('/api/activity/collection-state')({ accountId }, res); return res; }
   return { calls, query, changeScope: () => { scope = 'two'; }, setConnected: v => { connected = v; }, setAllowed: v => { allowed = v; }, setGate: v => { gate = v; } };
 }

@@ -283,7 +283,8 @@ test('plant switch off never defers and still replants nothing', async () => {
 // ── 真实 request-governor：合并后的整段请求不撞 80/30 预算，硬拦截仍在 ──
 const governorSource = fs.readFileSync(path.join(__dirname, '../src/services/request-governor.js'), 'utf8');
 function freshGovernor() {
-  const sandbox = vm.createContext({ module: { exports: {} }, process: { env: { NODE_TEST_CONTEXT: 'isolated' } } });
+  const sandbox = vm.createContext({ module: { exports: {} }, process: { env: { NODE_TEST_CONTEXT: 'isolated' } },
+    require: name => { assert.equal(name, './request-policy'); return require('../src/services/request-policy'); } });
   vm.runInContext(governorSource, sandbox);
   return sandbox.module.exports;
 }

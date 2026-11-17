@@ -3,9 +3,10 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '@/api'
 
+export type FertilizerType = 'normal' | 'organic'
 export interface FertilizeTarget { id: number, identity: string }
-export interface FertilizePlan { accountId: string, targets: FertilizeTarget[] }
-interface Progress { active: boolean, confirmed: number, total: number, reason: string, refreshError: string }
+export interface FertilizePlan { accountId: string, fertilizerType: FertilizerType, targets: FertilizeTarget[] }
+interface Progress { fertilizerType: FertilizerType, active: boolean, confirmed: number, total: number, reason: string, refreshError: string }
 interface Context {
   accountId: () => string
   lands: () => Land[]
@@ -44,11 +45,12 @@ export const useManualFertilizeStore = defineStore('manual-fertilize', () => {
       progress.value[accountId]!.reason = reason
     }
   }
-  function prepare(accountId: string, lands: Land[]): FertilizePlan {
-    return { accountId, targets: fertilizeTargets(lands) }
+  function prepare(accountId: string, lands: Land[], fertilizerType: FertilizerType = 'organic'): FertilizePlan {
+    return { accountId, fertilizerType, targets: fertilizeTargets(lands) }
   }
   function matches(plan: FertilizePlan, accountId: string, lands: Land[]) {
-    return plan.accountId === accountId && JSON.stringify(plan.targets) === JSON.stringify(fertilizeTargets(lands))
+    return (plan.fertilizerType === 'normal' || plan.fertilizerType === 'organic')
+      && plan.accountId === accountId && JSON.stringify(plan.targets) === JSON.stringify(fertilizeTargets(lands))
   }
   async function run(plan: FertilizePlan, context: Context) {
     const id = plan.accountId
@@ -58,7 +60,7 @@ export const useManualFertilizeStore = defineStore('manual-fertilize', () => {
     }
     const ticket = { cancelled: false }
     tickets.set(id, ticket)
-    progress.value[id] = { active: true, confirmed: 0, total: plan.targets.length, reason: '', refreshError: '' }
+    progress.value[id] = { fertilizerType: plan.fertilizerType, active: true, confirmed: 0, total: plan.targets.length, reason: '', refreshError: '' }
     const result = progress.value[id]!
     // UI countdown timers may pause in a background tab. Keep the earliest
     // known absolute deadline as well as accepting fresher, earlier deadlines.
@@ -110,7 +112,7 @@ export const useManualFertilizeStore = defineStore('manual-fertilize', () => {
             break
         }
         try {
-          const { data } = await api.post('/api/land/fertilize', { landId: target.id }, {
+          const { data } = await api.post('/api/land/fertilize', { landId: target.id, fertilizerType: plan.fertilizerType }, {
             headers: { 'x-account-id': id },
             errorFeedback: 'consumer',
             // Shared request interceptors read the current account asynchronously.

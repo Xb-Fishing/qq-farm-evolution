@@ -635,6 +635,10 @@ function createWorkerManager(deps) {
         if (msg.type === 'status_sync') {
             // 状态同步
             wrk.status = normalizeStatusForPanel(msg.data, accountId, wrk.name);
+            if (wrk.process?.persistentSession) wrk.status.sessionUpgrade = {
+                requiresRescan: wrk.process.sessionFacts?.game?.requestPolicy?.supported !== true,
+                requestPolicy: wrk.process.sessionFacts?.game?.requestPolicy || null,
+            };
             if (typeof onStatusSync === 'function') {
                 onStatusSync(accountId, wrk.status, wrk.name);
             }

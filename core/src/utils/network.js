@@ -397,17 +397,18 @@ function sendSceneAwareRpc(service, method, body, timeout, options) {
 /** Promise 版发送 */
 function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, options = {}) {
     return new Promise((resolve, reject) => {
+        const friend = requestGovernor.isFriendRequest(serviceName, methodName, bodyBytes, userState.gid);
         const request = createSendContext(methodName, (err, body, meta) => {
             if (err) {
                 if (request.current() && (request.sent || err.code === 'LOCAL_REQUEST_TIMEOUT')
                     && err.code !== 'LOCAL_BUSINESS_PAUSED'
                     && err.isSessionAuthorityRejection !== true && err.isLocalRequestRejection !== true) {
                     const breakerExempt = options.breakerExemptBusinessError === true && err.isServerBusinessError === true;
-                    requestGovernor.recordSent(serviceName, methodName, false, Date.now(), { breakerExempt });
+                    requestGovernor.recordSent(serviceName, methodName, false, Date.now(), { breakerExempt, friend });
                 }
                 reject(err);
             } else {
-                requestGovernor.recordSent(serviceName, methodName, true);
+                requestGovernor.recordSent(serviceName, methodName, true, Date.now(), { friend });
                 resolve({ body, meta });
             }
         }, timeout);
@@ -419,7 +420,7 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000, optio
             if (paused) { request.finish(paused); return; }
             // 请求治理：硬预算过闸 + 异常画像（白名单放行；预算拒绝走正常错误路径）。
             // 注意：被预算拦截的请求不会计入失败窗口，避免降速阈值自我强化。
-            const gate = requestGovernor.checkRequest(serviceName, methodName);
+            const gate = requestGovernor.checkRequest(serviceName, methodName, Date.now(), { friend });
             if (!gate.allowed) {
                 const governedError = new Error(`请求被治理器拦截(${gate.reason}): ${methodName}`);
                 // 结构化标记（严格布尔 + 白名单类别）：仅供本地读取观测/警告聚合识别。
@@ -1090,7 +1091,7 @@ function stopNetwork(reason = '停止网络') {
 function getWs() { return ws; }
 function isConnected() { return !!(ws && ws.readyState === WebSocket.OPEN); }
 
-const GOVERNED_BUDGET_REASONS = new Set(['budget_total', 'budget_method']);
+const GOVERNED_BUDGET_REASONS = new Set(['budget_total', 'budget_method', 'budget_friend']);
 function getAceStatus() {
     if (aceService) return aceService.getStatus();
     return tsdkRuntime ? { running: false, runtime: tsdkRuntime.getStatus() } : null;

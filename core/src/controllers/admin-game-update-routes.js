@@ -29,6 +29,17 @@ function registerAdminGameUpdateRoutes(context) {
     });
   }
 
+  app.post('/api/dog/feed', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '账号未连接，无法投喂')) return;
+      const result = await provider.feedDog(accountId, req.body);
+      res.json({ ok: true, data: result });
+    } catch (error) { sendProviderError(res, error); }
+    finally { const key = panelScopes.get(`dog-state:${accountId}`); if (key) panelReads.clear(key); }
+  });
+
   app.get('/api/activity/emails', async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);
     if (!accountId) return;

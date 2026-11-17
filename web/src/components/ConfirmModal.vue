@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 
 type ModalType = 'primary' | 'danger' | 'success' | 'secondary'
@@ -30,6 +30,27 @@ const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'close'): void
 }>()
+
+const dialog = ref<HTMLElement | null>(null)
+let previousFocus: HTMLElement | null = null
+watch(() => props.show, async (show) => {
+  if (show) {
+    if (typeof document !== 'undefined') previousFocus = document.activeElement as HTMLElement | null
+    await nextTick()
+    if (props.show) dialog.value?.querySelector?.<HTMLElement>('button:not([disabled])')?.focus?.()
+  }
+  else if (previousFocus?.isConnected) previousFocus.focus()
+})
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeModal(); return }
+  if (event.key !== 'Tab') return
+  const buttons = [...(dialog.value?.querySelectorAll<HTMLElement>('button:not([disabled])') || [])]
+  if (!buttons.length) { event.preventDefault(); return }
+  const target = event.shiftKey ? buttons[buttons.length - 1] : buttons[0]
+  if ((event.shiftKey && document.activeElement === buttons[0]) || (!event.shiftKey && document.activeElement === buttons[buttons.length - 1])) {
+    event.preventDefault(); target?.focus()
+  }
+}
 
 const confirmDisabled = computed(() => {
   if (props.loading)
@@ -75,7 +96,12 @@ function confirm() {
       @click="closeModal"
     >
       <div
+        ref="dialog"
         class="confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="title"
+        @keydown="handleKeydown"
         :data-tone="modalTone"
         @click.stop
       >

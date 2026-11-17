@@ -726,9 +726,16 @@ export const useActivityStore = defineStore('activity', () => {
       }
       const isCount = (count: unknown) => typeof count === 'string' && /^(?:0|[1-9]\d*)$/.test(count)
       if (kind === 'dog' && (!Array.isArray(value.dogs) || !Array.isArray(value.foods) || typeof value.currentDogName !== 'string'
-        || typeof value.foodInventoryKnown !== 'boolean' || !isCount(value.pendingGiftCountDec) || value.feedingEnabled !== false
+        || typeof value.foodInventoryKnown !== 'boolean' || !isCount(value.pendingGiftCountDec) || typeof value.feedingEnabled !== 'boolean'
         || value.foods.some((food: any) => !food || typeof food.name !== 'string' || !isCount(food.countDec)))) {
         throw new Error('守卫犬状态不完整，请稍后刷新')
+      }
+      if (kind === 'dog' && value.feedingEnabled && (value.protectionKnown !== true
+        || !Number.isSafeInteger(value.protectionSeconds) || value.protectionSeconds < 0
+        || !Number.isSafeInteger(value.capacitySeconds) || value.capacitySeconds <= 0 || value.protectionSeconds > value.capacitySeconds
+        || value.foods.some((food: any) => !Number.isSafeInteger(food.durationSeconds) || food.durationSeconds <= 0
+          || !/^[a-f0-9]{64}$/.test(food.quoteFingerprint || '') || typeof food.canFeed !== 'boolean'))) {
+        throw new Error('守卫犬投喂状态不完整，请稍后刷新')
       }
       if (kind === 'collections' && (!Array.isArray(value.items) || !Array.isArray(value.displays) || !Number.isInteger(value.currentScore)
         || !Number.isInteger(value.claimedScore) || value.writesEnabled !== false
@@ -757,11 +764,39 @@ export const useActivityStore = defineStore('activity', () => {
     return currentId === String(accountId)
   }
 
+  async function feedDog(accountId: string, request: { itemId: number, count: number, operationId: string, quoteFingerprint: string }) {
+    if (!isCurrentAccount(accountId) || updateReads.value.dog.loading) return { ok: false, cancelled: true }
+    const seq = ++updateSeq.dog
+    const current = () => seq === updateSeq.dog && isCurrentAccount(accountId)
+    updateReads.value.dog.loading = true
+    updateReads.value.dog.error = ''
+    try {
+      const { data } = await api.post('/api/dog/feed', request, {
+        headers: { 'x-account-id': accountId }, errorFeedback: 'consumer',
+        transformRequest: [(body, headers) => {
+          if (!current()) throw Object.assign(new Error('账号已变化'), { code: 'ERR_CANCELED' })
+          headers['x-account-id'] = accountId
+          headers['Content-Type'] = 'application/json'
+          return JSON.stringify(body)
+        }],
+      })
+      if (!current()) return { ok: false, cancelled: true }
+      if (!data?.ok || data.data?.confirmed !== true) throw new Error(data?.error || '投喂结果未确认，请刷新核对，不会自动重试')
+      updateReads.value.dog.data = data.data.state
+      return { ok: true }
+    }
+    catch (error: any) {
+      if (current()) updateReads.value.dog.error = error?.response?.data?.error || error?.message || '投喂结果未知，请刷新核对'
+      return { ok: false }
+    }
+    finally { if (current()) updateReads.value.dog.loading = false }
+  }
+
   function clearActivityData() {
     cancelUpdateReads(true)
   }
   function cancelActivityReads() {
     cancelUpdateReads()
   }
-  return { updateReads, loadUpdate, cancelUpdateReads, clearActivityData, cancelActivityReads }
+  return { updateReads, loadUpdate, feedDog, cancelUpdateReads, clearActivityData, cancelActivityReads }
 })

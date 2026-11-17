@@ -73,8 +73,8 @@ message DogPanelFood {
 message DogPanelReply {
   repeated DogPanelDog dogs = 1;
   int64 current_dog_id = 2;
-  int64 field_3 = 3;
-  int64 field_4 = 4;
+  int64 protection_seconds = 3;
+  int64 capacity_seconds = 4;
   repeated DogPanelFood foods = 5;
   int64 field_6 = 6;
   int64 pending_gift_count = 7;

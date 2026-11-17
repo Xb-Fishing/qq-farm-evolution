@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
+import { newOperationId } from '@/utils/commerce-quantity'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useActivityStore } from '@/stores/activity'
 
@@ -14,6 +16,32 @@ const number = (value: unknown) => value == null || !Number.isFinite(Number(valu
 const time = (value: unknown) => value == null || !(Number(value) > 0) ? '未读取' : new Date(Number(value)).toLocaleString()
 const catalog = computed(() => store.updateReads.catalog.data)
 const dog = computed(() => store.updateReads.dog.data)
+const dogSection = ref<HTMLElement | null>(null)
+async function openDog() {
+  expanded.value = true
+  await nextTick()
+  dogSection.value?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  await store.loadUpdate('dog', props.accountId)
+}
+const feeding = ref<{ account: string, itemId: number, name: string, quoteFingerprint: string, operationId: string } | null>(null)
+let feedingTrigger: HTMLElement | null = null
+function prepareFeeding(food: any, event: MouseEvent) {
+  if (!food.canFeed || store.updateReads.dog.loading) return
+  feedingTrigger = event.currentTarget as HTMLElement
+  feeding.value = { account: props.accountId, itemId: food.id, name: food.name, quoteFingerprint: food.quoteFingerprint, operationId: newOperationId() }
+}
+function closeFeeding() { feeding.value = null; nextTick(() => feedingTrigger?.focus()) }
+async function executeFeeding() {
+  const selected = feeding.value
+  closeFeeding()
+  if (selected?.account === props.accountId) await store.feedDog(selected.account, { itemId: selected.itemId, count: 1, quoteFingerprint: selected.quoteFingerprint, operationId: selected.operationId })
+}
+watch(() => props.accountId, () => { feeding.value = null })
+function duration(seconds: unknown) {
+  const n = Number(seconds)
+  if (!Number.isSafeInteger(n) || n < 0) return '未知'
+  return `${Math.floor(n / 86400)} 天 ${Math.floor(n % 86400 / 3600)} 小时`
+}
 const collections = computed(() => store.updateReads.collections.data)
 const exactCount = (value: unknown) => typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value).toLocaleString() : '未知'
 const entries = computed(() => (catalog.value?.series || []).flatMap((group: any) => (group.items || []).map((item: any) => ({ ...item, group }))))
@@ -43,9 +71,12 @@ onBeforeUnmount(() => store.cancelUpdateReads())
   <section class="update-card" aria-label="游戏更新与邮箱">
     <div class="update-heading">
       <div><h2>游戏更新与邮箱</h2><p>查看采集时间、邮件、守卫犬与珍藏室。</p></div>
-      <BaseButton variant="secondary" :disabled="!accountId" :aria-expanded="expanded" @click="open">
-        {{ expanded ? '收起更新与邮箱' : '查看更新与邮箱' }}
-      </BaseButton>
+      <div class="flex flex-wrap gap-2">
+        <BaseButton variant="primary" :disabled="!accountId" @click="openDog">守卫犬与喂食</BaseButton>
+        <BaseButton variant="secondary" :disabled="!accountId" :aria-expanded="expanded" @click="open">
+          {{ expanded ? '收起更新与邮箱' : '查看更新与邮箱' }}
+        </BaseButton>
+      </div>
     </div>
     <div v-if="expanded" class="update-sections">
       <section aria-label="今日动态">
@@ -81,7 +112,7 @@ onBeforeUnmount(() => store.cancelUpdateReads())
           <span v-else>{{ store.updateReads.emails.data?.boxes?.[box]?.errorClass === 'claim_busy' ? '自动领奖进行中，请稍后刷新；本次数量未知' : store.updateReads.emails.data ? '本箱读取失败，数量未知' : '尚未读取' }}</span>
         </div>
       </section>
-      <section aria-label="守卫犬只读状态">
+      <section ref="dogSection" aria-label="守卫犬状态与喂食">
         <h3>守卫犬</h3>
         <BaseButton variant="secondary" :loading="store.updateReads.dog.loading" @click="store.loadUpdate('dog', accountId)">
           读取守卫犬状态
@@ -89,7 +120,13 @@ onBeforeUnmount(() => store.cancelUpdateReads())
         <p v-if="store.updateReads.dog.error" role="alert">{{ store.updateReads.dog.error }}（上次成功结果不会清空）</p>
         <template v-if="dog">
           <p>{{ dog.currentDogName }} · 采集：{{ time(dog.fetchedAt) }} · 待领技能礼包 {{ exactCount(dog.pendingGiftCountDec) }} 份</p>
-          <ul v-if="dog.foodInventoryKnown"><li v-for="food in dog.foods" :key="food.id">{{ food.name }}：{{ exactCount(food.countDec) }}</li></ul>
+          <p v-if="dog.protectionKnown" class="my-2 text-sm font-medium">护卫剩余 {{ duration(dog.protectionSeconds) }} · 容量 {{ duration(dog.capacitySeconds) }}</p>
+          <ul v-if="dog.foodInventoryKnown" class="my-3 grid gap-2 sm:grid-cols-3">
+            <li v-for="food in dog.foods" :key="food.id" class="flex items-center justify-between gap-2 border border-slate-200 rounded-lg p-3 dark:border-slate-700">
+              <span>{{ food.name }}<strong class="ml-1">{{ exactCount(food.countDec) }}</strong></span>
+              <BaseButton size="sm" :disabled="!food.canFeed || store.updateReads.dog.loading" :title="food.canFeed ? '消耗 1 份现有狗粮' : '库存不足、容量不足或当前不可投喂'" @click="prepareFeeding(food, $event)">喂 1 份</BaseButton>
+            </li>
+          </ul>
           <p v-else>{{ dog.inventoryError || '狗粮库存未知' }}</p>
           <p class="update-muted">{{ dog.feedingReason }}</p>
         </template>
@@ -161,6 +198,7 @@ onBeforeUnmount(() => store.cancelUpdateReads())
       </details>
     </div>
   </section>
+  <ConfirmModal :show="!!feeding" title="确认投喂狗粮" :message="`将消耗 1 份${feeding?.name || '狗粮'}。只投喂一次，不购买狗粮；结果未知时停止，不自动重试。`" @confirm="executeFeeding" @close="closeFeeding" @cancel="closeFeeding" />
 </template>
 
 <style scoped>
