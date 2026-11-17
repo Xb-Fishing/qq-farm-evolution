@@ -83,7 +83,7 @@ function noteVisitFailure(trace, phase, count, error, details = {}) {
     const message = business ? (details.fallback ? '好友偷菜被服务端拒绝，已结束本次逐地处理' : '普通好友偷菜被服务端拒绝，本次不再逐地重试')
       : category === 'deferred' ? '好友操作预检查未确认，本次暂缓' : budget ? '好友操作被通信预算暂缓' : '好友操作传输失败，本次停止推进';
     log('好友', message, { module: 'friend', event: 'friend_visit_failure', ...trace,
-      phase, landCount: count, category, serverCodeTag: codeTag, ...details });
+      phase, landCount: count, category, businessFailureTag: codeTag, ...details });
   } catch { /* Observability must not change the operation. */ }
 }
 

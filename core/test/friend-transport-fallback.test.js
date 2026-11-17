@@ -4,11 +4,22 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const temp = fs.realpathSync(os.tmpdir()), repo = path.resolve(__dirname, '../..');
 assert.ok(temp !== repo && !temp.startsWith(repo + path.sep));
 const prefix = path.resolve(temp, 'friend-transport-'); assert.equal(path.dirname(prefix), temp);
-const data = fs.mkdtempSync(prefix); process.env.FARM_DATA_DIR = data;
-const files = ['../src/services/friend-visit.js', '../src/services/friend-api.js'].map(f => path.resolve(__dirname, f));
+const data = fs.mkdtempSync(prefix); assert.equal(fs.realpathSync(data), data);
+const previousEnv = Object.fromEntries(['FARM_DATA_DIR', 'FARM_LOG_DIR', 'FARM_PRIVATE_CONFIG_FILE'].map(key => [key, process.env[key]]));
+process.env.FARM_DATA_DIR = data; delete process.env.FARM_LOG_DIR;
+process.env.FARM_PRIVATE_CONFIG_FILE = path.join(data, 'none.json');
+const files = ['../src/services/friend-visit.js', '../src/services/friend-api.js', '../src/services/logger.js', '../src/services/privacy-guard.js', '../src/config/runtime-paths.js', 'friend-transport-fallback.test.js'].map(f => path.resolve(__dirname, f));
 const fingerprints = () => files.map(f => [fs.statSync(f).mode, crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')]);
 const original = fingerprints();
-test.after(() => { assert.deepEqual(fingerprints(), original); fs.rmSync(data, { recursive: true, force: true }); });
+test.after(() => {
+  try { assert.deepEqual(fingerprints(), original); }
+  finally {
+    fs.rmSync(data, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
 const biz = code => Object.assign(new Error('synthetic refusal'), { isServerBusinessError: true, serverErrorCode: code });
 const transport = kind => Object.assign(new Error('synthetic failure'), kind === 'budget' ? { isGovernedRejection: true, governedReason: 'budget_total' } : kind === 'epoch' ? { code: 'SESSION_EPOCH_RETIRED' } : {});
 function fixture(outcomes = [], flags = {}) {
@@ -105,4 +116,112 @@ test('ordinary friends skip rejected batches and stop short-cycle retries; a lat
     assert.match(messages[0][1], /本次不再逐地重试/); assert.equal(messages[0][2].category, 'business');
     const later = await h.run('visitFriendForSteal'); assert.equal(later.acted, true); assert.equal(h.tally.steal, 3);
   } finally { h.restore(); }
+});
+
+
+test('both visit entries retain stable business tags through real sanitization and isolated logger files', async () => {
+  const { sanitizeMeta } = require('../src/services/logger');
+  const rows = [];
+  for (const mode of ['visitFriend', 'visitFriendForSteal']) {
+    for (const error of [biz(12345), biz('12345'), biz(12346), transport('timeout'), transport('epoch'), transport('budget'),
+      Object.assign(biz(1), { isServerBusinessError: 'true' }), biz(0), biz('0x10'), Object.assign(biz(1), { unknown: true }),
+      Object.assign(biz(1), { isGovernedRejection: true })]) {
+      const h = fixture([error], { priority: false });
+      try {
+        await h.run(mode);
+        assert.deepEqual(h.calls.filter(Array.isArray), [[11, 12, 13]]);
+        const meta = h.logs.find(row => row[2]?.event === 'friend_visit_failure')?.[2];
+        assert.ok(meta);
+        const sanitized = sanitizeMeta(meta);
+        if (meta.category === 'business') {
+          assert.match(sanitized.businessFailureTag, /^[0-9a-f]{12}$/);
+          assert.equal(sanitized.businessFailureTag, meta.businessFailureTag);
+        } else assert.equal(sanitized.businessFailureTag || '', '');
+        assert.equal(Object.hasOwn(meta, 'serverCodeTag'), false);
+        rows.push(meta);
+      } finally { h.restore(); }
+    }
+    const deferred = fixture([], { priority: false, deferred: true });
+    try {
+      await deferred.run(mode);
+      assert.equal(deferred.calls.filter(Array.isArray).length, 0);
+      const meta = deferred.logs.find(row => row[2]?.event === 'friend_visit_failure')?.[2];
+      assert.equal(meta?.category, 'deferred');
+      assert.equal(sanitizeMeta(meta).businessFailureTag, '');
+      rows.push(meta);
+    } finally { deferred.restore(); }
+  }
+  const business = rows.filter(row => row.category === 'business');
+  assert.equal(business.length, 6);
+  assert.equal(business[0].businessFailureTag, business[1].businessFailureTag);
+  assert.equal(business[0].businessFailureTag, business[3].businessFailureTag);
+  assert.equal(business[2].businessFailureTag, business[5].businessFailureTag);
+  assert.notEqual(business[0].businessFailureTag, business[2].businessFailureTag);
+  const sentinel = 'synthetic-sensitive-' + crypto.randomBytes(12).toString('hex');
+  const sensitiveKeys = ['code', 'token', 'password', 'auth', 'secret'];
+  const queryPrefix = '?' + new URLSearchParams({ token: '' }).toString();
+  // secret text follows the real privacy query redactor; other keys use the logger key rule.
+  const sensitive = Object.fromEntries(sensitiveKeys.map(key => [key, key === 'secret' ? queryPrefix + sentinel : sentinel]));
+  const payload = rows.map((row, index) => ({ ...row, diagnosticIndex: index, ...sensitive }));
+  const logData = path.resolve(data, 'real-logger-data');
+  assert.equal(path.dirname(logData), data);
+  fs.mkdirSync(logData, { mode: 0o700 }); assert.equal(fs.realpathSync(logData), logData);
+  const env = { ...process.env, FARM_DATA_DIR: logData, FARM_PRIVATE_CONFIG_FILE: path.join(logData, 'none.json'), LOG_LEVEL: 'info' };
+  delete env.FARM_LOG_DIR; delete env.NODE_OPTIONS; delete env.NODE_TEST_CONTEXT;
+  const childSource = `
+    const fs = require('node:fs'), path = require('node:path');
+    const root = fs.realpathSync(process.env.FARM_DATA_DIR);
+    const logs = path.resolve(root, 'logs');
+    if (path.dirname(logs) !== root) process.exit(2);
+    const { createModuleLogger } = require(process.argv[1]);
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => { input += chunk; });
+    process.stdin.on('end', () => {
+      const rows = JSON.parse(input), logger = createModuleLogger('friend-diagnostic-fixture');
+      for (const row of rows) logger.info('synthetic diagnostic', row);
+      const deadline = Date.now() + 5000;
+      const timer = setInterval(() => {
+        const files = fs.existsSync(logs) ? fs.readdirSync(logs).filter(name => /^combined.*[.]log$/.test(name)) : [];
+        const lines = files.flatMap(name => fs.readFileSync(path.join(logs, name), 'utf8').trim().split('\\n')).filter(Boolean);
+        if (lines.length >= rows.length) { clearInterval(timer); process.exit(0); }
+        if (Date.now() >= deadline) { clearInterval(timer); process.exit(3); }
+      }, 25);
+    });
+  `;
+  const { spawn } = require('node:child_process');
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', childSource, path.resolve(__dirname, '../src/services/logger.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let text = '';
+    const timer = setTimeout(() => { child.kill(); reject(Error('isolated logger timed out')); }, 8000);
+    child.stdout.on('data', chunk => { text += chunk; }); child.stderr.on('data', chunk => { text += chunk; });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => { clearTimeout(timer); if (code !== 0) reject(Error(`isolated logger exit ${code}`)); else resolve(text); });
+    child.stdin.end(JSON.stringify(payload));
+  });
+  assert.equal(output.includes(sentinel), false, 'console must redact sensitive values');
+  const logDir = path.resolve(logData, 'logs'); assert.equal(fs.realpathSync(logDir), logDir);
+  const contents = fs.readdirSync(logDir).filter(name => /^combined.*[.]log$/.test(name)).map(name => fs.readFileSync(path.join(logDir, name), 'utf8')).join('');
+  assert.equal(contents.includes(sentinel), false, 'files must redact sensitive values');
+  const persisted = contents.trim().split('\n').map(line => JSON.parse(line)).map(row => row.meta || row).sort((a, b) => a.diagnosticIndex - b.diagnosticIndex);
+  assert.equal(persisted.length, payload.length);
+  for (let index = 0; index < persisted.length; index++) {
+    const row = persisted[index];
+    assert.equal(row.businessFailureTag, rows[index].businessFailureTag);
+    for (const key of sensitiveKeys.filter(key => key !== 'secret')) assert.equal(row[key], '[REDACTED]');
+    assert.equal(row.secret, queryPrefix + '[REDACTED]');
+  }
+});
+
+test('diagnostic map caps distinct business keys at 128 and expires them after 60 seconds', async () => {
+  const h = fixture(Array.from({ length: 130 }, (_, index) => biz(20000 + index)), { priority: false });
+  const originalNow = Date.now; let now = originalNow(); Date.now = () => now;
+  try {
+    for (let index = 0; index < 129; index++) await h.run('visitFriend');
+    assert.equal(h.logs.filter(row => row[2]?.event === 'friend_visit_failure').length, 128);
+    assert.equal(h.calls.filter(Array.isArray).length, 129);
+    now += 60000; await h.run('visitFriend');
+    assert.equal(h.logs.filter(row => row[2]?.event === 'friend_visit_failure').length, 129);
+    assert.equal(h.calls.filter(Array.isArray).length, 130);
+  } finally { Date.now = originalNow; h.restore(); }
 });
