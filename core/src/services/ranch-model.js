@@ -110,11 +110,11 @@ function shopCards(raw, nowMs) {
         const bought = BigInt(decimal(row.bought_num)); const limit = BigInt(decimal(row.limit_count));
         const remaining = limit === 0n ? null : (limit > bought ? limit - bought : 0n).toString();
         const now = BigInt(Math.floor(nowMs / 1000));
-        const start = BigInt(decimal(row.discount_start_time)); const end = BigInt(decimal(row.discount_end_time));
+        const start = BigInt(signedMetadata(row.discount_start_time, '折扣开始时间')); const end = BigInt(signedMetadata(row.discount_end_time, '折扣结束时间'));
         const discount = start > 0n && start <= now && now < end;
         const price = valid ? itemDto({ id: config.price_id, count: discount ? row.discount_price : row.price }) : null;
         const reward = itemDto({ id: itemId, count: row.item_count });
-        const expired = row.is_display_countdown === true && BigInt(decimal(row.end_time)) <= now;
+        const expired = row.is_display_countdown === true && BigInt(signedMetadata(row.end_time, '商品结束时间')) <= now;
         return { id, reward, price, animal: cubs.get(itemId) || null, maxCount: config?.one_buy_count || 0, remaining,
             available: valid && row.unlocked === true && row.owned !== true && !expired && reward.count !== '0' && remaining !== '0',
             requiredLevel: (row.conds || []).find(cond => cond.type === 3)?.param?.toString() || null };

@@ -176,3 +176,15 @@ test('signed item-instance identifiers and unset timers do not become inventory 
     raw.bag.physical_items[0].count = '5';raw.cells.facilities[0].upgrade_end_time = '-2';
     assert.throws(() => model.normalizeState(raw, NOW), /设施升级时间必须是非负整数/);
 });
+
+test('shop zero timestamps are not quantities or active free discounts', () => {
+    const raw = fixture(), goods = raw.shop.goods_list[0];
+    goods.discount_start_time = '-62135596800'; goods.discount_end_time = '-62135596800'; goods.discount_price = '0';
+    assert.equal(model.normalizeState(raw, NOW).shop.goods[0].price.count, '10');
+    assert.equal(model.planAction('buy', { shopId: '5', goodsId: '10002', count: 2 }, raw, NOW).costItems[0].count, '20');
+    goods.discount_start_time = String(Math.floor(NOW / 1000) - 10); goods.discount_end_time = String(Math.floor(NOW / 1000) + 10); goods.discount_price = '3';
+    assert.equal(model.planAction('buy', { shopId: '5', goodsId: '10002', count: 2 }, raw, NOW).costItems[0].count, '6');
+    goods.discount_price = '-1';assert.throws(() => model.normalizeState(raw, NOW), /物品数量必须是非负整数/);
+    goods.discount_price = '3';goods.is_display_countdown = true;goods.end_time = '-62135596800';
+    assert.equal(model.normalizeState(raw, NOW).shop.goods[0].available, false);
+});
