@@ -297,8 +297,9 @@ test('更新交接的新 Code 启动时只消费一次，不再申请另一个 C
   const file = path.join(directory, `${nonce}.json`);
   const accounts = store.getAccounts().accounts;
   const account = accounts.find(a => String(a.id) === id);
+  const createdAt = Date.now();
   fs.writeFileSync(file, JSON.stringify({ version: 1, nonce, targetCommit, oldPid: 123, oldStartTicks: '456',
-    createdAt: Date.now(), expiresAt: Date.now() + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
+    createdAt, expiresAt: createdAt + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
     accounts: [{ accountId: id, accountStamp: accountStamp(account, store.isAccountAutoLogin), code: 'prepared-one-use-code', generation: 1 }],
   }), { mode: 0o600 });
   const env = { ...process.env, FARM_WX_RESTART_HANDOFF_FILE: file,
@@ -330,8 +331,9 @@ test('等待凭据锁期间新扫码、暂停或过期，旧交接 Code 不得�
     const account = accounts.find(a => String(a.id) === id);
     const nonce = `fixture-lock-${change}-handoff`;
     const file = path.join(directory, `${nonce}.json`);
+    const createdAt = Date.now();
     fs.writeFileSync(file, JSON.stringify({ version: 1, nonce, targetCommit: commit, oldPid: 123, oldStartTicks: '456',
-      createdAt: Date.now(), expiresAt: Date.now() + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
+      createdAt, expiresAt: createdAt + 90000, accountsStamp: wxAccountsStamp(accounts, store.isAccountAutoLogin),
       accounts: [{ accountId: id, accountStamp: accountStamp(account, store.isAccountAutoLogin), code: 'stale-prepared-code', generation: 1 }],
     }), { mode: 0o600 });
     let unlock; let entered;

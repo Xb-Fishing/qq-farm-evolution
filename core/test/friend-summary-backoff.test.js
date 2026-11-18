@@ -153,7 +153,7 @@ function makeHarness(t, options = {}) {
   const activity = new Proxy({ noteEnterPresence: () => ({ onlineEdge: false }), resolveFriendDisplayName: (_gid, name) => name },
     { get: (obj, key) => obj[key] || (() => false) });
   const limits = {
-    checkDailyReset: () => {}, canOperate: () => state.canOperate, canOperateBad: () => false,
+    checkDailyReset: () => {}, canOperate: options.canOperate || (() => state.canOperate), canOperateBad: () => false,
     getCanGetHelpExp: () => true, getHelpAutoDisabledByLimit: () => false, updateOperationLimits: () => {},
     getRemainingTimes: () => state.canOperate ? 99 : 0, getBadRemainingTimes: () => 99,
     canGetExpByCandidates: () => true, setCanGetHelpExp: () => {},
@@ -539,15 +539,44 @@ test('own last-ten-second protection and real unified pause prevent new friend r
   assert.equal(h.state.composites.length, 0); assert.equal(h.state.visits.length, 0);
 });
 
-test('existing quiet-hour help protection retains explicit steal path and quotas', async t => {
-  const h = makeHarness(t); h.state.canOperate = false;
+test('a local communication budget rejection on entry sends no harvest request', async t => {
+  const h = makeHarness(t); h.state.enterMode = 'budget';
   seed(h, [dueFriend(81001, 0, { steal_plant_num: 1 })]);
   await h.orchestrator.checkFriends({ onlySteal: true });
-  assert.equal(h.state.visits.length, 0, 'quota guard precedes cache visit');
-  h.state.canOperate = true; h.state.enterMode = 'budget';
-  await h.orchestrator.checkFriends({ onlySteal: true });
-  assert.equal(h.state.visits.length, 1, 'due target still dispatches during active summary gate');
+  assert.equal(h.state.visits.length, 1);
+  assert.deepEqual(h.state.harvests, []);
 });
+
+for (const pathKind of ['summary', 'cached', 'watch', 'server-denied']) {
+  test(`insect limit exhausted: ${pathKind} harvest eligibility`, async t => {
+    const limits = require('../src/services/friend-operation-limits');
+    const h = makeHarness(t, { canOperate: limits.canOperate });
+    const gid = 81001;
+    const op = limits.PUT_BUG_OPERATION_ID;
+    limits.updateOperationLimits([{ id: op, day_times: 100, day_times_lt: 100 }]);
+    assert.equal(limits.canOperate(op), false);
+    h.state.remoteCan = pathKind !== 'server-denied';
+    const lands = [1, 2, 3].map(id => ({ id, plant: { id: 1, stealable: true, phases: [{ phase: 4 }] } }));
+    h.state.enterGate = { promise: Promise.resolve({ lands }) };
+    h.state.analyzer = { stealable: [1, 2, 3], stealableInfo: lands.map(({ id }) => ({ landId: id, name: '合成果实' })) };
+    const friend = dueFriend(gid, 0, { steal_plant_num: 3 });
+    if (pathKind === 'watch') {
+      h.watch.watchFriend(gid, friend.name, { now: h.clock.now, ripeAt: h.clock.now + 1000, mode: 'prearm' });
+      h.clock.now = h.watch.getNextWatchDueAt();
+    } else if (pathKind === 'cached') {
+      seed(h, [friend]);
+    } else {
+      h.state.summaryMode = 'success';
+      h.state.friends = [friend];
+    }
+    await h.orchestrator.checkFriends({ onlySteal: true });
+    assert.deepEqual(h.state.visits.map(v => v.gid), [gid]);
+    assert.equal(h.state.attempts.filter(a => a.method === 'CheckCanOperate').length, 1);
+    // The fixture server grants two of three eligible plots, or explicitly denies the visit.
+    assert.deepEqual(h.state.harvests.map(v => [...v.lands]), h.state.remoteCan ? [[1, 2]] : []);
+    assert.equal(limits.canOperate(op), false);
+  });
+}
 
 test('valid pre-enter reply is reused once and actual CheckCanOperate/batch per-land fallback preserved', async t => {
   const h = makeHarness(t); h.state.priorities = [81001]; h.watch.setPriorityGids([81001]); const now = h.clock.now;
