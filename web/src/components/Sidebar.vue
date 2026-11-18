@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Card } from '@/stores/user'
-import { useDateFormat, useIntervalFn, useNow } from '@vueuse/core'
+import { useDateFormat, useIntervalFn, useNow, useStorage } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -30,9 +30,15 @@ const { mysteryOffer, mysteryOfferAccountId } = storeToRefs(shopStore)
 const { loginPageConfig, sidebarOpen } = storeToRefs(appStore)
 
 const wsErrorNotifiedAt = ref<Record<string, number>>({})
-const hasUnadaptedActivities = ref(false)
-const unadaptedActivityIds = ref<number[]>([])
-const notifiedActivitySignature = ref('')
+const reminderOwner = computed(() => userStore.isAdmin ? userStore.username : '')
+const readActivityIds = useStorage<number[]>(() => `activity-read-ids:${reminderOwner.value}`, [], undefined, { writeDefaults: false, flush: 'sync' })
+const candidateIds = ref<number[]>([])
+const unreadActivityIds = computed(() => {
+  const read = new Set(Array.isArray(readActivityIds.value) ? readActivityIds.value : [])
+  return candidateIds.value.filter(id => !read.has(id))
+})
+let reminderRequest = 0
+let receivedReport = false
 const brandLogoFailed = ref(false)
 
 const systemConnected = ref(true)
@@ -85,30 +91,47 @@ async function refreshStatusFallback() {
   }
 }
 
-async function refreshActivityUpdateReminder() {
-  if (!userStore.isAdmin) {
-    hasUnadaptedActivities.value = false
-    return
-  }
-  try {
-    const { data } = await api.get('/api/activity/update/status')
-    const ids = Array.isArray(data?.report?.unknownActivityIds)
-      ? data.report.unknownActivityIds.map(Number).filter((id: number) => id > 0).sort((a: number, b: number) => a - b)
-      : []
-    unadaptedActivityIds.value = ids
-    hasUnadaptedActivities.value = ids.length > 0
-    const signature = ids.join(',')
-    if (signature && signature !== notifiedActivitySignature.value) {
-      notifiedActivitySignature.value = signature
-      const groups = Array.isArray(data?.report?.online?.groups) ? data.report.online.groups : []
-      const titles = [...new Set(groups.map((item: any) => String(item?.title || '').trim()).filter(Boolean))]
-      toast.warning(`发现未适配活动：${titles.join('、') || `${ids.length} 个活动组`}`, 8000)
-    }
-  }
-  catch {
-    // 提醒查询失败不影响侧边栏及其他后台功能。
+function markActivitiesRead() {
+  if (route.path === '/activity' && reminderOwner.value && unreadActivityIds.value.length) {
+    const prior = Array.isArray(readActivityIds.value) ? readActivityIds.value : []
+    readActivityIds.value = [...prior, ...unreadActivityIds.value]
   }
 }
+
+async function refreshActivityUpdateReminder() {
+  const owner = reminderOwner.value
+  if (!owner)
+    return
+  const request = ++reminderRequest
+  try {
+    const { data } = await api.get('/api/activity/update/status')
+    if (request !== reminderRequest || owner !== reminderOwner.value || data?.ok !== true
+      || !Array.isArray(data.report?.unknownActivityIds) || data.report?.online?.available === false) {
+      return
+    }
+    const reviewed = new Set<number>(Array.isArray(data.reviewedActivityIds) ? data.reviewedActivityIds.map(Number) : [])
+    const ids = [...new Set<number>(data.report.unknownActivityIds.map(Number))]
+      .filter(id => Number.isSafeInteger(id) && id > 0 && !reviewed.has(id))
+    const previous = new Set(candidateIds.value)
+    candidateIds.value = ids
+    markActivitiesRead()
+    const added = unreadActivityIds.value.filter(id => !previous.has(id))
+    if (receivedReport && added.length)
+      toast.warning(`新增 ${added.length} 个活动候选节点`, 8000)
+    receivedReport = true
+  }
+  catch {
+    // Keep the last successful report when polling fails.
+  }
+}
+
+watch(reminderOwner, () => {
+  reminderRequest++
+  receivedReport = false
+  candidateIds.value = []
+  void refreshActivityUpdateReminder()
+}, { immediate: true, flush: 'sync' })
+watch(() => route.path, markActivitiesRead)
 
 onMounted(() => {
   appStore.fetchLoginPageConfig()
@@ -118,7 +141,6 @@ onMounted(() => {
   userStore.fetchUserInfo()
   // 获取公告（普通用户）
   fetchAnnouncement()
-  refreshActivityUpdateReminder()
 })
 
 watch(() => loginPageConfig.value.logoUrl, () => {
@@ -126,6 +148,7 @@ watch(() => loginPageConfig.value.logoUrl, () => {
 })
 
 onBeforeUnmount(() => {
+  reminderRequest++
   statusStore.disconnectRealtime()
 })
 
@@ -584,9 +607,9 @@ async function copyToken() {
           title="神秘商人已出现"
         />
         <span
-          v-if="item.path === '/activity' && hasUnadaptedActivities"
+          v-if="item.path === '/activity' && unreadActivityIds.length"
           class="h-2 w-2 shrink-0 rounded-full bg-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]"
-          :title="`发现 ${unadaptedActivityIds.length} 个未适配活动`"
+          :title="`${unreadActivityIds.length} 个未读活动候选节点`"
         />
       </router-link>
     </nav>

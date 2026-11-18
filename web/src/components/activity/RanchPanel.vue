@@ -111,7 +111,11 @@ defineExpose({ refresh })
         刷新牧场
       </BaseButton>
     </header>
-    <RanchAutomationSettings :automation="ranch.automation" :state="ranch.state" :saving="ranch.savingAutomation" @save="ranch.saveAutomation" />
+    <RanchAutomationSettings
+      :key="accountId" :automation="ranch.automation" :state="ranch.optionState" :shops="ranch.optionShops"
+      :loading="ranch.loadingOptions" :policy-error="ranch.error" :options-error="ranch.optionError" :saving="ranch.savingAutomation"
+      @load="ranch.loadOptions" @retry-policy="ranch.loadAutomation" @save="ranch.saveAutomation"
+    />
     <nav class="my-4 flex flex-wrap gap-2" aria-label="牧场功能">
       <BaseButton v-for="tab in [{ id: 'animals', name: '动物与库存' }, { id: 'shop', name: '幼崽与饲料商店' }, { id: 'tasks', name: '牧场任务' }]" :key="tab.id" :variant="ranch.view === tab.id ? 'primary' : 'secondary'" :disabled="ranch.operating || ranch.preparing" @click="refresh(tab.id)">
         {{ tab.name }}

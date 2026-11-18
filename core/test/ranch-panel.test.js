@@ -74,3 +74,54 @@ test('placement selector visibly uses the same eligible default and edited desti
   h.click(button(f.root, '放养')); await h.flush();
   assert.equal(f.posts[0].body.input.ranchId, '12'); assert.equal(f.posts[0].url, '/api/ranch/prepare');
 });
+
+test('automation opens the correct shop itself, joins inventory stacks and keeps future placement separate from buying', async () => {
+  const f = fixture(); await h.flush();
+  const calls = [];
+  const room = (id, type, active) => ({ id, name: '栏舍' + id, active, ranch: { husbandryType: type, count: 3, capacity: 3, animals: [], shelves: [], hazards: [] } });
+  const cub = (id, count, locked = false) => ({ id, name: id === '60001' ? '鸡幼崽' : '鸭幼崽', count, locked, husbandryType: 1 });
+  const stock = { ...state(), facilities: [room('11', 1, true), room('12', 2, true), room('13', 1, false)],
+    currencies: [{ id: '1007', name: '金券', available: '45' }, { id: '1005', name: '金豆豆', available: '7' }],
+    cubs: [cub('60001', '2'), cub('60001', '1'), cub('60001', '9', true)] };
+  const card = (id, item, name, price, animal) => ({ id, available: true, reward: { id: item, name }, price: { id: price, name: '货币', count: '3' }, animal });
+  f.read(async (_url, config) => {
+    const { view, shopId } = config.params; calls.push([view, shopId]);
+    const goods = shopId === '5' ? [card('71', '60002', '鸭幼崽', '1007', { husbandry_type: '窝' })] : [card('81', '7001', '牧草', '1005', null)];
+    return { data: { ok: true, data: { ...stock, shop: view === 'shop' ? { shopId, goods } : null } } };
+  });
+  await f.store.refresh(); await h.flush();
+  const form = () => h.findAll(f.root, n => n.tag === 'form')[0];
+  const select = label => h.findAll(h.findAll(form(), n => n.tag === 'label' && h.textOf(n).trim().startsWith(label))[0], n => n.tag === 'select')[0];
+  h.findAll(f.root, n => n.tag === 'details')[0].props.onToggle({ currentTarget: { open: true } });
+  await h.flush();
+  assert.deepEqual(calls, [['animals', '5'], ['shop', '5']]); assert.equal(f.store.view, 'animals');
+  assert.match(h.textOf(select('放养幼崽')), /鸡幼崽 · 可用 3/);
+  assert.match(h.textOf(select('放养幼崽')), /鸭幼崽 · 可用 0（补货后放养）/);
+  select('放养幼崽').props.onChange({ target: { value: '60002' } }); await h.flush();
+  assert.match(h.textOf(select('栏舍')), /栏舍11 · 3\/3（已满）/);
+  assert.doesNotMatch(h.textOf(select('栏舍')), /栏舍12|栏舍13/);
+  select('栏舍').props['onUpdate:modelValue']('11');
+  select('商店').props.onChange({ target: { value: '6' } }); await h.flush();
+  assert.match(h.textOf(select('商品')), /牧草/); assert.doesNotMatch(h.textOf(select('商品')), /鸭幼崽/);
+  select('商品').props.onChange({ target: { value: '81' } }); await h.flush();
+  assert.equal(f.posts.length, 0);
+  form().props.onSubmit({ preventDefault() {} }); await h.flush();
+  assert.deepEqual(f.posts.map(p => p.url), ['/api/ranch/automation']);
+  const { cubId, ranchId, shopId, goodsId, currencyId, buyEnabled } = f.posts[0].body;
+  assert.deepEqual({ cubId, ranchId, shopId, goodsId, currencyId, buyEnabled }, { cubId: '60002', ranchId: '11', shopId: '6', goodsId: '81', currencyId: '1005', buyEnabled: false });
+});
+
+test('catalogue failures are retryable and a previous account cannot populate current choices', async () => {
+  const f = fixture(); await h.flush();
+  const pending = h.deferred();
+  f.read(async () => pending.promise);
+  const loading = f.store.loadOptions('5'); await h.flush();
+  f.read(async () => ({ data: { ok: true, data: state() } })); f.mount('account-b'); await h.flush();
+  pending.resolve({ data: { ok: true, data: { ...state(), shop: { shopId: '5', goods: [{ id: 'old' }] } } } });
+  await loading; assert.deepEqual(Object.keys(f.store.optionShops), []);
+  f.read(async () => { throw new Error('牧场暂忙'); }); await f.store.loadOptions('5');
+  assert.match(f.store.optionError, /牧场暂忙/); assert.equal(f.store.loadingOptions, false);
+  f.read(async () => ({ data: { ok: true, data: { ...state(), shop: { shopId: '5', goods: [] } } } }));
+  await f.store.loadOptions('5', true); assert.equal(f.store.optionError, ''); assert.deepEqual(f.store.optionShops['5'].goods, []);
+  assert.equal(f.posts.length, 0);
+});

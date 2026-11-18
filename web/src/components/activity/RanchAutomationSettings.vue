@@ -1,18 +1,61 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 
-const props = defineProps<{ automation: any, state: any, saving: boolean }>()
-const emit = defineEmits<{ save: [policy: Record<string, any>] }>()
+const props = defineProps<{ automation: any, state: any, shops: Record<string, any>, loading: boolean, optionsError: string, saving: boolean, policyError: string }>()
+const emit = defineEmits<{ save: [policy: Record<string, any>], retryPolicy: [], load: [shopId: string, force?: boolean] }>()
 const draft = ref<Record<string, any>>({})
 watch(() => props.automation, (value) => {
   draft.value = value ? { ...value.policy } : {}
 }, { immediate: true })
+const opened = ref(false)
+watch([opened, () => draft.value.shopId], ([open, id]) => {
+  if (open && id)
+    emit('load', String(id))
+})
+const cubChoices = computed(() => {
+  const choices = new Map<string, { id: string, name: string, type: number, count: bigint, sold: boolean }>()
+  for (const cub of props.state?.cubs || []) {
+    const row = choices.get(cub.id) || { id: cub.id, name: cub.name, type: cub.husbandryType, count: 0n, sold: false }
+    if (!cub.locked)
+      row.count += BigInt(cub.count)
+    choices.set(row.id, row)
+  }
+  for (const good of props.shops['5']?.goods || []) {
+    if (!good.available || !good.animal || !good.reward)
+      continue
+    const id = String(good.reward.id)
+    const row = choices.get(id) || { id, name: good.reward.name, type: good.animal.husbandry_type === '窝' ? 1 : 2, count: 0n, sold: false }
+    row.sold = true
+    choices.set(id, row)
+  }
+  return [...choices.values()].filter(row => row.count > 0n || row.sold)
+})
+const selectedCub = computed(() => cubChoices.value.find(row => row.id === draft.value.cubId))
+const rooms = computed(() => (props.state?.facilities || []).filter((row: any) =>
+  row.active && row.ranch && (!selectedCub.value || row.ranch.husbandryType === selectedCub.value.type)))
+const catalogue = computed(() => props.shops[draft.value.shopId]?.goods)
+const goods = computed(() => (catalogue.value || []).filter((row: any) => row.available && row.price))
+const selectedGood = computed(() => goods.value.find((row: any) => row.id === draft.value.goodsId))
+function changeCub(id: string) {
+  draft.value.cubId = id
+  if (!rooms.value.some((row: any) => row.id === draft.value.ranchId))
+    draft.value.ranchId = ''
+}
+function changeShop(id: string) {
+  draft.value.shopId = id
+  draft.value.goodsId = ''
+}
+function changeGood(id: string) {
+  draft.value.goodsId = id
+  if (selectedGood.value)
+    draft.value.currencyId = selectedGood.value.price.id
+}
 const freeActions = [{ key: 'harvest', name: '自动收获' }, { key: 'produce', name: '自动生产' }, { key: 'clean', name: '自动清理' }, { key: 'tasks', name: '领取普通任务奖励' }]
 </script>
 
 <template>
-  <details class="my-4 border border-gray-200 rounded-lg p-3 dark:border-gray-700">
+  <details class="my-4 border border-gray-200 rounded-lg p-3 dark:border-gray-700" @toggle="opened = ($event.currentTarget as HTMLDetailsElement).open">
     <summary class="cursor-pointer font-medium">
       牧场自动化 · {{ automation?.policy?.enabled ? '已启用' : '未启用' }}
     </summary>
@@ -30,26 +73,57 @@ const freeActions = [{ key: 'harvest', name: '自动收获' }, { key: 'produce',
       </fieldset>
       <fieldset class="border rounded p-3 space-y-2">
         <legend><label><input v-model="draft.placeEnabled" type="checkbox">使用库存自动放养</label></legend>
-        <label class="block">幼崽 <select v-model="draft.cubId"><option value="">请选择库存幼崽</option><option v-if="draft.cubId && !state?.cubs?.some((x: any) => x.id === draft.cubId)" :value="draft.cubId">已保存的幼崽（当前无库存）</option><option v-for="cub in state?.cubs || []" :key="`${cub.id}:${cub.uid}`" :value="cub.id">{{ cub.name }}</option></select></label>
-        <label class="block">栏舍 <select v-model="draft.ranchId"><option value="">请选择栏舍</option><option v-for="facility in (state?.facilities || []).filter((x: any) => x.ranch)" :key="facility.id" :value="facility.id">{{ facility.name }}</option></select></label>
+        <label class="block">放养幼崽
+          <select :value="draft.cubId" @change="changeCub(($event.target as HTMLSelectElement).value)">
+            <option value="">{{ cubChoices.length ? '选择幼崽' : (loading ? '正在读取幼崽…' : state ? '暂无可选幼崽' : '库存尚未读到') }}</option>
+            <option v-if="draft.cubId && !selectedCub" :value="draft.cubId">已保存的幼崽（当前不可用）</option>
+            <option v-for="cub in cubChoices" :key="cub.id" :value="cub.id">{{ cub.name }} · 可用 {{ cub.count }}{{ cub.count === 0n ? '（补货后放养）' : '' }}</option>
+          </select>
+        </label>
+        <p v-if="state && !cubChoices.some(cub => cub.count > 0n)" class="text-xs">
+          背包没有可放养的幼崽。可先选已解锁的商店幼崽，有库存和空位后才会放养。
+        </p>
+        <label class="block">栏舍
+          <select v-model="draft.ranchId">
+            <option value="">{{ rooms.length ? '选择栏舍' : state ? '没有匹配的已启用栏舍' : '栏舍尚未读到' }}</option>
+            <option v-if="draft.ranchId && !rooms.some((room: any) => room.id === draft.ranchId)" :value="draft.ranchId">已保存的栏舍（当前不可用）</option>
+            <option v-for="room in rooms" :key="room.id" :value="room.id">{{ room.name }} · {{ room.ranch.count }}/{{ room.ranch.capacity }}{{ room.ranch.count >= room.ranch.capacity ? '（已满）' : '' }}</option>
+          </select>
+        </label>
         <label class="block">每日最多放养 <input v-model.number="draft.cubDailyLimit" type="number" min="0" max="1000000000" required></label>
         <label class="block">至少保留幼崽 <input v-model.number="draft.cubReserve" type="number" min="0" max="1000000000" required></label>
       </fieldset>
       <fieldset class="border rounded p-3 space-y-2">
         <legend><label><input v-model="draft.buyEnabled" type="checkbox">自动购买指定商品</label></legend>
-        <p>先打开下方商店，查看商品及费用，再选择购买目标。</p>
-        <label class="block">商店 <select v-model="draft.shopId"><option value="5">幼崽商店</option><option value="6">饲料商店</option></select></label>
-        <label class="block">商品 <select v-model="draft.goodsId"><option value="">请选择商品</option><option v-if="draft.goodsId && !state?.shop?.goods?.some((x: any) => x.id === draft.goodsId)" :value="draft.goodsId">已保存的商品</option><option v-for="good in state?.shop?.shopId === draft.shopId ? state.shop.goods : []" :key="good.id" :value="good.id">{{ good.reward.name }} · {{ good.price?.name }} {{ good.price?.count }}</option></select></label>
+        <label class="block">商店 <select :value="draft.shopId" @change="changeShop(($event.target as HTMLSelectElement).value)"><option value="5">幼崽商店</option><option value="6">饲料商店</option></select></label>
+        <label class="block">商品
+          <select :value="draft.goodsId" @change="changeGood(($event.target as HTMLSelectElement).value)">
+            <option value="">{{ goods.length ? '选择商品' : loading ? '正在读取商品…' : catalogue ? '当前没有可购商品' : '商店尚未读到' }}</option>
+            <option v-if="draft.goodsId && !selectedGood" :value="draft.goodsId">已保存的商品（当前不可用）</option>
+            <option v-for="good in goods" :key="good.id" :value="good.id">{{ good.reward.name }} · {{ good.price.name }} × {{ good.price.count }}</option>
+          </select>
+        </label>
         <label class="block">单次购买数量 <input v-model.number="draft.purchaseCount" type="number" min="1" max="99" required></label>
-        <label class="block">允许消耗的货币 <select v-model="draft.currencyId"><option v-for="coin in state?.currencies || []" :key="coin.id" :value="coin.id">{{ coin.name }}</option></select></label>
+        <label class="block">允许消耗的货币 <select v-model="draft.currencyId"><option v-if="!state?.currencies?.length" :value="draft.currencyId">余额尚未读到</option><option v-for="coin in state?.currencies || []" :key="coin.id" :value="coin.id" :disabled="!!selectedGood && coin.id !== selectedGood.price.id">{{ coin.name }} · 可用 {{ coin.available }}</option></select></label>
         <label class="block">每日最多花费 <input v-model.number="draft.currencyDailyLimit" type="number" min="0" max="1000000000" required></label>
         <label class="block">至少保留货币 <input v-model.number="draft.currencyReserve" type="number" min="0" max="1000000000" required></label>
       </fieldset>
+      <div class="flex flex-wrap items-center gap-2">
+        <BaseButton type="button" variant="secondary" :loading="loading" @click="emit('load', String(draft.shopId), true)">
+          刷新库存和商店
+        </BaseButton>
+        <span v-if="optionsError" role="alert">{{ optionsError }}</span>
+      </div>
       <p>每日额度按北京时间零点重置。未知结果仍暂停，不会因换日重试。</p>
       <BaseButton type="submit" :loading="saving">
         保存牧场自动化
       </BaseButton>
     </form>
+    <p v-else-if="policyError && !saving" role="alert" class="mt-3 text-sm">
+      {{ policyError }} <BaseButton variant="secondary" @click="emit('retryPolicy')">
+        重新读取自动化设置
+      </BaseButton>
+    </p>
     <p v-else class="mt-3 text-sm">
       正在读取该账号的自动化设置。
     </p>

@@ -17,6 +17,12 @@ export const useRanchStore = defineStore('ranch', () => {
   const result = ref<any>(null)
   const automation = ref<any>(null)
   const savingAutomation = ref(false)
+  const optionState = ref<any>(null)
+  const optionShops = ref<Record<string, any>>({})
+  const optionError = ref('')
+  const loadingOptions = ref(false)
+  const reads = new Map<string, Promise<any>>()
+  let optionsSequence = 0
   const uncertain = computed(() => ['pending', 'unknown', 'partial'].includes(result.value?.outcome || ''))
   const blocked = computed(() => !state.value || readError.value || loading.value || preparing.value || operating.value || uncertain.value || !!state.value?.sceneRecoveryRequired)
   let generation = 0
@@ -27,6 +33,9 @@ export const useRanchStore = defineStore('ranch', () => {
   function cancel() {
     generation++
     confirmationSequence++
+    optionsSequence++
+    reads.clear()
+    loadingOptions.value = false
     for (const controller of controllers) controller.abort()
     controllers.clear()
     quote.value = null
@@ -39,6 +48,9 @@ export const useRanchStore = defineStore('ranch', () => {
     cancel()
     accountId.value = String(id || '')
     state.value = null
+    optionState.value = null
+    optionShops.value = {}
+    optionError.value = ''
     automation.value = null
     readError.value = false
     error.value = ''
@@ -101,6 +113,68 @@ export const useRanchStore = defineStore('ranch', () => {
         savingAutomation.value = false
     }
   }
+  function rememberOptions(snapshot: any) {
+    if (!snapshot || snapshot.sceneRecoveryRequired)
+      return
+    if (!optionState.value || Number(snapshot.serverTime ?? 0) >= Number(optionState.value.serverTime ?? 0))
+      optionState.value = snapshot
+    const shop = snapshot.shop
+    if (shop && Array.isArray(shop.goods))
+      optionShops.value = { ...optionShops.value, [shop.shopId]: { ...shop, fetchedAt: Date.now() } }
+  }
+  function readSnapshot(id: string, token: number, view: string, shopId: string) {
+    const key = `${view}:${shopId}`
+    const pending = reads.get(key)
+    if (pending)
+      return pending
+    const request = requestConfig(id, token)
+    const task = api.get('/api/ranch/state', { ...request.config, params: { view, shopId } })
+      .then(({ data }) => {
+        if (data?.ok !== true || !data.data)
+          throw Object.assign(new Error(data?.error || '牧场数据未能读取'), { response: { data } })
+        if (generation === token)
+          rememberOptions(data.data)
+        return data.data
+      })
+      .finally(() => {
+        controllers.delete(request.controller)
+        if (reads.get(key) === task)
+          reads.delete(key)
+      })
+    reads.set(key, task)
+    return task
+  }
+  async function loadOptions(selectedShop: string, force = false) {
+    if (!accountId.value || !['5', '6'].includes(selectedShop))
+      return
+    const id = accountId.value
+    const token = generation
+    const sequence = ++optionsSequence
+    const current = () => token === generation && sequence === optionsSequence
+    loadingOptions.value = true
+    optionError.value = ''
+    try {
+      // Finish the active scene read before asking for another shop.
+      await Promise.allSettled([...reads.values()])
+      for (const shop of new Set([selectedShop, '5'])) {
+        if (!current())
+          return
+        if (!force && Date.now() - (optionShops.value[shop]?.fetchedAt ?? 0) < 60000)
+          continue
+        const state = await readSnapshot(id, token, 'shop', shop)
+        if (state.sceneRecoveryRequired || String(state.shop?.shopId) !== shop)
+          throw new Error('该商店尚未读到，请稍后刷新选项')
+      }
+    }
+    catch (e: any) {
+      if (current() && e?.code !== 'ERR_CANCELED')
+        optionError.value = e?.response?.data?.error || e?.message || '选项暂时无法读取'
+    }
+    finally {
+      if (current())
+        loadingOptions.value = false
+    }
+  }
   async function refresh(nextView = view.value, nextShop = shopId.value) {
     const id = accountId.value
     if (!id || operating.value)
@@ -114,16 +188,13 @@ export const useRanchStore = defineStore('ranch', () => {
     loading.value = true
     error.value = ''
     errorCode.value = ''
-    const request = requestConfig(id, token)
     try {
-      const { data } = await api.get('/api/ranch/state', { ...request.config, params: { view: nextView, shopId: nextShop } })
+      const snapshot = await readSnapshot(id, token, nextView, nextShop)
       if (generation !== token || sequence !== readSequence)
         return false
-      if (data?.ok !== true)
-        throw Object.assign(new Error(data?.error || '牧场数据未能读取'), { response: { data } })
-      state.value = data.data
+      state.value = snapshot
       readError.value = false
-      result.value = data.data.lastOperation || null
+      result.value = snapshot.lastOperation || null
       outcomes.set(id, result.value)
       return true
     }
@@ -135,7 +206,6 @@ export const useRanchStore = defineStore('ranch', () => {
       return false
     }
     finally {
-      controllers.delete(request.controller)
       if (generation === token && sequence === readSequence)
         loading.value = false
     }
@@ -196,8 +266,10 @@ export const useRanchStore = defineStore('ranch', () => {
       if (generation !== token)
         return false
       result.value = data.data
-      if (data.data.snapshot)
+      if (data.data.snapshot) {
         state.value = { ...data.data.snapshot, lastOperation: data.data, sceneRecoveryRequired: data.data.sceneRecoveryRequired }
+        rememberOptions(state.value)
+      }
       return data.data.outcome === 'confirmed'
     }
     catch (e: any) {
@@ -245,5 +317,5 @@ export const useRanchStore = defineStore('ranch', () => {
     confirmationSequence++
     quote.value = null
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, error, errorCode, quote, result, uncertain, blocked, automation, savingAutomation, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, error, errorCode, quote, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
 })
