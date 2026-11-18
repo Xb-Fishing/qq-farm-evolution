@@ -26,7 +26,9 @@ function registerAdminRanchRoutes(context) {
     const key = `ranch:${view}:${shop}:${id}`;
     try {
       const result = await activityReader.read(key, () => provider.getRanchState(id, view, shop));
-      if (result.value?.ok !== true || result.value?.data?.sceneRecoveryRequired) activityReader.clear(key);
+      const recoveryRequired = result.value?.ok === true
+        ? result.value.data?.sceneRecoveryRequired : result.value?.sceneRecoveryRequired;
+      if (recoveryRequired === true) activityReader.clear(key);
       return respond(res, { ...result.value, upstreamCached: result.upstreamCached });
     } catch (error) { return sendProviderError(res, error); }
   });

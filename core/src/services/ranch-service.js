@@ -262,6 +262,16 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
           catch (failure) { result = { ...pending, outcome: 'unknown', completed: 0, message: failure.message }; }
         }
         result ||= { ...pending, outcome: 'unknown', completed: 0, message: '操作结果尚未确认' };
+        if (after) {
+          if (plan.action === 'claimTasks') after.tasks = reply;
+          if (plan.action === 'buy' && before.shop) {
+            try { after.shop = await rpc('shop', { shop_id: before.shopId }); after.shopId = before.shopId; } catch { /* Keep the confirmed purchase and refreshable inventory. */ }
+          }
+        }
+        let snapshot = null;
+        try { if (after) snapshot = model.normalizeState(after, now()); } catch { /* Preserve a confirmed write when the refreshed DTO is invalid. */ }
+
+        // Read the latest ledger after refresh so a policy saved while awaiting it survives.
         data = read(); quote = data.quotes.find(row => row.id === id);
         if (result.outcome === 'not_sent' && quote?.autoReservation && data.automation?.day === quote.autoReservation.day) {
           for (const cost of quote.autoReservation.costs) {
@@ -272,14 +282,6 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
         }
         if (quote) { quote.status = result.outcome; quote.result = result; }
         data.lastOperation = result;
-        if (after) {
-          if (plan.action === 'claimTasks') after.tasks = reply;
-          if (plan.action === 'buy' && before.shop) {
-            try { after.shop = await rpc('shop', { shop_id: before.shopId }); after.shopId = before.shopId; } catch { /* Keep the confirmed purchase and refreshable inventory. */ }
-          }
-        }
-        let snapshot = null;
-        try { if (after) snapshot = model.normalizeState(after, now()); } catch { /* Preserve a confirmed write when the refreshed DTO is invalid. */ }
         if (snapshot) { data.lastObservedAt = now(); data.lastObservedOperationId = id; }
         try { save(data); } catch { result.storageWarning = true; }
         return { ...result, snapshot,
