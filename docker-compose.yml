@@ -23,6 +23,10 @@ services:
       # 管理员首次初始化（可选）：默认空值，未设置时正常启动，已有管理员数据不受影响
       FARM_ADMIN_USERNAME: "${FARM_ADMIN_USERNAME:-}"
       FARM_ADMIN_PASSWORD: "${FARM_ADMIN_PASSWORD:-}"
+      # Optional independent QQ authorization gateway; disabled by default.
+      FARM_QQ_AUTH_ENABLED: "${FARM_QQ_AUTH_ENABLED:-0}"
+      FARM_QQ_AUTH_ENDPOINT: "${FARM_QQ_AUTH_ENDPOINT:-}"
+      FARM_QQ_AUTH_SIGNATURE: "${FARM_QQ_AUTH_SIGNATURE:-}"
       # 抓包服务已嵌入本进程，无需单独启动；可按需调整代理端口池：
       # CAPTURE_PORTS: "18000-18999"
       # 需要固定对外地址时，在 .env 中设置（局域网 / Tailscale 可同时填写）：
