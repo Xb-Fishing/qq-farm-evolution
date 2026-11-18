@@ -2114,6 +2114,34 @@
       "sourceItemId": 3001,
       "sharedSpriteFrame": true,
       "sharedSpriteEvidence": "同固定ItemInfo中两物品icon_res完全相同且bundle_name均缺省；交付该同版本共享sprite原字节，不借旧本地不同像素图。"
+    },
+    {
+      "itemId": 26038,
+      "file": "26038_Crop_6038_Seed.png",
+      "assetName": "Crop_6038",
+      "kind": "seed",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/26038.png",
+      "gitBlob": "de9088303dbd92fa0254931b3c2fb896876b75d6",
+      "sha256": "5ea12d657bed9a342650b39d01c64fea38ec1057a94585caf36ba8fc548282de",
+      "width": 100,
+      "height": 100
+    },
+    {
+      "itemId": 26084,
+      "file": "26084_Crop_6084_Seed.png",
+      "assetName": "Crop_6084",
+      "kind": "seed",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/26084.png",
+      "gitBlob": "1d1db9152ca99697c90c1e660626664a6928a9f7",
+      "sha256": "8338326682a80908a2ac6605cd68d1f7c4f615129a82714c01e20bb9792d6dad",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {

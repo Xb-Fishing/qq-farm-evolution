@@ -42,7 +42,6 @@ const {
   getPlantBySeedId,
   getItemById,
   getItemImageById,
-  getSeedLevel,
   getSeedImageBySeedId,
   getSeedImageByName,
   getPlantImageByPhase,
@@ -857,7 +856,7 @@ function getBagSeedsFromItems(items) {
     const name = rawName.endsWith('??') ? rawName.slice(0, -2) : rawName;
     const requiredLevel = plant
       ? Math.max(0, Number(plant.land_level_need || 0))
-      : Math.max(0, Number(info && info.level || getSeedLevel(id) || 0));
+      : 0; // ItemInfo.level is display metadata; an unmapped seed has no verified land requirement.
     const plantSize = plant ? Math.max(1, Number(plant.size || 1)) : 0;
 
     const existing = seedMap.get(id) || {

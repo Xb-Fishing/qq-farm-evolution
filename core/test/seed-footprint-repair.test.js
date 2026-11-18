@@ -114,8 +114,10 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   // These additional non-seeds have independent real Bag/Sell/icon coverage in
   // ranch-inventory-items.test.js; keep the original historical-row hash intact.
   const ranchInventoryItems = new Set([1007, 1102, 3003]);
+  // Exact item-only rows/icons and unknown footprint: future-calendar-seed-items.test.js.
+  const futureCalendarSeeds = new Set([26038, 26084]);
   const originalItems = items.filter(x => ![22254, 42254, 20040, 7001].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
-    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id) && !oilTeaItems.has(x.id) && !ranchInventoryItems.has(x.id))
+    && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id) && !oilTeaItems.has(x.id) && !ranchInventoryItems.has(x.id) && !futureCalendarSeeds.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',
