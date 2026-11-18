@@ -57,6 +57,7 @@ const {
 } = require("./admin-plant-blacklist-routes");
 const { registerAdminProxyRoutes } = require("./admin-proxy-routes");
 const { registerAdminPublicInfoRoutes } = require("./admin-public-info-routes");
+const { registerAdminQqLoginRoutes } = require("./admin-qq-login-routes");
 const { registerAdminQrLoginRoutes } = require("./admin-qr-login-routes");
 const { createAdminRouteHelpers } = require("./admin-route-helpers");
 const { registerAdminSettingsRoutes } = require("./admin-settings-routes");
@@ -422,6 +423,7 @@ function startAdminServer(dataProvider) {
   registerWxLoginQrImageRoute(app);
   registerAuthGate(app, requireAdminToken);
   registerRequestTimeoutGuard(app);
+  registerAdminQqLoginRoutes({ app, requireAdminToken });
   registerAdminPublicInfoRoutes({
     app,
     provider,

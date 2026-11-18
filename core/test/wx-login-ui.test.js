@@ -100,7 +100,7 @@ function modalHarness(show = true) {
         '@vueuse/core': { useIntervalFn: callback => { const interval = { callback, active: false }; intervals.push(interval); return { pause: () => { interval.active = false; }, resume: () => { interval.active = true; } }; } },
         '@/api': { __esModule: true, default: { get: async () => ({ data: {} }), post: async (_url, body) => { saves.push(body); return { data: { ok: true } }; } } },
         '@/components/ui/BaseButton.vue': stub, '@/components/ui/BaseInput.vue': stub, '@/components/ui/BaseTextarea.vue': stub,
-        '@/components/MengkaNtLoginGuide.vue': stub,
+        '@/components/MengkaNtLoginGuide.vue': stub, '@/components/QqLoginPanel.vue': stub,
         '@/stores/wx-login': { useWxLoginStore: () => wx }, '@/utils/gateway-url': { parseManualLoginInput: () => ({}) },
     }, { localStorage: storage }).default;
     Modal.render = () => null;

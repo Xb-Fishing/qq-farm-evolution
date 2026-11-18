@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import api from '@/api'
+import MengkaNtLoginGuide from '@/components/MengkaNtLoginGuide.vue'
+import QqLoginPanel from '@/components/QqLoginPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseTextarea from '@/components/ui/BaseTextarea.vue'
-import MengkaNtLoginGuide from '@/components/MengkaNtLoginGuide.vue'
 import { useWxLoginStore } from '@/stores/wx-login'
 import { parseManualLoginInput } from '@/utils/gateway-url'
 
@@ -45,7 +46,7 @@ interface CaptureFlowState {
   }
 }
 
-const activeTab = ref<'wx' | 'capture' | 'manual' | 'mengka_nt'>('manual')
+const activeTab = ref<'wx' | 'capture' | 'manual' | 'mengka_nt' | 'qq'>('manual')
 const loading = ref(false)
 const wxChecking = ref(false)
 let modalGeneration = 0
@@ -77,6 +78,56 @@ const form = reactive({
   code: '',
   platform: 'qq' as 'qq' | 'wx',
 })
+
+interface QqCodeContext { session: string, target: string | null }
+let qqCodeContext: QqCodeContext | null = null
+function panelSession() {
+  try {
+    return typeof localStorage === 'undefined' ? '' : localStorage.getItem('admin_token') || ''
+  }
+  catch {
+    return ''
+  }
+}
+function qqTarget() {
+  return props.editData ? String(props.editData.id) : null
+}
+function invalidateQqCode() {
+  if (!qqCodeContext)
+    return
+  qqCodeContext = null
+  form.code = ''
+  form.name = ''
+  modalGeneration++
+  loading.value = false
+  errorMessage.value = '扫码会话或目标账号已变化，请重新获取 QQ 登录码'
+}
+function currentQqCode(context: QqCodeContext) {
+  // A superseded request must never clear a later modal's new Code.
+  if (qqCodeContext !== context)
+    return false
+  if (context.session === panelSession() && context.target === qqTarget()
+    && form.platform === 'qq' && props.editData?.platform !== 'wx') {
+    return true
+  }
+  invalidateQqCode()
+  return false
+}
+function checkQqSession() {
+  if (qqCodeContext)
+    currentQqCode(qqCodeContext)
+}
+
+function acceptQqCode(value: { code: string, nickname: string }) {
+  if (!props.show || activeTab.value !== 'qq' || props.editData?.platform === 'wx')
+    return
+  form.code = value.code
+  form.platform = 'qq'
+  qqCodeContext = { session: panelSession(), target: qqTarget() }
+  if (!form.name.trim() && !props.editData)
+    form.name = value.nickname.trim().slice(0, 32) || 'QQ扫码账号'
+  activeTab.value = 'manual'
+}
 
 const captureHelpSteps = computed(() => captureHelpMode.value === 'first'
   ? [
@@ -365,13 +416,36 @@ async function loadWxQRCode() {
     startWxCheck()
 }
 
-async function addAccount(data: any, requestGeneration = modalGeneration) {
+async function addAccount(data: any, requestGeneration = modalGeneration, qqContext: QqCodeContext | null = null) {
+  if (qqContext && !currentQqCode(qqContext))
+    return
   loading.value = true
   errorMessage.value = ''
   try {
-    const res = await api.post('/api/accounts', data)
+    const config = qqContext
+      ? {
+          errorFeedback: 'consumer' as const,
+          validateStatus: (status: number) => (status >= 200 && status < 300) || status === 401 || status === 403,
+          transformRequest: [(body: any, headers: any) => {
+            if (requestGeneration !== modalGeneration || !props.show || !currentQqCode(qqContext))
+              throw Object.assign(new Error('已取消'), { code: 'ERR_CANCELED' })
+            if (qqContext.session)
+              headers['x-admin-token'] = qqContext.session
+            headers['Content-Type'] = 'application/json'
+            return JSON.stringify(body)
+          }],
+        }
+      : undefined
+    const res = await api.post('/api/accounts', data, config)
     if (requestGeneration !== modalGeneration || !props.show)
       return
+    if (qqContext && !currentQqCode(qqContext))
+      return
+    if (qqContext && (res.status === 401 || res.status === 403)) {
+      invalidateQqCode()
+      errorMessage.value = '面板登录已失效，请重新登录后重新扫码'
+      return
+    }
     if (res.data.ok) {
       // 携带本次保存的账号 id：既有账号重扫 = target id；新增账号取回包
       // 末位新账号。无 id（旧调用方/异常形态）保持 undefined 兼容。
@@ -386,6 +460,8 @@ async function addAccount(data: any, requestGeneration = modalGeneration) {
     }
   }
   catch (e: any) {
+    if (qqContext && !currentQqCode(qqContext))
+      return
     if (requestGeneration === modalGeneration && props.show)
       errorMessage.value = `保存失败: ${e.response?.data?.error || e.message}`
   }
@@ -397,6 +473,9 @@ async function addAccount(data: any, requestGeneration = modalGeneration) {
 
 async function submitManual() {
   errorMessage.value = ''
+  const qqContext = qqCodeContext
+  if (qqContext && !currentQqCode(qqContext))
+    return
   if (!form.code) {
     errorMessage.value = '请输入 Code'
     return
@@ -448,7 +527,7 @@ async function submitManual() {
     }
   }
 
-  await addAccount(payload)
+  await addAccount(payload, modalGeneration, qqContext)
 }
 
 const wxQrImageSrc = computed(() => {
@@ -462,6 +541,7 @@ const wxQrImageSrc = computed(() => {
 })
 
 function close() {
+  qqCodeContext = null
   modalGeneration++
   wxChecking.value = false
   stopWxCheck()
@@ -473,13 +553,16 @@ function close() {
 }
 
 watch(() => props.show, (newVal) => {
+  qqCodeContext = null
   modalGeneration++
   wxChecking.value = false
   loading.value = false
   if (newVal) {
-    activeTab.value = (['wx', 'capture', 'manual', 'mengka_nt'] as const).includes(props.initialTab as any)
-      ? (props.initialTab as 'wx' | 'capture' | 'manual' | 'mengka_nt')
+    activeTab.value = (['wx', 'capture', 'manual', 'mengka_nt', 'qq'] as const).includes(props.initialTab as any)
+      ? (props.initialTab as 'wx' | 'capture' | 'manual' | 'mengka_nt' | 'qq')
       : 'manual'
+    if (activeTab.value === 'qq' && props.editData?.platform === 'wx')
+      activeTab.value = 'manual'
     errorMessage.value = ''
     captureError.value = ''
     captureCopiedField.value = ''
@@ -509,6 +592,10 @@ watch(() => props.show, (newVal) => {
 }, { immediate: true })
 
 watch([() => props.show, activeTab], ([show, tab]) => {
+  if (qqCodeContext && (!show || tab !== 'manual')) {
+    qqCodeContext = null
+    form.code = ''
+  }
   modalGeneration++
   wxChecking.value = false
   loading.value = false
@@ -520,7 +607,16 @@ watch([() => props.show, activeTab], ([show, tab]) => {
     void cancelCaptureSession()
 }, { immediate: true })
 
+watch(() => [props.editData?.id, props.editData?.platform], checkQqSession, { flush: 'sync' })
+onMounted(() => {
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function')
+    window.addEventListener('storage', checkQqSession)
+})
+
 onUnmounted(() => {
+  qqCodeContext = null
+  if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function')
+    window.removeEventListener('storage', checkQqSession)
   modalGeneration++
   stopWxCheck()
   resetWxSession()
@@ -544,7 +640,16 @@ onUnmounted(() => {
           {{ errorMessage }}
         </div>
 
-        <div class="mb-4 flex border-b" :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 10%, transparent)' }">
+        <div class="mb-4 flex flex-wrap border-b" :style="{ borderColor: 'color-mix(in srgb, var(--theme-text) 10%, transparent)' }">
+          <button
+            v-if="!editData || editData.platform !== 'wx'"
+            class="min-h-11 flex-1 py-2 text-center text-sm font-medium transition-colors"
+            :class="activeTab === 'qq' ? 'border-b-2' : 'opacity-60'"
+            :style="{ color: activeTab === 'qq' ? 'var(--theme-primary)' : 'var(--theme-text)', borderColor: 'var(--theme-primary)' }"
+            @click="activeTab = 'qq'"
+          >
+            QQ扫码
+          </button>
           <button
             v-if="!editData || editData.platform !== 'wx'"
             class="flex-1 py-2 text-center text-sm font-medium transition-colors"
@@ -590,6 +695,7 @@ onUnmounted(() => {
           </button>
         </div>
 
+        <QqLoginPanel v-if="show && activeTab === 'qq' && (!editData || editData.platform !== 'wx')" :key="editData?.id || 'new'" @ready="acceptQqCode" />
         <MengkaNtLoginGuide v-if="activeTab === 'mengka_nt'" />
 
         <div v-if="activeTab === 'wx'" class="space-y-4">

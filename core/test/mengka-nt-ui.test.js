@@ -40,6 +40,7 @@ test('真实账号弹窗呈现萌卡NT入口、专用地址和启动策略；复
       if (name === '@/stores/wx-login') return { useWxLoginStore: () => wx };
       if (name === '@/utils/gateway-url') return { parseManualLoginInput: () => ({}) };
       if (name.startsWith('@/components/ui/')) return stub;
+      if (name === '@/components/QqLoginPanel.vue') return { __esModule: true, default: { render: () => null } };
       if (name === '@/components/MengkaNtLoginGuide.vue') return { __esModule: true, default: load(path.join(web, 'src/components/MengkaNtLoginGuide.vue')) };
       throw new Error(`Unexpected UI import: ${name}`);
     }, module, module.exports, ...Object.values(globals));

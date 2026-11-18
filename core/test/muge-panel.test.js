@@ -57,7 +57,11 @@ test('actual panel renders four sections, text-only long input, loading/error an
   const Panel = h.compileSfcModule(files[1], resolve); const root = h.makeNode('root'); let refreshes = 0;
   try {
     h.render(h.vue.h(Panel, { activity: dto(null), loading: false, error: '', onRefresh: () => refreshes++ }), root);
-    for (const title of ['兴牧庆典', '牧友同行', '成长手册', '牧场人格', '尚未接入', '未取得']) assert.ok(h.textOf(root).includes(title));
+    for (const title of ['兴牧庆典', '牧友同行', '成长手册', '牧场人格', '个人进度', '未取得']) assert.ok(h.textOf(root).includes(title));
+    assert.doesNotMatch(h.textOf(root), /牧场经营、任务与领奖尚未接入/);
+    const link = h.findAll(root, n => n.tag === 'a' && n.props.href === '#ranch');
+    assert.equal(link.length, 1); assert.match(h.textOf(link[0]), /前往牧场经营与任务/);
+    h.click(link[0]); assert.equal(refreshes, 0, 'same-page navigation does not refresh or write');
     assert.equal(h.findAll(root, n => n.tag === 'img').length, 0); assert.ok(h.textOf(root).includes('<img onerror=attack>'));
     h.click(h.buttonsOf(root)[0]); assert.equal(refreshes, 1);
     h.render(h.vue.h(Panel, { activity: null, loading: true, error: 'ordinary failure' }), root); assert.match(h.textOf(root), /正在读取规则|ordinary failure/);

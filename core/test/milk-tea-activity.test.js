@@ -29,6 +29,7 @@ const mkdtempPrefix = path.join(tempRoot, 'farm-milk-tea-activity-');
 assert.equal(isInsideOrEqualDir(mkdtempPrefix, tempRoot), true, 'mkdtemp 前缀必须位于临时根内');
 const privateDir = path.resolve(fs.mkdtempSync(mkdtempPrefix));
 assert.equal(isInsideOrEqualDir(privateDir, tempRoot), true, '独立运行数据目录必须落在临时根内');
+const savedDataDir = process.env.FARM_DATA_DIR;
 process.env.FARM_DATA_DIR = privateDir;
 function assertWriteInsidePrivateDir(target) {
   const resolved = path.resolve(String(target));
@@ -456,6 +457,8 @@ test('固定配置：物品分类无重复，已核验森野植物显式登记�
 });
 
 test.after(() => {
+  if (savedDataDir === undefined) delete process.env.FARM_DATA_DIR;
+  else process.env.FARM_DATA_DIR = savedDataDir;
   for (const [file, before] of fingerprintsBefore) {
     assert.deepEqual(fingerprintOf(file), before, `候选源码被改动: ${file}`);
   }
@@ -488,16 +491,17 @@ test('真实配置与背包入口：奶茶券为道具、甜莓为果实、所�
 
 test('共享真实GetGroup入口：四类详情可用，私有原始回调保留、公开快照无原始字节', async () => {
   await loadProto();const networkPath=require.resolve('../src/utils/network'),activityPath=require.resolve('../src/services/activity');
-  const previous=[networkPath,activityPath].map(p=>[p,require.cache[p]]);let requests=0;
+  const fixturePath=require.resolve('./fixtures/retired-milk-tea-activity');
+  const previous=[networkPath,activityPath,fixturePath].map(p=>[p,require.cache[p]]);let requests=0;
   const raw=types.MilkTeaGetGroupReply.encode(types.MilkTeaGetGroupReply.create({group:{head:{activity_id:ROOT,begin_time:1,end_time:4102444800},children:[
     {head:{activity_id:MAIN},milk_tea:{summary:{shop_name:'测试奶茶店',level:2}}},
     {head:{activity_id:SHOP},shop:{goods:[{id:9001,item:[{id:20525,count:1}],cost:[{id:1041,count:10}],purchase_limit:5}]}},
     {head:{activity_id:FUND},growth_fund:{unlocked:true,tiers:[{tier_id:1,state:2}]}},
     {head:{activity_id:HAPPY},share_reward:{summary:{current_score:20,daily:{claim_limit:1},milestones:[{tier_id:1,threshold:20,state:2}]}}},
   ]}})).finish();
-  require.cache[networkPath]={id:networkPath,filename:networkPath,loaded:true,exports:{sendMsgAsync:async(_s,method)=>{requests++;assert.equal(method,'GetGroup');return{body:raw};}}};delete require.cache[activityPath];
+  require.cache[networkPath]={id:networkPath,filename:networkPath,loaded:true,exports:{sendMsgAsync:async(_s,method)=>{requests++;assert.equal(method,'GetGroup');return{body:raw};}}};delete require.cache[activityPath];delete require.cache[fixturePath];
   try{
-    const activity=require('../src/services/activity');let privateBody;
+    const activity=require('./fixtures/retired-milk-tea-activity');let privateBody;
     const result=await activity.getActivityGroupSnapshot(ROOT,'',{onRawBody:body=>{privateBody=body;}});
     const children=new Map(result.children.map(child=>[child.id,child]));
     assert.equal(children.get(MAIN).details.milkTea.level,2);assert.equal(children.get(SHOP).details.exchangeShop.items[0].purchaseLimit,5);

@@ -23,8 +23,11 @@ function dateLabel(value: unknown) {
       </BaseButton>
     </header>
     <p class="mt-2 text-sm">
-      当前提供活动规则与参与条件。牧场经营、任务与领奖尚未接入，个人进度和可领取状态未取得。
+      此处提供牧歌初启活动规则与参与条件；活动专属个人进度和领奖状态尚未取得。牧场经营与牧场任务已在本页提供入口。
     </p>
+    <BaseButton href="#ranch" variant="secondary" class="mt-2 min-h-11">
+      前往牧场经营与任务
+    </BaseButton>
     <p v-if="loading" role="status" class="mt-2">
       正在读取牧歌规则…
     </p>

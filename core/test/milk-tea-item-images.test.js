@@ -128,7 +128,7 @@ test('204011 金露云酪 keeps its direct coin price 1001:1000000 and stays out
 });
 
 function fixture(t, bagError, additionalBagItems = []) {
-  const paths = ['../src/utils/network', '../src/services/warehouse', '../src/services/activity', '../src/services/milk-tea-activity']
+  const paths = ['../src/utils/network', '../src/services/warehouse', '../src/services/activity', '../src/services/milk-tea-activity', './fixtures/retired-milk-tea-activity']
     .map(name => require.resolve(name));
   const saved = paths.map(file => [file, require.cache[file]]);
   const calls = [];
@@ -164,7 +164,7 @@ function fixture(t, bagError, additionalBagItems = []) {
       else delete require.cache[file];
     }
   });
-  return { calls, connection, warehouse: require('../src/services/warehouse'), activity: require('../src/services/activity') };
+  return { calls, connection, warehouse: require('../src/services/warehouse'), activity: require('./fixtures/retired-milk-tea-activity') };
 }
 
 test('real BagReply and panel cache deliver all reward images; reward metadata grants no automatic selling', async t => {
