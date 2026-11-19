@@ -7,6 +7,8 @@ const model = require('./ranch-model');
 const policyTools = require('./ranch-policy');
 const LOCAL_CODES = new Set(['INVALID_ARGUMENT', 'GOODS_UNAVAILABLE', 'PURCHASE_LIMIT_EXCEEDED', 'INSUFFICIENT_BALANCE']);
 const error = (code, message) => Object.assign(new Error(message), { code });
+const QUOTE_TTL_MS = 60000;
+const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用';
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const planIdentity = plan => digest({ action: plan.action, route: plan.route, payload: plan.payload,
   costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null });
@@ -23,7 +25,7 @@ const sameItems = (a, b) => JSON.stringify(sumItems(a).map(({ id, count }) => ({
   === JSON.stringify(sumItems(b).map(({ id, count }) => ({ id, count })));
 
 /** Intents are persisted before writes; a late response or process replacement never replays them. */
-function createRanchService({ network, file, now = Date.now, canAutomate = () => false }) {
+function createRanchService({ network, file, now = Date.now, quoteNow = now, canAutomate = () => false }) {
   const sockets = new WeakMap();
   const inFlight = new Set();
   let autoRunning = false;
@@ -90,10 +92,13 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
       throw failure;
     }
   }
-  async function rpc(routeName, payload = {}) {
+  async function rpc(routeName, payload = {}, beforeDispatch) {
     const route = codec.ROUTES[routeName]; if (!route) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场请求');
     const wire = await stage(routeName, 'encode', () => codec.encode(route.request, payload));
-    const response = await stage(routeName, 'request', () => network.sendMsgAsync(route.service, route.method, wire, 2500));
+    const response = await stage(routeName, 'request', () => {
+      if (beforeDispatch) beforeDispatch();
+      return network.sendMsgAsync(route.service, route.method, wire, 2500);
+    });
     return stage(routeName, 'decode', () => codec.decode(route.reply, response.body));
   }
   async function loadRaw(initial, view = 'animals', shopId = '5') {
@@ -142,14 +147,15 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
     validateInput(input);
     const accountOrigin = origin();
     if (unresolved(read())) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对，请先刷新并确认');
-    return withScene(async ({ initial, assertCurrent }) => {
+    const prepared = await withScene(async ({ initial, assertCurrent }) => {
       const raw = await loadRaw(initial, viewFor(action), input.shopId); assertCurrent();
       if (origin() !== accountOrigin) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请重新确认');
       const plan = model.planAction(action, input, raw, now());
       if (plan.count > 50 && ['place', 'produce', 'harvest', 'clean', 'claimTasks'].includes(action))
         throw error('RANCH_INVALID_ARGUMENT', '本次目标数量过多，请分次操作');
+      const issuedAt = quoteNow();
       const quote = { id: crypto.randomUUID(), action, input, plan, fingerprint: planIdentity(plan), origin: accountOrigin,
-        at: now(), expiresAt: now() + 60000, status: 'prepared' };
+        at: issuedAt, expiresAt: issuedAt + QUOTE_TTL_MS, status: 'prepared' };
       const data = read(); if (unresolved(data)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作尚未确认');
       if (autoRevision !== undefined) {
         const state = autoState(data);
@@ -157,11 +163,13 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
           throw error('RANCH_AUTOMATION_PAUSED', '自动化设置或可用额度已变化');
         quote.autoRevision = autoRevision;
       }
-      data.quotes = data.quotes.filter(row => row.status !== 'prepared' || row.expiresAt > now()).slice(-19);
+      data.quotes = data.quotes.filter(row => row.status !== 'prepared' || row.expiresAt > quoteNow()).slice(-19);
       data.quotes.push(quote); save(data);
       return { id: quote.id, action, label: plan.label, count: plan.count,
         costItems: plan.costItems, expectedRewards: sumItems(plan.expectedRewards), expiresAt: quote.expiresAt };
     });
+    // Device clocks can differ from the game clock. Report time left after scene restoration.
+    return { ...prepared, validForMs: Math.min(QUOTE_TTL_MS, Math.max(0, prepared.expiresAt - quoteNow())) };
   }
   function verifyReply(plan, reply, before, after) {
     const unknown = message => { throw error('RANCH_RESULT_UNKNOWN', message); };
@@ -217,21 +225,33 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
     return { outcome: completed < plan.count ? 'partial' : 'confirmed', completed, requested: plan.count,
       rewards: sumItems(rewards), costs: plan.costItems, message: completed < plan.count ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : '操作已确认' };
   }
+  function checkQuote(data, quote, id) {
+    if (!quote) {
+      if (data.lastOperation?.id === id) return { ...visibleOperation(data.lastOperation), replayed: true };
+      throw error('RANCH_CONFIRMATION_MISSING', '确认记录已失效，请刷新牧场核对结果');
+    }
+    if (quote.status !== 'prepared') {
+      const result = quote.result || (data.lastOperation?.id === id && data.lastOperation);
+      if (!result) throw error('RANCH_RESULT_UNCONFIRMED', '执行结果待核对，请刷新牧场');
+      return { ...visibleOperation(result), replayed: true };
+    }
+    if (unresolved(data)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对');
+    if (quote.origin !== origin()) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请刷新牧场后重新选择操作');
+    if (quote.expiresAt <= quoteNow()) throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
+    return null;
+  }
   async function execute(id) {
     if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw error('RANCH_INVALID_ARGUMENT', '确认记录无效');
     let data = read(); let quote = data.quotes.find(row => row.id === id);
-    if (!quote) throw error('RANCH_CONFIRMATION_EXPIRED', '确认已过期，请重新准备');
-    if (quote.status !== 'prepared') return { ...visibleOperation(quote.result || data.lastOperation), replayed: true };
-    if (unresolved(data)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对');
-    if (quote.expiresAt <= now() || quote.origin !== origin()) throw error('RANCH_CONFIRMATION_EXPIRED', '确认已过期或连接已变化，请重新准备');
+    const replay = checkQuote(data, quote, id);
+    if (replay) return replay;
     return withScene(async ({ initial, assertCurrent }) => {
       const before = await loadRaw(initial, viewFor(quote.action), quote.input.shopId); assertCurrent();
       const plan = model.planAction(quote.action, quote.input, before, now());
-      if (planIdentity(plan) !== quote.fingerprint) throw error('RANCH_STATE_CHANGED', '数量、费用或目标状态已变化，请重新确认');
       data = read(); quote = data.quotes.find(row => row.id === id);
-      if (!quote || quote.status !== 'prepared' || quote.expiresAt <= now() || quote.origin !== origin())
-        throw error('RANCH_CONFIRMATION_EXPIRED', '确认已失效，请刷新后重试');
-      if (unresolved(data)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对');
+      const settled = checkQuote(data, quote, id);
+      if (settled) return settled;
+      if (planIdentity(plan) !== quote.fingerprint) throw error('RANCH_STATE_CHANGED', '数量、费用或目标状态已变化，请重新核对');
       if (quote.autoRevision !== undefined) {
         const state = autoState(data);
         if (!canAutomate() || state.revision !== quote.autoRevision || !policyTools.allowance(state.policy, plan, before, state.usage))
@@ -247,11 +267,19 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
       assertCurrent();
       const pending = { id, action: quote.action, label: plan.label, outcome: 'pending', at: now(), requested: plan.count };
       quote.status = 'pending'; quote.result = pending; data.lastOperation = pending; save(data); inFlight.add(id);
-      let result; let reply; let after = null;
+      let result; let reply; let after = null; let expiredBeforeDispatch = false;
       try {
-        try { reply = await rpc(plan.route, plan.payload); }
+        try {
+          reply = await rpc(plan.route, plan.payload, () => {
+            // Persistence and encoding can outlast the preview; only this refusal proves no dispatch.
+            if (quote.expiresAt <= quoteNow()) {
+              expiredBeforeDispatch = true;
+              throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
+            }
+          });
+        }
         catch (failure) {
-          const local = failure.isLocalRequestRejection === true || failure.isGovernedRejection === true
+          const local = expiredBeforeDispatch || failure.isLocalRequestRejection === true || failure.isGovernedRejection === true
             || /^SESSION_(?:CONFIG_CHANGED|EPOCH_RETIRED|CONNECTION_CHANGED|BINDING_REVOKED)$/.test(failure.code || '');
           result = { ...pending, outcome: local ? 'not_sent' : 'unknown', completed: 0,
             message: local ? '本次请求未发出，请刷新后重试' : '请求结果尚未确认，不会自动重试；请刷新核对' };
@@ -284,6 +312,10 @@ function createRanchService({ network, file, now = Date.now, canAutomate = () =>
         data.lastOperation = result;
         if (snapshot) { data.lastObservedAt = now(); data.lastObservedOperationId = id; }
         try { save(data); } catch { result.storageWarning = true; }
+        if (expiredBeforeDispatch) {
+          if (result.storageWarning) throw error('RANCH_RESULT_UNCONFIRMED', '确认结果未能保存，请刷新牧场核对');
+          throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
+        }
         return { ...result, snapshot,
           refreshRequired: !snapshot, message: !snapshot && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
       } finally { inFlight.delete(id); }
@@ -356,6 +388,8 @@ function service() {
     instance = createRanchService({ network: require('../utils/network'),
       canAutomate: () => typeof automationAdmission === 'function' && automationAdmission(),
       file: () => require('../config/runtime-paths').getDataFile(`ranch-operations-${suffix}.json`),
+      // Heartbeat clock corrections affect game rules, not the user's review window.
+      quoteNow: () => Math.floor(performance.timeOrigin + performance.now()),
       now: () => require('../utils/utils').getServerTimeSec() * 1000 });
   }
   return instance;

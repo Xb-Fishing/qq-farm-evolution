@@ -10,13 +10,14 @@ const state = () => ({ level: 1, grass: '30', currencies: [], facilities: [], cu
 const roots = [];
 test.after(() => { for (const root of roots) h.render(null, root); });
 function fixture() {
-  const posts = []; let read = async () => ({ data: { ok: true, data: state() } }); let prepare;
+  const posts = []; let read = async () => ({ data: { ok: true, data: state() } }); let prepare; let operate;
   const api = {
     get: async (url, config) => url.endsWith('/automation') ? { data: { ok: true, data: { policy: { ...DEFAULT_POLICY }, revision: 0 } } } : read(url, config),
     post: async (url, body, config) => {
       posts.push({ url, body, config });
       if (url.endsWith('/prepare')) return prepare ? prepare() : { data: { ok: true, data: { id: 'synthetic-quote', label: '牧场生产', count: 1, costItems: [], expiresAt: Date.now() + 60000 } } };
       if (url.endsWith('/automation')) return { data: { ok: true, data: { policy: body, revision: 1 } } };
+      if (url.endsWith('/operate') && operate) return operate();
       return { data: { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [], snapshot: state() } } };
     },
   };
@@ -32,7 +33,7 @@ function fixture() {
   const root = h.makeNode('root'); roots.push(root);
   const mount = id => h.render(h.vue.h(Panel, { accountId: id }), root);
   mount('account-a');
-  return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; } };
+  return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; }, operate: fn => { operate = fn; } };
 }
 const button = (root, label) => h.buttonsOf(root).find(x => h.textOf(x).includes(label));
 test('real ranch panel prepares then confirms once; free and paid automation preferences save for selected account', async () => {
@@ -64,7 +65,7 @@ test('switch and unload discard stale reads and confirmations; failed refresh re
 });
 test('placement selector visibly uses the same eligible default and edited destination as its quote', async () => {
   const f = fixture(); await h.flush();
-  const ranch = id => ({ id, name: '栏舍' + id, level: 1, active: true, ranch: { husbandryType: 1, count: 0, capacity: 4, animals: [], shelves: [], hazards: [] } });
+  const ranch = id => ({ id, name: `栏舍${id}`, level: 1, active: true, ranch: { husbandryType: 1, count: 0, capacity: 4, animals: [], shelves: [], hazards: [] } });
   f.read(async () => ({ data: { ok: true, data: { ...state(), facilities: [ranch('11'), ranch('12')],
     cubs: [{ id: '60001', name: '鸡幼崽', count: '2', husbandryType: 1, locked: false }] } } }));
   await f.store.refresh(); await h.flush();
@@ -78,7 +79,7 @@ test('placement selector visibly uses the same eligible default and edited desti
 test('automation opens the correct shop itself, joins inventory stacks and keeps future placement separate from buying', async () => {
   const f = fixture(); await h.flush();
   const calls = [];
-  const room = (id, type, active) => ({ id, name: '栏舍' + id, active, ranch: { husbandryType: type, count: 3, capacity: 3, animals: [], shelves: [], hazards: [] } });
+  const room = (id, type, active) => ({ id, name: `栏舍${id}`, active, ranch: { husbandryType: type, count: 3, capacity: 3, animals: [], shelves: [], hazards: [] } });
   const cub = (id, count, locked = false) => ({ id, name: id === '60001' ? '鸡幼崽' : '鸭幼崽', count, locked, husbandryType: 1 });
   const stock = { ...state(), facilities: [room('11', 1, true), room('12', 2, true), room('13', 1, false)],
     currencies: [{ id: '1007', name: '金券', available: '45' }, { id: '1005', name: '金豆豆', available: '7' }],
@@ -124,4 +125,49 @@ test('catalogue failures are retryable and a previous account cannot populate cu
   f.read(async () => ({ data: { ok: true, data: { ...state(), shop: { shopId: '5', goods: [] } } } }));
   await f.store.loadOptions('5', true); assert.equal(f.store.optionError, ''); assert.deepEqual(f.store.optionShops['5'].goods, []);
   assert.equal(f.posts.length, 0);
+});
+
+function quoteReply(id, validForMs, price = '2') {
+  return { data: { ok: true, data: { id, action: 'buy', label: '购买幼崽', count: 1,
+    costItems: [{ name: '金券', count: price }], expectedRewards: [{ name: '鸡', count: '1' }],
+    expiresAt: Date.now() - 3600000, validForMs } } };
+}
+test('a fresh ranch confirmation works when the browser wall clock is ahead of the game clock', async () => {
+  const f = fixture(); await h.flush(); f.prepare(async () => quoteReply('original', 55000));
+  await f.store.prepare('buy', { shopId: '5', goodsId: '71', count: 1 }); await h.flush();
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.deepEqual(f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId), ['original']);
+  assert.match(h.textOf(f.root), /操作已确认/);
+});
+test('expired ranch quote renews the original selection and shows the new price before any write', async () => {
+  const f = fixture(); await h.flush(); let round = 0;
+  f.prepare(async () => ++round === 1 ? quoteReply('old', 0, '2') : quoteReply('fresh', 55000, '4'));
+  const input = { shopId: '5', goodsId: '71', count: 1 };
+  await f.store.prepare('buy', input); input.count = 9; await h.flush();
+  assert.ok(button(f.root, '重新核对')); h.click(button(f.root, '重新核对')); await h.flush();
+  assert.equal(f.posts.filter(p => p.url.endsWith('/operate')).length, 0);
+  assert.equal(f.posts.filter(p => p.url.endsWith('/prepare')).at(-1).body.input.count, 1);
+  assert.match(h.textOf(f.root), /金券 × 4/);
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.deepEqual(f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId), ['fresh']);
+});
+test('server expiry offers a fresh review; a lost execute reply is never renewed', async () => {
+  const f = fixture(); await h.flush(); let seq = 0; f.prepare(async () => quoteReply(`quote-${++seq}`, 60000));
+  f.operate(async () => { throw Object.assign(new Error('expired'), { response: { data: { ok: false, code: 'RANCH_QUOTE_EXPIRED', error: '确认已到期' } } }); });
+  await f.store.prepare('buy', { shopId: '5', goodsId: '71', count: 1 }); await f.store.execute(); await h.flush();
+  assert.equal(f.store.uncertain, false); assert.ok(button(f.root, '重新核对'));
+  assert.equal(await f.store.execute(), false, 'renewing a quote does not report a confirmed operation'); await h.flush();
+  f.operate(async () => { throw new Error('synthetic timeout'); });
+  await f.store.execute(); await h.flush();
+  assert.equal(f.store.result.outcome, 'unknown'); assert.equal(f.store.quote, null);
+  assert.equal(await f.store.prepare('buy', { count: 1 }), false);
+  assert.equal(f.posts.filter(p => p.url.endsWith('/prepare')).length, 2);
+});
+test('changing account while renewing a ranch quote discards late confirmation', async () => {
+  const f = fixture(); await h.flush(); f.prepare(async () => quoteReply('old', 0));
+  await f.store.prepare('buy', { count: 1 }); await h.flush();
+  const wait = h.deferred(); f.prepare(() => wait.promise);
+  h.click(button(f.root, '重新核对')); f.mount('account-b'); await h.flush();
+  wait.resolve(quoteReply('foreign', 60000)); await h.flush();
+  assert.equal(f.store.quote, null); assert.equal(f.posts.filter(p => p.url.endsWith('/operate')).length, 0);
 });

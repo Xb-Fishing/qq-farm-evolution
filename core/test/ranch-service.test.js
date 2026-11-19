@@ -12,7 +12,7 @@ test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 function fixture() {
   const file = path.resolve(root, `operations-${Math.random().toString(16).slice(2)}.json`);
   assert.ok(file.startsWith(root + path.sep));
-  let now = 1800000000000; let allowed = true; let failure = false; let malformed = false;
+  let now = 1800000000000; let gameOffset = 0; let allowed = true; let failure = false; let malformed = false;
   let gold = 100; let price = 10; let grass = 50; let cubs = 5; let writes = 0;
   const calls = []; const ws = {}; let beforeWrite;
   const facilities = [
@@ -23,9 +23,14 @@ function fixture() {
   ];
   const network = {
     getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
-    withRanchScene: async callback => callback({ initial: f.initial, assertCurrent() {} }),
+    withRanchScene: async callback => {
+      const value = await callback({ initial: f.initial, assertCurrent() {} });
+      now += f.restoreDelayMs || 0;
+      return value;
+    },
     sendMsgAsync: async (service, method, wire) => {
       calls.push(method);
+      f.onRead?.(method);
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
@@ -51,8 +56,8 @@ function fixture() {
       return { body: codec.encode(route.reply, reply) };
     },
   };
-  const make = () => createRanchService({ network, file: () => file, now: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, file, get writes() { return writes; }, advance: ms => { now += ms; },
+  const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
+  const f = { service: make(), make, calls, file, get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
   return f;
@@ -161,7 +166,7 @@ test('first scene payload is decoded through the real codec without a redundant 
   assert.equal(f.writes, 0);
 });
 test('malformed first scene data identifies its decoding stage without exposing wire contents', async () => {
-  const f = fixture(); f.initial = Buffer.from([0x12, 0x7f]);
+  const f = fixture(); f.initial = Buffer.from([0x12, 0x7F]);
   const result = await f.service.getState();
   assert.equal(result.code, 'RANCH_READ_FAILED');
   assert.equal(result.failureStage, 'scene_data');
@@ -169,4 +174,55 @@ test('malformed first scene data identifies its decoding stage without exposing 
   assert.equal(result.error, '牧场场景数据失败，请稍后重试');
   assert.equal(JSON.stringify(result).includes('out of range'), false);
   assert.equal(f.calls.length, 0); assert.equal(f.writes, 0);
+});
+
+test('quote lifetime reports elapsed time after restoration and expires at the boundary without sending an operation', async () => {
+  const f = fixture(); f.restoreDelayMs = 12500;
+  const { data: quote } = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 });
+  assert.equal(quote.validForMs, 47500);
+  f.advance(quote.validForMs);
+  assert.equal((await f.service.execute(quote.id)).code, 'RANCH_QUOTE_EXPIRED');
+  assert.equal(f.writes, 0);
+
+  f.restoreDelayMs = 0;
+  const fresh = await quoteBuy(f);
+  f.onRead = method => { if (method === 'GetBag') f.advance(60000); };
+  assert.equal((await f.service.execute(fresh)).code, 'RANCH_QUOTE_EXPIRED');
+  assert.equal(f.writes, 0, 'expiry during the fresh pre-write read is enforced');
+});
+
+test('an evicted confirmation cannot reissue a prior purchase', async () => {
+  const f = fixture();
+  const initial = await quoteBuy(f);
+  assert.equal((await f.service.execute(initial)).data.outcome, 'confirmed');
+  for (let i = 0; i < 21; i++) await quoteBuy(f);
+  const replay = await f.service.execute(initial);
+  assert.equal(replay.data.outcome, 'confirmed'); assert.equal(replay.data.replayed, true);
+  assert.equal(f.writes, 1);
+});
+
+test('a game clock correction cannot expire or extend a live confirmation', async () => {
+  const f = fixture();
+  const valid = await quoteBuy(f); f.correctGameClock(3600000);
+  assert.equal((await f.service.execute(valid)).data.outcome, 'confirmed');
+  const expired = await quoteBuy(f); f.correctGameClock(-3600000); f.advance(60001);
+  assert.equal((await f.service.execute(expired)).code, 'RANCH_QUOTE_EXPIRED');
+  assert.equal(f.writes, 1);
+});
+
+test('expiry during encoding refunds the durable automation reservation without dispatching', async t => {
+  const f = fixture();
+  const saved = await f.service.setAutomation({ ...require('../src/services/ranch-policy').DEFAULT_POLICY,
+    enabled: true, buyEnabled: true, goodsId: '10002', currencyDailyLimit: 20 });
+  const prepared = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 }, saved.data.revision);
+  const original = codec.encode;
+  t.mock.method(codec, 'encode', (name, payload) => {
+    const bytes = original(name, payload);
+    if (name === codec.ROUTES.buy.request) f.advance(60001);
+    return bytes;
+  });
+  assert.equal((await f.service.execute(prepared.data.id)).code, 'RANCH_QUOTE_EXPIRED');
+  assert.equal(f.writes, 0);
+  assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '0');
+  assert.equal((await f.service.execute(prepared.data.id)).data.outcome, 'not_sent');
 });

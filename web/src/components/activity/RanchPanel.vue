@@ -89,9 +89,11 @@ const message = computed(() => {
   const quote = ranch.quote
   if (!quote)
     return ''
+  if (ranch.reviewNotice)
+    return `${ranch.reviewNotice}\n重新核对后会显示最新数量和费用，仍需你确认执行。`
   const costs = quote.costItems?.map((row: any) => `${row.name} × ${row.count}`).join('、') || '无额外物品消耗'
   const rewards = quote.expectedRewards?.map((row: any) => `${row.name} × ${row.count}`).join('、')
-  return `本次 ${quote.count} 项。\n消耗：${costs}${rewards ? `\n预计获得：${rewards}` : ''}\n确认后执行一次，结果不明不会自动重试。`
+  return `${quote.renewed ? '已重新核对。\n' : ''}本次 ${quote.count} 项。\n消耗：${costs}${rewards ? `\n预计获得：${rewards}` : ''}\n确认单 60 秒有效。确认后执行一次，结果不明不会自动重试。`
 })
 defineExpose({ refresh })
 </script>
@@ -291,7 +293,7 @@ defineExpose({ refresh })
     <p v-if="ranch.operating" class="mt-3 text-sm text-gray-500" role="status">
       正在执行，请等待确认结果…
     </p>
-    <ConfirmModal :show="!!ranch.quote" :title="ranch.quote?.label || '确认牧场操作'" :message="message" type="primary" confirm-text="确认执行" @confirm="ranch.execute()" @close="ranch.closeQuote()" @cancel="ranch.closeQuote()" />
+    <ConfirmModal :show="!!ranch.quote" :title="ranch.quote?.label || '确认牧场操作'" :message="message" type="primary" :confirm-text="ranch.reviewNotice ? '重新核对' : '确认执行'" :loading="ranch.preparing" @confirm="ranch.execute()" @close="ranch.closeQuote()" @cancel="ranch.closeQuote()" />
   </section>
 </template>
 
