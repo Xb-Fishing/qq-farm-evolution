@@ -11,7 +11,7 @@ const QUOTE_TTL_MS = 60000;
 const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用';
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const planIdentity = plan => digest({ action: plan.action, route: plan.route, payload: plan.payload,
-  costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null });
+  costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null, ...(plan.upgradeTarget && { upgradeTarget: plan.upgradeTarget }) });
 function sumItems(items = []) {
   const values = new Map();
   for (const item of items) {
@@ -122,6 +122,24 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     return raw;
   }
   function viewFor(action) { return action === 'buy' ? 'shop' : action === 'claimTasks' ? 'tasks' : 'animals'; }
+  async function loadAction(initial, action, input, assertCurrent, rechecking = false) {
+    const raw = await loadRaw(initial, viewFor(action), input.shopId);
+    assertCurrent();
+    try {
+      if (action === 'upgrade') {
+        const facility = model.selectedFacility(raw.cells.facilities, input.facilityId);
+        if (facility.state !== 1) throw error('RANCH_UPGRADE_UNAVAILABLE', '设施尚未建成或未就绪');
+        raw.facilityDetail = (await rpc('facilityDetail', { instance_id: String(facility.instance_id) })).info;
+        assertCurrent();
+      }
+      return { raw, plan: model.planAction(action, input, raw, now()) };
+    } catch (failure) {
+      if (rechecking && ['upgrade', 'completeUpgrade'].includes(action)
+        && ['RANCH_FACILITY_NOT_FOUND', 'RANCH_UPGRADE_UNAVAILABLE', 'RANCH_UPGRADE_PENDING', 'RANCH_PRICE_UNKNOWN', 'INSUFFICIENT_BALANCE'].includes(failure.code))
+        throw error('RANCH_STATE_CHANGED', `${failure.message}，请重新核对`);
+      throw failure;
+    }
+  }
   function validateInput(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || JSON.stringify(input).length > 6000)
       throw error('RANCH_INVALID_ARGUMENT', '操作参数无效');
@@ -143,14 +161,13 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     });
   }
   async function prepare(action, input = {}, autoRevision) {
-    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'claimTasks'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
+    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
     validateInput(input);
     const accountOrigin = origin();
     if (unresolved(read())) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对，请先刷新并确认');
     const prepared = await withScene(async ({ initial, assertCurrent }) => {
-      const raw = await loadRaw(initial, viewFor(action), input.shopId); assertCurrent();
+      const { raw, plan } = await loadAction(initial, action, input, assertCurrent);
       if (origin() !== accountOrigin) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请重新确认');
-      const plan = model.planAction(action, input, raw, now());
       if (plan.count > 50 && ['place', 'produce', 'harvest', 'clean', 'claimTasks'].includes(action))
         throw error('RANCH_INVALID_ARGUMENT', '本次目标数量过多，请分次操作');
       const issuedAt = quoteNow();
@@ -183,6 +200,19 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       if (!sameItems(rewards, plan.expectedRewards)) unknown('任务奖励回执未完全匹配，请核对领取状态');
       const remaining = model.normalizeState({ ...before, tasks: reply }, now()).tasks;
       if (remaining.some(row => plan.payload.ids.includes(row.id) && !row.claimed)) unknown('任务仍显示未领取，请核对结果');
+    } else if (plan.upgradeTarget) {
+      const target = plan.upgradeTarget;
+      const matchesTarget = row => String(row?.instance_id) === target.instanceId && row.facility_id === target.toId && row.level === target.toLevel;
+      const current = after && model.selectedFacility(after.cells.facilities, target.instanceId);
+      if (plan.action === 'upgrade') {
+        const start = reply.upgrade;
+        if (String(start?.inst_id) !== target.instanceId || start.target_facility_id !== target.toId || start.target_level !== target.toLevel)
+          unknown('升级回执的设施或目标等级不匹配，请刷新核对');
+        const progressing = current?.facility_id === target.fromId && current.level === target.fromLevel && [1, 2].includes(current.upgrade_state);
+        if (!progressing && !matchesTarget(current)) unknown('设施尚未显示本次升级，请刷新核对');
+      } else if (!matchesTarget(reply.facility) || (after && !matchesTarget(current))) {
+        unknown('设施实际等级与升级目标不匹配，请刷新核对');
+      }
     } else if (plan.action === 'addGrass') {
       if (!sameItems(reply.consumed, plan.costItems)) unknown('补草扣除回执未匹配，请核对牧草数量');
     } else {
@@ -217,13 +247,14 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       }
       completed = reply.op_results.length; rewards = reply.op_results.flatMap(row => row.rewards || []);
     }
-    if (['place', 'addGrass'].includes(plan.action)) {
+    if (['place', 'addGrass', 'upgrade'].includes(plan.action)) {
       if (!after) unknown('写入已回复，但新库存未能读取，请刷新核对');
       for (const cost of plan.costItems) if (BigInt(model.balance(before.bag, cost.id).total) - BigInt(model.balance(after.bag, cost.id).total) !== BigInt(cost.count))
         unknown('库存变化与本次费用未匹配，请核对结果');
     }
+    const success = { upgrade: '已开始升级，到时可在设施卡完成升级', completeUpgrade: '设施升级已完成' };
     return { outcome: completed < plan.count ? 'partial' : 'confirmed', completed, requested: plan.count,
-      rewards: sumItems(rewards), costs: plan.costItems, message: completed < plan.count ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : '操作已确认' };
+      rewards: sumItems(rewards), costs: plan.costItems, message: completed < plan.count ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : success[plan.action] || '操作已确认' };
   }
   function checkQuote(data, quote, id) {
     if (!quote) {
@@ -246,8 +277,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     const replay = checkQuote(data, quote, id);
     if (replay) return replay;
     return withScene(async ({ initial, assertCurrent }) => {
-      const before = await loadRaw(initial, viewFor(quote.action), quote.input.shopId); assertCurrent();
-      const plan = model.planAction(quote.action, quote.input, before, now());
+      const { raw: before, plan } = await loadAction(initial, quote.action, quote.input, assertCurrent, true);
       data = read(); quote = data.quotes.find(row => row.id === id);
       const settled = checkQuote(data, quote, id);
       if (settled) return settled;
@@ -341,7 +371,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     try { return { ok: true, data: await callback() }; }
     catch (failure) {
       const known = /^RANCH_[A-Z_]{1,64}$/.test(failure.code || '') || LOCAL_CODES.has(failure.code);
-      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', bag: '背包', shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理' };
+      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包', shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理' };
       const failureStage = Object.hasOwn(labels, failure.ranchStage) ? failure.ranchStage : 'unknown';
       const failureKind = ['encode', 'request', 'decode', 'normalize'].includes(failure.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
       if (!known) {

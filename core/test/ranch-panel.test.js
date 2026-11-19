@@ -171,3 +171,35 @@ test('changing account while renewing a ranch quote discards late confirmation',
   wait.resolve(quoteReply('foreign', 60000)); await h.flush();
   assert.equal(f.store.quote, null); assert.equal(f.posts.filter(p => p.url.endsWith('/operate')).length, 0);
 });
+
+test('nest task opens its facility without spending and only a separate confirmation starts the upgrade', async () => {
+  const f = fixture(); await h.flush();
+  const nest = { id: '41', moduleType: 6, name: '窝', active: true, capacity: 3, level: 1,
+    upgrade: { status: 'available', nextLevel: 2, nextCapacity: 4, requiredLevel: 8, durationSec: 10, canStart: true,
+      costs: [{ id: '1007', name: '金券', count: '14000' }] } };
+  const task = { desc: '窝升级至2级', id: '300018', upgradeFacilityModuleType: 6, upgradeFacilityLevel: 2,
+    progress: '1', total: '2', unlocked: true, claimed: false, canClaim: false, rewards: [] };
+  const stock = { ...state(), level: 9, facilities: [nest], currencies: [{ id: '1007', name: '金券', available: '5709', total: '5709' }] };
+  f.read(async (_, config) => ({ data: { ok: true, data: { ...stock, tasks: config.params.view === 'tasks' ? [task] : null } } }));
+  h.click(button(f.root, '牧场任务')); await h.flush();
+  h.click(button(f.root, '前往窝升级')); await h.flush();
+  assert.equal(f.store.view, 'animals'); assert.equal(f.posts.length, 0);
+  assert.match(h.textOf(f.root), /还差 8291/); assert.match(h.textOf(f.root), /容量 3 → 4/);
+  f.prepare(async () => ({ data: { ok: false, code: 'RANCH_INSUFFICIENT_BALANCE', error: '金券不足，升级还差 8291' } }));
+  h.click(button(f.root, '升级至 2 级')); await h.flush();
+  assert.equal(f.store.quote, null); assert.match(h.textOf(f.root), /金券不足/);
+  f.prepare(async () => quoteReply('nest-quote', 60000, '13800'));
+  h.click(button(f.root, '升级至 2 级')); await h.flush();
+  assert.equal(f.posts.length, 2);
+  for (const post of f.posts) assert.deepEqual(post.body, { action: 'upgrade', input: { facilityId: '41' } });
+  assert.match(h.textOf(f.root), /金券 × 13800/);
+  f.operate(async () => ({ data: { ok: true, data: { outcome: 'confirmed', message: '已开始升级',
+    snapshot: { ...stock, serverTime: 1800000000000, facilities: [{ ...nest, upgrade: { ...nest.upgrade, canStart: false, status: 'in_progress', endTimeMs: 1800000010000 } }] } } } }));
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.match(h.textOf(f.root), /正在升级至 2 级/); assert.equal(button(f.root, '完成升级'), undefined);
+  f.read(async () => ({ data: { ok: true, data: { ...stock, facilities: [{ ...nest, upgrade: { ...nest.upgrade, canStart: false, canComplete: true, status: 'ready' } }] } } }));
+  h.click(button(f.root, '刷新牧场')); await h.flush();
+  h.click(button(f.root, '完成升级')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'completeUpgrade', input: { facilityId: '41' } });
+  assert.deepEqual(f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId), ['nest-quote']);
+});

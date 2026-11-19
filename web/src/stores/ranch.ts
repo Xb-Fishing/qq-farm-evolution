@@ -299,6 +299,9 @@ export const useRanchStore = defineStore('ranch', () => {
         state.value = { ...data.data.snapshot, lastOperation: data.data, sceneRecoveryRequired: data.data.sceneRecoveryRequired }
         rememberOptions(state.value)
       }
+      else if (data.data.refreshRequired) {
+        readError.value = true
+      }
       return data.data.outcome === 'confirmed'
     }
     catch (e: any) {

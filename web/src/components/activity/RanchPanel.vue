@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import RanchAutomationSettings from '@/components/activity/RanchAutomationSettings.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -27,6 +27,7 @@ async function refresh(view = ranch.view, shop = ranch.shopId) {
     retryTimer = setTimeout(() => { void refresh(view, shop) }, 5000)
   else if (ok)
     retries = 0
+  return ok
 }
 watch(() => props.accountId, (id) => {
   viewGeneration++
@@ -46,6 +47,50 @@ onBeforeUnmount(() => {
   ranch.cancel()
 })
 const facilities = computed(() => ranch.state?.facilities || [])
+const facilityCards = ref<HTMLElement[]>([])
+const estimatedServerTime = ref(0)
+watch(() => [ranch.state, ranch.view] as const, ([snapshot, view], _, onCleanup) => {
+  const receivedAt = performance.now()
+  const serverTime = Number(snapshot?.serverTime) || 0
+  estimatedServerTime.value = serverTime
+  if (!serverTime || view !== 'animals')
+    return
+  const lastDeadline = Math.max(0, ...facilities.value.map((row: any) =>
+    row.upgrade?.status === 'in_progress' ? Number(row.upgrade.endTimeMs) || 0 : 0))
+  if (lastDeadline <= serverTime)
+    return
+  const timer = setInterval(() => {
+    estimatedServerTime.value = serverTime + performance.now() - receivedAt
+    if (estimatedServerTime.value >= lastDeadline)
+      clearInterval(timer)
+  }, 500)
+  onCleanup(() => clearInterval(timer))
+}, { immediate: true })
+function secondsRemaining(upgrade: any) {
+  return Math.max(0, Math.ceil((upgrade.endTimeMs - estimatedServerTime.value) / 1000))
+}
+function costLabel(cost: any) {
+  const balance = ranch.state.currencies.find((row: any) => row.id === cost.id)
+  const missing = balance ? BigInt(cost.count) - BigInt(balance.available) : 0n
+  return `${cost.name} × ${cost.count}${missing > 0n ? `（还差 ${missing}）` : ''}`
+}
+function taskFacility(task: any) {
+  if (!task.upgradeFacilityModuleType || task.claimed || task.canClaim)
+    return
+  return facilities.value.find((row: any) => row.active && row.moduleType === task.upgradeFacilityModuleType && row.level < task.upgradeFacilityLevel)
+}
+async function openFacility(task: any) {
+  const facilityId = taskFacility(task)?.id
+  const generation = viewGeneration
+  if (!facilityId || !await refresh('animals'))
+    return
+  await nextTick()
+  if (generation !== viewGeneration || ranch.view !== 'animals')
+    return
+  const card = facilityCards.value.find(node => node.id === `ranch-facility-${facilityId}`)
+  card?.focus({ preventScroll: true })
+  card?.scrollIntoView({ block: 'center' })
+}
 const animals = computed(() => ranch.state?.animals || [])
 const producers = computed(() => animals.value.filter((row: any) => row.canProduce).length)
 const harvests = computed(() => animals.value.filter((row: any) => row.canHarvest).length + facilities.value.reduce((n: number, row: any) => n + (row.ranch?.shelves?.filter((s: any) => s.canCollect).length || 0), 0))
@@ -168,10 +213,37 @@ defineExpose({ refresh })
           </BaseButton>
         </div>
         <div class="grid gap-3 lg:grid-cols-2">
-          <article v-for="facility in facilities" :key="facility.id" class="min-w-0 border border-gray-200 rounded-lg p-3 dark:border-gray-700">
+          <article v-for="facility in facilities" :id="`ranch-facility-${facility.id}`" :key="facility.id" ref="facilityCards" tabindex="-1" class="min-w-0 border border-gray-200 rounded-lg p-3 dark:border-gray-700">
             <h3 class="font-semibold">
               {{ facility.name }} <span class="text-sm text-gray-500">Lv.{{ facility.level }}</span>
             </h3>
+            <div v-if="facility.upgrade" class="my-3 rounded-lg bg-emerald-50 p-3 text-sm dark:bg-emerald-950">
+              <template v-if="facility.active && facility.upgrade.nextLevel">
+                <p class="font-medium">
+                  容量 {{ facility.capacity }} → {{ facility.upgrade.nextCapacity }}
+                </p>
+                <p v-if="facility.upgrade.status === 'available' || facility.upgrade.status === 'not_available'" class="my-1">
+                  牧场 {{ facility.upgrade.requiredLevel }} 级可升 · 耗时 {{ facility.upgrade.durationSec }} 秒
+                </p>
+                <p v-if="facility.upgrade.canStart && facility.upgrade.costs?.length" class="mb-2">
+                  预计消耗 {{ facility.upgrade.costs.map(costLabel).join('、') }}
+                </p>
+              </template>
+              <BaseButton v-if="facility.upgrade.canStart || (facility.active && facility.upgrade.nextLevel && facility.upgrade.status === 'not_available')" :disabled="ranch.blocked || !facility.upgrade.canStart" @click="ranch.prepare('upgrade', { facilityId: facility.id })">
+                升级至 {{ facility.upgrade.nextLevel }} 级
+              </BaseButton>
+              <template v-else-if="facility.upgrade.status === 'in_progress' || facility.upgrade.canComplete">
+                <p v-if="facility.upgrade.status === 'in_progress' && secondsRemaining(facility.upgrade) > 0">
+                  正在升级至 {{ facility.upgrade.nextLevel }} 级，约剩 {{ secondsRemaining(facility.upgrade) }} 秒
+                </p>
+                <BaseButton v-else :disabled="ranch.blocked" @click="ranch.prepare('completeUpgrade', { facilityId: facility.id })">
+                  完成升级
+                </BaseButton>
+              </template>
+              <p v-if="facility.upgrade.reason && facility.upgrade.status !== 'in_progress'" class="text-gray-600 dark:text-gray-300">
+                {{ facility.upgrade.reason }}
+              </p>
+            </div>
             <template v-if="facility.feed">
               <p class="my-2 text-sm">
                 牧草机 {{ facility.feed.count }} / {{ facility.capacity }} · <span v-if="facility.feed.remainingSec != null">剩余约 {{ Math.ceil(Number(facility.feed.remainingSec) / 60) }} 分钟</span><span v-else>当前未提供计时</span>
@@ -281,6 +353,9 @@ defineExpose({ refresh })
               {{ task.rewards.map((row: any) => `${row.name} × ${row.count}`).join('、') }}
             </p>
           </div>
+          <BaseButton v-if="taskFacility(task)" :disabled="ranch.loading || ranch.preparing || ranch.operating" @click="openFacility(task)">
+            前往{{ taskFacility(task).name }}升级
+          </BaseButton>
           <BaseButton :disabled="ranch.blocked || !task.canClaim" @click="ranch.prepare('claimTasks', { taskId: task.id, double: false })">
             领取
           </BaseButton>

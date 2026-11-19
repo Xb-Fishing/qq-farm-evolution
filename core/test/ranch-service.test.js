@@ -9,11 +9,11 @@ process.env.FARM_DATA_DIR = root;
 const codec = require('../src/services/ranch-codec');
 const { createRanchService } = require('../src/services/ranch-service');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
-function fixture() {
+function fixture(upgrade = false) {
   const file = path.resolve(root, `operations-${Math.random().toString(16).slice(2)}.json`);
   assert.ok(file.startsWith(root + path.sep));
   let now = 1800000000000; let gameOffset = 0; let allowed = true; let failure = false; let malformed = false;
-  let gold = 100; let price = 10; let grass = 50; let cubs = 5; let writes = 0;
+  let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let cubs = 5; let writes = 0;
   const calls = []; const ws = {}; let beforeWrite;
   const facilities = [
     { instance_id: '11', facility_id: 6001002, module_type: 6, state: 1, level: 2, capacity: 4,
@@ -21,6 +21,10 @@ function fixture() {
         animals: [{ ranch_inst_id: '11', animal_inst_id: 7, animal_id: '60001', can_deliver: true, can_harvest: true }] } },
     { instance_id: '22', facility_id: 7001001, module_type: 8, state: 1, level: 1, capacity: 100, feed_machine: { feed_count: 10 } },
   ];
+  if (upgrade) {
+    Object.assign(facilities[0], { facility_id: 6001001, level: 1, capacity: 3, upgrade_state: 0, upgrade_end_time: '0' });
+    facilities[0].ranch.capacity = 3;
+  }
   const network = {
     getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
     withRanchScene: async callback => {
@@ -34,7 +38,12 @@ function fixture() {
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
-      else if (method === 'GetBag') reply = { global_scene_id: 2, physical_items: [{ id: '60001', count: String(cubs) }, { id: '7001', count: String(grass) }], virtual_items: [{ id: '1007', count: String(gold) }] };
+      else if (method === 'GetBag') reply = { global_scene_id: 2, physical_items: [{ id: '60001', count: String(cubs) }, { id: '7001', count: String(grass) }], virtual_items: [{ id: '1007', count: String(gold) }, ...(upgrade ? [{ id: '1102', count: '40000' }] : [])] };
+      else if (method === 'GetFacilityDetail') {
+        const facility = facilities[0]; assert.equal(request.instance_id, facility.instance_id);
+        reply = { info: { instance_id: facility.instance_id, facility_id: facility.facility_id, module_type: facility.module_type,
+          level: facility.level, upgrade_cost: [{ id: '1007', count: String(f.upgradeCost) }] } };
+      }
       else if (method === 'ShopProfiles') reply = { shop_profiles: [{ shop_id: 5, global_scene_ids: [2] }] };
       else if (method === 'ShopInfo') reply = { goods_list: [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }] };
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: [] } };
@@ -42,7 +51,16 @@ function fixture() {
         if (f.rejectUnsent) throw Object.assign(new Error('synthetic budget rejection'), { isGovernedRejection: true });
         beforeWrite?.(); writes++;
         if (failure) throw new Error('synthetic timeout');
-        if (method === 'BuyGoods') {
+        if (method === 'UpgradeBuilding') {
+          assert.equal(request.inst_id, facilities[0].instance_id);
+          gold -= f.upgradeCost; facilities[0].upgrade_state = 1; facilities[0].upgrade_end_time = String(Math.floor(now / 1000) + 10);
+          reply = { upgrade: { inst_id: request.inst_id, target_facility_id: 6001002, target_level: 2, state: 1, end_time: facilities[0].upgrade_end_time } };
+        } else if (method === 'CompleteBuildingUpgrade') {
+          assert.equal(request.inst_id, facilities[0].instance_id);
+          Object.assign(facilities[0], { facility_id: 6001002, level: 2, capacity: 4, upgrade_state: 0, upgrade_end_time: '0' });
+          facilities[0].ranch.capacity = 4;
+          reply = { facility: facilities[0], item: { inst_id: request.inst_id, facility_id: 6001002, level: 2 } };
+        } else if (method === 'BuyGoods') {
           const count = Number(request.num); gold -= price * count; cubs += count;
           reply = { goods: { id: '10002' }, cost_items: [{ id: '1007', count: String(price * count) }], get_items: [{ id: '60001', count: String(count) }] };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
@@ -57,7 +75,7 @@ function fixture() {
     },
   };
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, file, get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
+  const f = { service: make(), make, calls, file, upgradeCost: 14000, get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
   return f;
@@ -225,4 +243,39 @@ test('expiry during encoding refunds the durable automation reservation without 
   assert.equal(f.writes, 0);
   assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '0');
   assert.equal((await f.service.execute(prepared.data.id)).data.outcome, 'not_sent');
+});
+
+test('facility upgrade checks the live price twice, then starts and completes as two distinct confirmations', async () => {
+  const f = fixture(true);
+  const target = { facilityId: '11' };
+  const quote = await f.service.prepare('upgrade', target);
+  assert.equal(quote.ok, true, quote.error); assert.equal(quote.data.costItems[0].count, '14000');
+  assert.equal(f.writes, 0); assert.equal(f.calls.filter(x => x === 'GetFacilityDetail').length, 1);
+  f.upgradeCost = 14001;
+  assert.equal((await f.service.execute(quote.data.id)).code, 'RANCH_STATE_CHANGED'); assert.equal(f.writes, 0);
+  const fresh = await f.service.prepare('upgrade', target);
+  assert.equal(fresh.data.costItems[0].count, '14001');
+  const started = await f.service.execute(fresh.data.id);
+  assert.equal(started.data.outcome, 'confirmed', started.data.message);
+  assert.match(started.data.message, /已开始升级/);
+  const nest = started.data.snapshot.facilities.find(x => x.id === '11');
+  assert.equal(nest.level, 1); assert.equal(nest.upgrade.status, 'in_progress');
+  assert.equal(nest.upgrade.canComplete, false);
+  assert.equal((await f.service.prepare('completeUpgrade', target)).ok, false); assert.equal(f.writes, 1);
+  f.advance(10000);
+  const complete = await f.service.prepare('completeUpgrade', target); assert.equal(complete.ok, true, complete.error);
+  assert.equal(complete.data.costItems.length, 0); assert.equal(f.writes, 1);
+  const done = await f.service.execute(complete.data.id); assert.equal(done.data.outcome, 'confirmed', done.data.message);
+  assert.equal(done.data.snapshot.facilities.find(x => x.id === '11').level, 2);
+  assert.equal((await f.service.execute(complete.data.id)).data.replayed, true); assert.equal(f.writes, 2);
+});
+test('invalid upgrade instance never requests its detail and a mismatched start receipt is held', async () => {
+  const f = fixture(true);
+  assert.equal((await f.service.prepare('upgrade', { facilityId: '99' })).ok, false);
+  assert.equal(f.calls.includes('GetFacilityDetail'), false);
+  const q = await f.service.prepare('upgrade', { facilityId: '11' }); assert.equal(q.ok, true, q.error);
+  f.mutateReply = reply => ({ ...reply, upgrade: { ...reply.upgrade, target_level: 9 } });
+  const result = await f.service.execute(q.data.id);
+  assert.equal(result.data.outcome, 'unknown'); assert.equal(f.writes, 1);
+  assert.equal((await f.service.execute(q.data.id)).data.replayed, true); assert.equal(f.writes, 1);
 });

@@ -186,6 +186,55 @@ message AllCellsReply {
     int32 region_quota_count = 8;
     SpeedUpInfo region_speed_up = 9;
 }
+message FacilityDetailInfo {
+    int64 instance_id = 1;
+    string name = 2;
+    string description = 3;
+    int32 base_facility_id = 4;
+    int32 module_type = 5;
+    repeated Item upgrade_cost = 6;
+    int32 level = 7;
+    int32 facility_id = 8;
+    int32 position_x = 9;
+    int32 position_y = 10;
+    int32 rotation = 11;
+    int32 width = 12;
+    int32 height = 13;
+    int32 capacity = 14;
+    RanchDetail ranch = 20;
+    FeedMachineDetail feed_machine = 21;
+    bytes order_board = 22;
+    EmptyFacilityDetail empty_detail = 99;
+}
+message EmptyFacilityDetail {
+}
+message GetFacilityDetailRequest {
+    int64 instance_id = 1;
+    int64 host_gid = 2;
+}
+message GetFacilityDetailReply {
+    FacilityDetailInfo info = 1;
+}
+message BuildingUpgradeInfo {
+    int64 inst_id = 1;
+    int32 state = 2;
+    int64 end_time = 3;
+    int32 target_facility_id = 4;
+    int32 target_level = 5;
+}
+message UpgradeBuildingRequest {
+    int64 inst_id = 1;
+}
+message UpgradeBuildingReply {
+    BuildingUpgradeInfo upgrade = 1;
+}
+message CompleteBuildingUpgradeRequest {
+    int64 inst_id = 1;
+}
+message CompleteBuildingUpgradeReply {
+    FacilityInfo facility = 1;
+    BuildingItemInfo item = 2;
+}
 message FeedMachineDetail {
     int32 feed_count = 1;
     int32 consume_rate = 2;
@@ -406,6 +455,27 @@ const ROUTES = Object.freeze({
         "request": "AllCellsRequest",
         "reply": "AllCellsReply",
         "writing": false
+    },
+    "facilityDetail": {
+        "service": "gamepb.homesteadpb.HomesteadService",
+        "method": "GetFacilityDetail",
+        "request": "GetFacilityDetailRequest",
+        "reply": "GetFacilityDetailReply",
+        "writing": false
+    },
+    "upgrade": {
+        "service": "gamepb.homesteadpb.HomesteadService",
+        "method": "UpgradeBuilding",
+        "request": "UpgradeBuildingRequest",
+        "reply": "UpgradeBuildingReply",
+        "writing": true
+    },
+    "completeUpgrade": {
+        "service": "gamepb.homesteadpb.HomesteadService",
+        "method": "CompleteBuildingUpgrade",
+        "request": "CompleteBuildingUpgradeRequest",
+        "reply": "CompleteBuildingUpgradeReply",
+        "writing": true
     },
     "bag": {
         "service": "gamepb.itempb.ItemService",

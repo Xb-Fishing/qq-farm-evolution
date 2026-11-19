@@ -427,168 +427,264 @@
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 1,
-      "capacity": 3
+      "capacity": 3,
+      "next_facility_id": 6001002,
+      "upgrade_conditions": null,
+      "upgrade_cost": null,
+      "upgrade_secs": null
     },
     {
       "facility_id": 6001002,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 2,
-      "capacity": 4
+      "capacity": 4,
+      "next_facility_id": 6001003,
+      "upgrade_conditions": "RANCH_LEVEL:8",
+      "upgrade_cost": "1007:14000",
+      "upgrade_secs": 10
     },
     {
       "facility_id": 6001003,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 3,
-      "capacity": 5
+      "capacity": 5,
+      "next_facility_id": 6001004,
+      "upgrade_conditions": "RANCH_LEVEL:16",
+      "upgrade_cost": "1007:155000",
+      "upgrade_secs": 60
     },
     {
       "facility_id": 6001004,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 4,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6001005,
+      "upgrade_conditions": "RANCH_LEVEL:24",
+      "upgrade_cost": "1007:349000",
+      "upgrade_secs": 300
     },
     {
       "facility_id": 6001005,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 5,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6001006,
+      "upgrade_conditions": "RANCH_LEVEL:32",
+      "upgrade_cost": "1007:610000",
+      "upgrade_secs": 900
     },
     {
       "facility_id": 6001006,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 6,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6001007,
+      "upgrade_conditions": "RANCH_LEVEL:40",
+      "upgrade_cost": "1007:2300000",
+      "upgrade_secs": 1800
     },
     {
       "facility_id": 6001007,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 7,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6001008,
+      "upgrade_conditions": "RANCH_LEVEL:48",
+      "upgrade_cost": "1007:4000000",
+      "upgrade_secs": 21600
     },
     {
       "facility_id": 6001008,
       "name": "窝",
       "module_type": "MODULE_TYPE_RANCH_COOP",
       "level": 8,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": null,
+      "upgrade_conditions": "RANCH_LEVEL:57",
+      "upgrade_cost": "1007:8200000",
+      "upgrade_secs": 43200
     },
     {
       "facility_id": 6002001,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 1,
-      "capacity": 3
+      "capacity": 3,
+      "next_facility_id": 6002002,
+      "upgrade_conditions": null,
+      "upgrade_cost": null,
+      "upgrade_secs": null
     },
     {
       "facility_id": 6002002,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 2,
-      "capacity": 4
+      "capacity": 4,
+      "next_facility_id": 6002003,
+      "upgrade_conditions": "RANCH_LEVEL:25",
+      "upgrade_cost": "1007:14000",
+      "upgrade_secs": 10
     },
     {
       "facility_id": 6002003,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 3,
-      "capacity": 5
+      "capacity": 5,
+      "next_facility_id": 6002004,
+      "upgrade_conditions": "RANCH_LEVEL:28",
+      "upgrade_cost": "1007:155000",
+      "upgrade_secs": 60
     },
     {
       "facility_id": 6002004,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 4,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6002005,
+      "upgrade_conditions": "RANCH_LEVEL:31",
+      "upgrade_cost": "1007:349000",
+      "upgrade_secs": 300
     },
     {
       "facility_id": 6002005,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 5,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6002006,
+      "upgrade_conditions": "RANCH_LEVEL:36",
+      "upgrade_cost": "1007:610000",
+      "upgrade_secs": 900
     },
     {
       "facility_id": 6002006,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 6,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6002007,
+      "upgrade_conditions": "RANCH_LEVEL:44",
+      "upgrade_cost": "1007:2300000",
+      "upgrade_secs": 1800
     },
     {
       "facility_id": 6002007,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 7,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": 6002008,
+      "upgrade_conditions": "RANCH_LEVEL:52",
+      "upgrade_cost": "1007:4000000",
+      "upgrade_secs": 21600
     },
     {
       "facility_id": 6002008,
       "name": "棚",
       "module_type": "MODULE_TYPE_RANCH_SHED",
       "level": 8,
-      "capacity": 6
+      "capacity": 6,
+      "next_facility_id": null,
+      "upgrade_conditions": "RANCH_LEVEL:63",
+      "upgrade_cost": "1007:8200000",
+      "upgrade_secs": 43200
     },
     {
       "facility_id": 7001001,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 1,
-      "capacity": 100
+      "capacity": 100,
+      "next_facility_id": 7001002,
+      "upgrade_conditions": null,
+      "upgrade_cost": null,
+      "upgrade_secs": null
     },
     {
       "facility_id": 7001002,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 2,
-      "capacity": 150
+      "capacity": 150,
+      "next_facility_id": 7001003,
+      "upgrade_conditions": "RANCH_LEVEL:10",
+      "upgrade_cost": "1007:6000",
+      "upgrade_secs": 4
     },
     {
       "facility_id": 7001003,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 3,
-      "capacity": 560
+      "capacity": 560,
+      "next_facility_id": 7001004,
+      "upgrade_conditions": "RANCH_LEVEL:18",
+      "upgrade_cost": "1007:62000",
+      "upgrade_secs": 25
     },
     {
       "facility_id": 7001004,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 4,
-      "capacity": 1100
+      "capacity": 1100,
+      "next_facility_id": 7001005,
+      "upgrade_conditions": "RANCH_LEVEL:26",
+      "upgrade_cost": "1007:140000",
+      "upgrade_secs": 120
     },
     {
       "facility_id": 7001005,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 5,
-      "capacity": 1800
+      "capacity": 1800,
+      "next_facility_id": 7001006,
+      "upgrade_conditions": "RANCH_LEVEL:34",
+      "upgrade_cost": "1007:245000",
+      "upgrade_secs": 360
     },
     {
       "facility_id": 7001006,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 6,
-      "capacity": 2900
+      "capacity": 2900,
+      "next_facility_id": 7001007,
+      "upgrade_conditions": "RANCH_LEVEL:42",
+      "upgrade_cost": "1007:931000",
+      "upgrade_secs": 720
     },
     {
       "facility_id": 7001007,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 7,
-      "capacity": 5200
+      "capacity": 5200,
+      "next_facility_id": 7001008,
+      "upgrade_conditions": "RANCH_LEVEL:50",
+      "upgrade_cost": "1007:1614000",
+      "upgrade_secs": 9000
     },
     {
       "facility_id": 7001008,
       "name": "牧草机",
       "module_type": "MODULE_TYPE_FEED_MACHINE",
       "level": 8,
-      "capacity": 8000
+      "capacity": 8000,
+      "next_facility_id": null,
+      "upgrade_conditions": "RANCH_LEVEL:60",
+      "upgrade_cost": "1007:3299000",
+      "upgrade_secs": 18000
     }
   ],
   "items": [

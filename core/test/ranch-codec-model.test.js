@@ -80,6 +80,107 @@ test('numeric validation and balance distinguish known zero, locked and unavaila
     assert.throws(() => model.normalizeState(raw, NOW), /场景/);
 });
 
+test('facility upgrade routes and independent wire fixtures preserve target, costs and int64 identifiers', () => {
+    const routeTriples = [
+        ['facilityDetail', 'GetFacilityDetail', false],
+        ['upgrade', 'UpgradeBuilding', true],
+        ['completeUpgrade', 'CompleteBuildingUpgrade', true],
+    ];
+    const idWire = protobuf.Writer.create().uint32(8).int64(HUGE).finish();
+    for (const [route, method, writing] of routeTriples) {
+        assert.deepEqual(codec.ROUTES[route], { service: 'gamepb.homesteadpb.HomesteadService', method,
+            request: `${method}Request`, reply: `${method}Reply`, writing });
+        assert.deepEqual(Buffer.from(codec.encode(`${method}Request`, { [writing ? 'inst_id' : 'instance_id']: HUGE })), Buffer.from(idWire));
+    }
+    const detailWire = protobuf.Writer.create().uint32(10).fork()
+        .uint32(8).int64(HUGE).uint32(40).int32(6)
+        .uint32(50).fork().uint32(8).int64('1007').uint32(16).int64('14000').ldelim()
+        .uint32(56).int32(1).uint32(64).int32(6001001).ldelim().finish();
+    const { info } = codec.decode('GetFacilityDetailReply', detailWire);
+    assert.deepEqual([info.instance_id, info.module_type, info.level, info.facility_id], [HUGE, 6, 1, 6001001]);
+    assert.deepEqual(info.upgrade_cost.map(({ id, count }) => [id, count]), [['1007', '14000']]);
+    assert.equal(codec.decode('GetFacilityDetailReply', Buffer.alloc(0)).info, null);
+    const started = protobuf.Writer.create().uint32(10).fork().uint32(8).int64(HUGE)
+        .uint32(16).int32(1).uint32(24).int64('1700000010').uint32(32).int32(6001002).uint32(40).int32(2).ldelim().finish();
+    assert.deepEqual(codec.decode('UpgradeBuildingReply', started).upgrade, {
+        inst_id: HUGE, state: 1, end_time: '1700000010', target_facility_id: 6001002, target_level: 2,
+    });
+    const completed = protobuf.Writer.create().uint32(10).fork().uint32(8).int64(HUGE)
+        .uint32(16).int32(6001002).uint32(56).int32(2).ldelim()
+        .uint32(18).fork().uint32(8).int64(HUGE).uint32(16).int32(6001002).uint32(24).int32(2).ldelim().finish();
+    const reply = codec.decode('CompleteBuildingUpgradeReply', completed);
+    assert.deepEqual([reply.facility.instance_id, reply.facility.facility_id, reply.facility.level], [HUGE, 6001002, 2]);
+    assert.deepEqual([reply.item.inst_id, reply.item.facility_id, reply.item.level], [HUGE, 6001002, 2]);
+});
+
+function upgradeFixture() {
+    const raw = fixture();
+    Object.assign(raw.cells.facilities[0], { facility_id: 6001001, level: 1, capacity: 3 });
+    raw.bag.virtual_items.push({ id: '1102', count: String(model.metadata.levels.find(row => row.level === 8).exp) });
+    const detail = { instance_id: HUGE, facility_id: 6001001, module_type: 6, level: 1,
+        upgrade_cost: [{ id: '1007', count: '15000' }] };
+    return { raw, detail, facility: raw.cells.facilities[0], input: { facilityId: HUGE } };
+}
+
+test('upgrade preview is read-only, uses the fixed level chain, and prepares against exact dynamic costs', () => {
+    const { raw, detail, input } = upgradeFixture();
+    const initial = model.normalizeState(raw, NOW).facilities[0].upgrade;
+    assert.deepEqual({ ...initial, costs: initial.costs.map(({ id, count }) => [id, count]) }, {
+        status: 'available', nextLevel: 2, nextCapacity: 4, durationSec: 10, requiredLevel: 8,
+        costs: [['1007', '14000']], canStart: true, canComplete: false, reason: '', endTimeMs: null,
+    });
+    assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'RANCH_PRICE_UNKNOWN' });
+    raw.facilityDetail = detail;
+    const plan = model.planAction('upgrade', input, raw, NOW);
+    assert.deepEqual(plan.payload, { inst_id: HUGE });
+    assert.deepEqual(plan.upgradeTarget, { instanceId: HUGE, fromId: 6001001, fromLevel: 1, toId: 6001002, toLevel: 2 });
+    assert.equal(plan.label, '开始升级：窝 Lv.1 → Lv.2');
+    assert.deepEqual(plan.costItems.map(({ id, count }) => [id, count]), [['1007', '15000']]);
+    for (const changes of [{ instance_id: '22' }, { facility_id: 6001002 }, { module_type: 7 }, { level: 2 }]) {
+        raw.facilityDetail = { ...detail, ...changes };
+        assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'RANCH_STATE_CHANGED' });
+    }
+    for (const costs of [undefined, [], [{ id: '1007', count: '0' }], [{ id: '1007', count: '-1' }]]) {
+        raw.facilityDetail = { ...detail, upgrade_cost: costs };
+        assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'RANCH_PRICE_UNKNOWN' });
+    }
+    raw.facilityDetail = { ...detail, upgrade_cost: [{ id: '1007', count: '9007199254741000' }, { id: '1007', count: '1' }] };
+    assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'INSUFFICIENT_BALANCE' });
+    raw.facilityDetail = detail;
+    raw.bag.virtual_items.pop();
+    assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'RANCH_UPGRADE_UNAVAILABLE' });
+});
+
+test('complete upgrade requires the same eligible facility and a known elapsed timer, and carries no costs', () => {
+    const { raw, facility, input } = upgradeFixture();
+    assert.throws(() => model.planAction('completeUpgrade', input, raw, NOW), { code: 'RANCH_UPGRADE_UNAVAILABLE' });
+    for (const time of ['1700000000', String(NOW)]) {
+        Object.assign(facility, { upgrade_state: 1, upgrade_end_time: time });
+        assert.throws(() => model.planAction('completeUpgrade', input, raw, NOW - 1), { code: 'RANCH_UPGRADE_PENDING' });
+        assert.throws(() => model.planAction('upgrade', input, raw, NOW), { code: 'RANCH_UPGRADE_UNAVAILABLE' });
+        const plan = model.planAction('completeUpgrade', input, raw, NOW);
+        assert.deepEqual(plan.payload, { inst_id: HUGE });
+        assert.deepEqual(plan.costItems, []);
+        assert.equal(plan.label, '完成升级：窝 Lv.1 → Lv.2');
+        assert.equal(model.normalizeState(raw, NOW).facilities[0].upgrade.endTimeMs, NOW);
+    }
+    for (const [state, end] of [[2, '0'], [2, '-1'], [3, '1700000000']]) {
+        Object.assign(facility, { upgrade_state: state, upgrade_end_time: end });
+        assert.equal(model.normalizeState(raw, NOW).facilities[0].upgrade.canComplete, false);
+    }
+    Object.assign(facility, { upgrade_state: 0, upgrade_end_time: '0', facility_id: 6001008, level: 8 });
+    assert.equal(model.normalizeState(raw, NOW).facilities[0].upgrade.status, 'not_available');
+});
+
+test('only the reviewed coop upgrade task has a facility navigation target', () => {
+    const raw = fixture();
+    raw.tasks.task_info.growth_tasks.push({ id: '300018', task_type: 4, is_unlocked: true, total_progress: '2', progress: '1', rewards: [] });
+    const tasks = model.normalizeState(raw, NOW).tasks;
+    const task = tasks.find(row => row.id === '300018');
+    assert.deepEqual([task.upgradeFacilityModuleType, task.upgradeFacilityLevel, task.canClaim], [6, 2, false]);
+    assert.equal(tasks.filter(row => Object.hasOwn(row, 'upgradeFacilityModuleType')).length, 1);
+});
+
 test('buy cross-checks current shop, discounts, max count and exact BigInt affordability', () => {
     const raw = fixture();
     raw.shop.goods_list[0].price = '900719925474099';
@@ -151,7 +252,7 @@ test('clean targets known own hazards; tasks batch only qualified ordinary rewar
     assert.throws(() => model.planAction('claimTasks', { taskId: HUGE }, raw, NOW), /未完成/);
     raw.cells.facilities[0].ranch.hazards = [];
     assert.throws(() => model.planAction('clean', {}, raw, NOW), /没有/);
-    for (const unsupported of ['sell', 'feed', 'upgrade', 'useCan', 'claimIllustrated']) assert.throws(() => model.planAction(unsupported, {}, raw, NOW), /不支持/);
+    for (const unsupported of ['sell', 'feed', 'useCan', 'claimIllustrated']) assert.throws(() => model.planAction(unsupported, {}, raw, NOW), /不支持/);
 });
 
 test('signed item-instance identifiers and unset timers do not become inventory quantities', () => {
@@ -178,7 +279,8 @@ test('signed item-instance identifiers and unset timers do not become inventory 
 });
 
 test('shop zero timestamps are not quantities or active free discounts', () => {
-    const raw = fixture(), goods = raw.shop.goods_list[0];
+    const raw = fixture();
+    const goods = raw.shop.goods_list[0];
     goods.discount_start_time = '-62135596800'; goods.discount_end_time = '-62135596800'; goods.discount_price = '0';
     assert.equal(model.normalizeState(raw, NOW).shop.goods[0].price.count, '10');
     assert.equal(model.planAction('buy', { shopId: '5', goodsId: '10002', count: 2 }, raw, NOW).costItems[0].count, '20');
