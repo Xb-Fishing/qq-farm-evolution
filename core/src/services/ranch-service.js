@@ -9,6 +9,8 @@ const LOCAL_CODES = new Set(['INVALID_ARGUMENT', 'GOODS_UNAVAILABLE', 'PURCHASE_
 const error = (code, message) => Object.assign(new Error(message), { code });
 const QUOTE_TTL_MS = 60000;
 const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用';
+// Scene entry, possible AllCells fallback, view reads, and two restoration attempts.
+const READ_CALLS = { animals: 5, tasks: 6, shop: 7 };
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const planIdentity = plan => digest({ action: plan.action, route: plan.route, payload: plan.payload,
   costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null, ...(plan.upgradeTarget && { upgradeTarget: plan.upgradeTarget }) });
@@ -147,9 +149,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     for (const key of ['targets', 'taskIds']) if (input[key] && (!Array.isArray(input[key]) || input[key].length > 50))
       throw error('RANCH_INVALID_ARGUMENT', '本次目标数量过多，请分次操作');
   }
-  async function withScene(callback) {
+  async function withScene(callback, maxCalls = 10) {
     if (typeof network.withRanchScene !== 'function') throw error('RANCH_CONNECTION_UPDATE_REQUIRED', '当前连接尚未支持牧场，请更新程序后重试');
-    return stage('scene', 'request', () => network.withRanchScene(callback, { maxCalls: 10 }));
+    return stage('scene', 'request', () => network.withRanchScene(callback, { maxCalls }));
   }
   async function getState(view = 'animals', shopId = '5') {
     if (!['animals', 'shop', 'tasks'].includes(view)) throw error('RANCH_INVALID_ARGUMENT', '牧场页面无效');
@@ -158,7 +160,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       const snapshot = await stage('state', 'normalize', () => model.normalizeState(raw, now()));
       const data = read(); data.lastObservedAt = now(); data.lastObservedOperationId = data.lastOperation?.id || null; save(data);
       return { ...snapshot, view, lastOperation: visibleOperation(data.lastOperation) };
-    });
+    }, READ_CALLS[view]);
   }
   async function prepare(action, input = {}, autoRevision) {
     if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
@@ -184,7 +186,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       data.quotes.push(quote); save(data);
       return { id: quote.id, action, label: plan.label, count: plan.count,
         costItems: plan.costItems, expectedRewards: sumItems(plan.expectedRewards), expiresAt: quote.expiresAt };
-    });
+    }, READ_CALLS[viewFor(action)] + (action === 'upgrade' ? 1 : 0));
     // Device clocks can differ from the game clock. Report time left after scene restoration.
     return { ...prepared, validForMs: Math.min(QUOTE_TTL_MS, Math.max(0, prepared.expiresAt - quoteNow())) };
   }
@@ -271,11 +273,12 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (quote.expiresAt <= quoteNow()) throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
     return null;
   }
-  async function execute(id) {
+  async function execute(id, markOperationNotSent) {
     if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw error('RANCH_INVALID_ARGUMENT', '确认记录无效');
     let data = read(); let quote = data.quotes.find(row => row.id === id);
     const replay = checkQuote(data, quote, id);
     if (replay) return replay;
+    let operationAttempted = false;
     return withScene(async ({ initial, assertCurrent }) => {
       const { raw: before, plan } = await loadAction(initial, quote.action, quote.input, assertCurrent, true);
       data = read(); quote = data.quotes.find(row => row.id === id);
@@ -306,6 +309,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
               expiredBeforeDispatch = true;
               throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
             }
+            operationAttempted = true;
           });
         }
         catch (failure) {
@@ -349,10 +353,24 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         return { ...result, snapshot,
           refreshRequired: !snapshot, message: !snapshot && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
       } finally { inFlight.delete(id); }
+    }).catch(failure => {
+      if (!operationAttempted && (failure?.isGovernedRejection === true
+        || (failure?.isLocalRequestRejection === true && failure.outcome === 'not_sent'))) {
+        markOperationNotSent(id);
+      }
+      throw failure;
     });
   }
   function acknowledge(id) {
     const data = read(); const op = visibleOperation(data.lastOperation);
+    const quote = data.quotes.find(row => row.id === id);
+    // A lost HTTP admission can leave only an unconsumed quote. Explicitly
+    // cancel it so an older preflight can never dispatch after this response.
+    if (!unresolved(data) && !inFlight.has(id)) {
+      if (quote?.status === 'cancelled' && quote.result?.outcome === 'not_sent') return visibleOperation(quote.result);
+      if (quote?.status === 'prepared' && cancel(id).cancelled)
+        return visibleOperation(read().quotes.find(row => row.id === id).result);
+    }
     if (!op || op.id !== id || !['unknown', 'partial'].includes(op.outcome) || inFlight.has(id))
       throw error('RANCH_INVALID_ARGUMENT', '没有可核对的未确认结果');
     if (data.lastObservedOperationId !== op.id) throw error('RANCH_REFRESH_REQUIRED', '请先刷新牧场并核对库存与动物状态');
@@ -368,7 +386,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     return { cancelled: true };
   }
   async function safe(callback) {
-    try { return { ok: true, data: await callback() }; }
+    let quoteId;
+    try { return { ok: true, data: await callback(id => { quoteId = id; }) }; }
     catch (failure) {
       const known = /^RANCH_[A-Z_]{1,64}$/.test(failure.code || '') || LOCAL_CODES.has(failure.code);
       const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包', shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理' };
@@ -378,10 +397,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         try { require('../utils/utils').logWarn('牧场', '牧场读取失败', { module: 'ranch', event: 'ranch_read_failed', failureStage, failureKind }); } catch { /* Diagnostics cannot change request results. */ }
       }
       return { ok: false, failureStage, failureKind, code: known ? (failure.code.startsWith('RANCH_') ? failure.code : `RANCH_${failure.code}`) : 'RANCH_READ_FAILED',
-        error: known ? failure.message : `牧场${labels[failureStage] || '读取'}失败，请稍后重试`, sceneRecoveryRequired: failure.sceneRecoveryRequired === true };
+        error: known ? failure.message : `牧场${labels[failureStage] || '读取'}失败，请稍后重试`, sceneRecoveryRequired: failure.sceneRecoveryRequired === true,
+        ...(quoteId && { operationNotSent: true, quoteId }) };
     }
   }
-  async function automate() {
+  async function automate(markOperationNotSent) {
     if (autoRunning || !canAutomate()) return { skipped: true };
     const data = read(); const state = autoState(data);
     if (!state.policy.enabled || state.nextAt > now() || unresolved(data)) return { skipped: true };
@@ -402,12 +422,13 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       const selected = slots.map(i => policyTools.chooseAction(state.policy, snapshot, i)).find(Boolean);
       if (!selected) return { skipped: true };
       const quote = await prepare(selected.action, selected.input, state.revision);
-      return execute(quote.id);
+      return execute(quote.id, markOperationNotSent);
     } finally { autoRunning = false; }
   }
   return { getState: (...args) => safe(() => getState(...args)), prepare: (...args) => safe(() => prepare(...args)),
     getAutomation: () => safe(getAutomation), setAutomation: value => safe(() => setAutomation(value)), automate: () => safe(automate),
-    execute: (...args) => safe(() => execute(...args)), cancel: (...args) => safe(() => cancel(...args)), acknowledge: (...args) => safe(() => acknowledge(...args)) };
+    execute: id => safe(markOperationNotSent => execute(id, markOperationNotSent)),
+    cancel: (...args) => safe(() => cancel(...args)), acknowledge: (...args) => safe(() => acknowledge(...args)) };
 }
 let instance;
 function service() {

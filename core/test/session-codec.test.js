@@ -1,7 +1,18 @@
 const test = require('node:test'); const assert = require('node:assert/strict');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const prefix = path.resolve(os.tmpdir(), 'session-codec-test-'); assert.equal(path.dirname(prefix), path.resolve(os.tmpdir()));
-const temporary = fs.mkdtempSync(prefix); process.env.FARM_DATA_DIR = temporary;
+const temp = fs.realpathSync(os.tmpdir()); const repo = fs.realpathSync(path.join(__dirname, '../..'));
+assert.ok(temp !== repo && !temp.startsWith(repo + path.sep));
+const prefix = path.resolve(temp, 'session-codec-test-'); assert.equal(path.dirname(prefix), temp);
+const temporary = fs.mkdtempSync(prefix);
+function fixturePath(name) {
+  const target = path.resolve(temporary, name);
+  assert.equal(path.dirname(target), temporary);
+  return target;
+}
+process.env.FARM_DATA_DIR = temporary;
+process.env.FARM_PRIVATE_CONFIG_FILE = fixturePath('private-config.json');
+process.env.FARM_LOG_DIR = fixturePath('logs');
+process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 test.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
 const Long = require('long'); const protobuf = require('protobufjs');
 const { encode, decode } = require('../src/runtime/session-codec');
@@ -39,4 +50,17 @@ test('errors keep business semantics while rejecting non-transferable checkpoint
   const timer = setTimeout(() => {}, 10000);
   try { for (const value of [() => {}, Promise.resolve(), timer]) assert.throws(() => encode(value), /Unsupported/); }
   finally { clearTimeout(timer); }
+});
+
+test('errors retain an explicit local rejection marker only when provided', () => {
+  for (const marker of [true, false]) {
+    const original = Object.assign(new Error('synthetic rejection'), {
+      isLocalRequestRejection: marker, operationNotSent: true, quoteId: 'synthetic-quote', outcome: 'not_sent',
+    });
+    const copy = decode(encode(original));
+    assert.equal(copy.isLocalRequestRejection, marker);
+    for (const field of ['operationNotSent', 'quoteId', 'outcome'])
+      assert.equal(Object.hasOwn(copy, field), false);
+  }
+  assert.equal(Object.hasOwn(decode(encode(new Error('ordinary error'))), 'isLocalRequestRejection'), false);
 });

@@ -11,6 +11,7 @@ export const useRanchStore = defineStore('ranch', () => {
   const loading = ref(false)
   const preparing = ref(false)
   const operating = ref(false)
+  const acknowledging = ref(false)
   const error = ref('')
   const errorCode = ref('')
   const quote = ref<any>(null)
@@ -22,6 +23,17 @@ export const useRanchStore = defineStore('ranch', () => {
     reviewNotice.value = ''
   }
   const expiryNotice = '本次确认已到期，请重新核对数量和费用。'
+  function showQuote(selected: any) {
+    clearQuote()
+    quote.value = selected
+    if (selected.deadline !== null) {
+      const remaining = selected.deadline - performance.now()
+      if (remaining <= 0)
+        reviewNotice.value = expiryNotice
+      else
+        expiryTimer = setTimeout(() => { reviewNotice.value = expiryNotice }, remaining)
+    }
+  }
   const result = ref<any>(null)
   const automation = ref<any>(null)
   const savingAutomation = ref(false)
@@ -32,7 +44,7 @@ export const useRanchStore = defineStore('ranch', () => {
   const reads = new Map<string, Promise<any>>()
   let optionsSequence = 0
   const uncertain = computed(() => ['pending', 'unknown', 'partial'].includes(result.value?.outcome || ''))
-  const blocked = computed(() => !state.value || readError.value || loading.value || preparing.value || operating.value || uncertain.value || !!state.value?.sceneRecoveryRequired)
+  const blocked = computed(() => !state.value || readError.value || loading.value || preparing.value || operating.value || acknowledging.value || uncertain.value || !!state.value?.sceneRecoveryRequired)
   let generation = 0
   let readSequence = 0
   let confirmationSequence = 0
@@ -50,6 +62,7 @@ export const useRanchStore = defineStore('ranch', () => {
     loading.value = false
     preparing.value = false
     operating.value = false
+    acknowledging.value = false
     savingAutomation.value = false
   }
   function bind(id: string) {
@@ -185,7 +198,7 @@ export const useRanchStore = defineStore('ranch', () => {
   }
   async function refresh(nextView = view.value, nextShop = shopId.value) {
     const id = accountId.value
-    if (!id || operating.value)
+    if (!id || operating.value || acknowledging.value)
       return false
     const token = generation
     const sequence = ++readSequence
@@ -202,7 +215,10 @@ export const useRanchStore = defineStore('ranch', () => {
         return false
       state.value = snapshot
       readError.value = false
-      result.value = snapshot.lastOperation || null
+      const previous = outcomes.get(id)
+      const observed = snapshot.lastOperation
+      // A refresh that has not observed this operation cannot settle its outcome.
+      result.value = previous?.outcome === 'unknown' && observed?.id !== previous.id ? previous : observed || null
       outcomes.set(id, result.value)
       return true
     }
@@ -242,20 +258,9 @@ export const useRanchStore = defineStore('ranch', () => {
       if (!data.data?.id)
         throw new Error('未取得牧场确认记录，请重新准备')
       const ttl = data.data.validForMs
-      clearQuote()
       // A legacy server only supplies an absolute game time; let it validate that quote.
       const deadline = Number.isFinite(ttl) ? performance.now() + Math.max(0, ttl) : null
-      quote.value = { ...data.data, intent, deadline, renewed: renewing }
-      if (deadline !== null) {
-        if (ttl <= 0) {
-          reviewNotice.value = expiryNotice
-        }
-        else {
-          expiryTimer = setTimeout(() => {
-            reviewNotice.value = expiryNotice
-          }, ttl)
-        }
-      }
+      showQuote({ ...data.data, intent, deadline, renewed: renewing })
       return true
     }
     catch (e: any) {
@@ -275,7 +280,7 @@ export const useRanchStore = defineStore('ranch', () => {
   async function execute() {
     const selected = quote.value
     const id = accountId.value
-    if (!selected || !id || preparing.value || operating.value)
+    if (!selected || !id || preparing.value || operating.value || acknowledging.value)
       return false
     if (reviewNotice.value || (selected.deadline !== null && performance.now() >= selected.deadline)) {
       await prepare(selected.intent.action, selected.intent.input, true)
@@ -306,6 +311,16 @@ export const useRanchStore = defineStore('ranch', () => {
     }
     catch (e: any) {
       const body = e?.response?.data
+      if (body?.ok === false && body.operationNotSent === true && body.quoteId === selected.id && !body.sceneRecoveryRequired) {
+        if (generation === token && sequence === confirmationSequence) {
+          failure(e)
+          const unsent = { id: selected.id, outcome: 'not_sent', label: selected.label, message: error.value }
+          outcomes.set(id, unsent)
+          result.value = unsent
+          showQuote({ ...selected, notSentMessage: error.value })
+        }
+        return false
+      }
       if (body?.ok === false && ['RANCH_QUOTE_EXPIRED', 'RANCH_STATE_CHANGED', 'RANCH_CONFIRMATION_MISSING', 'RANCH_SESSION_CHANGED'].includes(body.code)) {
         if (generation === token && sequence === confirmationSequence) {
           failure(e)
@@ -336,32 +351,42 @@ export const useRanchStore = defineStore('ranch', () => {
   }
   async function acknowledge() {
     const selected = result.value
+    const operationId = selected?.id
     const id = accountId.value
-    if (!selected || operating.value || loading.value)
+    if (!selected || typeof operationId !== 'string' || !operationId || !uncertain.value || operating.value || loading.value || acknowledging.value)
       return false
     const token = generation
     const request = requestConfig(id, token)
+    acknowledging.value = true
+    const ownsResult = () => generation === token && accountId.value === id && result.value === selected
+      && result.value?.id === operationId && uncertain.value
     try {
-      const { data } = await api.post('/api/ranch/acknowledge', { operationId: selected.id }, request.config)
-      if (generation !== token)
+      const { data } = await api.post('/api/ranch/acknowledge', { operationId }, request.config)
+      if (!ownsResult())
         return false
       if (data?.ok !== true)
         throw Object.assign(new Error(data?.error || '请先刷新核对'), { response: { data } })
+      if (data.data?.id !== operationId || !['acknowledged', 'not_sent'].includes(data.data?.outcome))
+        throw new Error('核对回执未匹配当前操作，请刷新核对')
       result.value = data.data
       outcomes.set(id, data.data)
       error.value = ''
       return true
     }
     catch (e: any) {
-      if (generation === token && e?.code !== 'ERR_CANCELED')
+      if (ownsResult() && e?.code !== 'ERR_CANCELED')
         failure(e)
       return false
     }
-    finally { controllers.delete(request.controller) }
+    finally {
+      controllers.delete(request.controller)
+      if (generation === token)
+        acknowledging.value = false
+    }
   }
   function closeQuote() {
     confirmationSequence++
     clearQuote()
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
 })

@@ -134,11 +134,12 @@ const message = computed(() => {
   const quote = ranch.quote
   if (!quote)
     return ''
+  const notSent = quote.notSentMessage ? `操作未发出：${quote.notSentMessage}\n` : ''
   if (ranch.reviewNotice)
-    return `${ranch.reviewNotice}\n重新核对后会显示最新数量和费用，仍需你确认执行。`
+    return `${notSent}${ranch.reviewNotice}\n重新核对后会显示最新数量和费用，仍需你确认执行。`
   const costs = quote.costItems?.map((row: any) => `${row.name} × ${row.count}`).join('、') || '无额外物品消耗'
   const rewards = quote.expectedRewards?.map((row: any) => `${row.name} × ${row.count}`).join('、')
-  return `${quote.renewed ? '已重新核对。\n' : ''}本次 ${quote.count} 项。\n消耗：${costs}${rewards ? `\n预计获得：${rewards}` : ''}\n确认单 60 秒有效。确认后执行一次，结果不明不会自动重试。`
+  return `${notSent}${quote.renewed ? '已重新核对。\n' : ''}本次 ${quote.count} 项。\n消耗：${costs}${rewards ? `\n预计获得：${rewards}` : ''}\n确认单 60 秒有效。确认后执行一次，结果不明不会自动重试。`
 })
 defineExpose({ refresh })
 </script>
@@ -154,7 +155,7 @@ defineExpose({ refresh })
           管理动物、补充牧草与领取收益，消耗前会确认数量。
         </p>
       </div>
-      <BaseButton :loading="ranch.loading" :disabled="ranch.operating" @click="refresh()">
+      <BaseButton :loading="ranch.loading" :disabled="ranch.operating || ranch.acknowledging" @click="refresh()">
         刷新牧场
       </BaseButton>
     </header>
@@ -164,7 +165,7 @@ defineExpose({ refresh })
       @load="ranch.loadOptions" @retry-policy="ranch.loadAutomation" @save="ranch.saveAutomation"
     />
     <nav class="my-4 flex flex-wrap gap-2" aria-label="牧场功能">
-      <BaseButton v-for="tab in [{ id: 'animals', name: '动物与库存' }, { id: 'shop', name: '幼崽与饲料商店' }, { id: 'tasks', name: '牧场任务' }]" :key="tab.id" :variant="ranch.view === tab.id ? 'primary' : 'secondary'" :disabled="ranch.operating || ranch.preparing" @click="refresh(tab.id)">
+      <BaseButton v-for="tab in [{ id: 'animals', name: '动物与库存' }, { id: 'shop', name: '幼崽与饲料商店' }, { id: 'tasks', name: '牧场任务' }]" :key="tab.id" :variant="ranch.view === tab.id ? 'primary' : 'secondary'" :disabled="ranch.operating || ranch.preparing || ranch.acknowledging" @click="refresh(tab.id)">
         {{ tab.name }}
       </BaseButton>
     </nav>
@@ -184,10 +185,10 @@ defineExpose({ refresh })
         已获得：{{ ranch.result.rewards.map((item: any) => `${item.name} × ${item.count}`).join('、') }}
       </p>
       <div v-if="ranch.uncertain" class="mt-2 flex flex-wrap gap-2">
-        <BaseButton :disabled="ranch.operating || ranch.loading" @click="refresh()">
+        <BaseButton :disabled="ranch.operating || ranch.loading || ranch.acknowledging" @click="refresh()">
           刷新并核对
         </BaseButton>
-        <BaseButton :disabled="ranch.operating || ranch.loading" @click="ranch.acknowledge()">
+        <BaseButton :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging" @click="ranch.acknowledge()">
           已核对，允许继续
         </BaseButton>
       </div>

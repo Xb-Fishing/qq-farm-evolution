@@ -4,14 +4,27 @@ const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'farm-ranch-service-'));
+const temp = fs.realpathSync(os.tmpdir());
+const repo = fs.realpathSync(path.join(__dirname, '../..'));
+assert.ok(temp !== repo && !temp.startsWith(repo + path.sep));
+const prefix = path.resolve(temp, 'farm-ranch-service-');
+assert.equal(path.dirname(prefix), temp);
+const root = fs.mkdtempSync(prefix);
+function fixturePath(name) {
+  const target = path.resolve(root, name);
+  assert.equal(path.dirname(target), root);
+  return target;
+}
 process.env.FARM_DATA_DIR = root;
+process.env.FARM_PRIVATE_CONFIG_FILE = fixturePath('private-config.json');
+process.env.FARM_LOG_DIR = fixturePath('logs');
+process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 const codec = require('../src/services/ranch-codec');
+const { encode, decode } = require('../src/runtime/session-codec');
 const { createRanchService } = require('../src/services/ranch-service');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 function fixture(upgrade = false) {
-  const file = path.resolve(root, `operations-${Math.random().toString(16).slice(2)}.json`);
-  assert.ok(file.startsWith(root + path.sep));
+  const file = fixturePath(`operations-${Math.random().toString(16).slice(2)}.json`);
   let now = 1800000000000; let gameOffset = 0; let allowed = true; let failure = false; let malformed = false;
   let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let cubs = 5; let writes = 0;
   const calls = []; const ws = {}; let beforeWrite;
@@ -34,7 +47,7 @@ function fixture(upgrade = false) {
     },
     sendMsgAsync: async (service, method, wire) => {
       calls.push(method);
-      f.onRead?.(method);
+      if (f.onRead) await f.onRead(method);
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
@@ -48,9 +61,10 @@ function fixture(upgrade = false) {
       else if (method === 'ShopInfo') reply = { goods_list: [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }] };
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: [] } };
       else {
+        if (f.queueFull) throw decode(encode(Object.assign(new Error('synthetic request queue full'), { isLocalRequestRejection: true })));
         if (f.rejectUnsent) throw Object.assign(new Error('synthetic budget rejection'), { isGovernedRejection: true });
         beforeWrite?.(); writes++;
-        if (failure) throw new Error('synthetic timeout');
+        if (failure) throw decode(encode(Object.assign(new Error('synthetic timeout'), { code: 'LOCAL_REQUEST_TIMEOUT' })));
         if (method === 'UpgradeBuilding') {
           assert.equal(request.inst_id, facilities[0].instance_id);
           gold -= f.upgradeCost; facilities[0].upgrade_state = 1; facilities[0].upgrade_end_time = String(Math.floor(now / 1000) + 10);
@@ -105,6 +119,31 @@ test('only proven unsent automatic writes release their durable budget reservati
   f.advance(86400000);
   assert.equal((await f.make().automate()).data.skipped, true); assert.equal(f.writes, 1);
 });
+test('a bridged queue rejection refunds the write reservation, while a bridged timeout stays unknown and never replays', async () => {
+  const f = fixture(); const policy = (await f.service.getAutomation()).data.policy;
+  const settings = await f.service.setAutomation({ ...policy, enabled: true, buyEnabled: true, goodsId: '10002', currencyDailyLimit: 10 });
+  const prepare = () => f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 }, settings.data.revision);
+  const first = await prepare();
+  assert.equal(first.ok, true, first.error);
+  f.queueFull = true;
+  const rejected = await f.service.execute(first.data.id);
+  assert.equal(rejected.data.outcome, 'not_sent');
+  assert.equal(rejected.operationNotSent, undefined);
+  assert.equal(f.writes, 0);
+  assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '0');
+
+  f.queueFull = false;
+  const second = await prepare();
+  assert.equal(second.ok, true, second.error);
+  f.timeout();
+  const timedOut = await f.service.execute(second.data.id);
+  assert.equal(timedOut.data.outcome, 'unknown');
+  assert.equal(timedOut.operationNotSent, undefined);
+  const replacement = f.make();
+  assert.equal((await replacement.execute(second.data.id)).data.outcome, 'unknown');
+  assert.equal((await replacement.getAutomation()).data.usage['buy:1007'], '10');
+  assert.equal(f.writes, 1);
+});
 test('place subtracts exact inventory reserve before imposing batch and capacity limits', () => {
   const { DEFAULT_POLICY, chooseAction } = require('../src/services/ranch-policy');
   const state = { cubs: [{ id: '60001', count: '100', locked: false }], facilities: [{ id: '11', active: true, ranch: { capacity: 4, count: 0 } }] };
@@ -121,6 +160,54 @@ test('authenticated offline worker can disable automation without a game read', 
   const res = { status() { return this; }, json(value) { this.body = value; return this; } };
   await routes.get('/api/ranch/automation')({ body: { enabled: false } }, res);
   assert.equal(saved.enabled, false); assert.equal(res.body.ok, true);
+});
+test('explicit acknowledgement cancels an unconsumed quote durably without replaying it', async () => {
+  const f = fixture(); const id = await quoteBuy(f);
+  await f.service.getState();
+  const result = await f.service.acknowledge(id);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.data.outcome, 'not_sent');
+  assert.equal(f.writes, 0);
+  assert.equal((await f.make().acknowledge(id)).data.outcome, 'not_sent', 'a lost cancellation reply is safe to acknowledge again');
+  assert.equal((await f.make().execute(id)).data.outcome, 'not_sent');
+  assert.equal(f.writes, 0);
+  const fresh = await quoteBuy(f);
+  assert.notEqual(fresh, id);
+  assert.equal((await f.service.execute(fresh)).data.outcome, 'confirmed');
+  assert.equal(f.writes, 1);
+});
+test('explicit cancellation stops a preflight that was already waiting for its read', async () => {
+  const f = fixture(); const id = await quoteBuy(f);
+  let entered; let release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const paused = new Promise(resolve => { release = resolve; });
+  f.onRead = async method => { if (method === 'GetBag') { entered(); await paused; } };
+  const old = f.service.execute(id);
+  await started;
+  let cancelled;
+  try {
+    cancelled = await f.service.acknowledge(id);
+  } finally { release(); }
+  const late = await old;
+  assert.equal(cancelled.ok, true, cancelled.error);
+  assert.equal(cancelled.data.outcome, 'not_sent');
+  assert.equal(late.ok, true, late.error);
+  assert.equal(late.data.outcome, 'not_sent');
+  assert.equal(late.data.replayed, true);
+  assert.equal(f.writes, 0);
+});
+test('a prepared quote cannot acknowledge or replace a different unknown write', async () => {
+  const f = fixture(); const sent = await quoteBuy(f); const prepared = await quoteBuy(f);
+  f.timeout();
+  assert.equal((await f.service.execute(sent)).data.outcome, 'unknown');
+  const denied = await f.service.acknowledge(prepared);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.code, 'RANCH_INVALID_ARGUMENT');
+  const data = JSON.parse(fs.readFileSync(f.file));
+  assert.equal(data.lastOperation.id, sent);
+  assert.equal(data.lastOperation.outcome, 'unknown');
+  assert.equal(data.quotes.find(row => row.id === prepared).status, 'prepared');
+  assert.equal(f.writes, 1);
 });
 test('timeout persists across replacement, blocks manual and automatic until a fresh observed acknowledgement', async () => {
   const f = fixture(); const id = await quoteBuy(f); f.timeout();

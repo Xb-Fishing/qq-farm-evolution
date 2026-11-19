@@ -2,7 +2,8 @@ const v8 = require('node:v8');
 const Long = require('long');
 
 const ERROR_FIELDS = ['name', 'message', 'code', 'isServerBusinessError', 'serverErrorCode',
-  'pauseRemainMs', 'isGovernedRejection', 'governedReason', 'business', 'reasonCode', 'isSessionAuthorityRejection'];
+  'pauseRemainMs', 'isGovernedRejection', 'governedReason', 'business', 'reasonCode', 'isSessionAuthorityRejection',
+  'isLocalRequestRejection'];
 
 // Preserve message field presence, Longs, bytes, Map/Set and shared references.
 // Functions, promises and timer handles are deliberately not transferable state.

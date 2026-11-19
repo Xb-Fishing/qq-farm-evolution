@@ -66,7 +66,7 @@ async function actualBudgetRejection(reason) {
     assert.equal(h.attempts.length, 0, 'governor rejection occurs before any physical socket send');
     const decoded = await throughBridge(error);
     assert.equal(decoded.isGovernedRejection, true); assert.equal(decoded.governedReason, reason);
-    assert.equal(decoded.isLocalRequestRejection, undefined, 'not a transferable proof');
+    assert.equal(decoded.isLocalRequestRejection, true, 'the bridge preserves the local marker; strict governed proof remains required');
     return decoded;
   } finally { await h.stop(); }
 }

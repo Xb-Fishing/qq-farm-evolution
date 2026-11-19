@@ -81,20 +81,20 @@ function createGameSceneCoordinator(options) {
     try { return await pending; }
     finally { if (recovery === pending) recovery = null; scheduleRecovery(); }
   }
-  function checkOwner(current) {
+  function checkOwner(current, forSend = false) {
     const state = syncIdentity();
     if (!current.live || context.getStore() !== current || state.key !== current.identity.key || !state.connected)
       throw sceneError('RANCH_SESSION_CHANGED', '账号连接已变化，未继续发送牧场操作');
     if (state.revision !== current.identity.revision) throw sceneError('RANCH_SETTINGS_CHANGED', '账号设置已变化，请刷新后重试');
     if (current.yieldRequested || options.priority?.(totalMs + 10000) || now() >= current.deadline)
       throw sceneError('RANCH_FARM_PRIORITY', '农场收获或好友抢收优先，请稍后重试');
-    if (current.calls >= current.maxCalls - 2) throw sceneError('RANCH_REQUEST_BOUND', '本次牧场读取已达上限，请分次操作');
+    if (forSend && current.calls >= current.maxCalls - 2) throw sceneError('RANCH_REQUEST_BOUND', '本次牧场读取已达上限，请分次操作');
   }
   async function send(service, method, body, timeout, extra) {
     if (maintenance(service, method)) return options.send(service, method, body, timeout, extra, false);
     const current = context.getStore();
     if (current && current === lease) {
-      checkOwner(current); current.calls++;
+      checkOwner(current, true); current.calls++;
       return options.send(service, method, body, Math.min(timeout > 0 ? timeout : rpcMs, rpcMs, Math.max(1, current.deadline - now())), extra, false);
     }
     const started = now();

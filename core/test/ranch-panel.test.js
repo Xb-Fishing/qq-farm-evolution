@@ -2,15 +2,34 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const temp = fs.realpathSync(os.tmpdir());
+const repo = fs.realpathSync(path.join(__dirname, '../..'));
+assert.ok(temp !== repo && !temp.startsWith(repo + path.sep));
+const prefix = path.resolve(temp, 'farm-ranch-panel-');
+assert.equal(path.dirname(prefix), temp);
+const privateDir = fs.mkdtempSync(prefix);
+function fixturePath(name) {
+  const target = path.resolve(privateDir, name);
+  assert.equal(path.dirname(target), privateDir);
+  return target;
+}
+process.env.FARM_DATA_DIR = privateDir;
+process.env.FARM_PRIVATE_CONFIG_FILE = fixturePath('private-config.json');
+process.env.FARM_LOG_DIR = fixturePath('logs');
+process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 const h = require('./activity-availability.test');
 const { DEFAULT_POLICY } = require('../src/services/ranch-policy');
 const state = () => ({ level: 1, grass: '30', currencies: [], facilities: [], cubs: [], inventory: [],
   animals: [{ id: 7, ranchId: '11', name: '鸡', canProduce: true }], tasks: [], lastOperation: null });
 const roots = [];
-test.after(() => { for (const root of roots) h.render(null, root); });
+test.after(() => {
+  try { for (const root of roots) h.render(null, root); }
+  finally { fs.rmSync(privateDir, { recursive: true, force: true }); }
+});
 function fixture() {
-  const posts = []; let read = async () => ({ data: { ok: true, data: state() } }); let prepare; let operate;
+  const posts = []; let read = async () => ({ data: { ok: true, data: state() } }); let prepare; let operate; let acknowledge;
   const api = {
     get: async (url, config) => url.endsWith('/automation') ? { data: { ok: true, data: { policy: { ...DEFAULT_POLICY }, revision: 0 } } } : read(url, config),
     post: async (url, body, config) => {
@@ -18,6 +37,7 @@ function fixture() {
       if (url.endsWith('/prepare')) return prepare ? prepare() : { data: { ok: true, data: { id: 'synthetic-quote', label: '牧场生产', count: 1, costItems: [], expiresAt: Date.now() + 60000 } } };
       if (url.endsWith('/automation')) return { data: { ok: true, data: { policy: body, revision: 1 } } };
       if (url.endsWith('/operate') && operate) return operate();
+      if (url.endsWith('/acknowledge') && acknowledge) return acknowledge(body);
       return { data: { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [], snapshot: state() } } };
     },
   };
@@ -33,7 +53,7 @@ function fixture() {
   const root = h.makeNode('root'); roots.push(root);
   const mount = id => h.render(h.vue.h(Panel, { accountId: id }), root);
   mount('account-a');
-  return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; }, operate: fn => { operate = fn; } };
+  return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; }, operate: fn => { operate = fn; }, acknowledge: fn => { acknowledge = fn; } };
 }
 const button = (root, label) => h.buttonsOf(root).find(x => h.textOf(x).includes(label));
 test('real ranch panel prepares then confirms once; free and paid automation preferences save for selected account', async () => {
@@ -132,6 +152,231 @@ function quoteReply(id, validForMs, price = '2') {
     costItems: [{ name: '金券', count: price }], expectedRewards: [{ name: '鸡', count: '1' }],
     expiresAt: Date.now() - 3600000, validForMs } } };
 }
+const budgetError = '本轮请求预算不足，已为农场与场景恢复保留额度';
+const budgetDenied = proof => ({ data: { ok: false, code: 'RANCH_BUDGET_BUSY', error: budgetError, ...proof } });
+const confirmedQuote = { operationNotSent: true, quoteId: 'original' };
+const economicIntent = { shopId: '5', goodsId: '71', count: 1 };
+const operates = f => f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId);
+
+async function budgetFixture(validForMs = 60000) {
+  const f = fixture(); await h.flush();
+  f.prepare(async () => quoteReply('original', validForMs));
+  await f.store.prepare('buy', economicIntent); await h.flush();
+  return f;
+}
+test('a proven budget refusal preserves the confirmation until an explicit click sends once', async () => {
+  const f = await budgetFixture();
+  let writes = 0;
+  f.operate(async () => budgetDenied(confirmedQuote));
+  h.click(button(f.root, '确认执行')); await h.flush();
+  await h.flush();
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.equal(f.store.blocked, false);
+  assert.match(h.textOf(f.root), /操作未发出/);
+  assert.ok(h.textOf(f.root).includes(budgetError));
+  const dialog = h.findAll(f.root, node => node.props.role === 'dialog')[0];
+  assert.ok(dialog, 'the original confirmation remains open');
+  assert.ok(h.textOf(dialog).includes(budgetError), 'the refusal is visible inside the confirmation');
+  assert.match(h.textOf(dialog), /操作未发出/);
+  assert.match(h.textOf(dialog), /金券 × 2/);
+  assert.deepEqual(f.store.quote.intent, { action: 'buy', input: economicIntent });
+  assert.deepEqual(operates(f), ['original']);
+  assert.equal(f.posts.length, 2);
+  assert.equal(writes, 0);
+  const reply = h.deferred();
+  f.operate(() => { writes++; return reply.promise; });
+  const confirm = button(f.root, '确认执行');
+  h.click(confirm); h.click(confirm); await h.flush();
+  assert.equal(writes, 1);
+  reply.resolve({ data: { ok: true, data: { outcome: 'confirmed', snapshot: state() } } }); await h.flush();
+  assert.deepEqual(operates(f), ['original', 'original']);
+  assert.match(h.textOf(f.root), /操作已确认/);
+});
+test('expiry while waiting for a budget rejection permits only a fresh quote before another execute', async () => {
+  const f = await budgetFixture(500);
+  const pending = h.deferred();
+  const deadline = f.store.quote.deadline;
+  f.operate(() => pending.promise);
+  h.click(button(f.root, '确认执行'));
+  assert.deepEqual(operates(f), ['original']);
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - performance.now()) + 10));
+  pending.resolve(budgetDenied(confirmedQuote)); await h.flush();
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.ok(button(f.root, '重新核对'));
+  f.prepare(async () => quoteReply('fresh', 60000, '4'));
+  h.click(button(f.root, '重新核对')); await h.flush();
+  assert.deepEqual(operates(f), ['original']);
+  assert.deepEqual(f.posts.at(-1).body.input, economicIntent);
+  assert.match(h.textOf(f.root), /金券 × 4/);
+  assert.equal(f.store.quote.notSentMessage, undefined, 'a new quote clears the previous refusal');
+  f.operate(async () => ({ data: { ok: true, data: { outcome: 'confirmed', snapshot: state() } } }));
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.deepEqual(operates(f), ['original', 'fresh']);
+});
+for (const [scenario, invalidate] of [
+  ['account switch', f => f.mount('account-b')],
+  ['unmount and reentry', f => { h.render(null, f.root); f.mount('account-a'); }],
+  ['confirmation sequence change', f => f.store.closeQuote()],
+]) {
+  test(`late budget refusal cannot restore a confirmation after ${scenario}`, async () => {
+    const f = await budgetFixture();
+    const pending = h.deferred();
+    f.operate(() => pending.promise);
+    h.click(button(f.root, '确认执行')); invalidate(f); await h.flush();
+    pending.resolve(budgetDenied(confirmedQuote)); await h.flush();
+    assert.equal(f.store.quote, null);
+    assert.equal(f.store.result?.outcome, undefined);
+    assert.equal(button(f.root, '确认执行'), undefined);
+    assert.deepEqual(operates(f), ['original']);
+    assert.equal(f.posts.length, 2);
+  });
+}
+for (const [scenario, reject] of [
+  ['legacy budget rejection', () => budgetDenied({})],
+  ['mismatched quote', () => budgetDenied({ ...confirmedQuote, quoteId: 'another' })],
+  ['scene recovery failure', () => budgetDenied({ ...confirmedQuote, sceneRecoveryRequired: true })],
+  ['transport timeout', () => { throw new Error('synthetic timeout'); }],
+]) {
+  test(`${scenario} keeps the operation unknown and blocks replay after reentry`, async () => {
+    const f = await budgetFixture(); f.operate(reject);
+    h.click(button(f.root, '确认执行')); await h.flush();
+    assert.equal(f.store.quote, null);
+    assert.equal(f.store.result?.outcome, 'unknown');
+    h.render(null, f.root); f.mount('account-a'); await h.flush();
+    assert.equal(f.store.result?.outcome, 'unknown');
+    assert.equal(f.store.blocked, true);
+    f.read(async () => ({ data: { ok: true, data: { ...state(), lastOperation: { id: 'previous', outcome: 'confirmed' } } } }));
+    await f.store.refresh();
+    assert.equal(f.store.result.id, 'original');
+    assert.equal(f.store.result.outcome, 'unknown');
+    assert.equal(await f.store.prepare('buy', economicIntent), false);
+    assert.equal(await f.store.execute(), false);
+    assert.deepEqual(operates(f), ['original']);
+    assert.equal(f.posts.length, 2);
+  });
+}
+test('explicit acknowledgement clears a lost admission only after the server cancels its prepared quote', async () => {
+  const f = await budgetFixture(); f.operate(() => budgetDenied({}));
+  h.click(button(f.root, '确认执行')); await h.flush();
+  await f.store.refresh(); await h.flush();
+  assert.equal(f.store.uncertain, true);
+  f.acknowledge(async body => ({ data: { ok: true, data: { id: body.operationId, outcome: 'not_sent', message: '已取消尚未发送的操作' } } }));
+  h.click(button(f.root, '已核对，允许继续')); await h.flush();
+  assert.equal(f.posts.at(-1).url, '/api/ranch/acknowledge');
+  assert.deepEqual(f.posts.at(-1).body, { operationId: 'original' });
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.equal(f.store.uncertain, false);
+  assert.equal(f.store.quote, null);
+  assert.deepEqual(operates(f), ['original']);
+  assert.equal(f.store.blocked, false);
+});
+test('duplicate old acknowledgements cannot clear the next unknown operation or its reentry state', async () => {
+  const f = await budgetFixture();
+  f.operate(async () => { throw new Error('synthetic transport interruption'); });
+  await f.store.execute();
+  const replies = [];
+  f.acknowledge(body => {
+    const reply = h.deferred(); replies.push({ body, reply }); return reply.promise;
+  });
+  const first = f.store.acknowledge();
+  const second = f.store.acknowledge();
+  replies[0].reply.resolve({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } });
+  await first;
+  f.prepare(async () => quoteReply('next-unknown', 60000));
+  await f.store.prepare('buy', economicIntent);
+  await f.store.execute();
+  for (const pending of replies.slice(1)) pending.reply.resolve({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } });
+  await second; await h.flush();
+  assert.equal(replies.length, 1, 'only one acknowledgement may be in flight');
+  assert.equal(f.store.result.id, 'next-unknown');
+  assert.equal(f.store.result.outcome, 'unknown');
+  assert.equal(f.store.blocked, true);
+  h.render(null, f.root); f.mount('account-a'); await h.flush();
+  assert.equal(f.store.result.id, 'next-unknown');
+  assert.equal(f.store.result.outcome, 'unknown');
+  assert.equal(f.store.blocked, true);
+  assert.deepEqual(operates(f), ['original', 'next-unknown']);
+});
+test('acknowledgement busy state disables the button and blocks reads and new intents', async () => {
+  const f = await budgetFixture(); f.operate(() => budgetDenied({}));
+  await f.store.execute(); await h.flush();
+  const replies = [];
+  f.acknowledge(() => { const pending = h.deferred(); replies.push(pending); return pending.promise; });
+  const action = button(f.root, '已核对，允许继续');
+  h.click(action); h.click(action); await h.flush();
+  const busy = f.store.acknowledging;
+  const disabled = button(f.root, '已核对，允许继续')?.props.disabled;
+  const read = await f.store.refresh();
+  const prepare = await f.store.prepare('buy', economicIntent);
+  const execute = await f.store.execute();
+  for (const reply of replies) reply.resolve({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } });
+  await h.flush();
+  assert.equal(busy, true); assert.equal(disabled, true);
+  assert.equal(read, false); assert.equal(prepare, false); assert.equal(execute, false);
+  assert.equal(replies.length, 1);
+  assert.equal(f.store.acknowledging, false);
+  assert.deepEqual(operates(f), ['original']);
+});
+test('old acknowledgement completion after an account switch cannot release the new acknowledgement', async () => {
+  const f = await budgetFixture();
+  f.operate(async () => { throw new Error('synthetic transport interruption'); });
+  await f.store.execute();
+  const oldReply = h.deferred(); const newReply = h.deferred();
+  f.acknowledge(body => body.operationId === 'original' ? oldReply.promise : newReply.promise);
+  const old = f.store.acknowledge();
+  f.mount('account-b'); await h.flush();
+  f.prepare(async () => quoteReply('account-b-unknown', 60000));
+  await f.store.prepare('buy', economicIntent); await f.store.execute();
+  const current = f.store.acknowledge();
+  oldReply.resolve({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } });
+  await old;
+  const stillBusy = f.store.acknowledging;
+  const currentId = f.store.result.id;
+  newReply.resolve({ data: { ok: true, data: { id: 'account-b-unknown', outcome: 'not_sent' } } });
+  await current;
+  assert.equal(stillBusy, true);
+  assert.equal(currentId, 'account-b-unknown');
+  assert.equal(f.store.accountId, 'account-b');
+  assert.equal(f.store.result.id, 'account-b-unknown');
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.equal(f.store.acknowledging, false);
+});
+for (const reply of [null, { id: 'different', outcome: 'not_sent' }, { id: 'original', outcome: 'confirmed' }]) {
+  test(`invalid acknowledgement ${JSON.stringify(reply)} keeps the current unknown and allows explicit recovery`, async () => {
+    const f = await budgetFixture(); f.operate(() => budgetDenied({}));
+    await f.store.execute();
+    f.acknowledge(async () => ({ data: { ok: true, data: reply } }));
+    const invalid = await f.store.acknowledge();
+    assert.equal(invalid, false);
+    assert.equal(f.store.result.id, 'original'); assert.equal(f.store.result.outcome, 'unknown');
+    assert.equal(f.store.acknowledging, false); assert.equal(f.store.blocked, true);
+    f.acknowledge(async () => ({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } }));
+    assert.equal(await f.store.acknowledge(), true);
+    assert.deepEqual(operates(f), ['original']);
+  });
+}
+test('an acknowledgement failure preserves unknown and a later explicit retry can succeed', async () => {
+  const f = await budgetFixture(); f.operate(() => budgetDenied({}));
+  await f.store.execute();
+  f.acknowledge(async () => { throw new Error('synthetic acknowledgement interruption'); });
+  assert.equal(await f.store.acknowledge(), false);
+  assert.equal(f.store.result.outcome, 'unknown'); assert.equal(f.store.acknowledging, false);
+  f.acknowledge(async () => ({ data: { ok: true, data: { id: 'original', outcome: 'not_sent' } } }));
+  assert.equal(await f.store.acknowledge(), true);
+  assert.equal(f.posts.filter(post => post.url.endsWith('/acknowledge')).length, 2);
+  assert.deepEqual(operates(f), ['original']);
+});
+test('a fresh observed result can settle an unknown operation for the same confirmation', async () => {
+  const f = await budgetFixture();
+  f.operate(async () => { throw new Error('synthetic timeout'); });
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.equal(f.store.result.outcome, 'unknown');
+  f.read(async () => ({ data: { ok: true, data: { ...state(), lastOperation: { id: 'original', outcome: 'confirmed' } } } }));
+  await f.store.refresh(); await h.flush();
+  assert.match(h.textOf(f.root), /操作已确认/);
+  assert.equal(f.store.blocked, false);
+  assert.deepEqual(operates(f), ['original']);
+});
 test('a fresh ranch confirmation works when the browser wall clock is ahead of the game clock', async () => {
   const f = fixture(); await h.flush(); f.prepare(async () => quoteReply('original', 55000));
   await f.store.prepare('buy', { shopId: '5', goodsId: '71', count: 1 }); await h.flush();
