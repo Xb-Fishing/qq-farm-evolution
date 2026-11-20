@@ -118,7 +118,7 @@ function accountAvatar(acc: any) {
       </BaseButton>
     </div>
 
-    <div v-else class="grid grid-cols-1 gap-4 lg:grid-cols-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div v-else class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr))">
       <div
         v-for="acc in accounts"
         :key="acc.id"
@@ -169,13 +169,13 @@ function accountAvatar(acc: any) {
             <BaseButton
               variant="secondary"
               size="sm"
-              class="border rounded-full shadow-sm transition-all duration-500 ease-in-out active:scale-95"
-              :class="[acc.running ? 'sm:w-20 border-red-200 bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-500 active:border-red-300 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30 dark:focus:ring-red-500 dark:active:border-red-700' : 'sm:w-24 border-green-200 bg-green-50 text-green-600 hover:bg-green-100 focus:ring-green-500 active:border-green-300 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30 dark:focus:ring-green-500 dark:active:border-green-700']"
+              class="border rounded-full whitespace-nowrap shadow-sm transition-all duration-500 ease-in-out active:scale-95"
+              :class="[acc.running ? 'sm:w-20 border-red-200 bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-500 active:border-red-300 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30 dark:focus:ring-red-500 dark:active:border-red-700' : 'sm:w-28 border-green-200 bg-green-50 text-green-600 hover:bg-green-100 focus:ring-green-500 active:border-green-300 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30 dark:focus:ring-green-500 dark:active:border-green-700']"
               :disabled="!acc.running && isAccountOpsDisabled"
               :title="!acc.running && isAccountOpsDisabled ? '账号已到期，无法启动账号' : ''"
               @click.stop="emit('toggle', acc)"
             >
-              <div :class="acc.running ? 'i-carbon-stop-filled' : 'i-carbon-login-filled'" class="mr-1" />
+              <div :class="acc.running ? 'i-carbon-stop-filled' : 'i-carbon-login'" class="mr-1" />
               {{ acc.running ? '停止' : '立即登录' }}
             </BaseButton>
             <BaseButton
