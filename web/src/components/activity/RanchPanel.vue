@@ -118,6 +118,7 @@ const animals = computed(() => ranch.state?.animals || [])
 const producers = computed(() => animals.value.filter((row: any) => row.canProduce).length)
 const harvests = computed(() => animals.value.filter((row: any) => row.canHarvest).length + facilities.value.reduce((n: number, row: any) => n + (row.ranch?.shelves?.filter((s: any) => s.canCollect).length || 0), 0))
 const hazards = computed(() => facilities.value.reduce((n: number, row: any) => n + (row.ranch?.hazards?.length || 0), 0))
+const saleItems = computed(() => (ranch.state?.inventory || []).filter((row: any) => row.canSell === true))
 function cap(...values: any[]) {
   try {
     return Number(values.reduce((n: bigint, v) => {
@@ -127,9 +128,18 @@ function cap(...values: any[]) {
   }
   catch { return 0 }
 }
-function amount(key: string) {
-  const n = Number(quantities[key] || '1')
+function amount(key: string, fallback = 1) {
+  const n = Number(quantities[key] || fallback)
   return Number.isSafeInteger(n) && n > 0 ? n : 0
+}
+function grassMax(facility: any) {
+  return cap(ranch.state.grass, facility.capacity - facility.feed.count)
+}
+function grassAmount(facility: any) {
+  return amount(`grass-${facility.id}`, grassMax(facility))
+}
+function saleAmount(item: any) {
+  return amount(`sell-${item.uid}`, cap(item.count))
 }
 function priceMax(good: any) {
   if (!good.available || !good.price)
@@ -244,7 +254,24 @@ defineExpose({ refresh })
           <BaseButton :disabled="ranch.blocked || !hazards" @click="ranch.prepare('clean')">
             清理牧场（{{ hazards }}）
           </BaseButton>
+          <BaseButton :disabled="ranch.blocked || !saleItems.length" @click="ranch.prepare('sell', { all: true })">
+            批量出售产物（{{ saleItems.length }} 批）
+          </BaseButton>
         </div>
+        <details v-if="saleItems.length" class="mb-4 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+          <summary class="cursor-pointer text-sm font-medium">
+            按批次出售
+          </summary>
+          <ul class="mt-2 divide-y divide-gray-100 dark:divide-gray-800">
+            <li v-for="item in saleItems" :key="`${item.id}:${item.uid}`" class="flex flex-wrap items-center gap-2 py-2 text-sm">
+              <span class="min-w-28 flex-1">{{ item.name }} × {{ item.count }} · {{ item.sellPrices?.map((price: any) => `${price.name}×${price.count}`).join('、') }} / 件</span>
+              <input v-model="quantities[`sell-${item.uid}`]" class="ranch-quantity" type="number" min="1" :max="cap(item.count)" :aria-label="`${item.name}出售数量`" :placeholder="String(cap(item.count))">
+              <BaseButton :disabled="ranch.blocked || !saleAmount(item) || saleAmount(item) > cap(item.count)" @click="ranch.prepare('sell', { uid: item.uid, itemId: item.id, count: saleAmount(item) })">
+                出售 {{ saleAmount(item) }} 件
+              </BaseButton>
+            </li>
+          </ul>
+        </details>
         <div class="grid gap-3 lg:grid-cols-2">
           <article v-for="facility in facilities" :id="`ranch-facility-${facility.id}`" :key="facility.id" ref="facilityCards" tabindex="-1" class="min-w-0 border border-gray-200 rounded-lg p-3 dark:border-gray-700">
             <h3 class="font-semibold">
@@ -282,12 +309,9 @@ defineExpose({ refresh })
                 牧草机 {{ facility.feed.count }} / {{ facility.capacity }} · <span v-if="facility.feed.remainingSec != null">剩余约 {{ Math.ceil(Number(facility.feed.remainingSec) / 60) }} 分钟</span><span v-else>当前未提供计时</span>
               </p>
               <div class="flex flex-wrap items-center gap-2">
-                <input v-model="quantities[`grass-${facility.id}`]" class="ranch-quantity" type="number" min="1" :max="cap(ranch.state.grass, facility.capacity - facility.feed.count)" :aria-label="`${facility.name}补草数量`" placeholder="1">
-                <BaseButton :disabled="ranch.blocked || cap(ranch.state.grass, facility.capacity - facility.feed.count) < 1" @click="quantities[`grass-${facility.id}`] = String(cap(ranch.state.grass, facility.capacity - facility.feed.count))">
-                  最大
-                </BaseButton>
-                <BaseButton :disabled="ranch.blocked || amount(`grass-${facility.id}`) > cap(ranch.state.grass, facility.capacity - facility.feed.count)" @click="ranch.prepare('addGrass', { facilityId: facility.id, count: amount(`grass-${facility.id}`) })">
-                  补充牧草
+                <input v-model="quantities[`grass-${facility.id}`]" class="ranch-quantity" type="number" min="1" :max="grassMax(facility)" :aria-label="`${facility.name}补草数量`" :placeholder="String(grassMax(facility))">
+                <BaseButton :disabled="ranch.blocked || !grassAmount(facility) || grassAmount(facility) > grassMax(facility)" @click="ranch.prepare('addGrass', { facilityId: facility.id, count: grassAmount(facility) })">
+                  补草 {{ grassAmount(facility) }} 份
                 </BaseButton>
               </div>
             </template>

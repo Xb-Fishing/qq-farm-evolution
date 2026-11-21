@@ -315,6 +315,13 @@ message GetBagReply {
     int64 curr_grid_num = 4;
     int32 global_scene_id = 5;
 }
+message SellRequest {
+    repeated Item items = 1;
+}
+message SellReply {
+    repeated Item sell_items = 1;
+    repeated Item get_items = 2;
+}
 message SceneData {
     AllCellsReply homestead_cells = 2;
 }
@@ -483,6 +490,13 @@ const ROUTES = Object.freeze({
         "request": "GetBagRequest",
         "reply": "GetBagReply",
         "writing": false
+    },
+    "sell": {
+        "service": "gamepb.itempb.ItemService",
+        "method": "Sell",
+        "request": "SellRequest",
+        "reply": "SellReply",
+        "writing": true
     },
     "shopProfiles": {
         "service": "gamepb.shoppb.ShopService",

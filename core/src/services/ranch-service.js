@@ -257,6 +257,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       }
       return { raw, plan: model.planAction(action, input, raw, now()) };
     } catch (failure) {
+      if (rechecking && action === 'sell' && failure.code === 'RANCH_NO_ELIGIBLE_TARGET')
+        throw error('RANCH_STATE_CHANGED', '可售产物或报价已变化，请重新核对');
       if (rechecking && ['upgrade', 'completeUpgrade'].includes(action)
         && ['RANCH_FACILITY_NOT_FOUND', 'RANCH_UPGRADE_UNAVAILABLE', 'RANCH_UPGRADE_PENDING', 'RANCH_PRICE_UNKNOWN', 'INSUFFICIENT_BALANCE'].includes(failure.code))
         throw error('RANCH_STATE_CHANGED', `${failure.message}，请重新核对`);
@@ -295,7 +297,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     }, READ_CALLS[scan ? 'shop' : view]);
   }
   async function prepare(action, input = {}, autoRevision, autoSlot) {
-    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
+    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
     validateInput(input);
     const accountOrigin = origin();
     const previous = read();
@@ -320,7 +322,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       data.quotes = data.quotes.filter(row => row.status !== 'prepared' || row.expiresAt > quoteNow()).slice(-19);
       data.quotes.push(quote); save(data);
       return { id: quote.id, action, label: plan.label, count: plan.count,
-        costItems: plan.costItems, expectedRewards: sumItems(plan.expectedRewards), expiresAt: quote.expiresAt };
+        costItems: action === 'sell' ? sumItems(plan.costItems) : plan.costItems, expectedRewards: sumItems(plan.expectedRewards), expiresAt: quote.expiresAt };
     }, READ_CALLS[policyTools.SLOTS[autoSlot]?.type ? 'shop' : viewFor(action)] + (action === 'upgrade' ? 1 : 0));
     // Device clocks can differ from the game clock. Report time left after scene restoration.
     return { ...prepared, validForMs: Math.min(QUOTE_TTL_MS, Math.max(0, prepared.expiresAt - quoteNow())) };
@@ -331,6 +333,12 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (plan.action === 'buy') {
       if (String(reply.goods?.id) !== plan.payload.goods_id || !sameItems(reply.cost_items, plan.costItems)
         || !sameItems(reply.get_items, plan.expectedRewards)) unknown('购买回执的商品、费用或数量未完全匹配，请核对库存');
+      rewards = reply.get_items;
+    } else if (plan.action === 'sell') {
+      const stacks = rows => JSON.stringify((rows || []).map(row => [String(row.id), String(row.uid), String(row.count)])
+        .sort((a, b) => a[1].localeCompare(b[1])));
+      if (stacks(reply.sell_items) !== stacks(plan.payload.items) || !sameItems(reply.get_items, plan.expectedRewards))
+        unknown('出售回执的产物、数量或所得未完全匹配，请刷新核对');
       rewards = reply.get_items;
     } else if (plan.action === 'claimTasks') {
       rewards = reply.items || [];
@@ -508,6 +516,13 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         data.lastOperation = result;
         if (snapshot) { data.lastObservedAt = now(); data.lastObservedOperationId = id; }
         try { save(data); } catch { result.storageWarning = true; }
+        if (plan.action === 'sell' && result.outcome === 'confirmed') {
+          try {
+            const { log } = require('../utils/utils');
+            const income = result.rewards.map(row => `${row.name}×${row.count}`).join('、');
+            log('牧场', `出售牧场产物已确认 · ${result.completed} 批 · 收益 ${income}`, { module: 'ranch', event: 'ranch_sell_confirmed' });
+          } catch { /* Logging does not determine sale confirmation. */ }
+        }
         if (expiredBeforeDispatch) {
           if (result.storageWarning) throw error('RANCH_RESULT_UNCONFIRMED', '确认结果未能保存，请刷新牧场核对');
           throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);

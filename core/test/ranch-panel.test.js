@@ -951,3 +951,27 @@ test('a late known refusal cannot restore an older observation over the current 
   assert.equal(f.store.result.id, latest.id); await f.store.refresh();
   assert.equal(f.store.result.id, latest.id); assert.equal(f.store.blocked, false);
 });
+
+
+test('牧场批量出售和推荐补草从同页打开确认，确认前均不执行', async () => {
+  const f = fixture(); await h.flush();
+  f.read(async () => ({ data: { ok: true, data: {
+    ...state(), grass: '30',
+    facilities: [{ id: '22', name: '牧草机', capacity: 50, level: 1, feed: { count: 40 } }],
+    inventory: [
+      { id: '1060001', uid: '9007199254741001', name: '鸡蛋', count: '5', canSell: true, sellPrices: [{ name: '金券', count: '2' }] },
+      { id: '1060002', uid: '9007199254741002', name: '鸭蛋', count: '7', canSell: false },
+    ],
+  } } }));
+  await f.store.refresh();
+  f.prepare(async () => ({ data: { ok: true, data: { id: 'sale-quote', label: '出售牧场产物', count: 1,
+    costItems: [{ name: '鸡蛋', count: '5' }], expectedRewards: [{ name: '金券', count: '10' }], validForMs: 60000 } } }));
+  h.click(button(f.root, '批量出售产物（1 批）')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'sell', input: { all: true } });
+  assert.match(h.textOf(f.root), /预计获得：金券 × 10/);
+  assert.equal(f.posts.filter(post => post.url.endsWith('/operate')).length, 0);
+  await f.store.closeQuote();
+  h.click(button(f.root, '补草 10 份')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'addGrass', input: { facilityId: '22', count: 10 } });
+  assert.equal(f.posts.filter(post => post.url.endsWith('/operate')).length, 0);
+});
