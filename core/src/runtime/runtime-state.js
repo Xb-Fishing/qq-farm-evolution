@@ -78,6 +78,7 @@ function createRuntimeState(deps) {
         return {
             ...(clientRuntime ? { __clientRuntime: clientRuntime } : {}),
             automation: store.getAutomation(accountId),
+            requestPolicy: store.getConfigSnapshot(accountId).requestPolicy,
             plantingStrategy: store.getPlantingStrategy(accountId),
             preferredSeedId: store.getPreferredSeed(accountId),
             prioritize2x2Crops: store.getPrioritize2x2Crops(accountId),
