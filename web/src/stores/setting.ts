@@ -375,15 +375,9 @@ export const useSettingStore = defineStore('setting', () => {
         return { ok: false, error: '账号已切换，请在原账号核对已提交设置' }
 
       if (automationSnapshot) {
-        const automationPayload: Record<string, unknown> = {}
-        const milkControl: Record<string, unknown> = {}
-        for (const [key, value] of Object.entries(automationSnapshot)) {
-          if (key.startsWith('milk_tea_'))
-            milkControl[key] = value
-          else automationPayload[key] = value
-        }
-        if (Object.keys(milkControl).length)
-          automationPayload.milk_tea_control = milkControl
+        const automationPayload = Object.fromEntries(
+          Object.entries(automationSnapshot).filter(([key]) => !key.startsWith('milk_tea_')),
+        )
         const automationResult = await api.post('/api/automation', automationPayload, accountRequest)
         if (automationResult.data?.ok !== true)
           return { ok: false, error: automationResult.data?.error || '自动控制保存失败' }

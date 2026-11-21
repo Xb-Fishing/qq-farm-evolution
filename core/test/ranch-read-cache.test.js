@@ -10,6 +10,11 @@ const ordinaryFailure = {
   failureStage: 'bag', failureKind: 'request', sceneRecoveryRequired: false,
 };
 const success = { ok: true, data: { unlocked: true } };
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((accept, refuse) => { resolve = accept; reject = refuse; });
+  return { promise, resolve, reject };
+}
 
 function registerFixture(t, load) {
   const base = fs.realpathSync(os.tmpdir());
@@ -20,6 +25,7 @@ function registerFixture(t, load) {
     FARM_DATA_DIR: root,
     FARM_LOG_DIR: path.join(root, 'logs'),
     FARM_PRIVATE_CONFIG_FILE: path.join(root, 'private-config.json'),
+    FARM_SESSION_LOG_DIR: path.join(root, 'session-logs'),
   };
   const saved = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
   t.after(() => {
@@ -31,11 +37,12 @@ function registerFixture(t, load) {
     } finally {
       assert.equal(fs.realpathSync(root), root);
       fs.rmSync(root, { recursive: true, force: true });
+      assert.equal(fs.existsSync(root), false);
     }
   });
   assert.equal(fs.realpathSync(root), root);
   assert.equal(path.dirname(root), base);
-  for (const target of [overrides.FARM_LOG_DIR, overrides.FARM_PRIVATE_CONFIG_FILE]) {
+  for (const target of [overrides.FARM_LOG_DIR, overrides.FARM_PRIVATE_CONFIG_FILE, overrides.FARM_SESSION_LOG_DIR]) {
     assert.equal(path.dirname(target), root);
     assert.equal(fs.existsSync(target), false);
   }
@@ -47,8 +54,12 @@ function registerFixture(t, load) {
   const routes = new Map();
   const reads = [];
   const actions = [];
+  const cancellations = [];
   let time = 1000;
   const status = { authorized: true, connected: true, running: true };
+  const scopes = new Map(['fixture-a', 'fixture-b'].map(id => [id, JSON.stringify([id, 'binding', 1, 'host', 1, 1, 1])]));
+  let resolveScope = id => scopes.get(id);
+  let cancelAction = () => ({ ok: true, data: { cancelled: true } });
   registerAdminRanchRoutes({
     app: {
       get: (route, handler) => routes.set('GET ' + route, handler),
@@ -59,6 +70,7 @@ function registerFixture(t, load) {
     provider: {
       getStatus: () => ({ connection: { connected: status.connected } }),
       isAccountRunning: () => status.running,
+      getGamePanelReadScope: id => resolveScope(id),
       getRanchState: (...args) => {
         reads.push(args);
         return load(...args);
@@ -66,6 +78,10 @@ function registerFixture(t, load) {
       operateRanch: (id, quoteId) => {
         actions.push([id, quoteId]);
         return success;
+      },
+      cancelRanchAction: (id, quoteId) => {
+        cancellations.push([id, quoteId]);
+        return cancelAction();
       },
     },
     activityReader: createActivityReadCache({ now: () => time }),
@@ -77,14 +93,19 @@ function registerFixture(t, load) {
       status(code) { response.status = code; return this; },
       json(body) { response.body = body; return this; },
     };
-    await routes.get(route)(req, res);
+    const handler = routes.get(route);
+    if (!handler) return { status: 404 };
+    await handler(req, res);
     return response;
   }
   return {
-    reads, actions, status,
+    reads, actions, cancellations, status, scopes,
+    scopeLookup: fn => { resolveScope = fn; },
+    cancelAction: fn => { cancelAction = fn; },
     advance: ms => { time += ms; },
     state: (accountId = 'fixture-a', query) => call('GET /api/ranch/state', { accountId, query }),
     operate: (accountId, quoteId) => call('POST /api/ranch/operate', { accountId, body: { quoteId } }),
+    cancel: (accountId, quoteId) => call('POST /api/ranch/cancel', { accountId, body: { quoteId } }),
   };
 }
 
@@ -207,4 +228,115 @@ test('both scene recovery response shapes clear the current key immediately', as
   assert.deepEqual(await f.state(), { status: 200, body: { ...success, upstreamCached: false } });
   assert.deepEqual(await f.state(), { status: 200, body: { ...success, upstreamCached: true } });
   assert.equal(f.reads.length, 3);
+});
+
+test('a changed connection generation reloads every ranch view for that account within the TTL', async t => {
+  let level = 1;
+  const f = registerFixture(t, () => ({ ok: true, data: { level } }));
+  const views = ['animals', 'tasks', 'shop'];
+  for (const view of views) assert.equal((await f.state('fixture-a', { view })).body.data.level, 1);
+  await f.state('fixture-b');
+  level = 2;
+  f.scopes.set('fixture-a', JSON.stringify(['fixture-a', 'binding', 1, 'host', 2, 2, 2]));
+  for (const view of views) {
+    const next = await f.state('fixture-a', { view });
+    assert.equal(next.body.data.level, 2);
+    assert.equal(next.body.upstreamCached, false);
+    assert.equal((await f.state('fixture-a', { view })).body.upstreamCached, true);
+  }
+  assert.equal((await f.state('fixture-b')).body.data.level, 1);
+  assert.equal(f.reads.length, 7);
+});
+
+for (const oldReply of ['success', 'ordinary failure', 'throw']) {
+  test(`a late old-generation ${oldReply} cannot return or disturb the newer in-flight read`, async t => {
+    const old = deferred(); const next = deferred();
+    const oldStarted = deferred();
+    let calls = 0;
+    const f = registerFixture(t, () => {
+      if (++calls === 1) { oldStarted.resolve(); return old.promise; }
+      return next.promise;
+    });
+    const first = f.state();
+    await oldStarted.promise;
+    f.scopes.set('fixture-a', JSON.stringify(['fixture-a', 'binding', 2, 'host', 2, 2, 2]));
+    const fresh = f.state();
+    // Give the new loader a turn before settling the old promise.
+    await new Promise(resolve => setImmediate(resolve));
+    if (oldReply === 'throw') old.reject(new Error('old upstream exception'));
+    else old.resolve(oldReply === 'success' ? success : ordinaryFailure);
+    assert.equal((await first).status, 409);
+    assert.equal(calls, 2);
+    const joined = f.state();
+    next.resolve({ ok: true, data: { level: 2 } });
+    assert.equal((await fresh).body.data.level, 2);
+    assert.equal((await joined).body.upstreamCached, true);
+    assert.equal((await f.state()).body.upstreamCached, true);
+    assert.equal(f.reads.length, 2);
+  });
+}
+
+test('missing or unready scope and a change before dispatch allow no upstream read', async t => {
+  const f = registerFixture(t, () => success);
+  const scope = f.scopes.get('fixture-a');
+  f.scopeLookup(() => undefined);
+  assert.equal((await f.state()).status, 409);
+  f.scopeLookup(() => { throw new Error('账号业务尚未就绪'); });
+  assert.equal((await f.state()).status, 409);
+  let calls = 0;
+  f.scopeLookup(() => ++calls === 1 ? scope : scope + ':new');
+  assert.equal((await f.state()).status, 409);
+  assert.deepEqual(f.reads, []);
+});
+
+test('authorization is checked before dispatch and again for in-flight and cached results', async t => {
+  const pending = deferred(); const started = deferred();
+  let waitForRead = false;
+  const f = registerFixture(t, () => {
+    if (!waitForRead) return success;
+    started.resolve(); return pending.promise;
+  });
+  f.scopeLookup(id => { f.status.authorized = false; return f.scopes.get(id); });
+  assert.equal((await f.state()).status, 403);
+  assert.deepEqual(f.reads, []);
+  f.scopeLookup(id => f.scopes.get(id));
+  f.status.authorized = true;
+  waitForRead = true;
+  const request = f.state();
+  await started.promise;
+  f.status.authorized = false;
+  pending.resolve(success);
+  assert.equal((await request).status, 403);
+  f.status.authorized = true;
+  assert.deepEqual(await f.state(), { status: 200, body: { ...success, upstreamCached: true } });
+  assert.equal(f.reads.length, 1);
+});
+
+test('cancel validates the account and confirmation and delegates only to its running offline worker', async t => {
+  const f = registerFixture(t, () => success);
+  const id = 'fixture-a'; const quote = '00000000-0000-0000-0000-000000000001';
+  assert.equal((await f.cancel('', quote)).status, 400);
+  for (const invalid of [undefined, {}, '-'.repeat(36), quote + ' ', quote.replaceAll('-', '')]) {
+    assert.equal((await f.cancel(id, invalid)).status, 400);
+  }
+  assert.equal((await f.cancel('other-account', quote)).status, 403);
+  f.status.running = false;
+  assert.equal((await f.cancel(id, quote)).status, 409);
+  assert.deepEqual(f.cancellations, []);
+
+  f.status.running = true;
+  await f.state('fixture-b');
+  await f.state(id);
+  f.status.connected = false;
+  assert.deepEqual(await f.cancel(id, quote), { status: 200, body: { ok: true, data: { cancelled: true } } });
+  f.cancelAction(() => ({ ok: true, data: { cancelled: false, alreadyDispatched: true } }));
+  assert.equal((await f.cancel(id, quote)).status, 409);
+  f.cancelAction(() => { throw new Error('synthetic cancel exception'); });
+  assert.match((await f.cancel(id, quote)).body.error, /synthetic cancel exception/);
+  assert.deepEqual(f.cancellations, [[id, quote], [id, quote], [id, quote]]);
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.reads.length, 2);
+  f.status.connected = true;
+  assert.equal((await f.state(id)).body.upstreamCached, false);
+  assert.equal((await f.state('fixture-b')).body.upstreamCached, true);
 });
