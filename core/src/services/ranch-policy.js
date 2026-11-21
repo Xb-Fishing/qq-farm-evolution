@@ -5,7 +5,7 @@ const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: t
   intervalMinutes: 5, grassEnabled: false, grassDailyLimit: 0, grassReserve: 0,
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
-  stockCoop: false, stockShed: false, buyMissingCubs: false });
+  stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live' });
 const SLOTS = [
   { action: 'harvest', key: 'harvest' }, { action: 'produce', key: 'produce' },
   { action: 'clean', key: 'clean' }, { action: 'claimTasks', key: 'tasks', view: 'tasks' },
@@ -14,7 +14,9 @@ const SLOTS = [
   { key: 'stockCoop', type: 1 }, { key: 'stockShed', type: 2 },
 ];
 const STOCK_SHOP = '5';
+const STOCK_CURRENCY = '1007';
 const stockEnabled = (policy, type) => type === 1 ? policy.stockCoop : policy.stockShed;
+const liveStock = policy => policy.stockBudgetMode === 'live';
 const cubTypes = new Map(model.metadata.animals.map(row => [String(row.cub_item_id), row.husbandry_type === '窝' ? 1 : 2]));
 const positive = count => count > 0n ? count : 0n;
 const least = (...counts) => counts.reduce((a, b) => a < b ? a : b);
@@ -24,7 +26,10 @@ function normalizePolicy(value) {
   const result = { ...DEFAULT_POLICY };
   for (const key of Object.keys(result)) {
     if (value[key] === undefined) continue;
-    if (typeof result[key] === 'boolean') {
+    if (key === 'stockBudgetMode') {
+      if (!['live', 'manual'].includes(value[key])) throw new Error('补齐额度模式无效');
+      result[key] = value[key];
+    } else if (typeof result[key] === 'boolean') {
       if (typeof value[key] !== 'boolean') throw new Error('自动化开关无效');
       result[key] = value[key];
     } else if (typeof result[key] === 'number') {
@@ -41,8 +46,15 @@ function normalizePolicy(value) {
   if (result.grassEnabled && !result.grassDailyLimit) throw new Error('请设置每日补草上限');
   if (result.buyEnabled && (!result.goodsId || !result.currencyDailyLimit)) throw new Error('请设置购买商品和每日费用上限');
   if (result.stockCoop || result.stockShed) {
-    if (!result.cubDailyLimit) throw new Error('按栏舍补齐需要设置每日放养上限');
-    if (result.buyMissingCubs && !result.currencyDailyLimit) throw new Error('缺口补购需要设置每日花费上限');
+    // Previously saved stock policies retain their caps and purchase authorization.
+    if (value.stockBudgetMode === undefined) {
+      result.stockBudgetMode = 'manual';
+      if (value.buyMissingCubs === undefined) result.buyMissingCubs = false;
+    }
+    if (!liveStock(result)) {
+      if (!result.cubDailyLimit) throw new Error('按栏舍补齐需要设置每日放养上限');
+      if (result.buyMissingCubs && !result.currencyDailyLimit) throw new Error('缺口补购需要设置每日花费上限');
+    }
   }
   return result;
 }
@@ -81,26 +93,33 @@ function availableCubs(state, type) {
   return amounts;
 }
 
-function cubNeed(policy, state, type) {
+function cubNeed(policy, state, type, useLiveBudget = false) {
   const rooms = vacancies(state, type);
   if (!rooms?.length) return null;
   const amounts = availableCubs(state, type);
   const free = rooms.reduce((total, room) => total + room.count, 0n);
-  const reserve = id => BigInt(stockEnabled(policy, type) || policy.placeEnabled && policy.cubId === id ? policy.cubReserve : 0);
+  const reserve = id => !useLiveBudget && (stockEnabled(policy, type) || policy.placeEnabled && policy.cubId === id)
+    ? BigInt(policy.cubReserve) : 0n;
   const usable = [...amounts].map(([id, amount]) => [id, positive(amount - reserve(id))]);
   const missing = positive(free - usable.reduce((total, [, count]) => total + count, 0n));
-  return { rooms, amounts, usable, missing, reserve };
+  return { rooms, amounts, free, usable, missing, reserve };
 }
 
-function buyCount(policy, state, usage, card, cap) {
-  if (!card?.available || card.price?.id !== policy.currencyId || cap <= 0n) return 0n;
+function buyBudget(policy, state, usage, useLiveBudget = false) {
+  const id = useLiveBudget ? STOCK_CURRENCY : policy.currencyId;
+  const currency = state.currencies.find(item => item.id === id);
+  const reserve = useLiveBudget ? 0n : BigInt(policy.currencyReserve);
+  const available = currency ? BigInt(currency.available) - reserve : -1n;
+  return { id, available, daily: useLiveBudget ? null : remaining(policy, usage, 'buy', id) };
+}
+
+function buyCount(budget, card, cap) {
+  if (!card?.available || card.price?.id !== budget.id || cap <= 0n || budget.available < 0n) return 0n;
   const unit = BigInt(card.price.count);
-  const currency = state.currencies.find(item => item.id === card.price.id);
-  if (!currency || BigInt(currency.available) < BigInt(policy.currencyReserve)) return 0n;
   const limit = least(cap, BigInt(card.maxCount), card.remaining === null ? cap : BigInt(card.remaining));
   if (!unit) return limit;
-  return least(limit, remaining(policy, usage, 'buy', card.price.id) / unit,
-    (BigInt(currency.available) - BigInt(policy.currencyReserve)) / unit);
+  const affordable = budget.available / unit;
+  return budget.daily === null ? least(limit, affordable) : least(limit, affordable, budget.daily / unit);
 }
 
 function fixedBuy(policy, state, usage) {
@@ -109,24 +128,27 @@ function fixedBuy(policy, state, usage) {
   const [card] = cards;
   if (cards.length !== 1 || !card.available) return null;
   const requested = BigInt(policy.purchaseCount);
+  const budget = buyBudget(policy, state, usage);
   const type = cubTypes.get(card.reward.id);
   let count;
   if (type) {
     if (stockEnabled(policy, type) && policy.buyMissingCubs) return null;
     const need = cubNeed(policy, state, type);
     if (!need) return null;
-    count = buyCount(policy, state, usage, card, least(requested, need.missing / BigInt(card.reward.count)));
+    count = buyCount(budget, card, least(requested, need.missing / BigInt(card.reward.count)));
   } else {
-    count = buyCount(policy, state, usage, card, requested);
+    count = buyCount(budget, card, requested);
     if (count !== requested) return null;
   }
   return count > 0n ? { action: 'buy', input: { shopId: policy.shopId, goodsId: policy.goodsId, count: Number(count) } } : null;
 }
 
 function chooseStock(policy, state, type, usage) {
-  const need = cubNeed(policy, state, type);
-  const quota = remaining(policy, usage, 'place', '');
-  if (!need || !quota) return {};
+  const useLiveBudget = liveStock(policy);
+  const need = cubNeed(policy, state, type, useLiveBudget);
+  if (!need) return {};
+  const quota = useLiveBudget ? need.free : remaining(policy, usage, 'place', '');
+  if (!quota) return {};
   for (const [itemId, count] of need.usable) {
     if (count > 0n) {
       const room = need.rooms[0];
@@ -135,17 +157,17 @@ function chooseStock(policy, state, type, usage) {
   }
   if (!policy.buyMissingCubs) return {};
   const missing = least(need.missing, quota);
-  if (missing <= 0n || remaining(policy, usage, 'buy', policy.currencyId) <= 0n
-    || !state.currencies.some(item => item.id === policy.currencyId && BigInt(item.available) > BigInt(policy.currencyReserve))) return {};
+  const budget = buyBudget(policy, state, usage, useLiveBudget);
+  if (missing <= 0n || budget.daily === 0n || budget.available <= 0n) return {};
   if (state.shop?.shopId !== STOCK_SHOP) return { needsShop: true };
   if (new Set(state.shop.goods.map(card => card.id)).size !== state.shop.goods.length) return {};
   // The live unlock level takes precedence. The cub IDs follow progression within each husbandry type.
   const candidates = state.shop.goods.filter(card => card.available && cubTypes.get(card.reward.id) === type
-    && card.price?.id === policy.currencyId && BigInt(card.price.count) > 0n)
+    && card.price?.id === budget.id && BigInt(card.price.count) > 0n)
     .sort((a, b) => Number(b.requiredLevel ?? 0) - Number(a.requiredLevel ?? 0) || Number(b.reward.id) - Number(a.reward.id));
   for (const card of candidates) {
     const perUnit = BigInt(card.reward.count);
-    const count = buyCount(policy, state, usage, card, least(99n, missing / perUnit));
+    const count = buyCount(budget, card, least(99n, missing / perUnit));
     if (count > 0n && (need.amounts.get(card.reward.id) || 0n) + count * perUnit > need.reserve(card.reward.id))
       return { selected: { action: 'buy', input: { shopId: STOCK_SHOP, goodsId: card.id, count: Number(count) } } };
   }
@@ -170,13 +192,16 @@ function allowance(policy, plan, raw, usage, slot, now) {
       || !raw.cells.facilities.some(row => String(row.instance_id) === policy.ranchId && row.state === 1))) return false;
   }
 
+  const useLiveBudget = currentSlot.type && liveStock(policy);
+  const currencyId = useLiveBudget ? STOCK_CURRENCY : policy.currencyId;
   for (const cost of plan.costItems) {
     const prefix = { addGrass: 'grass', place: 'cub', buy: 'currency' }[plan.action];
-    if (!prefix || (plan.action === 'addGrass' && cost.id !== '7001') || (plan.action === 'buy' && cost.id !== policy.currencyId)) return false;
+    if (!prefix || (plan.action === 'addGrass' && cost.id !== '7001') || (plan.action === 'buy' && cost.id !== currencyId)) return false;
     const { id } = cost;
     const count = BigInt(cost.count);
-    if (count > remaining(policy, usage, plan.action, id)
-      || BigInt(model.balance(raw.bag, id).available) - count < BigInt(policy[`${prefix}Reserve`])) return false;
+    const reserve = useLiveBudget ? 0n : BigInt(policy[`${prefix}Reserve`]);
+    if ((!useLiveBudget && count > remaining(policy, usage, plan.action, id))
+      || BigInt(model.balance(raw.bag, id).available) - count < reserve) return false;
   }
   return true;
 }

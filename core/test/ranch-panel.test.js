@@ -449,11 +449,14 @@ test('nest task opens its facility without spending and only a separate confirma
   assert.deepEqual(f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId), ['nest-quote']);
 });
 
-test('stocking settings independently save either type and do not enable fixed purchase', async () => {
+test('stocking settings save either type without a budget and keep manual limits optional', async () => {
   const f = fixture();
   await h.flush();
   const form = h.findAll(f.root, node => node.tag === 'form')[0];
-  const field = label => h.findAll(h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === label)[0], node => node.tag === 'input')[0];
+  const field = (label) => {
+    const element = h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === label)[0];
+    return element && h.findAll(element, node => node.tag === 'input')[0];
+  };
   assert.match(h.textOf(form), /先放养背包里匹配的幼崽/);
   assert.match(h.textOf(form), /栏舍已满、未解锁或状态不明时暂停补齐/);
   function set(label, value) {
@@ -461,26 +464,55 @@ test('stocking settings independently save either type and do not enable fixed p
   }
   set('启用牧场自动化', true);
   set('补齐棚', true);
-  set('每日最多放养', 3);
   await h.flush();
-  assert.equal(field('每日最多花费').props.min, 0);
-  set('库存不足时补购幼崽', true);
-  set('每日最多花费', 25);
-  await h.flush();
-  assert.equal(field('每日最多花费').props.min, 1);
+  assert.equal(field('每日最多放养'), undefined);
+  assert.equal(field('每日最多花费'), undefined);
+  assert.equal(field('手动设置补齐额度').props.checked, false);
   form.props.onSubmit({ preventDefault() {} });
   await h.flush();
-  assert.equal(f.posts[0].body.stockCoop, false);
-  assert.equal(f.posts[0].body.stockShed, true);
-  assert.equal(f.posts[0].body.buyMissingCubs, true);
-  assert.equal(f.posts[0].body.buyEnabled, false);
-  assert.equal(f.posts[0].body.cubDailyLimit, 3);
-  assert.equal(f.posts[0].body.currencyDailyLimit, 25);
+  const live = require('../src/services/ranch-policy').normalizePolicy(f.posts[0].body);
+  assert.equal(live.stockBudgetMode, 'live');
+  assert.equal(live.stockCoop, false);
+  assert.equal(live.stockShed, true);
+  assert.equal(live.buyMissingCubs, true);
+  assert.equal(live.buyEnabled, false);
+  assert.equal(live.cubDailyLimit, 0);
+  assert.equal(live.currencyDailyLimit, 0);
+
   set('补齐棚', false);
   set('补齐窝', true);
+  field('手动设置补齐额度').props.onChange({ target: { checked: true } });
   await h.flush();
+  assert.equal(field('每日最多放养').props.min, '1');
+  assert.equal(field('每日最多花费').props.min, '1');
+  set('每日最多放养', 3);
+  set('每日最多花费', 25);
   form.props.onSubmit({ preventDefault() {} });
   await h.flush();
-  assert.equal(f.posts[1].body.stockCoop, true);
-  assert.equal(f.posts[1].body.stockShed, false);
+  const manual = require('../src/services/ranch-policy').normalizePolicy(f.posts[1].body);
+  assert.equal(manual.stockBudgetMode, 'manual');
+  assert.equal(manual.stockCoop, true);
+  assert.equal(manual.stockShed, false);
+  assert.equal(manual.cubDailyLimit, 3);
+  assert.equal(manual.currencyDailyLimit, 25);
+});
+
+test('switching ranch accounts discards unsaved live stocking changes', async () => {
+  const f = fixture();
+  await h.flush();
+  const toggle = () => {
+    const label = h.findAll(f.root, node => node.tag === 'label' && h.textOf(node).trim() === '补齐窝')[0];
+    return h.findAll(label, node => node.tag === 'input')[0];
+  };
+  toggle().props['onUpdate:modelValue'](true);
+  await h.flush();
+  f.mount('account-b');
+  await h.flush();
+  const form = h.findAll(f.root, node => node.tag === 'form')[0];
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.equal(f.posts.length, 1);
+  assert.equal(f.posts[0].config.headers['x-account-id'], 'account-b');
+  assert.equal(f.posts[0].body.stockCoop, false);
+  assert.equal(f.posts[0].body.stockBudgetMode, 'live');
 });

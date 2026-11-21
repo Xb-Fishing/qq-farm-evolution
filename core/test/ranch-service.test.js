@@ -516,7 +516,7 @@ test('both prepare and execute check fresh stocking requirements before any disp
         if (change === 'best offer changes') goods = [chick, duck];
         if (change === 'currency reserve changes') f.gold(34);
       };
-      await startStock(f, { currencyReserve: 5 });
+      await startStock(f, change === 'currency reserve changes' ? { currencyReserve: 5 } : { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
       const result = await f.service.automate();
       assert.equal(result.code, 'RANCH_AUTOMATION_PAUSED', `${change} during read ${changeAt}: ${JSON.stringify(result)}`);
       assert.equal(f.writes, 0);
@@ -529,7 +529,7 @@ test('an unknown automatic purchase blocks all subsequent stock writes after ser
   const f = fixture();
   f.facilities.push(stockRoom('12', 2, 3));
   f.goods = () => [chick, sheep];
-  await startStock(f, { stockShed: true });
+  await startStock(f, { stockShed: true, stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
   f.timeout();
   const timedOut = await f.service.automate();
   assert.equal(timedOut.data.outcome, 'unknown');
@@ -585,7 +585,7 @@ test('confirmed purchases exhaust the shared spend allowance before another stoc
 
 test('loss of automatic admission after reserving a stock order keeps the request unsent', async t => {
   const f = fixture();
-  await startStock(f);
+  await startStock(f, { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
   const original = codec.encode;
   t.mock.method(codec, 'encode', (name, payload) => {
     const bytes = original(name, payload);
@@ -603,7 +603,7 @@ test('coop and shed can place only existing cubs with a zero purchase budget, th
   const f = fixture();
   f.facilities.push(stockRoom('12', 2, 3));
   f.cubs.set('60001', 1);
-  await startStock(f, { stockShed: true, buyMissingCubs: false, currencyDailyLimit: 0 });
+  await startStock(f, { stockShed: true, buyMissingCubs: false, stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
   assert.equal((await stockRound(f)).action, 'place');
   assert.equal((await stockRound(f)).skipped, true);
   f.cubs.set('70001', 1);
@@ -612,4 +612,73 @@ test('coop and shed can place only existing cubs with a zero purchase budget, th
   assert.equal(f.facilities[2].ranch.animal_count, 1);
   assert.equal(f.calls.includes('ShopInfo'), false);
   assert.equal(f.calls.includes('BuyGoods'), false);
+});
+
+test('live stock mode buys only what current vacancies, available tickets and shop limits allow', async () => {
+  for (const { vacancies, tickets, remaining, count } of [
+    { vacancies: 3, tickets: 20, remaining: 5, count: 1 },
+    { vacancies: 8, tickets: 25, remaining: 5, count: 2 },
+    { vacancies: 8, tickets: 80, remaining: 1, count: 1 },
+    { vacancies: 8, tickets: 9, remaining: 5, count: 0 },
+  ]) {
+    const f = fixture();
+    f.facilities[0] = stockRoom('11', 1, vacancies);
+    f.gold(tickets);
+    const pack = { ...duck, item_count: '2', limit_count: '5', bought_num: String(5 - remaining) };
+    f.goods = () => [pack];
+    await startStock(f, { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
+    const result = await stockRound(f);
+    assert.equal(result.completed ?? 0, count);
+    if (count) {
+      assert.equal(result.action, 'buy');
+      assert.deepEqual(result.costs.map(item => [item.id, item.count]), [['1007', String(count * 10)]]);
+      assert.equal((await stockRound(f)).completed, count * 2);
+    }
+    assert.equal((await stockRound(f)).skipped, true);
+  }
+});
+
+test('live stock buys the highest affordable unlocked tier with verified shop level conditions', async () => {
+  const f = fixture();
+  f.gold(1100);
+  f.goods = () => [
+    { ...chick, price: '2', conds: [{ type: 3, param: '1' }] },
+    { ...duck, price: '1080', conds: [{ type: 3, param: '3' }] },
+    { ...duck, id: '10004', item_id: '60003', price: '2712', conds: [{ type: 3, param: '9' }] },
+  ];
+  await startStock(f, { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
+  const result = await stockRound(f);
+  assert.equal(result.action, 'buy');
+  assert.equal(result.completed, 1);
+  assert.deepEqual(result.rewards.map(item => [item.id, item.count]), [['60002', '1']]);
+  assert.equal(result.costs[0].count, '1080');
+});
+
+test('a persisted stocking policy without a mode reloads as manual and keeps its previous budget', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 5);
+  await startStock(f, { cubDailyLimit: 3, currencyDailyLimit: 10 });
+  const data = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+  delete data.automation.policy.stockBudgetMode;
+  fs.writeFileSync(f.file, JSON.stringify(data));
+  f.service = f.make();
+  const policy = (await f.service.getAutomation()).data.policy;
+  assert.equal(policy.stockBudgetMode, 'manual');
+  assert.equal(policy.cubDailyLimit, 3);
+  assert.equal(policy.currencyDailyLimit, 10);
+  assert.equal((await stockRound(f)).completed, 1);
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal((await stockRound(f)).skipped, true);
+});
+
+test('selecting live stock preserves manual quota semantics for existing fixed actions', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 4);
+  const food = { ...chick, id: '10001', item_id: '7001' };
+  f.goods = () => [food, chick];
+  await startStock(f, { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 10, buyEnabled: true,
+    shopId: '6', goodsId: food.id, purchaseCount: 2 });
+  assert.equal((await stockRound(f)).skipped, true, 'fixed purchase retains its manual quota');
+  assert.equal((await stockRound(f)).completed, 4, 'stock purchase is capped by live vacancy');
+  assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '40');
 });
