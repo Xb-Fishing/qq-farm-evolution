@@ -462,6 +462,9 @@ test('stocking settings independently save either type and do not enable fixed p
   set('启用牧场自动化', true);
   set('补齐棚', true);
   set('每日最多放养', 3);
+  await h.flush();
+  assert.equal(field('每日最多花费').props.min, 0);
+  set('库存不足时补购幼崽', true);
   set('每日最多花费', 25);
   await h.flush();
   assert.equal(field('每日最多花费').props.min, 1);
@@ -469,6 +472,7 @@ test('stocking settings independently save either type and do not enable fixed p
   await h.flush();
   assert.equal(f.posts[0].body.stockCoop, false);
   assert.equal(f.posts[0].body.stockShed, true);
+  assert.equal(f.posts[0].body.buyMissingCubs, true);
   assert.equal(f.posts[0].body.buyEnabled, false);
   assert.equal(f.posts[0].body.cubDailyLimit, 3);
   assert.equal(f.posts[0].body.currencyDailyLimit, 25);

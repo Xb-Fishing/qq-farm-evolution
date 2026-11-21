@@ -384,7 +384,7 @@ test('invalid upgrade instance never requests its detail and a mismatched start 
 });
 
 const stockPolicy = { enabled: true, harvest: false, produce: false, clean: false, tasks: false,
-  stockCoop: true, cubDailyLimit: 10, currencyDailyLimit: 100, intervalMinutes: 2 };
+  stockCoop: true, buyMissingCubs: true, cubDailyLimit: 10, currencyDailyLimit: 100, intervalMinutes: 2 };
 const chick = { id: '10002', item_id: '60001', item_count: '1', price: '10', unlocked: true };
 const duck = { ...chick, id: '10003', item_id: '60002', conds: [{ type: 3, param: '12' }] };
 const sheep = { ...chick, id: '10008', item_id: '70001' };
@@ -548,6 +548,7 @@ test('saved fixed cub purchases are bounded by compatible net vacancy and do not
   const data = JSON.parse(fs.readFileSync(f.file, 'utf8'));
   delete data.automation.policy.stockCoop;
   delete data.automation.policy.stockShed;
+  delete data.automation.policy.buyMissingCubs;
   fs.writeFileSync(f.file, JSON.stringify(data));
   const purchase = await stockRound(f);
   assert.equal(purchase.action, 'buy');
@@ -596,4 +597,19 @@ test('loss of automatic admission after reserving a stock order keeps the reques
   assert.equal(f.writes, 0);
   assert.equal(f.calls.includes('BuyGoods'), false);
   assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '0');
+});
+
+test('coop and shed can place only existing cubs with a zero purchase budget, then resume after inventory arrives', async () => {
+  const f = fixture();
+  f.facilities.push(stockRoom('12', 2, 3));
+  f.cubs.set('60001', 1);
+  await startStock(f, { stockShed: true, buyMissingCubs: false, currencyDailyLimit: 0 });
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal((await stockRound(f)).skipped, true);
+  f.cubs.set('70001', 1);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal(f.facilities[2].ranch.animal_count, 1);
+  assert.equal(f.calls.includes('ShopInfo'), false);
+  assert.equal(f.calls.includes('BuyGoods'), false);
 });

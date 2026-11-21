@@ -5,7 +5,7 @@ const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: t
   intervalMinutes: 5, grassEnabled: false, grassDailyLimit: 0, grassReserve: 0,
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
-  stockCoop: false, stockShed: false });
+  stockCoop: false, stockShed: false, buyMissingCubs: false });
 const SLOTS = [
   { action: 'harvest', key: 'harvest' }, { action: 'produce', key: 'produce' },
   { action: 'clean', key: 'clean' }, { action: 'claimTasks', key: 'tasks', view: 'tasks' },
@@ -40,8 +40,10 @@ function normalizePolicy(value) {
   if (result.placeEnabled && (!result.cubId || !result.ranchId || !result.cubDailyLimit)) throw new Error('请设置放养目标和每日上限');
   if (result.grassEnabled && !result.grassDailyLimit) throw new Error('请设置每日补草上限');
   if (result.buyEnabled && (!result.goodsId || !result.currencyDailyLimit)) throw new Error('请设置购买商品和每日费用上限');
-  if ((result.stockCoop || result.stockShed) && (!result.cubDailyLimit || !result.currencyDailyLimit))
-    throw new Error('按栏舍补齐需要设置每日放养和花费上限');
+  if (result.stockCoop || result.stockShed) {
+    if (!result.cubDailyLimit) throw new Error('按栏舍补齐需要设置每日放养上限');
+    if (result.buyMissingCubs && !result.currencyDailyLimit) throw new Error('缺口补购需要设置每日花费上限');
+  }
   return result;
 }
 const dayKey = now => new Date(now + 8 * 3600000).toISOString().slice(0, 10);
@@ -110,7 +112,7 @@ function fixedBuy(policy, state, usage) {
   const type = cubTypes.get(card.reward.id);
   let count;
   if (type) {
-    if (stockEnabled(policy, type)) return null;
+    if (stockEnabled(policy, type) && policy.buyMissingCubs) return null;
     const need = cubNeed(policy, state, type);
     if (!need) return null;
     count = buyCount(policy, state, usage, card, least(requested, need.missing / BigInt(card.reward.count)));
@@ -131,6 +133,7 @@ function chooseStock(policy, state, type, usage) {
       return { selected: { action: 'place', input: { ranchId: room.id, itemId, count: Number(least(count, room.count, quota, 50n)) } } };
     }
   }
+  if (!policy.buyMissingCubs) return {};
   const missing = least(need.missing, quota);
   if (missing <= 0n || remaining(policy, usage, 'buy', policy.currencyId) <= 0n
     || !state.currencies.some(item => item.id === policy.currencyId && BigInt(item.available) > BigInt(policy.currencyReserve))) return {};
