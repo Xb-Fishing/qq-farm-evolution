@@ -10,9 +10,11 @@ assert.ok(temp !== repo && !temp.startsWith(repo + path.sep));
 const prefix = path.resolve(temp, 'farm-ranch-service-');
 assert.equal(path.dirname(prefix), temp);
 const root = fs.mkdtempSync(prefix);
+assert.equal(fs.realpathSync(root), root);
 function fixturePath(name) {
   const target = path.resolve(root, name);
   assert.equal(path.dirname(target), root);
+  assert.equal(fs.existsSync(target), false);
   return target;
 }
 process.env.FARM_DATA_DIR = root;
@@ -22,7 +24,14 @@ process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 const codec = require('../src/services/ranch-codec');
 const { encode, decode } = require('../src/runtime/session-codec');
 const { createRanchService } = require('../src/services/ranch-service');
-test.after(() => fs.rmSync(root, { recursive: true, force: true }));
+test.after(() => {
+  // Run after the daily-feedback exit flush, which can otherwise recreate the fixture directory.
+  process.once('exit', () => {
+    assert.equal(fs.realpathSync(root), root);
+    fs.rmSync(root, { recursive: true, force: true });
+    assert.equal(fs.existsSync(root), false);
+  });
+});
 function fixture(upgrade = false) {
   const file = fixturePath(`operations-${Math.random().toString(16).slice(2)}.json`);
   let now = 1800000000000; let gameOffset = 0; let allowed = true; let failure = false; let malformed = false;
@@ -983,4 +992,116 @@ test('enabled due rounds report concrete stop reasons only when the reason chang
   const previous = records.length;
   assert.equal((await stockRound(f)).skipped, true);
   assert.equal(records.length, previous);
+});
+
+function cancelViaRoute(f) {
+  const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
+  const { registerAdminRanchRoutes } = require('../src/controllers/admin-ranch-routes');
+  const routes = new Map();
+  const id = 'account-a';
+  registerAdminRanchRoutes({
+    app: { get() {}, post: (route, handler) => routes.set(route, handler) },
+    getAccountIdFromRequest: () => id, canAccessAccount: () => true,
+    provider: {
+      isAccountRunning: () => true,
+      getStatus: () => ({ connection: { connected: false } }),
+      getGamePanelReadScope: () => JSON.stringify([id, 'binding', 1, 'host', 1, 1, 1]),
+      cancelRanchAction: (account, quote) => {
+        assert.equal(account, id);
+        return f.service.cancel(quote);
+      },
+    },
+    activityReader: createActivityReadCache(),
+    sendProviderError: (_res, error) => { throw error; },
+  });
+  return async quoteId => {
+    const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    await routes.get('/api/ranch/cancel')({ body: { quoteId } }, res);
+    return { code: res.code, body: res.body };
+  };
+}
+
+test('cancel over the offline worker route returns the reserved type to an already-due stock round', async () => {
+  const f = fixture();
+  f.cubs.set('60001', 2);
+  await startStock(f, { stockBudgetMode: 'live', buyMissingCubs: false });
+  const quote = await f.service.prepare('place', { ranchId: '11', itemId: '60001', count: 1 });
+  assert.equal(quote.ok, true);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 0);
+  const cancel = cancelViaRoute(f);
+  const calls = f.calls.length;
+  assert.deepEqual(await cancel(quote.data.id), { code: 200, body: { ok: true, data: { cancelled: true } } });
+  assert.equal((await cancel(quote.data.id)).code, 409);
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.writes, 0);
+  const reopened = f.make();
+  assert.equal((await reopened.execute(quote.data.id)).data.outcome, 'not_sent');
+  assert.equal(f.writes, 0);
+  const resumed = await f.service.automate();
+  assert.equal(resumed.data.outcome, 'confirmed');
+  assert.equal(resumed.data.costs[0].id, '60001');
+  assert.equal(resumed.data.completed, 2);
+  assert.equal(f.writes, 1);
+});
+
+test('cancel over the offline worker route wins before dispatch during an execute preflight', async () => {
+  const f = fixture(); const id = await quoteBuy(f); const cancel = cancelViaRoute(f);
+  let started, resume;
+  const entered = new Promise(resolve => { started = resolve; });
+  const paused = new Promise(resolve => { resume = resolve; });
+  f.onRead = async method => { if (method === 'GetBag') { started(); await paused; } };
+  const running = f.service.execute(id);
+  await entered;
+  try {
+    assert.equal((await cancel(id)).code, 200);
+    assert.equal(f.writes, 0);
+  } finally { resume(); }
+  assert.equal((await running).data.outcome, 'not_sent');
+  assert.equal(f.writes, 0);
+});
+
+for (const outcome of ['unknown', 'confirmed']) {
+  test(`cancel preserves a dispatched ${outcome} operation and its durable budget`, async () => {
+    const f = fixture(); const cancel = cancelViaRoute(f);
+    await startStock(f, { stockBudgetMode: 'live' });
+    if (outcome === 'unknown') f.timeout();
+    let inFlightCancel;
+    f.beforeWrite(() => {
+      const pending = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+      const usage = pending.automation.usage;
+      assert.equal(pending.lastOperation.outcome, 'pending');
+      assert.ok(BigInt(usage['buy:1007']) > 0n);
+      inFlightCancel = cancel(pending.lastOperation.id);
+    });
+    const result = await f.service.automate();
+    assert.equal(result.data.outcome, outcome);
+    assert.equal((await inFlightCancel).code, 409);
+    assert.equal(f.writes, 1);
+    const before = fs.readFileSync(f.file, 'utf8');
+    assert.ok(BigInt(JSON.parse(before).automation.usage['buy:1007']) > 0n);
+    assert.equal((await cancel(result.data.id)).code, 409);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), before);
+    assert.equal((await f.make().execute(result.data.id)).data.outcome, outcome);
+    assert.equal(f.writes, 1);
+  });
+}
+
+test('cancel preserves a partial operation and the existing spend ledger', async () => {
+  const f = fixture();
+  await startStock(f, { stockBudgetMode: 'live' });
+  assert.equal((await f.service.automate()).data.outcome, 'confirmed');
+  const room = f.facilities[0].ranch;
+  room.animals.push({ ...room.animals[0], animal_inst_id: 8 });
+  room.animal_count = 2;
+  const quote = await f.service.prepare('produce', { all: true });
+  assert.equal(quote.ok, true, quote.error);
+  assert.equal(quote.data.count, 2);
+  assert.equal((await f.service.execute(quote.data.id)).data.outcome, 'partial');
+  const before = fs.readFileSync(f.file, 'utf8');
+  assert.ok(BigInt(JSON.parse(before).automation.usage['buy:1007']) > 0n);
+  assert.equal((await cancelViaRoute(f)(quote.data.id)).code, 409);
+  assert.equal(fs.readFileSync(f.file, 'utf8'), before);
+  assert.equal((await f.make().execute(quote.data.id)).data.outcome, 'partial');
+  assert.equal(f.writes, 2);
 });

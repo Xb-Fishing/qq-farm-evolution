@@ -65,6 +65,12 @@ function registerAdminFarmResourceRoutes({
     if (!accountId)
       return;
 
+    // Retired settings stay readable for old snapshots, but are no longer editable.
+    // Reject the entire patch before publishing any current automation settings.
+    if (Object.keys(req.body || {}).some(key => key.startsWith("milk_tea_"))) {
+      return res.status(410).json({ ok: false, code: "ACTIVITY_RETIRED", error: "奶茶活动已结束，自动化设置不再开放" });
+    }
+
     try {
       let result = null;
       for (const [key, value] of Object.entries(req.body)) {

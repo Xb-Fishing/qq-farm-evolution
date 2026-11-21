@@ -52,7 +52,7 @@ function checkbox(root, label) { const direct = findAll(root, row => row.tag ===
 async function toggle(f, label, value) { const node = checkbox(f.root, label); if (node.props['onUpdate:modelValue']) node.props['onUpdate:modelValue'](value); else node.props.onChange({target:{checked:value}}); await flush(); }
 function input(f, label, value) { const parent = findAll(f.root, row => row.tag === 'label' && textOf(row).trim() === label)[0]; assert.ok(parent, label); const node = findAll(parent, row => row.tag === 'input')[0]; node.props.onInput({ target: { value } }); }
 
-test('real account component, composition and Pinia store save and reload new policies without ordinary tasks', async t => {
+test('ordinary settings save excludes retired fields from historical forms', async t => {
   const f = await historicalFixture(t);
   for (const label of ['自动购买活动种子', '自动班次工作（互动与工资）', '自动升级店铺']) await toggle(f, label, true);
   await toggle(f, '森野甜莓种子', true); await toggle(f, '森野黄金芽种子', true);
@@ -61,11 +61,10 @@ test('real account component, composition and Pinia store save and reload new po
   assert.equal(f.calls.length, 0, 'editing and expanding are local operations');
   click(button(f.root, '保存自动控制')); await flush();
   const body = f.calls.find(call => call.url === '/api/automation').body;
-  const payload = body.milk_tea_control;
-  assert.equal(payload.milk_tea_auto_seeds, true); assert.equal(payload.milk_tea_auto_work, true); assert.equal(payload.milk_tea_auto_upgrade, true);
-  assert.equal(payload.milk_tea_auto_rewards, false); assert.equal(body.task, false); assert.equal(payload.milk_tea_work_interaction_type, 3);
-  assert.deepEqual(payload.milk_tea_seed_policy.targetSeedIds, [20525, 29005]); assert.equal(payload.milk_tea_seed_policy.ticketDailyLimit, '8000');
-  f.reload(); await flush(); assert.equal(checkbox(f.root, '自动购买活动种子').checked, true); assert.equal(checkbox(f.root, '森野黄金芽种子').props.checked, true);
+  assert.equal(body.task, false);
+  assert.equal(Object.keys(body).some(key => key.startsWith('milk_tea_')), false);
+  f.reload(); await flush();
+  assert.equal(checkbox(f.root, '自动购买活动种子').checked, false);
 });
 test('ordinary response failure and rejected save show failure and release loading, never false success', async t => {
   for (const mode of ['response', 'throw']) {
@@ -76,19 +75,19 @@ test('ordinary response failure and rejected save show failure and release loadi
     render(null, f.root);
   }
 });
-test('save captures all milk authorization before awaiting; later local mutations need another save', async t => {
+test('ordinary automation save captures its snapshot before awaiting and omits retired fields', async t => {
   const f = await historicalFixture(t); f.api.pending = deferred();
+  const automation = f.control.localAutomationSettings.value.automation;
+  automation.task = true;
   await toggle(f, '自动购买活动种子', true); await toggle(f, '森野甜莓种子', true);
   click(button(f.root, '保存自动控制')); await vue.nextTick();
   assert.equal(f.control.automationSaving.value, true);
-  f.control.localAutomationSettings.value.automation.milk_tea_auto_work = true;
-  f.control.localAutomationSettings.value.automation.milk_tea_seed_policy.targetSeedIds = [20526];
-  f.control.localAutomationSettings.value.automation.milk_tea_seed_policy.coinDailyLimit = '999999';
+  automation.task = false;
+  automation.milk_tea_auto_work = true;
   f.api.pending.resolve(); await flush();
-  const payload = f.calls.find(call => call.url === '/api/automation').body.milk_tea_control;
-  assert.equal(payload.milk_tea_auto_seeds, true); assert.equal(payload.milk_tea_auto_work, false);
-  assert.deepEqual(payload.milk_tea_seed_policy.targetSeedIds, [20525]);
-  assert.equal(payload.milk_tea_seed_policy.coinDailyLimit, '240000');
+  const payload = f.calls.find(call => call.url === '/api/automation').body;
+  assert.equal(payload.task, true);
+  assert.equal(Object.keys(payload).some(key => key.startsWith('milk_tea_')), false);
 });
 test('invalid budgets block saving and unmount/account change invalidates a pending save notification', async t => {
   const invalid = await historicalFixture(t); await toggle(invalid, '自动购买活动种子', true);
@@ -124,7 +123,7 @@ test('backend account/default-plan persistence deeply clones policies and invali
   assert.deepEqual(reloaded.getAutomation('synthetic-persistent').milk_tea_seed_policy.targetSeedIds, []);
 });
 
-test('recommended full automation preserves targets and independent custom budgets through real group save/reload', async t => {
+test('historical recommendation keeps local targets and never submits retired automation', async t => {
   const f = await historicalFixture(t);
   const auto = f.control.localAutomationSettings.value.automation;
   auto.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
@@ -133,12 +132,14 @@ test('recommended full automation preserves targets and independent custom budge
   assert.equal(f.calls.length, 0); assert.equal(auto.milk_tea_auto_boost, false);
   await toggle(f, '自动使用现有宣传喇叭', true); assert.match(textOf(f.root), /每次最多 100 个/);
   await toggle(f, '自动使用现有宣传喇叭', false);
+  assert.equal(auto.milk_tea_auto_craft, true); assert.equal(auto.milk_tea_auto_hire, true); assert.equal(auto.milk_tea_auto_open, true);
+  assert.deepEqual(auto.milk_tea_seed_policy.targetSeedIds, [21435]); assert.equal(auto.milk_tea_seed_policy.ticketDailyLimit, '0');
+  assert.deepEqual(auto.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' });
   click(button(f.root, '保存自动控制')); await flush();
-  const payload = f.calls.find(call => call.url === '/api/automation').body.milk_tea_control;
-  assert.equal(payload.milk_tea_auto_craft, true); assert.equal(payload.milk_tea_auto_hire, true); assert.equal(payload.milk_tea_auto_open, true);
-  assert.deepEqual(payload.milk_tea_seed_policy.targetSeedIds, [21435]); assert.equal(payload.milk_tea_seed_policy.ticketDailyLimit, '0');
-  assert.deepEqual(payload.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' });
-  f.reload(); await vue.nextTick(); assert.equal(f.control.localAutomationSettings.value.automation.milk_tea_auto_craft, true);
+  const payload = f.calls.find(call => call.url === '/api/automation').body;
+  assert.equal(Object.keys(payload).some(key => key.startsWith('milk_tea_')), false);
+  f.reload(); await vue.nextTick();
+  await toggle(f, '自动雇佣员工', true);
   click(button(f.root, '展开高级预算')); await vue.nextTick();
   input(f, '雇佣每日上限（奶茶券）', 'bad'); const before = f.calls.length;
   click(button(f.root, '保存自动控制')); await flush(); assert.equal(f.calls.length, before); assert.match(f.alerts.at(-1)[0], /雇佣/);
@@ -166,7 +167,7 @@ test('real settings component renders absent or partial legacy policy without a 
   }
 });
 
-test('real settings payload, route and provider publish milk authorization as one complete snapshot', async t => {
+test('ordinary settings leave retired authorization untouched and internal persistence is atomic', async t => {
   const f = await historicalFixture(t); const backend = require('../src/models/store');
   const id = f.account.value; const snapshots = []; let revision = 0;
   backend.applyConfigSnapshot({ automation: { milk_tea_auto_seeds: false, milk_tea_auto_work: false, milk_tea_auto_upgrade: false, milk_tea_seed_policy: { targetSeedIds: [20525], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '240000', ticketReserve: '8000', ticketDailyLimit: '0' } } }, { persist: false, accountId: id });
@@ -175,7 +176,9 @@ test('real settings payload, route and provider publish milk authorization as on
     broadcastConfigToWorkers: accountId => snapshots.push(clone(backend.getAutomation(accountId))), callWorkerApi: () => { throw new Error('No game calls in configuration fixture'); } });
   const routes = new Map(); const app = {};
   for (const method of ['get', 'post', 'put', 'delete']) app[method] = (url, handler) => routes.set(`${method} ${url}`, handler);
-  require('../src/controllers/admin-farm-resource-routes').registerAdminFarmResourceRoutes({ app, provider, getAccountIdFromRequest: () => id, canAccessAccount: () => true });
+  require('../src/controllers/admin-farm-resource-routes').registerAdminFarmResourceRoutes({
+    app, provider, getAccountIdFromRequest: () => id, canAccessAccount: (_req, accountId) => accountId === id,
+  });
   const catalogGet = f.api.get;
   f.api.get = async url => url.startsWith('/api/activity/milk-tea') ? catalogGet(url) : ({ data: { ok: true, data: backend.getConfigSnapshot(id) } });
   f.api.post = async (url, body) => {
@@ -194,16 +197,14 @@ test('real settings payload, route and provider publish milk authorization as on
   const selection = findAll(f.root, row => row.tag === 'select' && row.props['aria-label'] === '互动方式')[0];
   selection.props.onChange({ target: { value: '3' } });
   click(button(f.root, '保存自动控制')); await flush();
-  assert.ok(snapshots.some(row => row.milk_tea_auto_seeds === true), 'actual provider/store must apply the new configuration');
-  for (const row of snapshots) if (row.milk_tea_auto_seeds || row.milk_tea_auto_work || row.milk_tea_auto_upgrade) {
-    assert.deepEqual(row.milk_tea_seed_policy.targetSeedIds, [20526], 'no broadcast may enable new automation against the old selected target');
-    assert.equal(row.milk_tea_auto_seeds, true); assert.equal(row.milk_tea_auto_work, true); assert.equal(row.milk_tea_auto_upgrade, true);
-    assert.equal(row.milk_tea_seed_policy.targetStock, 12); assert.equal(row.milk_tea_seed_policy.coinDailyLimit, '120000'); assert.equal(row.milk_tea_work_interaction_type, 3);
-    assert.equal(row.milk_tea_auto_craft, true); assert.equal(row.milk_tea_auto_hire, true);
-    assert.deepEqual(row.milk_tea_hire_policy, { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' });
+  assert.ok(f.alerts.some(row => row[0] === '自动控制设置已保存'));
+  assert.ok(snapshots.length > 0);
+  for (const row of snapshots) {
+    assert.equal(row.milk_tea_auto_seeds, false);
+    assert.equal(row.milk_tea_auto_work, false);
+    assert.equal(row.milk_tea_auto_upgrade, false);
+    assert.deepEqual(row.milk_tea_seed_policy.targetSeedIds, [20525]);
   }
-  assert.deepEqual(backend.getAutomation(id).milk_tea_seed_policy.targetSeedIds, [20526]);
-  assert.equal(snapshots.filter(row => row.milk_tea_auto_seeds).length, 1, 'milk policy is published once as a complete group');
   await provider.setAutomation(id, 'milk_tea_control', { milk_tea_auto_rewards: true, task: true, friend_bad: true });
   assert.equal(backend.getAutomation(id).task, false); assert.equal(backend.getAutomation(id).friend_bad, false);
   assert.equal(backend.getAutomation(id).milk_tea_control, undefined);
@@ -217,13 +218,13 @@ test('real settings payload, route and provider publish milk authorization as on
     return rename(src, dest);
   };
   try {
-    await assert.rejects(provider.setAutomation(id, 'milk_tea_control', { ...before, milk_tea_auto_seeds: false,
-      milk_tea_seed_policy: { ...before.milk_tea_seed_policy, targetSeedIds: [20525] } }), /synthetic milk config persistence failure/);
+    await assert.rejects(provider.setAutomation(id, 'milk_tea_control', { ...before, milk_tea_auto_seeds: true,
+      milk_tea_seed_policy: { ...before.milk_tea_seed_policy, targetSeedIds: [20526] } }), /synthetic milk config persistence failure/);
   } finally { fs.renameSync = rename; }
   assert.deepEqual(backend.getAutomation(id), before, 'failed group persistence rolls back the complete in-memory snapshot');
   assert.equal(fs.readFileSync(file).equals(disk), true); assert.equal(snapshots.length, broadcasts, 'provider must not broadcast an uncommitted authorization');
-  await provider.setAutomation(id, 'milk_tea_control', { ...before, milk_tea_auto_seeds: false });
-  assert.equal(backend.getAutomation(id).milk_tea_auto_seeds, false); assert.equal(snapshots.length, broadcasts + 1);
+  await provider.setAutomation(id, 'milk_tea_control', { ...before, milk_tea_auto_seeds: true });
+  assert.equal(backend.getAutomation(id).milk_tea_auto_seeds, true); assert.equal(snapshots.length, broadcasts + 1);
 });
 
 // Historical milk authorization UI, pinned to the retired d609585e fixture.
