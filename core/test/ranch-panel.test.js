@@ -20,7 +20,7 @@ process.env.FARM_PRIVATE_CONFIG_FILE = fixturePath('private-config.json');
 process.env.FARM_LOG_DIR = fixturePath('logs');
 process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 const h = require('./activity-availability.test');
-const { DEFAULT_POLICY } = require('../src/services/ranch-policy');
+const { DEFAULT_POLICY, targetTypes } = require('../src/services/ranch-policy');
 const state = () => ({ level: 1, grass: '30', currencies: [], facilities: [], cubs: [], inventory: [],
   animals: [{ id: 7, ranchId: '11', name: '鸡', canProduce: true }], tasks: [], lastOperation: null });
 const roots = [];
@@ -28,14 +28,14 @@ test.after(() => {
   try { for (const root of roots) h.render(null, root); }
   finally { fs.rmSync(privateDir, { recursive: true, force: true }); }
 });
-function fixture() {
+function fixture(initialPolicy = {}) {
   const posts = []; let read = async () => ({ data: { ok: true, data: state() } }); let prepare; let operate; let acknowledge;
   const api = {
-    get: async (url, config) => url.endsWith('/automation') ? { data: { ok: true, data: { policy: { ...DEFAULT_POLICY }, revision: 0 } } } : read(url, config),
+    get: async (url, config) => url.endsWith('/automation') ? { data: { ok: true, data: { policy: { ...DEFAULT_POLICY, ...initialPolicy }, targetTypes, revision: 0 } } } : read(url, config),
     post: async (url, body, config) => {
       posts.push({ url, body, config });
       if (url.endsWith('/prepare')) return prepare ? prepare() : { data: { ok: true, data: { id: 'synthetic-quote', label: '牧场生产', count: 1, costItems: [], expiresAt: Date.now() + 60000 } } };
-      if (url.endsWith('/automation')) return { data: { ok: true, data: { policy: body, revision: 1 } } };
+      if (url.endsWith('/automation')) return { data: { ok: true, data: { policy: body, targetTypes, revision: 1 } } };
       if (url.endsWith('/operate') && operate) return operate();
       if (url.endsWith('/acknowledge') && acknowledge) return acknowledge(body);
       return { data: { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [], snapshot: state() } } };
@@ -483,8 +483,8 @@ test('stocking settings save either type without a budget and keep manual limits
   set('补齐窝', true);
   field('手动设置补齐额度').props.onChange({ target: { checked: true } });
   await h.flush();
-  assert.equal(field('每日最多放养').props.min, '1');
-  assert.equal(field('每日最多花费').props.min, '1');
+  assert.equal(field('每日最多放养').props.min, 1);
+  assert.equal(field('每日最多花费').props.min, 1);
   set('每日最多放养', 3);
   set('每日最多花费', 25);
   form.props.onSubmit({ preventDefault() {} });
@@ -515,4 +515,37 @@ test('switching ranch accounts discards unsaved live stocking changes', async ()
   assert.equal(f.posts[0].config.headers['x-account-id'], 'account-b');
   assert.equal(f.posts[0].body.stockCoop, false);
   assert.equal(f.posts[0].body.stockBudgetMode, 'live');
+});
+
+test('smart stock takes over both fixed cub rules before the catalogue loads, and releases only the chosen type', async () => {
+  const f = fixture({ enabled: false, placeEnabled: true, cubId: '60002', ranchId: '11', cubDailyLimit: 3,
+    buyEnabled: true, shopId: '5', goodsId: '10008', currencyDailyLimit: 200 });
+  await h.flush();
+  const form = h.findAll(f.root, node => node.tag === 'form')[0];
+  const field = label => {
+    const entry = h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === label)[0];
+    return entry && h.findAll(entry, node => node.tag === 'input')[0];
+  };
+  field('启用牧场自动化并智能补栏').props.onChange({ target: { checked: true } });
+  await h.flush();
+  assert.match(h.textOf(form), /已接管窝，.*指定放养规则暂停/);
+  assert.match(h.textOf(form), /已接管棚，.*指定幼崽购买规则暂停/);
+  assert.equal(field('每日最多放养'), undefined);
+  assert.equal(field('每日最多花费'), undefined);
+  field('库存不足时补购幼崽').props['onUpdate:modelValue'](false);
+  await h.flush();
+  assert.match(h.textOf(form), /只用库存/);
+  assert.match(h.textOf(form), /指定幼崽购买规则暂停/);
+  form.props.onSubmit({ preventDefault() {} }); await h.flush();
+  const policy = f.posts.at(-1).body;
+  assert.deepEqual([policy.enabled, policy.stockCoop, policy.stockShed, policy.buyMissingCubs], [true, true, true, false]);
+  assert.deepEqual([policy.placeEnabled, policy.cubId, policy.ranchId, policy.buyEnabled, policy.goodsId], [true, '60002', '11', true, '10008']);
+  field('补齐棚').props['onUpdate:modelValue'](false); await h.flush();
+  assert.match(h.textOf(form), /当前仅管理窝/);
+  assert.doesNotMatch(h.textOf(form), /指定幼崽购买规则暂停/);
+  assert.ok(field('每日最多花费'));
+  assert.equal(field('每日最多放养'), undefined);
+  field('智能补栏').props.onChange({ target: { checked: false } }); await h.flush();
+  assert.ok(field('每日最多放养'));
+  assert.doesNotMatch(h.textOf(form), /规则暂停/);
 });

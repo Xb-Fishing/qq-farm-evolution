@@ -29,7 +29,7 @@ function fixture(upgrade = false) {
   let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let writes = 0;
   let nextAnimal = 8;
   const cubs = new Map();
-  const calls = []; const ws = {}; let beforeWrite;
+  const calls = []; const leases = []; const ws = {}; let beforeWrite;
   const facilities = [
     { instance_id: '11', facility_id: 6001002, module_type: 6, state: 1, level: 2, capacity: 4,
       ranch: { ranch_inst_id: '11', capacity: 4, animal_count: 1, husbandry_type: 1,
@@ -42,7 +42,8 @@ function fixture(upgrade = false) {
   }
   const network = {
     getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
-    withRanchScene: async callback => {
+    withRanchScene: async (callback, options) => {
+      leases.push(options.maxCalls);
       const value = await callback({ initial: f.initial, assertCurrent() {} });
       now += f.restoreDelayMs || 0;
       return value;
@@ -104,7 +105,7 @@ function fixture(upgrade = false) {
     },
   };
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, file, cubs, facilities, lockedCubs: [], upgradeCost: 14000,
+  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], upgradeCost: 14000,
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
@@ -681,4 +682,152 @@ test('selecting live stock preserves manual quota semantics for existing fixed a
   assert.equal((await stockRound(f)).skipped, true, 'fixed purchase retains its manual quota');
   assert.equal((await stockRound(f)).completed, 4, 'stock purchase is capped by live vacancy');
   assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '40');
+});
+
+test('inventory-only stock owns the coop, including when two same-type fixed rules are retained with no quotas', async () => {
+  const f = fixture();
+  f.cubs.set('60002', 1);
+  const policy = { ...stockPolicy, stockBudgetMode: 'live', buyMissingCubs: false, cubDailyLimit: 0, currencyDailyLimit: 0,
+    placeEnabled: true, ranchId: '11', cubId: '60001', buyEnabled: true, goodsId: '10002' };
+  const saved = await f.service.setAutomation(policy);
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.data.targetTypes.cubs['60002'], 1);
+  assert.equal(saved.data.targetTypes.goods['10008'], 2);
+  assert.equal(saved.data.targetTypes.goods['10001'], undefined);
+  assert.deepEqual((await f.service.getAutomation()).data.targetTypes, saved.data.targetTypes);
+  for (const [name, value] of Object.entries(policy)) assert.equal(saved.data.policy[name], value, name);
+  f.advance(30000);
+  const buy = { shopId: '5', goodsId: '10002', count: 1 };
+  const place = { ranchId: '11', itemId: '60001', count: 1 };
+  assert.equal((await f.service.prepare('buy', buy, saved.data.revision)).code, 'RANCH_AUTOMATION_PAUSED');
+  assert.equal((await f.service.prepare('place', place, saved.data.revision)).code, 'RANCH_AUTOMATION_PAUSED');
+  assert.deepEqual(f.calls, []);
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal(f.calls.includes('ShopInfo'), false);
+
+  const parked = await f.service.setAutomation({ ...policy, stockCoop: false });
+  assert.equal(parked.ok, true, parked.error);
+  assert.equal(parked.data.policy.placeEnabled, true);
+  assert.equal(parked.data.policy.buyEnabled, true);
+  f.service = f.make();
+  f.advance(30000);
+  f.calls.length = 0;
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.writes, 1);
+});
+
+test('turning off coop ownership restores valid fixed purchase and placement without reselecting their targets', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 3);
+  const policy = { ...stockPolicy, stockBudgetMode: 'live', buyMissingCubs: false,
+    placeEnabled: true, cubId: '60001', ranchId: '11', buyEnabled: true, goodsId: '10002' };
+  await startStock(f, policy);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal(f.calls.includes('ShopInfo'), false);
+
+  const restored = await f.service.setAutomation({ ...policy, stockCoop: false });
+  assert.equal(restored.ok, true, restored.error);
+  f.advance(30000);
+  assert.equal((await stockRound(f)).skipped, true, 'fixed placement waits for inventory');
+  assert.equal((await stockRound(f)).action, 'buy');
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal(f.facilities[0].ranch.animal_count, 1);
+});
+
+test('coop ownership leaves fixed shed rules and purchases of feed eligible', async () => {
+  const f = fixture();
+  f.facilities.push(stockRoom('12', 2, 4));
+  f.cubs.set('70001', 1);
+  f.goods = () => [sheep];
+  const policy = { ...stockPolicy, stockBudgetMode: 'live', buyMissingCubs: false,
+    placeEnabled: true, cubId: '70001', ranchId: '12', buyEnabled: true, goodsId: '10008', purchaseCount: 2 };
+  await startStock(f, policy);
+  assert.equal((await stockRound(f)).action, 'place');
+  const shedPurchase = await stockRound(f);
+  assert.equal(shedPurchase.action, 'buy');
+  assert.equal(shedPurchase.rewards[0].id, '70001');
+  const food = { ...chick, id: '10001', item_id: '7001' };
+  f.goods = () => [food];
+  const saved = await f.service.setAutomation({ ...policy, placeEnabled: false, shopId: '6', goodsId: food.id });
+  assert.equal(saved.ok, true, saved.error);
+  f.advance(120000);
+  let purchase = await stockRound(f);
+  if (purchase.skipped) purchase = await stockRound(f);
+  assert.equal(purchase.action, 'buy');
+  assert.equal(purchase.rewards[0].id, '7001');
+});
+
+test('claiming a type during a fixed action preflight prevents dispatch without affecting a one-off manual quote', async () => {
+  for (const action of ['buy', 'place']) {
+    for (const phase of ['prepare', 'execute']) {
+      const f = fixture();
+      f.cubs.set('60001', 1);
+      const policy = { ...stockPolicy, stockCoop: false, stockBudgetMode: 'live', buyMissingCubs: false,
+        placeEnabled: true, cubId: '60001', ranchId: '11', buyEnabled: true, goodsId: '10002' };
+      const saved = await f.service.setAutomation(policy);
+      const input = action === 'buy' ? { shopId: '5', goodsId: '10002', count: 1 } : { ranchId: '11', itemId: '60001', count: 1 };
+      const prepare = () => f.service.prepare(action, input, saved.data.revision);
+      const pending = phase === 'execute' ? await prepare() : null;
+      if (pending) assert.equal(pending.ok, true, pending.error);
+      f.onRead = async method => {
+        if (method !== (action === 'buy' ? 'ShopInfo' : 'GetBag')) return;
+        f.onRead = null;
+        const edited = await f.service.setAutomation({ ...policy, stockCoop: true });
+        assert.equal(edited.ok, true, edited.error);
+      };
+      const blocked = pending ? await f.service.execute(pending.data.id) : await prepare();
+      assert.equal(blocked.code, 'RANCH_AUTOMATION_PAUSED');
+      assert.equal(f.writes, 0);
+      const manual = await f.service.prepare(action, input);
+      assert.equal(manual.ok, true, manual.error);
+      assert.equal((await f.service.execute(manual.data.id)).data.outcome, 'confirmed');
+      assert.equal(f.writes, 1);
+    }
+  }
+});
+
+test('stock places the highest confirmed tier across stacks, selecting the room that fits the most per operation', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 1);
+  f.facilities.push(stockRoom('13', 1, 4));
+  f.cubs.set('60002', 5);
+  f.cubs.set('60001', 3);
+  f.goods = () => [
+    { ...duck, conds: [{ type: 3, param: '2' }] },
+    { ...chick, conds: [{ type: 3, param: '4' }] },
+  ];
+  await startStock(f, { stockBudgetMode: 'live', buyMissingCubs: false });
+  const placed = await stockRound(f);
+  assert.equal(placed.action, 'place');
+  assert.equal(placed.completed, 3);
+  assert.equal(placed.costs[0].id, '60001');
+  assert.equal(f.facilities[0].ranch.animal_count, 0);
+  assert.equal(f.facilities[2].ranch.animal_count, 3);
+  assert.equal(f.calls.filter(call => call === 'ShopInfo').length, 3, 'discovery and both checks use fresh shop tier data');
+  assert.deepEqual(f.leases, [7, 7, 10], 'scene limits cover shop reads in all three stages');
+  f.calls.length = 0;
+  assert.equal((await stockRound(f)).costs[0].id, '60002');
+  assert.equal(f.calls.includes('ShopInfo'), false, 'one inventory type needs no shop lookup');
+});
+
+test('stock rechecks changing inventory tiers before placement without sending the earlier candidate', async () => {
+  const f = fixture();
+  f.cubs.set('60002', 2);
+  f.cubs.set('60001', 2);
+  let reads = 0;
+  f.goods = () => {
+    reads++;
+    return [
+      { ...duck, conds: [{ type: 3, param: reads < 3 ? '2' : '5' }] },
+      { ...chick, conds: [{ type: 3, param: '4' }] },
+    ];
+  };
+  await startStock(f, { stockBudgetMode: 'live', buyMissingCubs: false });
+  const rejected = await f.service.automate();
+  assert.equal(rejected.code, 'RANCH_AUTOMATION_PAUSED');
+  assert.equal(reads, 3);
+  assert.equal(f.calls.includes('PlaceAnimal'), false);
 });
