@@ -12,8 +12,8 @@ import { useAccountStore } from '@/stores/account'
 import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
-import { formatCouponAmount, formatGoldAmount, formatGoldBeanAmount } from '@/utils/number-format'
 import { AUTOMATION_CATEGORY_LABELS, AUTOMATION_LOG_EVENT_GROUPS, getDailyEventCategory } from '@/utils/automation-observability'
+import { formatCouponAmount, formatGoldAmount, formatGoldBeanAmount } from '@/utils/number-format'
 
 const statusStore = useStatusStore()
 const accountStore = useAccountStore()
@@ -157,6 +157,7 @@ const modules = [
   { label: '仓库', value: 'warehouse' },
   { label: '任务', value: 'task' },
   { label: '活动', value: 'activity' },
+  { label: '牧场', value: 'ranch' },
   { label: '系统', value: 'system' },
 ]
 
@@ -176,9 +177,10 @@ const events = [
   { label: '进入农场', value: '进入农场' },
   { label: '好友巡查', value: '好友巡查循环' },
   { label: '偷菜巡查', value: '偷菜巡查' },
+  { label: '一键务农', value: '一键务农' },
   { label: '农场巡查', value: '农场循环' },
   { label: '土地提醒', value: '土地推送通知' },
-  { label: '收获作物', value: '收获作物' },
+  { label: '收获作物', value: '收获作物,到点保护收获' },
   { label: '清理枯枝', value: '铲除植物' },
   { label: '种植种子', value: '种植种子' },
   { label: '选择种子', value: '选择种子' },
@@ -197,7 +199,7 @@ const events = [
   { label: '月卡礼包', value: 'month_card_gift' },
   { label: '邮箱领取', value: 'email_rewards' },
   { label: '图鉴奖励', value: '图鉴奖励' },
-  { label: '同气礼包', value: '同气连枝礼包' },
+  { label: '同气礼包', value: '同气连枝礼包,dog_skill_gift_claim' },
   { label: '收获后出售', value: '收获后出售' },
   { label: '偷菜后出售', value: '偷菜后出售' },
   { label: '出售成功', value: 'sell_success,sell_done' },
@@ -622,6 +624,7 @@ interface DailyEvent {
 }
 
 const dailyEvents = ref<DailyEvent[]>([])
+let dailyEventsRequestId = 0
 const dailyEventCategory = ref('')
 const dailyEventCategories = [{ label: '全部分类', value: '' }, ...Object.entries(AUTOMATION_CATEGORY_LABELS).map(([value, label]) => ({ label, value }))]
 const visibleDailyEvents = computed(() => dailyEvents.value.filter(event => !dailyEventCategory.value || getDailyEventCategory(event) === dailyEventCategory.value).slice().reverse())
@@ -632,7 +635,6 @@ watch(currentAccountId, () => {
 })
 const downloadingDailyEvents = ref(false)
 const downloadingStealEvents = ref(false)
-let dailyEventsRequestId = 0
 
 async function fetchDailyEvents() {
   if (!currentAccountId.value)
@@ -884,7 +886,9 @@ useIntervalFn(updateCountdowns, 1000)
   </div>
   <div v-if="currentStatusReady && status?.sessionUpgrade?.requiresRescan" class="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-xl bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
     <p>更新已保留旧游戏连接。新通信控制需要重新建立连接后生效。{{ currentAccount?.platform === 'wx' ? '请为此账号重新扫码，新授权会替换旧连接。' : '请更新登录码后重启此账号。' }}</p>
-    <BaseButton v-if="currentAccount?.platform === 'wx'" variant="secondary" @click="rescanFromHome">重新扫码并更新连接</BaseButton>
+    <BaseButton v-if="currentAccount?.platform === 'wx'" variant="secondary" @click="rescanFromHome">
+      重新扫码并更新连接
+    </BaseButton>
   </div>
   <div class="flex flex-col gap-5 pt-1 md:pt-2">
     <div

@@ -2,7 +2,7 @@
 const model = require('./ranch-model');
 
 const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: true, clean: true, tasks: true,
-  intervalMinutes: 5, grassEnabled: false, grassDailyLimit: 0, grassReserve: 0,
+  intervalMinutes: 5, smartFeed: false, grassEnabled: false, grassDailyLimit: 0, grassReserve: 0,
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
   stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live' });
@@ -12,11 +12,17 @@ const SLOTS = [
   { action: 'addGrass', key: 'grassEnabled' }, { action: 'place', key: 'placeEnabled' },
   { action: 'buy', key: 'buyEnabled', view: 'shop' },
   { key: 'stockCoop', type: 1 }, { key: 'stockShed', type: 2 },
+  { key: 'smartFeed', feed: true },
 ];
 const STOCK_SHOP = '5';
 const STOCK_CURRENCY = '1007';
+const FEED_SHOP = '6';
+const FEED_GOODS = '10001';
+const FEED_ITEM = '7001';
+const EQUIPMENT_BATCH = 999n;
 const stockEnabled = (policy, type) => type === 1 ? policy.stockCoop : policy.stockShed;
 const liveStock = policy => policy.stockBudgetMode === 'live';
+const fixedBuysFeed = policy => policy.shopId === FEED_SHOP && policy.goodsId === FEED_GOODS;
 const cubTypes = Object.freeze(Object.fromEntries(model.metadata.animals.map(row => [String(row.cub_item_id), row.husbandry_type === '窝' ? 1 : 2])));
 const targetTypes = Object.freeze({ cubs: cubTypes, goods: Object.freeze(Object.fromEntries(model.metadata.goods
   .filter(row => cubTypes[row.item_id]).map(row => [String(row.id), cubTypes[row.item_id]]))) });
@@ -40,6 +46,9 @@ function fixedConfigured(policy, action) {
 function slotEnabled(policy, slot) {
   if (!slot || !policy[slot.key]) return false;
   const { action } = slot;
+  if (policy.smartFeed && (action === 'addGrass' || (action === 'buy' && fixedBuysFeed(policy))))
+    return false;
+  if (action === 'addGrass') return policy.grassDailyLimit > 0;
   return !['place', 'buy'].includes(action) || (!fixedOwnedByStock(policy, action) && fixedConfigured(policy, action));
 }
 
@@ -50,7 +59,7 @@ function actionSlot(action, index) {
 function isAutomaticActionEnabled(policy, action, index) {
   const slot = actionSlot(action, index);
   return policy.enabled && slotEnabled(policy, slot)
-    && (slot.type ? ['place', 'buy'].includes(action) : slot.action === action);
+    && (slot.feed ? ['addGrass', 'buy'].includes(action) : slot.type ? ['place', 'buy'].includes(action) : slot.action === action);
 }
 
 function normalizePolicy(value, { previous, fromStorage = false } = {}) {
@@ -74,13 +83,16 @@ function normalizePolicy(value, { previous, fromStorage = false } = {}) {
     throw new Error('巡检间隔应为2至60分钟，购买数量应为1至99');
   if (!['5', '6'].includes(result.shopId) || !['1007', '1002', '1005', '1008', '7002'].includes(result.currencyId))
     throw new Error('牧场商店或货币无效');
-  if (result.grassEnabled && !result.grassDailyLimit) throw new Error('请设置每日补草上限');
+  const parkedGrass = previous?.grassEnabled && !previous.grassDailyLimit;
+  if (result.grassEnabled && !result.smartFeed && !result.grassDailyLimit && !parkedGrass && !fromStorage)
+    throw new Error('请设置每日补草上限');
   if (!fromStorage) {
     for (const [action, enabled, message] of [
       ['place', 'placeEnabled', '请设置放养目标和每日上限'],
       ['buy', 'buyEnabled', '请设置购买商品和每日费用上限'],
     ]) {
-      if (!result[enabled] || fixedOwnedByStock(result, action) || fixedConfigured(result, action)) continue;
+      if (!result[enabled] || fixedOwnedByStock(result, action) || fixedConfigured(result, action)
+        || (result.smartFeed && action === 'buy' && fixedBuysFeed(result))) continue;
       // A saved rule may leave stock ownership before its budget is configured.
       // Preserve the selection but let slotEnabled keep the rule inactive.
       const parked = previous?.[enabled] && !fixedConfigured(previous, action)
@@ -115,6 +127,7 @@ function vacancies(state, type) {
   const rooms = state.facilities.filter(room => room.moduleType === type + 5);
   if (new Set(rooms.map(room => room.id)).size !== rooms.length) return null;
   const open = [];
+  let ready = false;
   for (const room of rooms) {
     if (room.state === 2 || room.state === 3) continue;
     const ranch = room.ranch;
@@ -123,9 +136,10 @@ function vacancies(state, type) {
       || ranch.animals.length !== ranch.count || new Set(ranch.animals.map(animal => animal.id)).size !== ranch.count) return null;
     if (room.upgradeState === 1 || room.upgradeState === 2) continue;
     if (room.upgradeState !== 0 || (room.upgradeEndTime !== '0' && room.upgradeEndTime !== null)) return null;
+    ready = true;
     if (ranch.capacity > ranch.count) open.push({ id: room.id, count: BigInt(ranch.capacity - ranch.count) });
   }
-  return open;
+  return { open, ready };
 }
 
 function availableCubs(state, type) {
@@ -137,8 +151,10 @@ function availableCubs(state, type) {
 }
 
 function cubNeed(policy, state, type, useLiveBudget = false) {
-  const rooms = vacancies(state, type);
-  if (!rooms?.length) return null;
+  const occupancy = vacancies(state, type);
+  if (!occupancy) return { reason: 'facility_unconfirmed' };
+  const { open: rooms, ready } = occupancy;
+  if (!rooms.length) return { reason: ready ? 'full' : 'no_facility' };
   const amounts = availableCubs(state, type);
   const free = rooms.reduce((total, room) => total + room.count, 0n);
   const reserve = id => !useLiveBudget && (stockEnabled(policy, type) || policy.placeEnabled && policy.cubId === id)
@@ -156,41 +172,55 @@ function buyBudget(policy, state, usage, useLiveBudget = false) {
   return { id, available, daily: useLiveBudget ? null : remaining(policy, usage, 'buy', id) };
 }
 
-function buyCount(budget, card, cap) {
-  if (!card?.available || card.price?.id !== budget.id || cap <= 0n || budget.available < 0n) return 0n;
+function purchaseQuantity(budget, card, cap) {
+  if (card?.remaining === '0') return { count: 0n, reason: 'shop_limit' };
+  if (!card?.available || card.price?.id !== budget.id) return { count: 0n, reason: 'no_product' };
+  if (cap <= 0n) return { count: 0n, reason: 'pack_exceeds_vacancy' };
+  if (budget.available < 0n) return { count: 0n, reason: 'insufficient_balance' };
+  let count = cap;
+  let reason;
   const unit = BigInt(card.price.count);
-  const limit = least(cap, BigInt(card.maxCount), card.remaining === null ? cap : BigInt(card.remaining));
-  if (!unit) return limit;
-  const affordable = budget.available / unit;
-  return budget.daily === null ? least(limit, affordable) : least(limit, affordable, budget.daily / unit);
+  const limits = [
+    [BigInt(card.maxCount), 'shop_limit'],
+    [card.remaining === null ? cap : BigInt(card.remaining), 'shop_limit'],
+    [unit > 0n ? budget.available / unit : cap, 'insufficient_balance'],
+    [unit > 0n && budget.daily !== null ? budget.daily / unit : cap, 'buy_daily_limit'],
+  ];
+  for (const [limit, bound] of limits) {
+    if (limit >= count) continue;
+    count = limit;
+    reason = bound;
+  }
+  return { count, reason };
 }
 
 function fixedBuy(policy, state, usage) {
-  if (state.shop?.shopId !== policy.shopId) return null;
+  if (state.shop?.shopId !== policy.shopId) return { reason: 'no_product' };
   const cards = state.shop.goods.filter(row => row.id === policy.goodsId);
   const [card] = cards;
-  if (cards.length !== 1 || !card.available) return null;
+  if (cards.length !== 1) return { reason: cards.length ? 'shop_unconfirmed' : 'no_product' };
+  if (!card.available) return { reason: card.remaining === '0' ? 'shop_limit' : 'no_product' };
   const requested = BigInt(policy.purchaseCount);
   const budget = buyBudget(policy, state, usage);
   const type = cubTypes[card.reward.id];
-  let count;
+  let cap = requested;
   if (type) {
     const need = cubNeed(policy, state, type);
-    if (!need) return null;
-    count = buyCount(budget, card, least(requested, need.missing / BigInt(card.reward.count)));
-  } else {
-    count = buyCount(budget, card, requested);
-    if (count !== requested) return null;
+    if (need.reason) return { reason: need.reason };
+    if (!need.missing) return { reason: 'inventory_covers_vacancy' };
+    cap = least(requested, need.missing / BigInt(card.reward.count));
   }
-  return count > 0n ? { action: 'buy', input: { shopId: policy.shopId, goodsId: policy.goodsId, count: Number(count) } } : null;
+  const { count, reason } = purchaseQuantity(budget, card, cap);
+  if (!count || (!type && count !== requested)) return { reason };
+  return { selected: { action: 'buy', input: { shopId: policy.shopId, goodsId: policy.goodsId, count: Number(count) } } };
 }
 
 function chooseStock(policy, state, type, usage) {
   const useLiveBudget = liveStock(policy);
   const need = cubNeed(policy, state, type, useLiveBudget);
-  if (!need) return {};
+  if (need.reason) return { reason: need.reason };
   const quota = useLiveBudget ? need.free : remaining(policy, usage, 'place', '');
-  if (!quota) return {};
+  if (!quota) return { reason: 'place_daily_limit' };
   if (need.usable.length) {
     if (need.usable.length > 1 && state.shop?.shopId !== STOCK_SHOP) return { needsShop: 'place' };
     const levels = new Map();
@@ -205,33 +235,130 @@ function chooseStock(policy, state, type, usage) {
     const room = need.rooms.reduce((best, next) => next.count > best.count ? next : best);
     return { selected: { action: 'place', input: { ranchId: room.id, itemId, count: Number(least(count, room.count, quota, 50n)) } } };
   }
-  if (!policy.buyMissingCubs) return {};
+  if (!policy.buyMissingCubs) return { reason: 'no_inventory' };
   const missing = least(need.missing, quota);
   const budget = buyBudget(policy, state, usage, useLiveBudget);
-  if (missing <= 0n || budget.daily === 0n || budget.available <= 0n) return {};
+  if (missing <= 0n) return { reason: 'inventory_covers_vacancy' };
+  if (budget.daily === 0n) return { reason: 'buy_daily_limit' };
+  if (budget.available <= 0n) return { reason: 'insufficient_balance' };
   if (state.shop?.shopId !== STOCK_SHOP) return { needsShop: 'buy' };
-  if (new Set(state.shop.goods.map(card => card.id)).size !== state.shop.goods.length) return {};
+  if (new Set(state.shop.goods.map(card => card.id)).size !== state.shop.goods.length) return { reason: 'shop_unconfirmed' };
   // The live unlock level takes precedence. The cub IDs follow progression within each husbandry type.
-  const candidates = state.shop.goods.filter(card => card.available && cubTypes[card.reward.id] === type
-    && card.price?.id === budget.id && BigInt(card.price.count) > 0n)
+  const matching = state.shop.goods.filter(card => cubTypes[card.reward.id] === type
+    && card.price?.id === budget.id && BigInt(card.price.count) > 0n);
+  const candidates = matching.filter(card => card.available)
     .sort((a, b) => Number(b.requiredLevel ?? 0) - Number(a.requiredLevel ?? 0) || Number(b.reward.id) - Number(a.reward.id));
+  if (!candidates.length) return { reason: matching.some(card => card.remaining === '0') ? 'shop_limit' : 'no_product' };
+  let reason;
   for (const card of candidates) {
     const perUnit = BigInt(card.reward.count);
-    const count = buyCount(budget, card, least(99n, missing / perUnit));
-    if (count > 0n && (need.amounts.get(card.reward.id) || 0n) + count * perUnit > need.reserve(card.reward.id))
-      return { selected: { action: 'buy', input: { shopId: STOCK_SHOP, goodsId: card.id, count: Number(count) } } };
+    const quantity = purchaseQuantity(budget, card, least(99n, missing / perUnit));
+    if (quantity.count > 0n) {
+      if ((need.amounts.get(card.reward.id) || 0n) + quantity.count * perUnit > need.reserve(card.reward.id))
+        return { selected: { action: 'buy', input: { shopId: STOCK_SHOP, goodsId: card.id, count: Number(quantity.count) } } };
+      reason ||= 'inventory_reserve';
+    } else reason ||= quantity.reason;
   }
-  return {};
+  return { reason };
+}
+
+function feedDemand(state, intervalMinutes) {
+  const rooms = state.facilities.filter(row => row.moduleType === 6 || row.moduleType === 7);
+  const machines = state.facilities.filter(row => row.moduleType === 8);
+  if (new Set([...rooms, ...machines].map(row => row.id)).size !== rooms.length + machines.length)
+    return { reason: 'facility_unconfirmed' };
+
+  let animals = 0n;
+  let capacity = 0n;
+  let blocked = false;
+  for (const room of rooms) {
+    if (room.state === 2 || room.state === 3) continue;
+    const ranch = room.ranch;
+    if (!room.active || !ranch || ranch.husbandryType !== room.moduleType - 5
+      || !Number.isSafeInteger(ranch.capacity) || ranch.capacity < 1
+      || !Number.isSafeInteger(ranch.count) || ranch.count < 0 || ranch.count > ranch.capacity
+      || !Array.isArray(ranch.animals) || ranch.animals.length !== ranch.count
+      || new Set(ranch.animals.map(animal => animal.id)).size !== ranch.count)
+      return { reason: 'facility_unconfirmed' };
+    animals += BigInt(ranch.count);
+    capacity += BigInt(ranch.capacity);
+    blocked ||= ranch.animals.some(animal => animal.grassBlocked);
+  }
+  if (!animals) return { reason: 'no_animals' };
+
+  const deficits = [];
+  let ready = false;
+  for (const machine of machines) {
+    if (machine.state === 2 || machine.state === 3 || machine.upgradeState === 1 || machine.upgradeState === 2) continue;
+    const feed = machine.feed;
+    // A default-decoded empty submessage also has count zero. Require a real status before refilling zero.
+    if (!machine.active || machine.upgradeState !== 0 || !feed
+      || !Number.isSafeInteger(machine.capacity) || machine.capacity <= 0
+      || !Number.isSafeInteger(feed.count) || feed.count < 0 || feed.count > machine.capacity
+      || (feed.count === 0 && (!Number.isSafeInteger(feed.status) || feed.status <= 0)))
+      return { reason: 'facility_unconfirmed' };
+    ready = true;
+    const target = (BigInt(machine.capacity) * animals + capacity - 1n) / capacity;
+    const deficit = target - BigInt(feed.count);
+    if (deficit <= 0n) continue;
+    const remaining = /^\d+$/.test(String(feed.remainingSec)) ? BigInt(feed.remainingSec) : null;
+    const urgent = blocked || feed.count === 0
+      || (remaining !== null && remaining > 0n && remaining <= BigInt(intervalMinutes * 60));
+    deficits.push({ machine, deficit, remaining, urgent });
+  }
+  if (!deficits.length) return { reason: ready ? 'grass_sufficient' : 'no_facility' };
+  deficits.sort((a, b) => {
+    if (a.urgent !== b.urgent) return a.urgent ? -1 : 1;
+    if ((a.machine.feed.count === 0) !== (b.machine.feed.count === 0)) return a.machine.feed.count === 0 ? -1 : 1;
+    if (a.remaining !== b.remaining) {
+      if (a.remaining === null) return 1;
+      if (b.remaining === null) return -1;
+      return a.remaining < b.remaining ? -1 : 1;
+    }
+    return a.machine.id.localeCompare(b.machine.id, 'en', { numeric: true });
+  });
+  return { deficits };
+}
+
+function chooseSmartFeed(policy, state) {
+  if (!policy.smartFeed) return {};
+  const { deficits, reason } = feedDemand(state, policy.intervalMinutes);
+  if (reason) return { reason };
+  if (!/^\d+$/.test(String(state.grass))) return { reason: 'facility_unconfirmed' };
+  const inventory = BigInt(state.grass);
+  const [{ machine, deficit, urgent }] = deficits;
+  if (inventory > 0n) {
+    const count = Number(least(inventory, deficit, EQUIPMENT_BATCH));
+    return { selected: { action: 'addGrass', input: { facilityId: machine.id, count } }, urgent };
+  }
+
+  const budget = buyBudget(policy, state, {}, true);
+  if (budget.available <= 0n) return { reason: 'insufficient_balance' };
+  if (state.shop?.shopId !== FEED_SHOP) return { needsShop: true };
+  const cards = state.shop.goods.filter(card => card.id === FEED_GOODS);
+  const [card] = cards;
+  if (cards.length > 1) return { reason: 'shop_unconfirmed' };
+  if (!card || card.reward?.id !== FEED_ITEM || card.price?.id !== STOCK_CURRENCY
+    || BigInt(card.reward.count) <= 0n || BigInt(card.price.count) <= 0n)
+    return { reason: 'no_product' };
+  const missing = deficits.reduce((total, row) => total + row.deficit, 0n);
+  const quantity = purchaseQuantity(budget, card, least(EQUIPMENT_BATCH, missing / BigInt(card.reward.count)));
+  if (!quantity.count)
+    return { reason: quantity.reason === 'pack_exceeds_vacancy' ? 'grass_pack_exceeds_deficit' : quantity.reason };
+  return { selected: { action: 'buy', input: { shopId: FEED_SHOP, goodsId: FEED_GOODS, count: Number(quantity.count) } } };
 }
 
 function allowance(policy, plan, raw, usage, slot, now) {
   if (!isAutomaticActionEnabled(policy, plan.action, slot)) return false;
   const currentSlot = actionSlot(plan.action, slot);
-  if (currentSlot.type || plan.action === 'buy') {
+  if (currentSlot.feed || currentSlot.type || plan.action === 'buy') {
     const state = model.normalizeState(raw, now);
-    const candidate = currentSlot.type ? chooseStock(policy, state, currentSlot.type, usage).selected : fixedBuy(policy, state, usage);
-    if (candidate?.action !== plan.action || plan.count !== candidate.input.count) return false;
+    const candidate = currentSlot.feed ? chooseSmartFeed(policy, state).selected
+      : currentSlot.type ? chooseStock(policy, state, currentSlot.type, usage).selected : fixedBuy(policy, state, usage).selected;
+    if (candidate?.action !== plan.action
+      || (currentSlot.feed ? plan.count > candidate.input.count : plan.count !== candidate.input.count)) return false;
     if (plan.action === 'buy' && (plan.payload.goods_id !== candidate.input.goodsId || String(raw.shopId) !== candidate.input.shopId)) return false;
+    if (plan.action === 'addGrass' && plan.payload.instance_id !== candidate.input.facilityId) return false;
     if (plan.action === 'place' && (plan.costItems[0]?.id !== candidate.input.itemId
       || plan.payload.items.some(row => row.ranch_inst_id !== candidate.input.ranchId))) return false;
   } else {
@@ -241,7 +368,7 @@ function allowance(policy, plan, raw, usage, slot, now) {
       || !raw.cells.facilities.some(row => String(row.instance_id) === policy.ranchId && row.state === 1))) return false;
   }
 
-  const useLiveBudget = currentSlot.type && liveStock(policy);
+  const useLiveBudget = currentSlot.feed || (currentSlot.type && liveStock(policy));
   const currencyId = useLiveBudget ? STOCK_CURRENCY : policy.currencyId;
   for (const cost of plan.costItems) {
     const prefix = { addGrass: 'grass', place: 'cub', buy: 'currency' }[plan.action];
@@ -257,13 +384,14 @@ function allowance(policy, plan, raw, usage, slot, now) {
 
 function chooseAction(policy, state, slot, usage = {}) {
   if (!slotEnabled(policy, SLOTS[slot])) return null;
-  const { action, type } = SLOTS[slot];
+  const { action, type, feed } = SLOTS[slot];
+  if (feed) return chooseSmartFeed(policy, state).selected;
   if (type) return chooseStock(policy, state, type, usage).selected;
   if (action === 'harvest' && (state.animals.some(x => x.canHarvest) || state.facilities.some(x => x.ranch?.shelves.some(s => s.canCollect)))) return { action, input: { all: true } };
   if (action === 'produce' && state.animals.some(x => x.canProduce)) return { action, input: { all: true } };
   if (action === 'clean' && state.facilities.some(x => x.ranch?.hazards.length)) return { action, input: {} };
   if (action === 'claimTasks' && state.tasks?.some(x => x.canClaim)) return { action, input: { all: true } };
-  if (action === 'buy') return fixedBuy(policy, state, usage);
+  if (action === 'buy') return fixedBuy(policy, state, usage).selected;
   if (action === 'addGrass') {
     const facility = state.facilities.find(x => x.active && x.feed && x.feed.count < x.capacity / 2);
     const count = facility ? Math.min(facility.capacity - facility.feed.count, Math.max(0, Number(state.grass) - policy.grassReserve), Number(remaining(policy, usage, 'addGrass', '7001')), 999) : 0;
@@ -278,5 +406,29 @@ function chooseAction(policy, state, slot, usage = {}) {
   }
   return null;
 }
-module.exports = { DEFAULT_POLICY, SLOTS, STOCK_SHOP, targetTypes, normalizePolicy, dayKey, allowance, chooseAction,
-  chooseStock, slotEnabled, isAutomaticActionEnabled };
+function inspectAction(policy, state, slot, usage) {
+  const config = SLOTS[slot];
+  if (!slotEnabled(policy, config)) return {};
+  if (config.feed) return chooseSmartFeed(policy, state);
+  if (config.type) return chooseStock(policy, state, config.type, usage);
+  if (config.action === 'buy') return fixedBuy(policy, state, usage);
+  const selected = chooseAction(policy, state, slot, usage);
+  if (selected) return { selected };
+  if (config.action === 'place') {
+    const room = state.facilities.find(row => row.id === policy.ranchId && row.active && row.ranch);
+    if (!room) return { reason: 'no_facility' };
+    if (room.ranch.count >= room.ranch.capacity) return { reason: 'full' };
+    if (!remaining(policy, usage, 'place', policy.cubId)) return { reason: 'place_daily_limit' };
+    return { reason: 'no_inventory' };
+  }
+  if (config.action === 'addGrass') {
+    if (!state.facilities.some(row => row.active && row.feed)) return { reason: 'no_facility' };
+    if (!state.facilities.some(row => row.active && row.feed && row.feed.count < row.capacity / 2)) return {};
+    if (!remaining(policy, usage, 'addGrass', '7001')) return { reason: 'grass_daily_limit' };
+    return { reason: 'no_grass' };
+  }
+  return {};
+}
+
+module.exports = { DEFAULT_POLICY, SLOTS, STOCK_SHOP, FEED_SHOP, FEED_GOODS, targetTypes, normalizePolicy, dayKey, allowance, chooseAction,
+  chooseStock, chooseSmartFeed, inspectAction, slotEnabled, isAutomaticActionEnabled };

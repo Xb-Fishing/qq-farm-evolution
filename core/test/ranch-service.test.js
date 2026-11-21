@@ -858,3 +858,129 @@ test('a manual cub preview reserves its type until confirmation or expiry, while
   assert.equal(result.data.costs[0].id, '70001');
   assert.equal(f.calls.includes('BuyGoods'), false);
 });
+
+function ranchLogs(t) {
+  const records = [];
+  const { setLogHook } = require('../src/utils/utils');
+  setLogHook((tag, message, isWarn, meta) => records.push({ tag, message, isWarn, meta }));
+  t.after(() => setLogHook(null));
+  return records;
+}
+
+test('automation logs confirmed purchases with true receipt data and skips manual, replayed, and timer-only work', async t => {
+  const records = ranchLogs(t);
+  const f = fixture();
+  await startStock(f, { stockBudgetMode: 'live', cubDailyLimit: 0, currencyDailyLimit: 0 });
+  assert.equal(records.length, 0);
+  const result = await f.service.automate();
+  assert.equal(result.data.outcome, 'confirmed');
+  const [entry] = records;
+  assert.equal(records.length, 1);
+  assert.equal(entry.tag, '牧场');
+  assert.equal(entry.isWarn, false);
+  assert.equal(entry.meta.automationCategory, 'ranch');
+  assert.equal(entry.meta.event, 'ranch_automation_action');
+  assert.equal(entry.meta.action, 'buy');
+  assert.equal(entry.meta.completed, 3);
+  assert.equal(entry.meta.result, 'confirmed');
+  assert.deepEqual(entry.meta.costs, [{ name: '金券', count: '30' }]);
+  assert.deepEqual(entry.meta.rewards, [{ name: '鸡幼崽', count: '3' }]);
+  assert.match(entry.message, /自动购买.*鸡幼崽.*3\/3.*金券×30.*鸡幼崽×3/);
+  assert.equal((await f.service.execute(result.data.id)).data.replayed, true);
+  for (let tick = 0; tick < 3; tick++) {
+    f.advance(30000);
+    assert.equal((await f.service.automate()).data.skipped, true);
+  }
+  const manual = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 });
+  assert.equal((await f.service.execute(manual.data.id)).data.outcome, 'confirmed');
+  assert.equal(records.length, 1);
+});
+
+test('automation logs true confirmed partial amounts and clearly pauses, without another action entry on repeated ticks', async t => {
+  const records = ranchLogs(t);
+  const f = fixture();
+  f.facilities[0].ranch.animals.push({ ranch_inst_id: '11', animal_inst_id: 8, animal_id: '60001', can_harvest: true });
+  f.mutateReply = reply => ({ ...reply, op_results: reply.op_results.map(item => ({ ...item,
+    rewards: [{ id: '2060001', count: '2' }], costs: [{ id: '7001', count: '1' }] })) });
+  await startStock(f, { stockCoop: false, harvest: true });
+  const result = await f.service.automate();
+  assert.equal(result.data.outcome, 'partial');
+  assert.equal(records.length, 1);
+  assert.equal(records[0].meta.result, 'partial');
+  assert.equal(records[0].meta.completed, 1);
+  assert.equal(records[0].meta.requested, 2);
+  assert.deepEqual(records[0].meta.rewards.map(item => item.count), ['2']);
+  assert.deepEqual(records[0].meta.costs, [{ name: '牧草', count: '1' }]);
+  assert.match(records[0].message, /部分确认.*已暂停.*人工核对/);
+  f.advance(120000);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(records.length, 1);
+});
+
+test('automation distinguishes unknown, proven unsent, and preflight error without leaking upstream diagnostics', async t => {
+  const records = ranchLogs(t);
+  for (const outcome of ['unknown', 'not_sent', 'error']) {
+    const f = fixture();
+    await startStock(f, { stockBudgetMode: 'live' });
+    if (outcome === 'unknown') f.timeout();
+    else if (outcome === 'not_sent') f.rejectUnsent = true;
+    else {
+      let reads = 0;
+      f.onRead = method => {
+        if (method === 'ShopInfo' && ++reads === 2) throw new Error('internal fixture upstream detail');
+      };
+    }
+    const result = await f.service.automate();
+    const entry = records.at(-1);
+    if (outcome === 'error') assert.equal(result.ok, false);
+    else assert.equal(result.data.outcome, outcome);
+    assert.equal(entry.meta.event, 'ranch_automation_action');
+    assert.equal(entry.meta.result, outcome);
+    assert.equal(entry.meta.action, 'buy');
+    assert.equal(entry.meta.completed, 0);
+    assert.deepEqual(entry.meta.costs, []);
+    assert.deepEqual(entry.meta.rewards, []);
+    assert.equal(entry.isWarn, true);
+    if (outcome === 'unknown') {
+      assert.match(entry.message, /结果未知.*已暂停.*人工核对/);
+      f.advance(86400000);
+      assert.equal((await f.make().automate()).data.skipped, true);
+      assert.equal(records.length, 1);
+    }
+  }
+  assert.equal(records.length, 3);
+  assert.ok(!JSON.stringify(records).includes('internal fixture upstream detail'));
+});
+
+test('enabled due rounds report concrete stop reasons only when the reason changes', async t => {
+  const records = ranchLogs(t);
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 3);
+  f.gold(0);
+  await startStock(f, { stockBudgetMode: 'live' });
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.deepEqual(records.map(row => row.meta.reason), ['insufficient_balance']);
+  f.service = f.make();
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.deepEqual(records.map(row => row.meta.reason), ['insufficient_balance']);
+  f.gold(100);
+  f.goods = () => [{ ...chick, limit_count: '1', bought_num: '1' }];
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  f.goods = () => [];
+  assert.equal((await stockRound(f)).skipped, true);
+  f.cubs.set('60001', 3);
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal(records.at(-1).meta.action, 'place');
+  for (const part of ['自动放养', '窝', '鸡幼崽', '3/3']) assert.ok(records.at(-1).message.includes(part));
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.deepEqual(records.filter(row => row.meta.event === 'ranch_automation_status').map(row => row.meta.reason),
+    ['insufficient_balance', 'shop_limit', 'no_product', 'full']);
+  const saved = await f.service.setAutomation({ ...stockPolicy, enabled: false });
+  assert.equal(saved.ok, true, saved.error);
+  const previous = records.length;
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal(records.length, previous);
+});

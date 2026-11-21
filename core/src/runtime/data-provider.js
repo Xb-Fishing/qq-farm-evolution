@@ -482,11 +482,12 @@ function createDataProvider(deps) {
         // 自助扫码已换发并落盘新 Code，直接沿现有 Worker 路径恢复，避免再次换码。
         // startWorker 是纯取值器（true=已拉起 / false=拒绝），必须如实透传：
         // 不能把「新授权已保存」冒充成「账号已启动」（2026-10-04 授权后未登录事故）。
-        startAccountFromSavedWxCode: (ref, expectedCode) => {
+        startAccountFromSavedWxCode: (ref, expectedCode, expectedGeneration) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account || account.platform !== 'wx' || !account.loginBuffer
-                || !expectedCode || account.code !== expectedCode) return false;
+                || !expectedCode || account.code !== expectedCode
+                || (expectedGeneration !== undefined && (account.credentialGeneration !== expectedGeneration || account.autoLogin === false))) return false;
             store.addOrUpdateAccount({ id: account.id, autoLogin: true });
             if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(account.id);
             return startWorker(findAccount(id || ref) || account);
@@ -530,14 +531,14 @@ function createDataProvider(deps) {
             return result && typeof result.then === 'function' ? result.then(() => true) : true;
         },
 
-        restartAccount: (ref) => {
+        restartAccount: (ref, options) => {
             const id = resolveAccountId(ref);
             const account = findAccount(id || ref);
             if (!account) return false;
             // restartWorker：true/false = 同步 startWorker 的结果；undefined = 重启
             // 已排队（等旧进程退出后拉起）。原样透传，调用方据此区分「已提交
             // 重连」与「真正启动」，绝不把排队冒充已连接。
-            return restartWorker(account);
+            return restartWorker(account, options);
         },
 
         isAccountRunning: (ref) => {

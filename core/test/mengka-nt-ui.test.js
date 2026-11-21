@@ -42,6 +42,7 @@ test('真实账号弹窗呈现萌卡NT入口、专用地址和启动策略；复
       if (name.startsWith('@/components/ui/')) return stub;
       if (name === '@/components/QqLoginPanel.vue') return { __esModule: true, default: { render: () => null } };
       if (name === '@/components/MengkaNtLoginGuide.vue') return { __esModule: true, default: load(path.join(web, 'src/components/MengkaNtLoginGuide.vue')) };
+      if (name === '@/stores/toast') return { useToastStore: () => ({ info: () => assert.fail('NT 页面不应显示微信启动提示') }) };
       throw new Error(`Unexpected UI import: ${name}`);
     }, module, module.exports, ...Object.values(globals));
     return module.exports.default;

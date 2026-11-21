@@ -7,6 +7,7 @@ import QqLoginPanel from '@/components/QqLoginPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseTextarea from '@/components/ui/BaseTextarea.vue'
+import { useToastStore } from '@/stores/toast'
 import { useWxLoginStore } from '@/stores/wx-login'
 import { parseManualLoginInput } from '@/utils/gateway-url'
 
@@ -24,6 +25,7 @@ const QR_AUTO_REFRESH_MS = 110_000
 const CAPTURE_SUCCESS_STORAGE_KEY = 'capture_login_succeeded'
 
 const wxLoginStore = useWxLoginStore()
+const toast = useToastStore()
 
 interface CaptureFlowState {
   id: string
@@ -51,7 +53,7 @@ const loading = ref(false)
 const wxChecking = ref(false)
 let modalGeneration = 0
 let ownsWxSession = false
-let confirmedWxLogin: null | { result: { wxid: string, nickname?: string, avatar?: string }, sessionId: string, target: { id: any, name: string } | null, generation: number } = null
+let confirmedWxLogin: null | { result: { wxid: string, nickname?: string, avatar?: string }, sessionId: string, panelSession: string, target: { id: any, name: string } | null, generation: number } = null
 function resetWxSession() {
   confirmedWxLogin = null
   if (ownsWxSession)
@@ -190,9 +192,10 @@ const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
 
   const requestGeneration = modalGeneration
   const sessionId = wxLoginStore.uuid
+  const session = panelSession()
   const target = props.editData ? { id: props.editData.id, name: props.editData.name } : null
   const isCurrent = () => requestGeneration === modalGeneration && props.show && activeTab.value === 'wx'
-    && sessionId === wxLoginStore.uuid && target?.id === props.editData?.id
+    && session === panelSession() && sessionId === wxLoginStore.uuid && target?.id === props.editData?.id
   wxChecking.value = true
   try {
     const result = await wxLoginStore.checkLogin()
@@ -200,7 +203,7 @@ const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
       return
     if (result.success && result.wxid) {
       stopWxCheck()
-      confirmedWxLogin = { result: { ...result, wxid: result.wxid }, sessionId, target, generation: requestGeneration }
+      confirmedWxLogin = { result: { ...result, wxid: result.wxid }, sessionId, panelSession: session, target, generation: requestGeneration }
       await completeWxLogin(confirmedWxLogin)
     }
   }
@@ -212,6 +215,7 @@ const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
 
 function isCurrentWxLogin(context: NonNullable<typeof confirmedWxLogin>) {
   return context.generation === modalGeneration && props.show && activeTab.value === 'wx'
+    && context.panelSession === panelSession()
     && context.sessionId === wxLoginStore.uuid && context.result.wxid === wxLoginStore.wxid
     && context.target?.id === props.editData?.id
 }
@@ -237,7 +241,7 @@ async function completeWxLogin(context: NonNullable<typeof confirmedWxLogin>) {
       wxid: result.wxid,
       avatar: result.avatar,
       wxSessionId: sessionId,
-    }, generation)
+    }, generation, null, context)
   }
   else {
     form.code = codeResult.code
@@ -416,37 +420,60 @@ async function loadWxQRCode() {
     startWxCheck()
 }
 
-async function addAccount(data: any, requestGeneration = modalGeneration, qqContext: QqCodeContext | null = null) {
-  if (qqContext && !currentQqCode(qqContext))
+async function addAccount(
+  data: any,
+  requestGeneration = modalGeneration,
+  qqContext: QqCodeContext | null = null,
+  wxContext: typeof confirmedWxLogin = null,
+) {
+  const current = () => requestGeneration === modalGeneration && props.show
+    && (!qqContext || currentQqCode(qqContext)) && (!wxContext || isCurrentWxLogin(wxContext))
+  if (!current() || loading.value)
     return
   loading.value = true
   errorMessage.value = ''
   try {
-    const config = qqContext
+    const sessionKey = qqContext?.session ?? wxContext?.panelSession
+    const config = qqContext || wxContext
       ? {
           errorFeedback: 'consumer' as const,
           validateStatus: (status: number) => (status >= 200 && status < 300) || status === 401 || status === 403,
           transformRequest: [(body: any, headers: any) => {
-            if (requestGeneration !== modalGeneration || !props.show || !currentQqCode(qqContext))
+            if (!current())
               throw Object.assign(new Error('已取消'), { code: 'ERR_CANCELED' })
-            if (qqContext.session)
-              headers['x-admin-token'] = qqContext.session
+            if (sessionKey)
+              headers['x-admin-token'] = sessionKey
             headers['Content-Type'] = 'application/json'
             return JSON.stringify(body)
           }],
         }
       : undefined
     const res = await api.post('/api/accounts', data, config)
-    if (requestGeneration !== modalGeneration || !props.show)
+    if (!current())
       return
-    if (qqContext && !currentQqCode(qqContext))
-      return
-    if (qqContext && (res.status === 401 || res.status === 403)) {
-      invalidateQqCode()
+    if ((qqContext || wxContext) && (res.status === 401 || res.status === 403)) {
+      if (qqContext)
+        invalidateQqCode()
       errorMessage.value = '面板登录已失效，请重新登录后重新扫码'
       return
     }
     if (res.data.ok) {
+      if (wxContext?.target) {
+        const startup = res.data.startup
+        if (startup?.state === 'held_offline') {
+          toast.info('微信授权已更新，账号继续保持不登录。')
+        }
+        else if (startup?.state === 'submitted' || startup?.queued === true) {
+          toast.info('微信授权已保存，已提交登录，请等待账号上线。', 5000)
+        }
+        else {
+          resetWxSession()
+          errorMessage.value = startup?.state === 'superseded'
+            ? '本次扫码已被新的账号操作取代，请查看当前账号状态。'
+            : '微信授权已保存，但登录尚未提交。请返回概览查看账号状态。'
+          return
+        }
+      }
       // 携带本次保存的账号 id：既有账号重扫 = target id；新增账号取回包
       // 末位新账号。无 id（旧调用方/异常形态）保持 undefined 兼容。
       const savedList = res.data.data && Array.isArray(res.data.data.accounts)
@@ -460,9 +487,7 @@ async function addAccount(data: any, requestGeneration = modalGeneration, qqCont
     }
   }
   catch (e: any) {
-    if (qqContext && !currentQqCode(qqContext))
-      return
-    if (requestGeneration === modalGeneration && props.show)
+    if (current())
       errorMessage.value = `保存失败: ${e.response?.data?.error || e.message}`
   }
   finally {
@@ -607,7 +632,11 @@ watch([() => props.show, activeTab], ([show, tab]) => {
     void cancelCaptureSession()
 }, { immediate: true })
 
-watch(() => [props.editData?.id, props.editData?.platform], checkQqSession, { flush: 'sync' })
+watch(() => [props.editData?.id, props.editData?.platform], () => {
+  checkQqSession()
+  if (props.show && activeTab.value === 'wx')
+    close()
+}, { flush: 'sync' })
 onMounted(() => {
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function')
     window.addEventListener('storage', checkQqSession)
@@ -744,7 +773,7 @@ onUnmounted(() => {
           </div>
 
           <div class="text-center text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
-            使用微信扫描二维码登录，成功后会自动添加账号
+            {{ editData ? '确认扫码后自动保存授权并提交登录。设为不登录的账号将保持原设置。' : '使用微信扫描二维码登录，成功后会自动添加账号' }}
           </div>
         </div>
 

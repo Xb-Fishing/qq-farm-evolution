@@ -5,10 +5,12 @@ const CATEGORIES = {
   warehouse: { label: '出售', module: 'warehouse' }, fertilizer: { label: '化肥', module: 'farm' },
   land: { label: '土地', module: 'farm' }, shop: { label: '商城', module: 'warehouse' },
   friend: { label: '好友互动', module: 'friend' }, activity: { label: '活动', module: 'activity' },
+  ranch: { label: '牧场', module: 'ranch' },
   login: { label: '登录维护', module: 'system' },
 };
 const ACTIONS = {
   '领取任务': 'task', '领取活跃奖励': 'task', '图鉴奖励': 'task',
+  ranch_automation_action: 'ranch', dog_skill_gift_claim: 'rewards',
   email_rewards: 'rewards', daily_share: 'rewards', month_card_gift: 'rewards',
   mall_free_gifts: 'rewards', vip_daily_gift: 'rewards',
   '开启化肥礼包': 'fertilizer', '购买化肥': 'fertilizer',
@@ -38,7 +40,7 @@ function logActivityAction(action, count) {
 }
 const queryTimes = new Map();
 const CONTROL_LABELS = {
-  farm: '农场巡查', harvest: '自动收获', plant: '自动种植', task: '任务领奖', sell: '自动出售',
+  dog_auto_feed: '守卫犬自动喂食', farm: '农场巡查', harvest: '自动收获', plant: '自动种植', task: '任务领奖', sell: '自动出售',
   friend: '好友巡查', friend_steal: '好友偷菜', friend_help: '好友帮助', friend_bad: '好友捣乱',
   friend_golden_bug: '好友黄金虫', friend_help_exp_limit: '帮助经验限制', farm_push: '土地推送响应',
   land_upgrade: '土地升级', golden_bug_clear: '清理黄金虫', fertilizer_gift: '化肥道具填充',
@@ -74,6 +76,12 @@ function actionFromLog(message, meta = {}) {
     : ['task', 'rewards'].includes(category) ? 'task'
       : category === 'fertilizer' ? (['购买化肥', '开启化肥礼包'].includes(event) ? 'warehouse' : 'farm') : category;
   if (meta.module !== expectedModule) return null;
+  if (event === 'ranch_automation_action') {
+    if (meta.result !== 'confirmed' || meta.replayed === true || !Number.isSafeInteger(meta.completed) || meta.completed <= 0
+      || !['harvest', 'produce', 'clean', 'claimTasks', 'addGrass', 'buy', 'place'].includes(meta.action)) return null;
+    return { category, message: redactExternalText(String(message || '')).slice(0, 280), level: 'info' };
+  }
+  if (event === 'dog_skill_gift_claim' && (meta.source !== 'automatic' || !(meta.count > 0))) return null;
   if (event === 'sell_done' ? meta.result !== 'unknown_gain'
     : event === '神秘商人自动购买' ? meta.result !== 'success'
       : event === 'milk_tea_operate' ? !(meta.result === 'ok' || (meta.action === 'interact' && meta.result === 'gameplay_lose'))

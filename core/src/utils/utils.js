@@ -85,6 +85,7 @@ function normalizeMeta(meta) {
 function resolveModuleTag(moduleName) {
     const moduleMap = {
         farm: '农场',
+        ranch: '牧场',
         friend: '好友',
         warehouse: '仓库',
         task: '任务',
@@ -99,6 +100,7 @@ function inferModuleFromTag(tag) {
     const t = String(tag || '').trim();
     const tagMap = {
         农场: 'farm',
+        牧场: 'ranch',
         商店: 'warehouse',
         购买: 'warehouse',
         仓库: 'warehouse',

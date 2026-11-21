@@ -542,6 +542,9 @@ async function runFarmOperation(opType, options = {}) {
         }
         actions.push(`一键务农${parts.join('/')}`);
         recordOperation('farming', farmingLandIds.length);
+        log('农场', `一键务农处理 ${farmingLandIds.length} 块地（${parts.join('/') || '无附加动作'}）`, {
+          module: 'farm', event: '一键务农', result: 'ok', count: farmingLandIds.length, logKind: 'action', automationCategory: 'farm',
+        });
         recordEvent(process.env.FARM_ACCOUNT_ID || '', 'info', 'farming',
           `一键务农：${parts.join('/') || '无动作'}`);
       } catch (err) {

@@ -9,6 +9,7 @@ const governor = require('../src/services/request-governor');
 const { validateRequestPolicy } = require('../src/services/request-policy');
 const store = require('../src/models/store');
 const { createDataProvider } = require('../src/runtime/data-provider');
+const { createRuntimeState } = require('../src/runtime/runtime-state');
 const proto = require('../src/utils/proto');
 test.before(() => proto.loadProto());
 const policy = { enabled: true, total60s: 8, friend60s: 2, method60s: 5 };
@@ -44,20 +45,26 @@ test('host-derived classification distinguishes own land from friends and cannot
   assert.equal(governor.isFriendRequest('gamepb.userpb.UserService', 'Heartbeat', Buffer.alloc(0), 910000), false);
 });
 test('settings save validates before mutation and account snapshots, default plans and host status stay truthful', async () => {
-  let broadcasts = 0;
+  const broadcasts = [];
+  const runtime = createRuntimeState({ store });
   const workers = { fixture: { name: 'fixture', status: { connection: { connected: true } }, process: { persistentSession: true, sessionFacts: { game: {} } } } };
   const provider = createDataProvider({ workers, store, getAccounts: () => ({ accounts: [{ id: 'fixture' }, { id: 'other' }] }),
-    nextConfigRevision: () => 1, broadcastConfigToWorkers: () => { broadcasts++; },
+    nextConfigRevision: runtime.nextConfigRevision,
+    broadcastConfigToWorkers: id => broadcasts.push({ id, config: runtime.buildConfigSnapshotForAccount(id) }),
     buildDefaultStatus: () => ({}), normalizeStatusForPanel: value => value });
   for (const bad of [null, { ...policy, enabled: 0 }, { ...policy, total60s: 0 }, { ...policy, friend60s: 1.5 }, { ...policy, method60s: '5' }]) {
     assert.throws(() => validateRequestPolicy(bad));
     await assert.rejects(provider.saveSettings('fixture', { requestPolicy: bad }));
   }
-  assert.equal(broadcasts, 0);
+  assert.equal(broadcasts.length, 0);
   await provider.saveSettings('fixture', { requestPolicy: policy });
-  assert.equal(broadcasts, 1);
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].id, 'fixture');
+  assert.deepEqual(broadcasts[0].config.requestPolicy, policy);
   assert.deepEqual(store.getConfigSnapshot('fixture').requestPolicy, policy);
-  assert.notDeepEqual(store.getConfigSnapshot('other').requestPolicy, policy);
+  const otherPolicy = store.getConfigSnapshot('other').requestPolicy;
+  assert.notDeepEqual(otherPolicy, policy);
+  assert.deepEqual(runtime.buildConfigSnapshotForAccount('other').requestPolicy, otherPolicy);
   assert.equal(provider.getStatus('fixture').sessionUpgrade.requiresRescan, true);
   workers.fixture.process.sessionFacts.game.requestPolicy = { supported: true, ...policy };
   assert.equal(provider.getStatus('fixture').sessionUpgrade.requiresRescan, false);

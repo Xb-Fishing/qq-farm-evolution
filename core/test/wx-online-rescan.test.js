@@ -520,3 +520,20 @@ test('kill 同步触发 exit/doRestart 重入：force_kill 不得删掉新注册
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal(workers['fixture-reenter'], wrk, 'fallback 回调不得删除新代次记录');
 });
+
+
+test('a restart callback for a superseded scan cannot launch a Worker on old process exit', () => {
+  const f = setupManager();
+  f.manager.startWorker(f.account);
+  const proc = f.children[0];
+  let current = true;
+  f.account.code = 'scan-code';
+  f.manager.restartWorker(f.account, { isCurrent: () => current });
+  assert.equal(f.workers[f.account.id].stopping, true);
+  current = false;
+  proc.emit('exit', 0, null);
+  assert.equal(f.children.length, 1);
+  f.account.code = 'latest-code';
+  assert.equal(f.manager.startWorker(f.account), true);
+  assert.equal(startConfigOf(f.children[1]).config.code, 'latest-code');
+});

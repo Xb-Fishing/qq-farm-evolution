@@ -28,10 +28,14 @@ export const useRanchStore = defineStore('ranch', () => {
     quote.value = selected
     if (selected.deadline !== null) {
       const remaining = selected.deadline - performance.now()
-      if (remaining <= 0)
+      if (remaining <= 0) {
         reviewNotice.value = expiryNotice
-      else
-        expiryTimer = setTimeout(() => { reviewNotice.value = expiryNotice }, remaining)
+      }
+      else {
+        expiryTimer = setTimeout(() => {
+          reviewNotice.value = expiryNotice
+        }, remaining)
+      }
     }
   }
   const result = ref<any>(null)
@@ -217,8 +221,24 @@ export const useRanchStore = defineStore('ranch', () => {
       readError.value = false
       const previous = outcomes.get(id)
       const observed = snapshot.lastOperation
-      // A refresh that has not observed this operation cannot settle its outcome.
-      result.value = previous?.outcome === 'unknown' && observed?.id !== previous.id ? previous : observed || null
+      // A lost HTTP response may refer to a still-unconsumed feed quote, rather than the latest operation.
+      if (previous?.outcome === 'unknown' && previous.feedOperation && observed?.id !== previous.id) {
+        const request = requestConfig(id, token)
+        try {
+          const { data } = await api.post('/api/ranch/reconcile-feed', { operationId: previous.id }, request.config)
+          if (generation !== token || sequence !== readSequence || outcomes.get(id) !== previous)
+            return false
+          result.value = data?.ok === true && data.data?.id === previous.id
+            ? (['unknown', 'partial', 'pending'].includes(observed?.outcome) ? observed : data.data)
+            : previous
+        }
+        finally {
+          controllers.delete(request.controller)
+        }
+      }
+      else {
+        result.value = previous?.outcome === 'unknown' && observed?.id !== previous.id ? previous : observed || null
+      }
       outcomes.set(id, result.value)
       return true
     }
@@ -334,7 +354,9 @@ export const useRanchStore = defineStore('ranch', () => {
         }
         return false
       }
-      const uncertain = { id: selected.id, outcome: 'unknown', label: selected.label, message: '请求状态暂未确认，请刷新核对；不会自动重试' }
+      const action = selected.intent?.action
+      const feedOperation = action === 'addGrass' || (action === 'buy' && String(selected.intent?.input?.goodsId) === '10001' && String(selected.intent?.input?.shopId) === '6')
+      const uncertain = { id: selected.id, action, feedOperation, outcome: 'unknown', label: selected.label, message: feedOperation ? '牧草操作状态暂未确认，程序会自动读取库存，不会重发原单' : '请求状态暂未确认，请刷新核对；不会自动重试' }
       outcomes.set(id, uncertain)
       if (generation === token) {
         if (e?.code !== 'ERR_CANCELED')

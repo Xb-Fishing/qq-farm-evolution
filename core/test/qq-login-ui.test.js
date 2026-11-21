@@ -79,6 +79,7 @@ function harness({ modal = true, enabled = true, editData, show = true } = {}) {
       if (name === 'vue') return vue;
       if (name === '@/api') return { __esModule: true, default: api };
       if (name === '@vueuse/core') return { useIntervalFn: () => ({ pause() {}, resume() {} }) };
+      if (name === '@/stores/toast') return { useToastStore: () => ({ info() {} }) };
       if (name === '@/stores/wx-login') return { useWxLoginStore: () => ({ config: {}, resetState() {} }) };
       if (name === '@/utils/gateway-url') return { parseManualLoginInput: value => ({ code: value }) };
       if (name === '@/components/QqLoginPanel.vue') return { __esModule: true, default: load(files[0]) };

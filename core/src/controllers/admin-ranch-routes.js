@@ -56,6 +56,14 @@ function registerAdminRanchRoutes(context) {
     } catch (error) { if (!res.destroyed) return sendProviderError(res, error); }
     finally { finished = true; req.off?.('aborted', cancel); res.off?.('close', cancel); }
   });
+  app.post('/api/ranch/reconcile-feed', async (req, res) => {
+    const id = await account(req, res); if (!id) return;
+    const receiptId = req.body?.operationId;
+    if (typeof receiptId !== 'string' || !/^[a-f0-9-]{36}$/.test(receiptId))
+      return res.status(400).json({ ok: false, error: '牧草单据无效' });
+    try { return respond(res, await provider.acknowledgeRanch(id, { feedReceiptId: receiptId })); }
+    catch (error) { return sendProviderError(res, error); }
+  });
   app.post('/api/ranch/acknowledge', async (req, res) => {
     const id = await account(req, res); if (!id) return;
     try { const result = await provider.acknowledgeRanch(id, req.body?.operationId); activityReader.clear(id); return respond(res, result); }
