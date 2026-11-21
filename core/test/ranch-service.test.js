@@ -831,3 +831,30 @@ test('stock rechecks changing inventory tiers before placement without sending t
   assert.equal(reads, 3);
   assert.equal(f.calls.includes('PlaceAnimal'), false);
 });
+
+test('a manual cub preview reserves its type until confirmation or expiry, while other facilities may restock', async () => {
+  for (const settle of ['confirm', 'expire']) {
+    const f = fixture();
+    f.cubs.set('60001', 2);
+    await startStock(f, { stockBudgetMode: 'live', buyMissingCubs: false });
+    const manual = await f.service.prepare('place', { ranchId: '11', itemId: '60001', count: 1 });
+    assert.equal(manual.ok, true);
+    f.calls.length = 0;
+    assert.equal((await f.service.automate()).data.skipped, true);
+    assert.deepEqual(f.calls, [], 'no scene read or competing write while the owner reviews the same type');
+    if (settle === 'confirm') assert.equal((await f.service.execute(manual.data.id)).data.completed, 1);
+    else f.advance(manual.data.validForMs + 1);
+    assert.equal((await f.service.automate()).data.completed, settle === 'confirm' ? 1 : 2);
+  }
+
+  const f = fixture();
+  f.facilities.push(stockRoom('12', 2, 2));
+  f.cubs.set('70001', 1);
+  await startStock(f, { stockCoop: true, stockShed: true, stockBudgetMode: 'live' });
+  const manual = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 });
+  assert.equal(manual.ok, true);
+  const result = await f.service.automate();
+  assert.equal(result.data.action, 'place');
+  assert.equal(result.data.costs[0].id, '70001');
+  assert.equal(f.calls.includes('BuyGoods'), false);
+});

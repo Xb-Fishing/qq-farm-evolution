@@ -51,8 +51,19 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     data.automation = { ...state, policy, revision: state.revision + 1, nextAt: now() + 30000 };
     save(data); return { ...data.automation, targetTypes: policyTools.targetTypes };
   }
+  function manualReviewOwns(data, type) {
+    if (!type) return false;
+    return data.quotes.some(quote => {
+      if (quote.autoRevision !== undefined || quote.status !== 'prepared' || quote.expiresAt <= quoteNow()) return false;
+      const targetType = quote.action === 'buy' ? policyTools.targetTypes.goods[quote.input?.goodsId]
+        : quote.action === 'place' ? policyTools.targetTypes.cubs[quote.input?.itemId] : undefined;
+      return type === targetType && quote.origin === origin();
+    });
+  }
   function checkAutomaticAction(data, action, revision, slot) {
     const state = autoState(data);
+    if (manualReviewOwns(data, policyTools.SLOTS[slot]?.type))
+      throw error('RANCH_AUTOMATION_PAUSED', '同类幼崽正在手动确认，智能补栏暂缓');
     if (!canAutomate() || state.revision !== revision || !policyTools.isAutomaticActionEnabled(state.policy, action, slot))
       throw error('RANCH_AUTOMATION_PAUSED', '该动作的自动化设置已变化或已由按栏舍补齐接管');
     return state;
@@ -337,8 +348,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
               throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
             }
             if (quote.autoRevision !== undefined) {
-              const state = autoState(read());
-              if (!canAutomate() || state.revision !== quote.autoRevision || state.day !== quote.autoReservation.day
+              const latest = read();
+              const state = autoState(latest);
+              if (manualReviewOwns(latest, policyTools.SLOTS[quote.autoSlot]?.type) || !canAutomate() || state.revision !== quote.autoRevision || state.day !== quote.autoReservation.day
                 || !policyTools.isAutomaticActionEnabled(state.policy, plan.action, quote.autoSlot))
                 throw Object.assign(error('RANCH_AUTOMATION_PAUSED', '自动化设置或额度日期已变化'), { isLocalRequestRejection: true });
             }
@@ -442,7 +454,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     autoRunning = true;
     try {
       const { SLOTS } = policyTools;
-      const eligibleSlots = SLOTS.flatMap((slot, index) => policyTools.slotEnabled(state.policy, slot) ? [index] : []);
+      const eligibleSlots = SLOTS.flatMap((slot, index) =>
+        policyTools.slotEnabled(state.policy, slot) && !manualReviewOwns(data, slot.type) ? [index] : []);
       if (!eligibleSlots.length) return { skipped: true };
       const cursor = eligibleSlots.find(i => i >= state.cursor % SLOTS.length) ?? eligibleSlots[0];
       state.cursor = (cursor + 1) % SLOTS.length;
