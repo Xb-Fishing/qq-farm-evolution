@@ -46,6 +46,29 @@ onBeforeUnmount(() => {
   clearRetry()
   ranch.cancel()
 })
+const feedReview = computed(() => ranch.result?.action === 'addGrass' || !!ranch.result?.reconciliation || ranch.result?.feedOperation === true)
+watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && feedReview.value] as const, ([id, operation, pending], _, onCleanup) => {
+  if (!id || !operation || !pending)
+    return
+  let closed = false
+  let timer: ReturnType<typeof setTimeout>
+  const delays = [15000, 30000, 60000]
+  const schedule = (index: number) => {
+    timer = setTimeout(async () => {
+      if (closed)
+        return
+      if (!ranch.operating && !ranch.loading && !ranch.quote)
+        await ranch.refresh()
+      if (!closed && index + 1 < delays.length)
+        schedule(index + 1)
+    }, delays[index])
+  }
+  schedule(0)
+  onCleanup(() => {
+    closed = true
+    clearTimeout(timer)
+  })
+})
 const facilities = computed(() => ranch.state?.facilities || [])
 const facilityCards = ref<HTMLElement[]>([])
 const estimatedServerTime = ref(0)
@@ -176,8 +199,17 @@ defineExpose({ refresh })
       正在读取牧场状态…
     </p>
     <div v-if="ranch.result" role="status" class="mb-3 rounded-lg bg-slate-100 p-3 text-sm dark:bg-slate-900">
-      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
+      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : feedReview && ranch.uncertain ? '程序正在自动核账' : ranch.result.outcome === 'replanned' ? '已按最新库存恢复巡检' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
       <p>{{ ranch.result.label }} · {{ ranch.result.message }}</p>
+      <dl v-if="ranch.result.reconciliation" class="ranch-audit" aria-label="牧草核账明细">
+        <div><dt>{{ ranch.result.action === 'buy' ? '背包入账' : '背包扣草' }}</dt><dd>预计 {{ ranch.result.reconciliation.expectedGrass }} · 实测 {{ ranch.result.reconciliation.observedGrass ?? '未能确定' }}</dd></div>
+        <div v-if="ranch.result.action === 'buy'">
+          <dt>金券支出</dt><dd>预计 {{ ranch.result.reconciliation.expectedTickets }} · 实测 {{ ranch.result.reconciliation.observedTickets ?? '未能确定' }}</dd>
+        </div>
+        <div v-else>
+          <dt>牧草机净增</dt><dd>预计 {{ ranch.result.reconciliation.expectedMachine }} · 实测 {{ ranch.result.reconciliation.observedMachine ?? '未读到' }}</dd>
+        </div>
+      </dl>
       <p v-if="ranch.result.completed">
         已确认 {{ ranch.result.completed }} 项
       </p>
@@ -186,9 +218,9 @@ defineExpose({ refresh })
       </p>
       <div v-if="ranch.uncertain" class="mt-2 flex flex-wrap gap-2">
         <BaseButton :disabled="ranch.operating || ranch.loading || ranch.acknowledging" @click="refresh()">
-          刷新并核对
+          {{ feedReview ? '查看最新数量' : '刷新并核对' }}
         </BaseButton>
-        <BaseButton :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging" @click="ranch.acknowledge()">
+        <BaseButton v-if="!feedReview" :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging" @click="ranch.acknowledge()">
           已核对，允许继续
         </BaseButton>
       </div>
@@ -397,5 +429,23 @@ defineExpose({ refresh })
   border-radius: 8px;
   background: var(--surface-1, transparent);
   padding: 6px 8px;
+}
+.ranch-audit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}
+.ranch-audit div {
+  padding: 0.55rem 0.7rem;
+  border-inline-start: 2px solid var(--theme-primary, #328266);
+}
+.ranch-audit dt {
+  font-size: 0.75rem;
+  opacity: 0.78;
+}
+.ranch-audit dd {
+  margin: 0.2rem 0 0;
+  font-variant-numeric: tabular-nums;
 }
 </style>

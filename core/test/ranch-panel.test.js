@@ -37,7 +37,7 @@ function fixture(initialPolicy = {}) {
       if (url.endsWith('/prepare')) return prepare ? prepare() : { data: { ok: true, data: { id: 'synthetic-quote', label: '牧场生产', count: 1, costItems: [], expiresAt: Date.now() + 60000 } } };
       if (url.endsWith('/automation')) return { data: { ok: true, data: { policy: body, targetTypes, revision: 1 } } };
       if (url.endsWith('/operate') && operate) return operate();
-      if (url.endsWith('/acknowledge') && acknowledge) return acknowledge(body);
+      if ((url.endsWith('/acknowledge') || url.endsWith('/reconcile-feed')) && acknowledge) return acknowledge(body);
       return { data: { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [], snapshot: state() } } };
     },
   };
@@ -497,7 +497,7 @@ test('stocking settings save either type without a budget and keep manual limits
   assert.equal(manual.currencyDailyLimit, 25);
 });
 
-test('switching ranch accounts discards unsaved live stocking changes', async () => {
+test('switching ranch accounts discards unsaved stocking and smart feed changes', async () => {
   const f = fixture();
   await h.flush();
   const toggle = () => {
@@ -505,6 +505,7 @@ test('switching ranch accounts discards unsaved live stocking changes', async ()
     return h.findAll(label, node => node.tag === 'input')[0];
   };
   toggle().props['onUpdate:modelValue'](true);
+  h.findAll(f.root, node => node.tag === 'input' && node.props.name === 'smartFeed')[0].props['onUpdate:modelValue'](true);
   await h.flush();
   f.mount('account-b');
   await h.flush();
@@ -514,6 +515,7 @@ test('switching ranch accounts discards unsaved live stocking changes', async ()
   assert.equal(f.posts.length, 1);
   assert.equal(f.posts[0].config.headers['x-account-id'], 'account-b');
   assert.equal(f.posts[0].body.stockCoop, false);
+  assert.equal(f.posts[0].body.smartFeed, false);
   assert.equal(f.posts[0].body.stockBudgetMode, 'live');
 });
 
@@ -526,7 +528,8 @@ test('smart stock takes over both fixed cub rules before the catalogue loads, an
     const entry = h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === label)[0];
     return entry && h.findAll(entry, node => node.tag === 'input')[0];
   };
-  field('启用牧场自动化并智能补栏').props.onChange({ target: { checked: true } });
+  assert.match(h.textOf(form), /开启补栏时会同时启用牧场自动化/);
+  field('智能补栏').props.onChange({ target: { checked: true } });
   await h.flush();
   assert.match(h.textOf(form), /已接管窝，.*指定放养规则暂停/);
   assert.match(h.textOf(form), /已接管棚，.*指定幼崽购买规则暂停/);
@@ -548,4 +551,96 @@ test('smart stock takes over both fixed cub rules before the catalogue loads, an
   field('智能补栏').props.onChange({ target: { checked: false } }); await h.flush();
   assert.ok(field('每日最多放养'));
   assert.doesNotMatch(h.textOf(form), /规则暂停/);
+});
+
+test('smart feed uses a boolean and parks only the stock-grass and matching pasture-purchase rules', async () => {
+  const f = fixture({ enabled: true, grassEnabled: true, grassDailyLimit: 30, grassReserve: 5,
+    buyEnabled: true, shopId: '6', goodsId: '10001', purchaseCount: 4, currencyDailyLimit: 12 });
+  await h.flush();
+  const form = h.findAll(f.root, node => node.tag === 'form')[0];
+  const control = (label, tag = 'input') => {
+    const field = h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim().startsWith(label))[0];
+    return h.findAll(field, node => node.tag === tag)[0];
+  };
+  const set = (label, value) => control(label).props['onUpdate:modelValue'](value);
+
+  assert.equal(control('智能供草').props.role, 'switch');
+  assert.equal(control('每日最多使用').props.required, true);
+  assert.equal(control('单次购买数量').props.required, true);
+  assert.equal(control('每日最多花费').props.required, true);
+
+  set('智能供草', true);
+  await h.flush();
+  assert.match(h.textOf(form), /按动物占栏比例计算牧草目标储备.*先用库存.*用金券补购.*无需填写预算/);
+  assert.match(h.textOf(form), /库存补草规则暂停，指定购买牧草也会暂停/);
+  assert.match(h.textOf(form), /指定牧草购买暂停/);
+  for (const label of ['每日最多使用', '至少保留牧草', '单次购买数量', '每日最多花费', '至少保留货币']) {
+    assert.equal(control(label).props.required, false, `${label} must not block smart feed`);
+    assert.ok(!control(label).props.disabled, `${label} stays editable`);
+  }
+  assert.equal(control('单次购买数量').props.min, undefined);
+
+  set('每日最多使用', '');
+  set('单次购买数量', '');
+  set('每日最多花费', '');
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  const parked = f.posts.at(-1).body;
+  const policyTools = require('../src/services/ranch-policy');
+  const policy = policyTools.normalizePolicy(parked);
+  assert.equal(policy.smartFeed, true);
+  assert.deepEqual([policy.grassEnabled, policy.buyEnabled, policy.goodsId, policy.purchaseCount], [true, true, '10001', 4]);
+  assert.equal(policyTools.isAutomaticActionEnabled(policy, 'addGrass'), false);
+  assert.equal(policyTools.isAutomaticActionEnabled(policy, 'buy'), false);
+
+  control('商品', 'select').props.onChange({ target: { value: '10002' } });
+  await h.flush();
+  assert.doesNotMatch(h.textOf(form), /指定牧草购买暂停/);
+  assert.equal(control('每日最多花费').props.required, true);
+  assert.equal(control('单次购买数量').props.min, 1);
+  control('商店', 'select').props.onChange({ target: { value: '5' } });
+  control('商品', 'select').props.onChange({ target: { value: '10001' } });
+  await h.flush();
+  assert.doesNotMatch(h.textOf(form), /指定牧草购买暂停/);
+  assert.equal(control('每日最多花费').props.required, true);
+
+  control('商店', 'select').props.onChange({ target: { value: '6' } });
+  control('商品', 'select').props.onChange({ target: { value: '10001' } });
+  set('智能供草', false);
+  set('每日最多使用', 20);
+  set('每日最多花费', 15);
+  await h.flush();
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  const restored = policyTools.normalizePolicy(f.posts.at(-1).body);
+  assert.equal(restored.smartFeed, false);
+  assert.equal(policyTools.isAutomaticActionEnabled(restored, 'addGrass'), true);
+  assert.equal(policyTools.isAutomaticActionEnabled(restored, 'buy'), true);
+});
+
+test('uncertain grass operations show expected versus observed amounts without a human acknowledgement button', async () => {
+  const f = fixture(); await h.flush();
+  f.read(async () => ({ data: { ok: true, data: { ...state(), lastOperation: {
+    id: 'feed-review', action: 'addGrass', outcome: 'unknown', label: '补充牧草', message: '账目暂未匹配',
+    reconciliation: { expectedGrass: '5', observedGrass: '5', expectedMachine: '5', observedMachine: '4', checking: false },
+  } } } }));
+  assert.equal(await f.store.refresh(), true); await h.flush();
+  assert.match(h.textOf(f.root), /程序正在自动核账/);
+  assert.match(h.textOf(f.root), /实测 4/);
+  assert.equal(button(f.root, '已核对，允许继续'), undefined);
+  assert.ok(button(f.root, '查看最新数量'));
+});
+
+test('the next refresh settles a lost feed HTTP response without a user acknowledgement', async () => {
+  const f = fixture(); await h.flush();
+  f.prepare(async () => quoteReply('feed-http-lost', 60000));
+  assert.ok(await f.store.prepare('addGrass', { facilityId: '22', count: 5 }));
+  f.operate(async () => { throw new Error('synthetic lost HTTP response'); });
+  await f.store.execute();
+  assert.equal(f.store.result.feedOperation, true);
+  f.acknowledge(async body => ({ data: { ok: true, data: { id: body.operationId, outcome: 'not_sent', completed: 0 } } }));
+  assert.equal(await f.store.refresh(), true);
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.equal(f.posts.filter(p => p.url.endsWith('/acknowledge')).length, 0);
+  assert.equal(f.posts.filter(p => p.url.endsWith('/operate')).length, 1);
 });

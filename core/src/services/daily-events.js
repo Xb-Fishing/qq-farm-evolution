@@ -13,7 +13,7 @@ const MAX_EVENTS = 200; // 单日上限，够看且防刷爆
 
 const accounts = new Map(); // accountId -> { date, events: [] }
 const automationCleanupDays = new Map();
-const AUTOMATION_CATEGORIES = new Set(['task', 'rewards', 'warehouse', 'fertilizer', 'land', 'shop', 'friend', 'activity', 'login']);
+const AUTOMATION_CATEGORIES = new Set(['task', 'rewards', 'warehouse', 'fertilizer', 'land', 'shop', 'friend', 'activity', 'ranch', 'login']);
 
 function automationFile(accountId, day = todayKey()) {
   const id = String(accountId || 'default');

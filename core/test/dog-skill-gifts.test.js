@@ -32,6 +32,7 @@ test('dog gift claim uses the dedicated RPC once for concurrent callers', async 
   const paths = [configPath, networkPath, protoPath, utilsPath, loggerPath];
   const previous = new Map(paths.map(path => [path, require.cache[path]]));
   const calls = [];
+  const logged = [];
   const messageType = reply => ({
     create: value => value,
     encode: () => ({ finish: () => Buffer.alloc(0) }),
@@ -56,7 +57,7 @@ test('dog gift claim uses the dedicated RPC once for concurrent callers', async 
       ClaimSkillGiftsReply: { decode: () => ({ item: { id: 101351, count: 2 }, claimed_count: 2 }) }
     }
   });
-  require.cache[utilsPath] = mockModule(utilsPath, { toNum: value => Number(value) || 0 });
+  require.cache[utilsPath] = mockModule(utilsPath, { toNum: value => Number(value) || 0, log: (_tag, _message, meta) => logged.push(meta), logWarn() {} });
   require.cache[loggerPath] = mockModule(loggerPath, {
     createModuleLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} })
   });
@@ -71,6 +72,7 @@ test('dog gift claim uses the dedicated RPC once for concurrent callers', async 
     assert.equal(first.claimed, 2);
     assert.deepEqual(second, first);
     assert.deepEqual(calls, ['GetDogInfo', 'ClaimSkillGifts']);
+    assert.equal(logged.length, 1); assert.equal(logged[0].count, 2); assert.equal(logged[0].event, 'dog_skill_gift_claim');
   } finally {
     delete require.cache[servicePath];
     for (const path of paths) {

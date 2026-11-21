@@ -69,8 +69,9 @@ test('OAuth 回调结果未知时不得重复消费一次性 code', async () => 
 async function setup() {
   const account = { id: 'fixture-account', username: 'fixture-owner', platform: 'wx',
     loginType: 'wx_qr', wxid: 'fixture-openid', loginBuffer: 'old-buffer', refreshtoken: 'old-refresh' };
-  const calls = { starts: 0, refreshSettings: 0, invalidations: [], writes: [], issue: 0, poll: 0 };
-  const behavior = { issue: async () => 'fixture-code', refresh: async () => ({
+  account.credentialGeneration = 'original-test-generation';
+  const calls = { starts: 0, genericStarts: 0, refreshSettings: 0, invalidations: [], writes: [], issue: 0, poll: 0 };
+  const behavior = { startResult: true, issue: async () => 'fixture-code', refresh: async () => ({
     loginBuffer: 'scan-rotated-buffer', refreshtoken: 'scan-rotated-refresh', accesstoken: 'anew',
   }) };
   class FixtureService {
@@ -84,8 +85,9 @@ async function setup() {
     async issueCode() { calls.issue += 1; return behavior.issue(); }
     async refreshLoginBuffer() { return behavior.refresh(); }
   }
-  const save = patch => {
+  const save = (patch, options) => {
     Object.assign(account, patch);
+    if (options?.newAuthorization) account.credentialGeneration = 'scan-test-generation';
     calls.writes.push(account.loginBuffer);
     return { accounts: [account] };
   };
@@ -97,6 +99,17 @@ async function setup() {
   const qr = await adapter.getQRCode('fixture-owner');
   const sessionId = qr.Data.Uuid;
   assert.equal((await adapter.checkQR(sessionId, 'fixture-owner')).Success, true);
+  const { createDataProvider } = require('../src/runtime/data-provider');
+  const runtime = createDataProvider({
+    workers: {}, getAccounts: () => ({ accounts: [account] }),
+    store: { addOrUpdateAccount: patch => Object.assign(account, patch) },
+    startWorker: attempted => {
+      assert.equal(attempted.credentialGeneration, 'scan-test-generation');
+      assert.equal(attempted.code, 'fixture-new-code');
+      calls.starts += 1;
+      return behavior.startResult;
+    },
+  });
   const routes = new Map();
   const app = { get() {}, post: (route, handler) => routes.set(route, handler), put() {}, delete() {}, patch() {} };
   load('controllers/admin-account-routes.js', { '../services/wx-login-adapter': adapter }).registerAdminAccountRoutes({
@@ -106,7 +119,8 @@ async function setup() {
       isAccountRunning: () => false,
       invalidateAccountCredentialTasks: () => { calls.invalidations.push(account.loginBuffer); },
       saveAutoCodeRefresh: async () => { calls.refreshSettings += 1; },
-      startAccount: async () => { calls.starts += 1; },
+      startAccount: async () => { calls.genericStarts += 1; },
+      startAccountFromSavedWxCode: runtime.startAccountFromSavedWxCode,
     },
     getAccountsForUser: () => [account], resolveAccountReference: value => value,
     canAccessAccount: req => req.currentUser.username === account.username,
@@ -117,7 +131,7 @@ async function setup() {
     await routes.get('/api/accounts')({ body, currentUser: { username: owner, role: 'user' } }, response);
     return response;
   };
-  const scanBody = { id: account.id, platform: 'wx', wxid: account.wxid, wxSessionId: sessionId };
+  const scanBody = { id: account.id, platform: 'wx', wxid: account.wxid, wxSessionId: sessionId, code: 'fixture-new-code' };
   return { account, calls, behavior, adapter, sessionId, invoke, scanBody };
 }
 
@@ -172,6 +186,8 @@ test('旧续期先完成，新扫码保存锁内重读最新凭据并仅启动�
   assert.deepEqual(f.calls.writes, ['old-rotated-buffer', 'scan-rotated-buffer']);
   assert.equal(f.account.refreshtoken, 'scan-rotated-refresh');
   assert.equal(f.calls.starts, 1);
+  assert.equal(f.calls.genericStarts, 0);
+  assert.equal(response.body.startup.state, 'submitted');
   assert.deepEqual(f.calls.invalidations, ['scan-rotated-buffer']);
   assert.equal(f.calls.refreshSettings, 1);
   assert.equal(response.body.startup.queued, true);
@@ -224,4 +240,31 @@ test('扫码失败阶段只记录固定原因，不记录凭据或身份原文',
   assert.equal(events[0].meta.reason, 'transport');
   assert.equal(events[0].meta.phase, 'checkqr');
   assert.equal(JSON.stringify(events).includes(marker), false);
+});
+
+
+test('same confirmed scan cannot save or request startup twice, and refused startup is shown as not submitted', async () => {
+  const f = await setup();
+  f.behavior.startResult = false;
+  const responses = await Promise.all([f.invoke(f.scanBody), f.invoke(f.scanBody)]);
+  const saved = responses.find(response => response.body.ok);
+  assert.ok(saved);
+  assert.equal(saved.body.startup.state, 'not_started');
+  assert.equal(saved.body.startup.queued, false);
+  assert.equal(f.calls.writes.length, 1);
+  assert.equal(f.calls.starts, 1);
+  assert.equal(f.calls.genericStarts, 0);
+});
+
+test('interactive scan updates authorization but keeps an explicitly held account offline', async () => {
+  const f = await setup();
+  f.account.autoLogin = false;
+  const response = await f.invoke({ ...f.scanBody, autoLogin: true, username: 'other-fixture-owner' });
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.startup.state, 'held_offline');
+  assert.equal(response.body.startup.queued, false);
+  assert.equal(f.account.autoLogin, false);
+  assert.equal(f.account.username, 'fixture-owner');
+  assert.equal(f.calls.starts, 0);
+  assert.equal(f.calls.refreshSettings, 0);
 });

@@ -8,6 +8,7 @@ export const AUTOMATION_CATEGORY_LABELS: Record<string, string> = {
   shop: '商城',
   friend: '好友互动',
   activity: '活动',
+  ranch: '牧场',
   login: '登录维护',
   system: '系统',
 }
@@ -21,6 +22,8 @@ export const AUTOMATION_LOG_EVENT_GROUPS = [
   { label: '自动控制：出售', value: 'sell_success,sell_done,sell_failed,sell_empty' },
   { label: '自动控制：商城', value: '神秘商人自动购买,mall_free_gifts' },
   { label: '自动控制：好友互动', value: '帮助好友,照顾好友,在线自动捣乱,放置黄金虫,自动同意好友' },
+  { label: '自动控制：牧场', value: 'ranch_automation_action,ranch_automation_status,ranch_feed_reconciliation' },
+  { label: '活动操作', value: 'activity_confirmed' },
   { label: '自动控制：奶茶', value: 'milk_tea_operate,milk_tea_auto_check' },
 ]
 

@@ -272,8 +272,13 @@ function registerAdminAccountRoutes({
         ? { ...body, id: resolvedId || String(body.id) }
         : body;
 
+      const wxScan = Boolean(body.wxSessionId && body.wxid && currentUser && nextAccount.platform === "wx");
+      const existingWxScan = isUpdate && wxScan;
+      if (body.wxSessionId && (!wxScan || typeof body.code !== "string" || !body.code.trim() || body.code.length > 512)) {
+        return res.status(400).json({ ok: false, error: "微信扫码会话或农场登录码无效，请重新扫码" });
+      }
       // 扫码凭证只允许由同一登录用户持有的短期会话写入账号。
-      if (body.wxSessionId && body.wxid && currentUser) {
+      if (wxScan) {
         const wxLoginAdapter = require("../services/wx-login-adapter");
         const pending = wxLoginAdapter.peekPendingWxInfo(
           body.wxSessionId,
@@ -337,6 +342,17 @@ function registerAdminAccountRoutes({
 
       if (!isUpdate && currentUser) nextAccount.username = currentUser.username;
       const wxLoginAdapter = require("../services/wx-login-adapter");
+      const lookup = id => getAccountsForUser().find(account => String(account.id) === String(id));
+      const original = existingWxScan ? lookup(nextAccount.id) : null;
+      if (existingWxScan && (!original || original.platform !== "wx" || !canAccessAccount(req, nextAccount.id))) {
+        return res.status(original ? 403 : 404).json({ ok: false, error: "无法为此账号保存微信扫码授权" });
+      }
+      if (existingWxScan) {
+        delete nextAccount.username;
+        delete nextAccount.autoLogin;
+      }
+      const originalGeneration = original?.credentialGeneration;
+      const originalOwner = original?.username;
       const saveAccount = () => {
         if (bridgeAccount?.existing) {
           const latest = getAccountsForUser().find(account => String(account.id) === String(nextAccount.id));
@@ -347,17 +363,24 @@ function registerAdminAccountRoutes({
             throw error;
           }
         }
-        if (body.wxSessionId && body.wxid && currentUser) {
+        if (wxScan) {
           const latest = wxLoginAdapter.peekPendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
-          if (!latest) throw new Error("微信扫码会话无效或已过期，请重新扫码");
+          const current = existingWxScan ? lookup(nextAccount.id) : null;
+          if (!latest || (existingWxScan && (!current || current.platform !== "wx" || current.username !== originalOwner
+            || current.credentialGeneration !== originalGeneration || !canAccessAccount(req, nextAccount.id)))) {
+            const error = new Error("微信扫码会话已过期、已保存或账号已变化，请重新扫码");
+            error.statusCode = 409;
+            throw error;
+          }
           Object.assign(nextAccount, {
             loginBuffer: latest.loginBuffer, refreshtoken: latest.refreshtoken, accesstoken: latest.accesstoken,
             wxCredentialExpiresAt: latest.wxCredentialExpiresAt, wxCredentialExpiresIn: latest.wxCredentialExpiresIn,
             wxRefreshTokenObservedAt: latest.wxRefreshTokenObservedAt, wxCredentialLastSuccessAt: latest.wxCredentialLastSuccessAt,
           });
         }
-        const saved = addOrUpdateAccount(nextAccount, { newAuthorization: Boolean(body.wxSessionId && body.wxid && currentUser && nextAccount.platform === 'wx') });
-        if (isUpdate && body.wxSessionId && typeof provider.invalidateAccountCredentialTasks === "function") {
+        const saved = addOrUpdateAccount(nextAccount, { newAuthorization: wxScan });
+        if (wxScan) wxLoginAdapter.consumePendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
+        if (existingWxScan && typeof provider.invalidateAccountCredentialTasks === "function") {
           // Fence old async completions before the credential lock is released.
           provider.invalidateAccountCredentialTasks(nextAccount.id);
         }
@@ -368,20 +391,25 @@ function registerAdminAccountRoutes({
         ? await wxLoginAdapter.withAccountCredentialLock(nextAccount.wxid || '', nextAccount.id, saveAccount)
         : saveAccount();
       const clientVersionUpdated = syncGatewayClientVersion(gateway, store, updateRuntimeConfig);
-      if (body.wxSessionId && body.wxid && currentUser) {
-        const wxLoginAdapter = require("../services/wx-login-adapter");
-        wxLoginAdapter.consumePendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
-        // 新授权已被服务端接受：推进扫码代次（允许下一次失效重新提醒），
-        // 并作废该账号遗留的自助二维码（守望/图片能力/adapter 会话）。
-        try {
-          const reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
-          const reminderAccountId = isUpdate
-            ? String(nextAccount.id)
-            : String((data.accounts.at(-1) || {}).id || "");
-          if (reminderAccountId) {
-            await reminder.noteAcceptedScan(reminderAccountId);
-          }
-        } catch { /* 提醒状态更新失败不阻断账号保存 */ }
+      const savedScanAccount = existingWxScan ? data.accounts.find(account => String(account.id) === String(nextAccount.id)) : null;
+      const scanGeneration = savedScanAccount?.credentialGeneration;
+      const isCurrentScan = () => {
+        if (!savedScanAccount) return false;
+        const current = lookup(nextAccount.id);
+        return !!current && current.platform === "wx" && current.username === originalOwner
+          && current.wxid === body.wxid && current.code === body.code
+          && current.credentialGeneration === scanGeneration
+          && canAccessAccount(req, nextAccount.id);
+      };
+      if (wxScan) {
+        const reminderAccountId = isUpdate ? String(nextAccount.id) : String((data.accounts.at(-1) || {}).id || "");
+        if (reminderAccountId && (!existingWxScan || isCurrentScan())) {
+          try {
+            const reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
+            await reminder.noteAcceptedScan(reminderAccountId, existingWxScan
+              ? { owner: originalOwner, wxid: body.wxid, guard: isCurrentScan } : {});
+          } catch { /* 提醒状态更新失败不阻断已保存的扫码 */ }
+        }
       }
       if (provider.addAccountLog) {
         const accountId = isUpdate
@@ -398,6 +426,7 @@ function registerAdminAccountRoutes({
 
       let autoRefreshEnabled = false;
       let startQueued = false;
+      let startupState;
       if (!isUpdate) {
         const created = data.accounts.at(-1);
         if (created) {
@@ -425,28 +454,44 @@ function registerAdminAccountRoutes({
             }
           });
         }
+      } else if (existingWxScan) {
+        const held = () => lookup(nextAccount.id)?.autoLogin === false;
+        if (!isCurrentScan()) startupState = "superseded";
+        else if (held()) startupState = "held_offline";
+        else {
+          try {
+            if (provider.isAccountRunning?.(nextAccount.id)) {
+              const restarted = await provider.restartAccount(nextAccount.id, { isCurrent: () => isCurrentScan() && !held() });
+              startQueued = restarted !== false;
+            } else {
+              if (typeof provider.saveAutoCodeRefresh === "function") {
+                await provider.saveAutoCodeRefresh(nextAccount.id, { enabled: true, intervalMinutes: 60 });
+                autoRefreshEnabled = true;
+              }
+              if (isCurrentScan() && !held()) {
+                // The panel already exchanged this confirmed scan for a fresh, one-use game code.
+                // Launch through the saved-code path instead of trying to refresh it a second time.
+                const started = await provider.startAccountFromSavedWxCode?.(nextAccount.id, body.code, scanGeneration);
+                startQueued = started === true;
+              }
+            }
+          } catch { /* 已保存的授权必须如实返回，不能当作保存失败重复消费 */ }
+          startupState = !isCurrentScan() ? "superseded" : held() ? "held_offline" : startQueued ? "submitted" : "not_started";
+          startQueued = startupState === "submitted";
+          if (startupState === "not_started") {
+            try { provider.addAccountLog?.("start_failed", "新扫码授权已保存，账号启动未提交，请查看登录状态", nextAccount.id, ""); }
+            catch { /* 页面仍需要明确的启动结果 */ }
+          }
+        }
       } else if (wasRunning && !onlyRenaming && !bridgeAccount) {
         await provider.restartAccount(nextAccount.id);
-        // 在线原生重扫：用刚保存的二维码 Code 立即重建一次连接（不追加
-        // 授权请求、不改 autoLogin），queued 表示正在用新授权重连。
-        if (body.wxSessionId && nextAccount.platform === "wx") startQueued = true;
-      } else if (!wasRunning && body.wxSessionId && nextAccount.platform === "wx") {
-        // A successful rescan of an offline account is a login request, not just a save.
-        if (typeof provider.saveAutoCodeRefresh === "function") {
-          await provider.saveAutoCodeRefresh(nextAccount.id, { enabled: true, intervalMinutes: 60 });
-          autoRefreshEnabled = true;
-        }
-        startQueued = true;
-        Promise.resolve().then(() => provider.startAccount(nextAccount.id)).catch(() => {
-          if (provider.addAccountLog) provider.addAccountLog("start_failed", "新扫码授权已保存，账号启动失败，请查看登录状态", nextAccount.id, "");
-        });
       }
 
       // 使用 provider 的脱敏结果，避免把微信滚动凭证返回浏览器。
       res.json({
         ok: true,
         data: bridgeAccount ? visibleAccounts() : provider.getAccounts(),
-        startup: { queued: startQueued, autoRefreshEnabled },
+        startup: { queued: startQueued, autoRefreshEnabled, ...(startupState && { state: startupState }) },
         ...(bridgeAccount ? { bridge: bridgeResponse(isUpdate ? (wasRunning ? 'saved_online' : 'saved_offline') : 'created') } : {}),
         clientVersion: gateway ? gateway.clientVersion : "",
         clientVersionUpdated,

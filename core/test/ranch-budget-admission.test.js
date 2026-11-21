@@ -40,7 +40,7 @@ const replies = {
     level: facility.level, upgrade_cost: [{ id: '1007', count: '14000' }] } },
 };
 let nextLedger = 0;
-function fixture({ embedded = false } = {}) {
+function fixture({ embedded = false, allowAutomation = false } = {}) {
   const identity = { key: 'fixture-login', connected: true, level: 30, revision: 1 };
   const calls = []; const ws = {};
   const totalMs = 1000;
@@ -77,7 +77,7 @@ function fixture({ embedded = false } = {}) {
   const ledger = fixturePath(`operations-${++nextLedger}.json`);
   const network = { getWs: () => ws, isConnected: () => identity.connected, getUserState: () => ({ gid: 42 }),
     withRanchScene: scene.run, sendMsgAsync: scene.send };
-  return Object.assign(f, { scene, service: createRanchService({ network, file: () => ledger, now: () => f.time }) });
+  return Object.assign(f, { scene, service: createRanchService({ network, file: () => ledger, now: () => f.time, canAutomate: () => allowAutomation }) });
 }
 
 const views = {
@@ -198,4 +198,49 @@ test('pre-write governed errors bind only execute proof and preserve a failed re
   assert.equal(result.quoteId, quote.data.id);
   assert.equal(result.sceneRecoveryRequired, true);
   assert.deepEqual(f.calls, [2, 'AllCells', 1, 1]);
+});
+
+
+test('account-filtered dashboard logs receive real ranch status entries through the worker log hook', async t => {
+  const { setLogHook } = require('../src/utils/utils');
+  const { observeAutomationLog } = require('../src/services/automation-observability');
+  const { createRuntimeState } = require('../src/runtime/runtime-state');
+  const { createDataProvider } = require('../src/runtime/data-provider');
+  const { registerAdminAccountRoutes } = require('../src/controllers/admin-account-routes');
+  const runtime = createRuntimeState({ store: {} });
+  const accountId = 'ranch-observation-account';
+  const otherId = 'other-account';
+  const getAccounts = () => ({ accounts: [{ id: accountId }, { id: otherId }] });
+  const provider = createDataProvider({ ...runtime, getAccounts });
+  setLogHook((tag, msg, isWarn, meta) => {
+    const observed = observeAutomationLog(accountId, tag, msg, isWarn, meta);
+    runtime.appendRuntimeLog({ accountId, time: '2026-11-21 10:00:00', tag: observed.tag, msg, isWarn, meta: observed.meta });
+  });
+  t.after(() => setLogHook(null));
+  const handlers = new Map();
+  registerAdminAccountRoutes({
+    app: { get: (route, handler) => handlers.set(route, handler), post() {}, put() {}, patch() {}, delete() {} },
+    provider, resolveAccountReference: id => id, canAccessAccount: (_req, id) => id === accountId,
+  });
+  const f = fixture({ allowAutomation: true });
+  const saved = await f.service.setAutomation({ enabled: true, harvest: false, produce: false, clean: false, tasks: false,
+    stockCoop: true, buyMissingCubs: false, stockBudgetMode: 'live' });
+  assert.equal(saved.ok, true, saved.error);
+  f.time += 31000;
+  assert.equal((await f.service.automate()).data.skipped, true);
+
+  const getLogs = handlers.get('/api/logs');
+  const query = { accountId, module: 'ranch', event: 'ranch_automation_action,ranch_automation_status' };
+  const res = { status(status) { this.code = status; return this; }, json(body) { this.body = body; } };
+  getLogs({ query, currentUser: { username: 'fixture' } }, res);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.data.length, 1);
+  const [entry] = res.body.data;
+  assert.equal(entry.accountId, accountId);
+  assert.equal(entry.tag, '牧场');
+  assert.equal(entry.meta.reason, 'no_inventory');
+  assert.equal(entry.meta.logKind, 'status');
+
+  getLogs({ query: { ...query, accountId: otherId }, currentUser: { username: 'fixture' } }, res);
+  assert.equal(res.code, 403);
 });

@@ -81,8 +81,10 @@ test('check and code timeouts abort transport and surface bounded failure; reset
     h.store.resetState(); assert.equal(h.store.status, 'idle'); assert.equal(h.store.isLoading, false);
 });
 
-function modalHarness(show = true) {
-    const intervals = []; const saves = []; const pendingCode = deferred(); let qrCount = 0; let codeCalls = 0; let codeResponder = () => pendingCode.promise;
+function modalHarness(show = true, editData = { id: 'account-a', name: 'fixture' }) {
+    const intervals = []; const saves = []; const notices = []; const emitted = []; const pendingCode = deferred();
+    let saveResponder = async () => ({ data: { ok: true, startup: { state: 'submitted', queued: true } } });
+    let qrCount = 0; let codeCalls = 0; let codeResponder = () => pendingCode.promise;
     const wx = vue.reactive({ isLoading: false, status: 'idle', uuid: show ? '' : 'other-session', qrCode: '', qrCreatedAt: 0, config: { autoAddAccount: true },
         resetState() { this.isLoading = false; this.uuid = ''; this.status = 'idle'; },
         async getQRCode() { this.uuid = `session-${++qrCount}`; this.status = 'qr_ready'; this.qrCreatedAt = Date.now(); return true; },
@@ -92,24 +94,25 @@ function modalHarness(show = true) {
         async getFarmCode() { codeCalls++; const result = await codeResponder(); this.retryable = result.definitive !== true; this.status = result.success ? 'success' : 'error'; return result; },
     });
     const filename = path.join(root, 'web/src/components/AccountModal.vue');
-    const { descriptor } = compiler.parse(fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ activeTab, wxChecking, loading, close, retryWxCode })\n</script>'), { filename });
+    const { descriptor } = compiler.parse(fs.readFileSync(filename, 'utf8').replace('</script>', '\ndefineExpose({ activeTab, wxChecking, loading, errorMessage, close, retryWxCode })\n</script>'), { filename });
     const source = compiler.compileScript(descriptor, { id: 'wx-modal-test' }).content;
     const stub = { __esModule: true, default: {} };
     const Modal = evaluate(source, {
         vue,
         '@vueuse/core': { useIntervalFn: callback => { const interval = { callback, active: false }; intervals.push(interval); return { pause: () => { interval.active = false; }, resume: () => { interval.active = true; } }; } },
-        '@/api': { __esModule: true, default: { get: async () => ({ data: {} }), post: async (_url, body) => { saves.push(body); return { data: { ok: true } }; } } },
+        '@/api': { __esModule: true, default: { get: async () => ({ data: {} }), post: async (_url, body) => { saves.push(body); return saveResponder(); } } },
         '@/components/ui/BaseButton.vue': stub, '@/components/ui/BaseInput.vue': stub, '@/components/ui/BaseTextarea.vue': stub,
         '@/components/MengkaNtLoginGuide.vue': stub, '@/components/QqLoginPanel.vue': stub,
+        '@/stores/toast': { useToastStore: () => ({ info: message => notices.push(message) }) },
         '@/stores/wx-login': { useWxLoginStore: () => wx }, '@/utils/gateway-url': { parseManualLoginInput: () => ({}) },
     }, { localStorage: storage }).default;
     Modal.render = () => null;
     const renderer = vue.createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null });
-    const props = vue.reactive({ show, initialTab: 'wx', editData: { id: 'account-a', name: 'fixture' } });
+    const props = vue.reactive({ show, initialTab: 'wx', editData });
     let instance;
-    const app = renderer.createApp({ render: () => vue.h(Modal, { ...props, ref: value => { instance = value; } }) });
+    const app = renderer.createApp({ render: () => vue.h(Modal, { ...props, onClose: () => emitted.push('close'), onSaved: id => emitted.push(id), ref: value => { instance = value; } }) });
     app.mount({});
-    return { app, props, wx, saves, pendingCode, intervals, instance: () => instance, qrCount: () => qrCount, codeCalls: () => codeCalls, setCodeResponder: fn => { codeResponder = fn; } };
+    return { app, props, wx, saves, notices, emitted, pendingCode, intervals, setSaveResponder: fn => { saveResponder = fn; }, instance: () => instance, qrCount: () => qrCount, codeCalls: () => codeCalls, setCodeResponder: fn => { codeResponder = fn; } };
 }
 
 test('real modal preserves initial wx tab and reopening same tab creates exactly one QR and resumes polling', async () => {
@@ -139,6 +142,9 @@ test('real modal saves confirmed Code with the matching QR session and selected 
         await vue.nextTick(); const poll = h.intervals[0].callback(); await vue.nextTick();
         h.pendingCode.resolve({ success: true, code: 'fixture-code' }); await poll;
         assert.equal(h.saves.length, 1); assert.equal(h.saves[0].id, 'account-a'); assert.equal(h.saves[0].wxSessionId, 'session-1');
+        assert.deepEqual(h.emitted, ['account-a', 'close']);
+        assert.match(h.notices[0], /已提交登录.*等待账号上线/);
+        assert.equal(h.codeCalls(), 1);
     } finally { h.app.unmount(); }
 });
 
@@ -394,9 +400,8 @@ test('autoAdd 关闭时对既有账号的重扫码仍写回原账号：完整会
 });
 
 test('autoAdd 关闭且无目标账号时保留旧手动路径', async () => {
-    const h = modalHarness();
+    const h = modalHarness(true, null);
     h.wx.config.autoAddAccount = false;
-    h.props.editData = null;
     try {
         await vue.nextTick(); const poll = h.intervals[0].callback(); await vue.nextTick();
         h.pendingCode.resolve({ success: true, code: 'fixture-manual-code' }); await poll;
@@ -577,4 +582,35 @@ test('账号列表刷新失败：当前账号缓存已清、无未处理异常�
         assert.equal(h.fetchAccountCalls.length, 1);
         assert.deepEqual(h.toasts, [], '已保存的授权不得被误报为保存失败');
     } finally { await vue.nextTick(); await vue.nextTick(); h.app.unmount(); }
+});
+
+
+test('saved authorization without startup stays visible and cannot be mistaken for an online account', async () => {
+    const h = modalHarness();
+    try {
+        h.setSaveResponder(async () => ({ data: { ok: true, startup: { state: 'not_started', queued: false } } }));
+        await vue.nextTick(); const poll = h.intervals[0].callback(); await vue.nextTick();
+        h.pendingCode.resolve({ success: true, code: 'fixture-code' }); await poll;
+        assert.match(h.instance().errorMessage, /授权已保存.*登录尚未提交/);
+        assert.deepEqual(h.emitted, []);
+        assert.deepEqual(h.notices, []);
+    } finally { h.app.unmount(); }
+});
+
+test('late startup feedback after switching account is discarded', async () => {
+    const h = modalHarness();
+    const saving = deferred();
+    h.setSaveResponder(() => saving.promise);
+    try {
+        await vue.nextTick(); const poll = h.intervals[0].callback(); await vue.nextTick();
+        h.pendingCode.resolve({ success: true, code: 'fixture-code' });
+        await vue.nextTick(); await vue.nextTick();
+        assert.equal(h.saves.length, 1);
+        h.props.editData = { id: 'account-b', name: 'other' };
+        await vue.nextTick();
+        saving.resolve({ data: { ok: true, startup: { state: 'submitted', queued: true } } });
+        await poll;
+        assert.deepEqual(h.emitted, ['close']);
+        assert.deepEqual(h.notices, []);
+    } finally { h.app.unmount(); }
 });

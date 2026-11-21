@@ -13,11 +13,9 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
 const { getItemById } = require('../config/gameConfig');
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
-const { toNum } = require('../utils/utils');
-const { createModuleLogger } = require('./logger');
+const { toNum, log, logWarn } = require('../utils/utils');
 
 const DOG_SKILL_GIFT_ITEM_ID = 101351;
-const logger = createModuleLogger('dog');
 let pendingClaim = null;
 
 async function getDogInfo() {
@@ -105,10 +103,12 @@ async function checkAndClaimDogSkillGifts(pendingCountHint, options = {}) {
       const claimed = Math.max(0, toNum(reply && reply.claimed_count)) || Math.max(0, toNum(item && item.count));
       const itemId = toNum(item && item.id);
       const itemName = getItemById(itemId)?.name || (itemId > 0 ? `物品#${itemId}` : '同气连枝礼包');
-      if (claimed > 0) logger.info(`拾取${itemName} x${claimed}`, { itemId, count: claimed });
+      if (claimed > 0) log('任务', `${options.automatic ? '自动领取' : '领取'}${itemName} × ${claimed}`, {
+        module: 'task', event: 'dog_skill_gift_claim', result: 'ok', count: claimed, source: options.automatic ? 'automatic' : 'manual',
+      });
       return { claimed, pending: Math.max(0, pendingCount - claimed), item };
     } catch (error) {
-      logger.warn(`拾取同气连枝礼包失败: ${error?.message || error}`);
+      logWarn('任务', '领取同气连枝礼包失败，未确认到账', { module: 'task', event: 'dog_skill_gift_claim', result: 'error', source: options.automatic ? 'automatic' : 'manual' });
       return {
         claimed: 0,
         pending: Math.max(0, toNum(pendingCountHint)),

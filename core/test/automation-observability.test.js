@@ -178,3 +178,14 @@ test('activity projection rejects empty, replayed and unknown results', () => {
   ]) assert.equal(observe.actionFromLog('ignored', { module: 'activity', event: 'activity_confirmed', ...meta }), null);
   assert.match(observe.actionFromLog('ignored', { module: 'activity', event: 'activity_confirmed', action: 'solar_season', count: 1, result: 'ok' }).message, /季度图鉴.*领取奖励/);
 });
+
+test('only fully confirmed automatic ranch results enter daily events, while all outcomes remain in runtime logs', () => {
+  const rows = [];
+  for (const result of ['confirmed', 'unknown', 'partial', 'not_sent', 'error']) {
+    const meta = { module: 'ranch', event: 'ranch_automation_action', action: 'buy', completed: 2, result, logKind: 'action' };
+    const normalized = observe.observeAutomationLog('fixture-ranch', '牧场', '自动购买牧草', false, meta, (...args) => rows.push(args));
+    assert.equal(normalized.meta.result, result);
+    assert.equal(normalized.meta.automationCategory, 'ranch');
+  }
+  assert.equal(rows.length, 1); assert.equal(rows[0][1], 'ranch');
+});
