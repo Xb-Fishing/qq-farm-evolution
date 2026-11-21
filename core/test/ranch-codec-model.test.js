@@ -252,7 +252,7 @@ test('clean targets known own hazards; tasks batch only qualified ordinary rewar
     assert.throws(() => model.planAction('claimTasks', { taskId: HUGE }, raw, NOW), /未完成/);
     raw.cells.facilities[0].ranch.hazards = [];
     assert.throws(() => model.planAction('clean', {}, raw, NOW), /没有/);
-    for (const unsupported of ['sell', 'feed', 'useCan', 'claimIllustrated']) assert.throws(() => model.planAction(unsupported, {}, raw, NOW), /不支持/);
+    for (const unsupported of ['feed', 'useCan', 'claimIllustrated']) assert.throws(() => model.planAction(unsupported, {}, raw, NOW), /不支持/);
 });
 
 test('signed item-instance identifiers and unset timers do not become inventory quantities', () => {

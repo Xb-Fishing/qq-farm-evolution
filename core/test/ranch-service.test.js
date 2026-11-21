@@ -64,7 +64,7 @@ function fixture(upgrade = false) {
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
       else if (method === 'GetBag') reply = { global_scene_id: 2,
-        physical_items: [{ id: '7001', count: String(grass) }, ...[...cubs].map(([id, count]) => ({ id, count: String(count) })), ...f.lockedCubs],
+        physical_items: [{ id: '7001', count: String(grass) }, ...[...cubs].map(([id, count]) => ({ id, count: String(count) })), ...f.lockedCubs, ...f.products.filter(row => BigInt(row.count) > 0n)],
         virtual_items: [{ id: '1007', count: String(gold) }, ...(upgrade ? [{ id: '1102', count: '40000' }] : [])] };
       else if (method === 'GetFacilityDetail') {
         const facility = facilities[0]; assert.equal(request.instance_id, facility.instance_id);
@@ -97,6 +97,16 @@ function fixture(upgrade = false) {
           cubs.set(good.item_id, (cubs.get(good.item_id) || 0) + quantity);
           if (good.limit_count) good.bought_num = String(Number(good.bought_num ?? 0) + count);
           reply = { goods: { id: good.id }, cost_items: [{ id: '1007', count: String(cost) }], get_items: [{ id: good.item_id, count: String(quantity) }] };
+        } else if (method === 'Sell') {
+          const earned = new Map();
+          for (const stack of request.items) {
+            const original = f.products.find(row => row.id === stack.id && row.uid === stack.uid);
+            assert.ok(original);
+            original.count = (BigInt(original.count) - BigInt(stack.count)).toString();
+            for (const price of original.show.sells) earned.set(price.id, (earned.get(price.id) || 0n) + BigInt(price.count) * BigInt(stack.count));
+          }
+          reply = { sell_items: request.items.map(({ id, uid, count }) => ({ id, uid, count })),
+            get_items: [...earned].map(([id, count]) => ({ id, count: count.toString() })) };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
         else if (method === 'PlaceAnimal') {
           reply = { op_results: request.items.map(({ ranch_inst_id, animal_id }) => {
@@ -114,7 +124,7 @@ function fixture(upgrade = false) {
     },
   };
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], upgradeCost: 14000,
+  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], products: [], upgradeCost: 14000,
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
@@ -1104,4 +1114,54 @@ test('cancel preserves a partial operation and the existing spend ledger', async
   assert.equal(fs.readFileSync(f.file, 'utf8'), before);
   assert.equal((await f.make().execute(quote.data.id)).data.outcome, 'partial');
   assert.equal(f.writes, 2);
+});
+
+
+const ranchProduct = (uid, count, price, flags = {}) => ({
+  id: '1060001', uid, count, show: { sells: [{ id: '1007', count: price }] }, ...flags,
+});
+
+test('牧场批量出售跳过锁定、条件及非产物堆栈，按实际 UID 和报价确认一次', async () => {
+  const f = fixture();
+  const first = ranchProduct('9007199254741001', '3', '2');
+  const second = ranchProduct('9007199254741002', '2', '4');
+  f.products.push(first, second, ranchProduct('9007199254741003', '9', '8', { is_locked: true }),
+    ranchProduct('9007199254741004', '6', '3', { show: { sells: [{ id: '1007', count: '5' }], sell_cond: [{ type: 'synthetic' }] } }),
+    ranchProduct('9007199254741005', '4', '2', { id: '7001' }));
+  const snapshot = await f.service.getState('animals');
+  assert.deepEqual(snapshot.data.inventory.filter(row => row.canSell).map(row => row.uid), [first.uid, second.uid]);
+  const quote = await f.service.prepare('sell', { all: true });
+  assert.equal(quote.ok, true, quote.error);
+  assert.deepEqual(quote.data.costItems.map(row => [row.id, row.count]), [['1060001', '5']]);
+  assert.deepEqual(quote.data.expectedRewards.map(row => [row.id, row.count]), [['1007', '14']]);
+  assert.equal(f.writes, 0);
+  second.show.sells[0].count = '5';
+  assert.equal((await f.service.execute(quote.data.id)).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 0);
+  second.show.sells[0].count = '4';
+  const result = await f.service.execute(quote.data.id);
+  assert.equal(result.data.outcome, 'confirmed', JSON.stringify({ message: result.data.message, writes: f.writes }));
+  assert.deepEqual(result.data.rewards.map(row => [row.id, row.count]), [['1007', '14']]);
+  assert.deepEqual(f.products.map(row => row.count), ['0', '0', '9', '6', '4']);
+  assert.equal((await f.make().execute(quote.data.id)).data.replayed, true);
+  assert.equal(f.writes, 1);
+});
+
+test('单批出售只提交确认数量，回执 UID 不匹配时保留未知并拒绝重发', async () => {
+  const f = fixture();
+  const item = ranchProduct('9007199254741001', '5', '3');
+  f.products.push(item);
+  const input = { uid: item.uid, itemId: item.id, count: 2 };
+  const invalid = await f.service.prepare('sell', { ...input, itemId: '2060001' });
+  assert.equal(invalid.code, 'RANCH_STATE_CHANGED');
+  const quote = await f.service.prepare('sell', input);
+  assert.equal(quote.ok, true, quote.error);
+  assert.equal(quote.data.expectedRewards[0].count, '6');
+  f.mutateReply = reply => ({ ...reply, sell_items: [{ ...reply.sell_items[0], uid: '9007199254741002' }] });
+  const result = await f.service.execute(quote.data.id);
+  assert.equal(result.data.outcome, 'unknown');
+  assert.equal(item.count, '3');
+  assert.equal((await f.make().execute(quote.data.id)).data.replayed, true);
+  assert.equal((await f.make().prepare('sell', input)).code, 'RANCH_RESULT_UNCONFIRMED');
+  assert.equal(f.writes, 1);
 });
