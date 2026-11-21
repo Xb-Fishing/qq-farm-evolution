@@ -357,7 +357,8 @@ function getLandLifecycleState(land) {
 
 /** 根据最新土地数据分类收获过的地块 */
 function classifyHarvestedLandsByMap(landIds, landMap) {
-  const removable = [];
+  const dead = [];
+  const empty = [];
   const growing = [];
   const unknown = [];
 
@@ -366,15 +367,17 @@ function classifyHarvestedLandsByMap(landIds, landMap) {
     if (!land) { unknown.push(landId); continue; }
 
     const state = getLandLifecycleState(land);
-    if (state === 'dead' || state === 'empty') {
-      removable.push(landId);
+    if (state === 'dead') {
+      dead.push(landId);
+    } else if (state === 'empty' && !land.plant && !toNum(land.master_land_id) && !isOccupiedSlaveLand(land, landMap)) {
+      empty.push(landId);
     } else if (state === 'growing') {
       growing.push(landId);
     } else {
       unknown.push(landId);
     }
   }
-  return { removable, growing, unknown };
+  return { empty, dead, growing, unknown };
 }
 
 /**
@@ -385,14 +388,15 @@ function classifyHarvestedLandsByMap(landIds, landMap) {
 async function resolveRemovableHarvestedLands(harvestedLandIds, harvestResult) {
   const landIds = Array.isArray(harvestedLandIds) ? harvestedLandIds.filter(Boolean) : [];
   if (landIds.length === 0) {
-    return { removable: [], growing: [], fallbackRemoved: 0 };
+    return { empty: [], dead: [], removable: [], growing: [], fallbackRemoved: 0 };
   }
 
   // 先用收获结果中的数据构建土地映射
   const resultLandMap = buildLandMap(harvestResult && harvestResult.land);
   const classified = classifyHarvestedLandsByMap(landIds, resultLandMap);
 
-  const removable = [...classified.removable];
+  const empty = [...classified.empty];
+  const dead = [...classified.dead];
   const growing = [...classified.growing];
   let unknown = [...classified.unknown];
   const fallbackRemoved = 0;
@@ -403,7 +407,8 @@ async function resolveRemovableHarvestedLands(harvestedLandIds, harvestResult) {
       const landsReply = await getAllLands();
       const freshLandMap = buildLandMap(landsReply && landsReply.lands);
       const reclassified = classifyHarvestedLandsByMap(unknown, freshLandMap);
-      removable.push(...reclassified.removable);
+      empty.push(...reclassified.empty);
+      dead.push(...reclassified.dead);
       growing.push(...reclassified.growing);
       unknown = reclassified.unknown;
     } catch (err) {
@@ -417,7 +422,7 @@ async function resolveRemovableHarvestedLands(harvestedLandIds, harvestResult) {
 
   // 补拉后依然未知时必须保守跳过。收获响应可能省略 2x2 主地块，
   // 或全量土地响应暂时不完整；把未知状态当成枯死会误铲仍在生长/
-  // 进入下一季的合种作物。确认 empty/dead 的地块才允许铲除。
+  // 进入下一季的合种作物。只铲除确认枯死的作物，已确认的空地直接进入补种。
   if (unknown.length > 0) {
     logWarn('农场', `收后仍有 ${unknown.length} 块土地状态未知，已跳过铲除 (${unknown.join(',')})`, {
       module: 'farm',
@@ -428,7 +433,8 @@ async function resolveRemovableHarvestedLands(harvestedLandIds, harvestResult) {
   }
 
   return {
-    removable: [...new Set(removable)],
+    empty, dead,
+    removable: [...new Set([...dead, ...empty])],
     growing: [...new Set(growing)],
     fallbackRemoved
   };

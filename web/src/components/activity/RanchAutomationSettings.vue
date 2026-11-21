@@ -37,6 +37,7 @@ const rooms = computed(() => (props.state?.facilities || []).filter((row: any) =
 const catalogue = computed(() => props.shops[draft.value.shopId]?.goods)
 const goods = computed(() => (catalogue.value || []).filter((row: any) => row.available && row.price))
 const selectedGood = computed(() => goods.value.find((row: any) => row.id === draft.value.goodsId))
+const stocking = computed(() => draft.value.stockCoop || draft.value.stockShed)
 function changeCub(id: string) {
   draft.value.cubId = id
   if (!rooms.value.some((row: any) => row.id === draft.value.ranchId))
@@ -72,6 +73,15 @@ const freeActions = [{ key: 'harvest', name: '自动收获' }, { key: 'produce',
         <label class="block">至少保留牧草 <input v-model.number="draft.grassReserve" type="number" min="0" max="1000000000" required></label>
       </fieldset>
       <fieldset class="border rounded p-3 space-y-2">
+        <legend>按栏舍补齐</legend>
+        <div class="flex flex-wrap gap-4">
+          <label class="flex items-center gap-2"><input v-model="draft.stockCoop" type="checkbox">补齐窝</label>
+          <label class="flex items-center gap-2"><input v-model="draft.stockShed" type="checkbox">补齐棚</label>
+        </div>
+        <p>确认有空位时，先放养背包里匹配的幼崽。库存不足时，从幼崽商店优先买当前可购的最高等级幼崽，购买量受空位、库存和额度限制。</p>
+        <p>栏舍已满、未解锁或状态不明时暂停补齐。库存够用时只放养。购买还会在无适配商品或额度不足时暂停。</p>
+      </fieldset>
+      <fieldset class="border rounded p-3 space-y-2">
         <legend><label><input v-model="draft.placeEnabled" type="checkbox">使用库存自动放养</label></legend>
         <label class="block">放养幼崽
           <select :value="draft.cubId" @change="changeCub(($event.target as HTMLSelectElement).value)">
@@ -90,8 +100,6 @@ const freeActions = [{ key: 'harvest', name: '自动收获' }, { key: 'produce',
             <option v-for="room in rooms" :key="room.id" :value="room.id">{{ room.name }} · {{ room.ranch.count }}/{{ room.ranch.capacity }}{{ room.ranch.count >= room.ranch.capacity ? '（已满）' : '' }}</option>
           </select>
         </label>
-        <label class="block">每日最多放养 <input v-model.number="draft.cubDailyLimit" type="number" min="0" max="1000000000" required></label>
-        <label class="block">至少保留幼崽 <input v-model.number="draft.cubReserve" type="number" min="0" max="1000000000" required></label>
       </fieldset>
       <fieldset class="border rounded p-3 space-y-2">
         <legend><label><input v-model="draft.buyEnabled" type="checkbox">自动购买指定商品</label></legend>
@@ -104,9 +112,18 @@ const freeActions = [{ key: 'harvest', name: '自动收获' }, { key: 'produce',
           </select>
         </label>
         <label class="block">单次购买数量 <input v-model.number="draft.purchaseCount" type="number" min="1" max="99" required></label>
-        <label class="block">允许消耗的货币 <select v-model="draft.currencyId"><option v-if="!state?.currencies?.length" :value="draft.currencyId">余额尚未读到</option><option v-for="coin in state?.currencies || []" :key="coin.id" :value="coin.id" :disabled="!!selectedGood && coin.id !== selectedGood.price.id">{{ coin.name }} · 可用 {{ coin.available }}</option></select></label>
-        <label class="block">每日最多花费 <input v-model.number="draft.currencyDailyLimit" type="number" min="0" max="1000000000" required></label>
+        <p>购买指定幼崽同样受对应栏舍缺口限制。若该类型已启用补齐，按补齐规则选购幼崽。</p>
+      </fieldset>
+      <fieldset class="border rounded p-3 space-y-2">
+        <legend>放养和购买额度</legend>
+        <label class="block">每日最多放养 <input v-model.number="draft.cubDailyLimit" type="number" :min="stocking || draft.placeEnabled ? 1 : 0" max="1000000000" required></label>
+        <label class="block">每种幼崽至少保留 <input v-model.number="draft.cubReserve" type="number" min="0" max="1000000000" required></label>
+        <label class="block">允许消耗的货币 <select v-model="draft.currencyId"><option v-if="!state?.currencies?.length" :value="draft.currencyId">余额尚未读到</option><option v-for="coin in state?.currencies || []" :key="coin.id" :value="coin.id" :disabled="draft.buyEnabled && !!selectedGood && coin.id !== selectedGood.price.id">{{ coin.name }} · 可用 {{ coin.available }}</option></select></label>
+        <label class="block">每日最多花费 <input v-model.number="draft.currencyDailyLimit" type="number" :min="stocking || draft.buyEnabled ? 1 : 0" max="1000000000" required></label>
         <label class="block">至少保留货币 <input v-model.number="draft.currencyReserve" type="number" min="0" max="1000000000" required></label>
+        <p v-if="stocking">
+          窝、棚和指定操作共用每日额度。幼崽商店的幼崽使用金券。
+        </p>
       </fieldset>
       <div class="flex flex-wrap items-center gap-2">
         <BaseButton type="button" variant="secondary" :loading="loading" @click="emit('load', String(draft.shopId), true)">

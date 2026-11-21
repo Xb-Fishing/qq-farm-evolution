@@ -58,7 +58,10 @@ async function withFixture(run) {
         let reply;
         switch (method) {
           case 'AllCells':
-            reply = { grid_width: 10, grid_height: 10, facilities: [] };
+            reply = { grid_width: 10, grid_height: 10, facilities: [
+              { instance_id: '11', facility_id: 6001001, module_type: 6, state: 1, level: 1, capacity: 3,
+                ranch: { ranch_inst_id: '11', capacity: 3, husbandry_type: 1 } },
+            ] };
             break;
           case 'GetBag':
             reply = {

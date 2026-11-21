@@ -555,7 +555,7 @@ async function runFarmOperation(opType, options = {}) {
 
   // ── 种植 ──
   if (opType === 'plant' || (opType === 'all' && isAutomationOn('plant'))) {
-    const emptyLands = [...new Set(analysis.empty)];
+    let emptyLands = [...new Set(analysis.empty)];
     let deadLands = [...new Set(analysis.dead)];
 
     // 收获后检查可铲除的地块
@@ -563,7 +563,8 @@ async function runFarmOperation(opType, options = {}) {
       await randomDelay(200, 800);
       if (automaticPaused()) return pausedResult();
       removeResult = await resolveRemovableHarvestedLands(harvestedLands, harvestResult);
-      deadLands = [...new Set([...deadLands, ...removeResult.removable])];
+      deadLands = [...new Set([...deadLands, ...removeResult.dead])];
+      emptyLands = [...new Set([...emptyLands, ...removeResult.empty])];
     }
 
     if (automaticPaused()) return pausedResult();

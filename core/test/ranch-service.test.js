@@ -26,7 +26,9 @@ test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 function fixture(upgrade = false) {
   const file = fixturePath(`operations-${Math.random().toString(16).slice(2)}.json`);
   let now = 1800000000000; let gameOffset = 0; let allowed = true; let failure = false; let malformed = false;
-  let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let cubs = 5; let writes = 0;
+  let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let writes = 0;
+  let nextAnimal = 8;
+  const cubs = new Map();
   const calls = []; const ws = {}; let beforeWrite;
   const facilities = [
     { instance_id: '11', facility_id: 6001002, module_type: 6, state: 1, level: 2, capacity: 4,
@@ -51,14 +53,16 @@ function fixture(upgrade = false) {
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
-      else if (method === 'GetBag') reply = { global_scene_id: 2, physical_items: [{ id: '60001', count: String(cubs) }, { id: '7001', count: String(grass) }], virtual_items: [{ id: '1007', count: String(gold) }, ...(upgrade ? [{ id: '1102', count: '40000' }] : [])] };
+      else if (method === 'GetBag') reply = { global_scene_id: 2,
+        physical_items: [{ id: '7001', count: String(grass) }, ...[...cubs].map(([id, count]) => ({ id, count: String(count) })), ...f.lockedCubs],
+        virtual_items: [{ id: '1007', count: String(gold) }, ...(upgrade ? [{ id: '1102', count: '40000' }] : [])] };
       else if (method === 'GetFacilityDetail') {
         const facility = facilities[0]; assert.equal(request.instance_id, facility.instance_id);
         reply = { info: { instance_id: facility.instance_id, facility_id: facility.facility_id, module_type: facility.module_type,
           level: facility.level, upgrade_cost: [{ id: '1007', count: String(f.upgradeCost) }] } };
       }
-      else if (method === 'ShopProfiles') reply = { shop_profiles: [{ shop_id: 5, global_scene_ids: [2] }] };
-      else if (method === 'ShopInfo') reply = { goods_list: [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }] };
+      else if (method === 'ShopProfiles') reply = { shop_profiles: [5, 6].map(shop_id => ({ shop_id, global_scene_ids: [2] })) };
+      else if (method === 'ShopInfo') reply = { goods_list: f.goods() };
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: [] } };
       else {
         if (f.queueFull) throw decode(encode(Object.assign(new Error('synthetic request queue full'), { isLocalRequestRejection: true })));
@@ -75,13 +79,24 @@ function fixture(upgrade = false) {
           facilities[0].ranch.capacity = 4;
           reply = { facility: facilities[0], item: { inst_id: request.inst_id, facility_id: 6001002, level: 2 } };
         } else if (method === 'BuyGoods') {
-          const count = Number(request.num); gold -= price * count; cubs += count;
-          reply = { goods: { id: '10002' }, cost_items: [{ id: '1007', count: String(price * count) }], get_items: [{ id: '60001', count: String(count) }] };
+          const good = f.goods().find(row => row.id === request.goods_id);
+          const count = Number(request.num);
+          const cost = Number(request.price) * count;
+          const quantity = Number(good.item_count) * count;
+          gold -= cost;
+          cubs.set(good.item_id, (cubs.get(good.item_id) || 0) + quantity);
+          if (good.limit_count) good.bought_num = String(Number(good.bought_num ?? 0) + count);
+          reply = { goods: { id: good.id }, cost_items: [{ id: '1007', count: String(cost) }], get_items: [{ id: good.item_id, count: String(quantity) }] };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
         else if (method === 'PlaceAnimal') {
-          cubs -= request.items.length;
-          for (let n = 0; n < request.items.length; n++) facilities[0].ranch.animals.push({ animal_inst_id: 8 + n, animal_id: '60001', ranch_inst_id: '11' });
-          reply = { op_results: request.items.map((_x, i) => ({ facility_inst_id: '11', kind: 1, target_id: String(i + 8) })) };
+          reply = { op_results: request.items.map(({ ranch_inst_id, animal_id }) => {
+            const room = facilities.find(row => row.instance_id === ranch_inst_id).ranch;
+            const animal_inst_id = nextAnimal++;
+            cubs.set(animal_id, cubs.get(animal_id) - 1);
+            room.animals.push({ ranch_inst_id, animal_id, animal_inst_id });
+            room.animal_count++;
+            return { facility_inst_id: ranch_inst_id, kind: 1, target_id: String(animal_inst_id) };
+          }) };
         } else reply = { op_results: [{ facility_inst_id: '11', kind: 1, target_id: '7' }] };
       }
       if (route.writing && f.mutateReply) reply = f.mutateReply(reply);
@@ -89,8 +104,9 @@ function fixture(upgrade = false) {
     },
   };
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, file, upgradeCost: 14000, get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
-    price: n => { price = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
+  const f = { service: make(), make, calls, file, cubs, facilities, lockedCubs: [], upgradeCost: 14000,
+    goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
+    price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
   return f;
 }
@@ -233,7 +249,7 @@ test('invalid refreshed state cannot authorize acknowledgement of an unknown wri
 test('place checks new animal and exact destination, duplicate and missing receipt targets', async () => {
   for (const mutate of [null, r => ({ op_results: r.op_results.map(x => ({ ...x, facility_inst_id: '99' })) }),
     r => ({ op_results: [r.op_results[0], r.op_results[0]] }), () => ({ op_results: [] })]) {
-    const f = fixture(); f.mutateReply = mutate;
+    const f = fixture(); f.mutateReply = mutate; f.cubs.set('60001', 5);
     const quote = await f.service.prepare('place', { ranchId: '11', itemId: '60001', count: 2 }); assert.equal(quote.ok, true);
     const result = await f.service.execute(quote.data.id); assert.equal(result.data.outcome, mutate ? 'unknown' : 'confirmed');
   }
@@ -365,4 +381,219 @@ test('invalid upgrade instance never requests its detail and a mismatched start 
   const result = await f.service.execute(q.data.id);
   assert.equal(result.data.outcome, 'unknown'); assert.equal(f.writes, 1);
   assert.equal((await f.service.execute(q.data.id)).data.replayed, true); assert.equal(f.writes, 1);
+});
+
+const stockPolicy = { enabled: true, harvest: false, produce: false, clean: false, tasks: false,
+  stockCoop: true, cubDailyLimit: 10, currencyDailyLimit: 100, intervalMinutes: 2 };
+const chick = { id: '10002', item_id: '60001', item_count: '1', price: '10', unlocked: true };
+const duck = { ...chick, id: '10003', item_id: '60002', conds: [{ type: 3, param: '12' }] };
+const sheep = { ...chick, id: '10008', item_id: '70001' };
+const stockRoom = (id, type, capacity) => ({ instance_id: id, facility_id: type === 1 ? 6001001 : 6002001,
+  module_type: 5 + type, state: 1, level: 1, capacity, ranch: { ranch_inst_id: id, capacity, animal_count: 0, husbandry_type: type, animals: [] } });
+
+async function startStock(f, overrides = {}) {
+  const saved = await f.service.setAutomation({ ...stockPolicy, ...overrides });
+  assert.equal(saved.ok, true, saved.error);
+  f.advance(30000);
+}
+async function stockRound(f) {
+  const result = await f.service.automate();
+  assert.equal(result.ok, true, result.error);
+  if (!result.data.skipped) assert.equal(result.data.outcome, 'confirmed', result.data.message);
+  f.advance(120000);
+  return result.data;
+}
+
+test('stock scheduler places matching unlocked inventory, then buys the highest live tier and stops at capacity', async () => {
+  const f = fixture();
+  f.cubs.set('60001', 1);
+  f.lockedCubs.push({ id: '60001', count: '8', is_locked: true });
+  const goods = [
+    { ...chick, conds: [{ type: 3, param: '2' }] },
+    { ...duck, item_count: '2', limit_count: '4', bought_num: '3' },
+    { ...duck, id: '10004', item_id: '60003', conds: [{ type: 3, param: '8' }] },
+    { ...duck, id: '10005', item_id: '60004', unlocked: false, conds: [{ type: 3, param: '18' }] },
+    sheep,
+  ];
+  f.goods = () => goods;
+  await startStock(f);
+
+  const placed = await stockRound(f);
+  assert.equal(placed.action, 'place');
+  assert.equal(placed.completed, 1);
+  assert.equal(f.calls.includes('ShopInfo'), false, 'stock placement works independently of the shop');
+  const purchased = await stockRound(f);
+  assert.equal(purchased.action, 'buy');
+  assert.equal(purchased.completed, 1);
+  assert.deepEqual(purchased.rewards.map(item => [item.id, item.count]), [['60002', '2']]);
+  assert.deepEqual(purchased.costs.map(item => [item.id, item.count]), [['1007', '10']]);
+  const rest = await stockRound(f);
+  assert.equal(rest.action, 'place');
+  assert.equal(rest.completed, 2);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal(f.writes, 3);
+});
+
+test('stock scheduler shares daily and reserve limits and buys only whole packs within the net shortage', async () => {
+  for (const [overrides, expected] of [
+    [{ currencyDailyLimit: 25 }, 2],
+    [{ currencyReserve: 79 }, 2],
+    [{ cubDailyLimit: 3 }, 1],
+    [{ cubReserve: 4, currencyDailyLimit: 20 }, 0],
+  ]) {
+    const f = fixture();
+    f.facilities[0] = stockRoom('11', 1, 7);
+    const pack = { ...duck, item_count: '2' };
+    f.goods = () => [pack];
+    await startStock(f, overrides);
+    const result = await stockRound(f);
+    assert.equal(result.completed ?? 0, expected, JSON.stringify(overrides));
+    if (expected) assert.equal(Number(result.rewards[0].count), expected * 2);
+  }
+
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 10);
+  const pack = { ...duck, item_count: '2', limit_count: '5', bought_num: '4' };
+  f.goods = () => [pack];
+  await startStock(f);
+  assert.equal((await stockRound(f)).completed, 1);
+  assert.equal((await stockRound(f)).completed, 2);
+  assert.equal((await stockRound(f)).skipped, true, 'shop limit stops further buy approvals');
+  assert.equal(f.writes, 2);
+});
+
+test('an unavailable coop slot does not displace the shed turn, and either type can be enabled alone', async () => {
+  for (const [coop, shed] of [[true, true], [true, false], [false, true]]) {
+    const f = fixture();
+    f.facilities[0] = { ...stockRoom('11', 1, 3), state: 2 };
+    f.facilities.push(stockRoom('12', 2, 3));
+    f.cubs.set('60001', 3);
+    f.cubs.set('70001', 1);
+    f.goods = () => [chick, sheep];
+    await startStock(f, { stockCoop: coop, stockShed: shed });
+    if (coop) assert.equal((await stockRound(f)).skipped, true);
+    const result = await stockRound(f);
+    if (!shed) assert.equal(result.skipped, true);
+    else {
+      assert.equal(result.action, 'place');
+      assert.equal(f.facilities[2].ranch.animal_count, 1);
+      if (coop) assert.equal((await stockRound(f)).skipped, true);
+      const purchase = await stockRound(f);
+      assert.equal(purchase.action, 'buy');
+      assert.deepEqual(purchase.rewards.map(item => [item.id, item.count]), [['70001', '2']]);
+    }
+    assert.equal(f.cubs.get('60001'), 3);
+  }
+});
+
+test('stock scheduler ignores unknown occupancy and missing compatible offers', async () => {
+  for (const failure of ['missing ranch', 'missing occupants', 'upgrade', 'no compatible goods', 'duplicate offer']) {
+    const f = fixture();
+    if (failure === 'missing ranch') delete f.facilities[0].ranch;
+    if (failure === 'missing occupants') f.facilities[0].ranch.animals = [];
+    if (failure === 'upgrade') f.facilities[0].upgrade_state = 1;
+    if (failure === 'no compatible goods') f.goods = () => [sheep];
+    if (failure === 'duplicate offer') f.goods = () => [chick, { ...chick, price: '1' }];
+    await startStock(f);
+    assert.equal((await stockRound(f)).skipped, true, failure);
+    assert.equal(f.writes, 0, failure);
+  }
+});
+
+test('both prepare and execute check fresh stocking requirements before any dispatch', async () => {
+  for (const changeAt of [2, 3]) {
+    for (const change of ['new stock', 'filled room', 'best offer changes', 'currency reserve changes']) {
+      const f = fixture();
+      let reads = 0;
+      let goods = [chick];
+      f.goods = () => goods;
+      f.onRead = method => {
+        if (method === 'AllCells' && change === 'filled room' && reads + 1 === changeAt)
+          f.facilities[0].ranch.capacity = 1;
+        if (method !== 'GetBag' || ++reads !== changeAt) return;
+        if (change === 'new stock') f.cubs.set('60002', 3);
+        if (change === 'best offer changes') goods = [chick, duck];
+        if (change === 'currency reserve changes') f.gold(34);
+      };
+      await startStock(f, { currencyReserve: 5 });
+      const result = await f.service.automate();
+      assert.equal(result.code, 'RANCH_AUTOMATION_PAUSED', `${change} during read ${changeAt}: ${JSON.stringify(result)}`);
+      assert.equal(f.writes, 0);
+      assert.deepEqual((await f.service.getAutomation()).data.usage, {});
+    }
+  }
+});
+
+test('an unknown automatic purchase blocks all subsequent stock writes after service replacement', async () => {
+  const f = fixture();
+  f.facilities.push(stockRoom('12', 2, 3));
+  f.goods = () => [chick, sheep];
+  await startStock(f, { stockShed: true });
+  f.timeout();
+  const timedOut = await f.service.automate();
+  assert.equal(timedOut.data.outcome, 'unknown');
+  assert.equal(f.writes, 1);
+  const calls = [...f.calls];
+  f.advance(86400000);
+  assert.equal((await f.make().automate()).data.skipped, true);
+  assert.deepEqual(f.calls, calls);
+});
+
+test('saved fixed cub purchases are bounded by compatible net vacancy and do not opt in to stock placement', async () => {
+  const f = fixture();
+  f.cubs.set('60002', 2);
+  f.facilities.push(stockRoom('12', 2, 3));
+  await startStock(f, { stockCoop: false, buyEnabled: true, goodsId: '10002', purchaseCount: 5 });
+  const data = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+  delete data.automation.policy.stockCoop;
+  delete data.automation.policy.stockShed;
+  fs.writeFileSync(f.file, JSON.stringify(data));
+  const purchase = await stockRound(f);
+  assert.equal(purchase.action, 'buy');
+  assert.equal(purchase.completed, 1);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal(f.writes, 1);
+  assert.equal((await f.service.getAutomation()).data.policy.stockShed, false);
+});
+
+test('an explicitly authorized non-cub purchase keeps its order quantity with full facilities', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 1);
+  f.goods = () => [{ ...chick, id: '10001', item_id: '7001' }];
+  await startStock(f, { stockCoop: false, buyEnabled: true, shopId: '6', goodsId: '10001', purchaseCount: 2 });
+  const result = await stockRound(f);
+  assert.equal(result.action, 'buy');
+  assert.equal(result.completed, 2);
+  assert.deepEqual(result.rewards.map(item => [item.id, item.count]), [['7001', '2']]);
+});
+
+test('confirmed purchases exhaust the shared spend allowance before another stock purchase', async () => {
+  const f = fixture();
+  f.facilities[0] = stockRoom('11', 1, 5);
+  f.facilities.push(stockRoom('12', 2, 5));
+  f.goods = () => [chick, sheep];
+  await startStock(f, { stockShed: true, currencyDailyLimit: 20 });
+  assert.equal((await stockRound(f)).completed, 2);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).action, 'place');
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.equal((await stockRound(f)).skipped, true);
+  assert.deepEqual((await f.service.getAutomation()).data.usage, { 'buy:1007': '20', 'place:60001': '2' });
+});
+
+test('loss of automatic admission after reserving a stock order keeps the request unsent', async t => {
+  const f = fixture();
+  await startStock(f);
+  const original = codec.encode;
+  t.mock.method(codec, 'encode', (name, payload) => {
+    const bytes = original(name, payload);
+    if (name === codec.ROUTES.buy.request) f.allow(false);
+    return bytes;
+  });
+  const result = await f.service.automate();
+  assert.equal(result.data.outcome, 'not_sent');
+  assert.equal(f.writes, 0);
+  assert.equal(f.calls.includes('BuyGoods'), false);
+  assert.equal((await f.service.getAutomation()).data.usage['buy:1007'], '0');
 });

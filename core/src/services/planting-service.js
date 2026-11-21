@@ -796,11 +796,6 @@ async function findBestSeed(overrideStrategy, accountId = getCurrentAccountId())
     }
     if (requiredLevel === -1) continue;
 
-    // 检查限购
-    const limitCount = toNum(goods.limit_count);
-    const boughtNum = toNum(goods.bought_num);
-    if (limitCount > 0 && boughtNum >= limitCount) continue;
-
     const seedId = toNum(goods.item_id);
     if (getPlantSizeBySeedId(seedId) !== 1) continue;
     candidates.push({
@@ -813,6 +808,26 @@ async function findBestSeed(overrideStrategy, accountId = getCurrentAccountId())
     logWarn('商店', '没有可购买的种子');
     return null;
   }
+
+  // 商店限购只约束购买。用同一份新鲜库存筛选候选并计算后续补购缺口。
+  const bagSeeds = await getBagSeeds();
+  if (!Array.isArray(bagSeeds)) {
+    logWarn('商店', '背包种子数据异常，本轮跳过补种');
+    return null;
+  }
+  const stock = new Map();
+  for (const seed of bagSeeds) {
+    const count = seed?.count;
+    const quantity = typeof count === 'number' || (typeof count === 'string' && /^\d+$/.test(count))
+      ? Number(count) : Number.NaN;
+    stock.set(toNum(seed?.seedId), Number.isSafeInteger(quantity) && quantity >= 0 ? quantity : Number.NaN);
+  }
+  const usableSeeds = candidates.filter(candidate => {
+    candidate.ownedStock = stock.get(candidate.seedId) ?? 0;
+    const limit = toNum(candidate.goods.limit_count);
+    return candidate.ownedStock !== 0 || limit <= 0 || toNum(candidate.goods.bought_num) < limit;
+  });
+  if (!usableSeeds.length) return null;
 
   const strategy = overrideStrategy || getPlantingStrategy(accountId);
   const rankingStrategies = {
@@ -828,7 +843,7 @@ async function findBestSeed(overrideStrategy, accountId = getCurrentAccountId())
   if (rankingType) {
     try {
       const rankings = getPlantRankings(rankingType);
-      const candidateMap = new Map(candidates.map(c => [c.seedId, c]));
+      const candidateMap = new Map(usableSeeds.map(c => [c.seedId, c]));
       for (const rank of rankings) {
         const seedId = Number(rank && rank.seedId) || 0;
         if (seedId <= 0) continue;
@@ -844,22 +859,22 @@ async function findBestSeed(overrideStrategy, accountId = getCurrentAccountId())
       logWarn('商店', `策略 ${strategy} 计算失败: ${err.message}，回退最高等级`);
     }
     // 回退：按所需等级降序
-    return candidates.sort((a, b) => b.requiredLevel - a.requiredLevel)[0];
+    return usableSeeds.sort((a, b) => b.requiredLevel - a.requiredLevel)[0];
   }
 
   if (strategy === 'preferred') {
     const preferredSeed = getPreferredSeed(accountId);
     if (preferredSeed > 0) {
-      const match = candidates.find(c => c.seedId === preferredSeed);
+      const match = usableSeeds.find(c => c.seedId === preferredSeed);
       if (match) return match;
       logWarn('商店', `优先种子 ${preferredSeed} 当前不可购买，回退自动选择`);
     }
-    candidates.sort((a, b) => b.requiredLevel - a.requiredLevel);
+    usableSeeds.sort((a, b) => b.requiredLevel - a.requiredLevel);
   } else {
-    candidates.sort((a, b) => b.requiredLevel - a.requiredLevel);
+    usableSeeds.sort((a, b) => b.requiredLevel - a.requiredLevel);
   }
 
-  return candidates[0];
+  return usableSeeds[0];
 }
 
 /**
@@ -1006,7 +1021,7 @@ async function getAvailableSeeds() {
  * @param {number[]} emptyLandIds - 空地
  */
 async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = [], options = {}) {
-  let allEmptyLands = [...emptyLandIds];
+  let allEmptyLands = [...new Set(emptyLandIds)];
   const userState = getUserState();
   const accountId = getCurrentAccountId();
   const result = {
@@ -1020,22 +1035,31 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = [], option
   // 铲除枯死作物
   if (deadLandIds.length > 0) {
     try {
-      await removePlant(deadLandIds);
-      log('铲除', `已铲除 ${deadLandIds.length} 块 (${deadLandIds.join(',')})`, {
-        module: 'farm', event: '铲除植物', result: 'ok', count: deadLandIds.length
+      const reply = await removePlant(deadLandIds);
+      const returned = buildLandMap(reply.land);
+      const cleared = deadLandIds.filter(id => {
+        const land = returned.get(toNum(id));
+        return land && !land.plant && !toNum(land.master_land_id);
       });
-      result.removedCount += deadLandIds.length;
-      allEmptyLands.push(...deadLandIds);
+      // 原批次中没有确认清空的土地在下一次土地快照重新判断。
+      allEmptyLands = expandRemoved2x2Lands(allEmptyLands, cleared, lands).filter(id => {
+        const land = returned.get(id);
+        return !land || (!land.plant && !toNum(land.master_land_id));
+      });
+      result.removedCount = cleared.length;
+      if (cleared.length) {
+        log('铲除', `已铲除 ${cleared.length} 块 (${cleared.join(',')})`, {
+          module: 'farm', event: '铲除植物', result: 'ok', count: cleared.length
+        });
+      }
     } catch (err) {
       logWarn('铲除', `批量铲除失败: ${err.message}`, {
         module: 'farm', event: '铲除植物', result: 'error'
       });
       if (options.ownQuietPriority) throw err;
-      allEmptyLands.push(...deadLandIds);
     }
   }
 
-  allEmptyLands = expandRemoved2x2Lands(allEmptyLands, deadLandIds, lands);
   const strategy = options.bagOnly ? 'bag_priority' : String(getPlantingStrategy(accountId) || '').trim();
   const size2Result = await plantPrioritized2x2Crops(allEmptyLands, lands, accountId);
   const reservedLandSet = new Set(size2Result.reservedLandIds || []);
@@ -1102,6 +1126,20 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds, lands = [], option
   return result;
 }
 
+function receivedSeed(items, expectedId) {
+  const counts = new Map();
+  for (const item of items || []) {
+    const id = toNum(item.id);
+    if (id !== expectedId && !(getPlantBySeedId(id) && getPlantSizeBySeedId(id) === 1)) continue;
+    const count = Number(item.count);
+    if (!Number.isSafeInteger(count) || count <= 0) continue;
+    counts.set(id, (counts.get(id) || 0) + count);
+  }
+  const id = counts.has(expectedId) || counts.size !== 1 ? expectedId : counts.keys().next().value;
+  const count = counts.get(id) || 0;
+  return { id, count: Number.isSafeInteger(count) ? count : 0 };
+}
+
 /**
  * 从商店购买种子并种植
  * @param {number[]} landIds - 目标地块
@@ -1144,41 +1182,12 @@ async function plantFromShop(landIds, userState, overrideStrategy, accountId = g
     }
   }
 
-  // 选定真实商店种子后做一次新鲜背包读取：先消耗该 seedId 的既有库存，
-  // 只为缺口购买。每个商店补种批次至多新增这一次既有 Bag 读取，无新增轮询。
-  let ownedStock = 0;
-  if (hasShopData) {
-    let bagSeeds;
-    try {
-      bagSeeds = await getBagSeeds();
-    } catch (err) {
-      logWarn('商店', `读取背包种子失败，本轮不购买也不种植: ${err.message}`, {
-        module: 'farm', event: '种植种子', result: 'bag_load_error'
-      });
-      return { plantedLands: [], plantedCount: 0, occupiedCount: 0 };
-    }
-    if (!Array.isArray(bagSeeds)) {
-      logWarn('商店', '背包种子数据异常(非数组)，本轮不购买也不种植', {
-        module: 'farm', event: '种植种子', result: 'bag_load_error'
-      });
-      return { plantedLands: [], plantedCount: 0, occupiedCount: 0 };
-    }
-    const matched = bagSeeds.find(seed => toNum(seed && seed.seedId) === toNum(bestSeed.seedId));
-    if (matched) {
-      const rawCount = matched.count;
-      const scalarCount = typeof rawCount === 'number'
-        || (typeof rawCount === 'string' && /^\d+$/.test(rawCount));
-      const stockCount = scalarCount ? Number(rawCount) : Number.NaN;
-      // 库存数量未知/非法时本轮零买零种：不能当作 0 触发购买
-      if (!scalarCount || !Number.isSafeInteger(stockCount) || stockCount < 0) {
-        logWarn('商店', '背包种子数量无效，本轮不购买也不种植', {
-          module: 'farm', event: '种植种子', result: 'bag_count_invalid', seedId: bestSeed.seedId
-        });
-        return { plantedLands: [], plantedCount: 0, occupiedCount: 0 };
-      }
-      ownedStock = stockCount;
-    }
-    // 背包无该 seedId 匹配项：库存记 0，正常按缺口购买
+  const ownedStock = hasShopData ? bestSeed.ownedStock : 0;
+  if (!Number.isSafeInteger(ownedStock) || ownedStock < 0) {
+    logWarn('商店', '背包种子数量无效，本轮跳过补种', {
+      module: 'farm', event: '种植种子', result: 'bag_count_invalid', seedId: bestSeed.seedId
+    });
+    return result;
   }
 
   // 缺口购买量：先扣库存，再按金币可负担量与限购余量截断
@@ -1245,29 +1254,33 @@ async function plantFromShop(landIds, userState, overrideStrategy, accountId = g
   }
 
   let finalSeedId = bestSeed.seedId;
+  let receivedCount = 0;
   if (hasShopData && plannedBuy > 0) {
     try {
       ownQuietPriority.setPurchase({ ...bestSeed, count: plannedBuy });
       const buyResult = await buyGoods(bestSeed.goodsId, plannedBuy, bestSeed.price);
-      // 从购买结果中提取实际种子 ID（可能是获取物品后得到的真实 ID）
-      if (buyResult.get_items && buyResult.get_items.length > 0) {
-        const item = buyResult.get_items[0];
-        const itemId = toNum(item.id);
-        if (itemId > 0) finalSeedId = itemId;
-      }
-      // 更新金币（扣除花费）
-      if (buyResult.cost_items) {
+      const received = receivedSeed(buyResult.get_items, bestSeed.seedId);
+      finalSeedId = received.id;
+      receivedCount = received.count;
+      const amounts = (buyResult.cost_items || []).map(item => toNum(item.count));
+      const cost = amounts.reduce((sum, amount) => sum + amount, 0);
+      if (amounts.length) {
         if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
-          require('../utils/network').correctSessionWallet('seedCost', { amounts: buyResult.cost_items.map(item => toNum(item.count)) });
+          require('../utils/network').correctSessionWallet('seedCost', { amounts });
         } else {
-          for (const costItem of buyResult.cost_items) userState.gold -= toNum(costItem.count);
+          userState.gold -= cost;
         }
       }
-      const boughtName = getPlantNameBySeedId(finalSeedId);
-      log('购买', `已购买 ${boughtName}种子 x${plannedBuy}, 花费 ${bestSeed.price * plannedBuy} 金币`, {
-        module: 'warehouse', event: '购买种子', result: 'ok',
-        seedId: finalSeedId, count: plannedBuy, cost: bestSeed.price * plannedBuy
-      });
+      if (receivedCount > 0) {
+        log('购买', `已收到 ${getPlantNameBySeedId(finalSeedId)}种子 x${receivedCount}，花费 ${cost} 金币`, {
+          module: 'warehouse', event: '购买种子', result: 'ok',
+          seedId: finalSeedId, count: receivedCount, cost
+        });
+      } else {
+        logWarn('购买', '购买回包未确认种子入包，本轮只使用购买前已确认的库存', {
+          module: 'warehouse', event: '购买种子', result: 'stock_unconfirmed', seedId: bestSeed.seedId
+        });
+      }
     } catch (err) {
       // 购买失败不重试，本轮不再继续种植
       logWarn('购买', err.message);
@@ -1277,7 +1290,7 @@ async function plantFromShop(landIds, userState, overrideStrategy, accountId = g
 
   // 最终种植上限 = 所需与（库存 + 实际购买）之最小
   const matchingStock = finalSeedId === bestSeed.seedId ? ownedStock : 0;
-  const maxPlantCount = hasShopData ? Math.min(plantCount, matchingStock + plannedBuy) : plantCount;
+  const maxPlantCount = hasShopData ? Math.min(plantCount, matchingStock + receivedCount) : plantCount;
   if (maxPlantCount <= 0) return result;
 
   // 执行种植

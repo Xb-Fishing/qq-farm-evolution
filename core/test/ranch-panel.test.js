@@ -448,3 +448,35 @@ test('nest task opens its facility without spending and only a separate confirma
   assert.deepEqual(f.posts.at(-1).body, { action: 'completeUpgrade', input: { facilityId: '41' } });
   assert.deepEqual(f.posts.filter(p => p.url.endsWith('/operate')).map(p => p.body.quoteId), ['nest-quote']);
 });
+
+test('stocking settings independently save either type and do not enable fixed purchase', async () => {
+  const f = fixture();
+  await h.flush();
+  const form = h.findAll(f.root, node => node.tag === 'form')[0];
+  const field = label => h.findAll(h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === label)[0], node => node.tag === 'input')[0];
+  assert.match(h.textOf(form), /先放养背包里匹配的幼崽/);
+  assert.match(h.textOf(form), /栏舍已满、未解锁或状态不明时暂停补齐/);
+  function set(label, value) {
+    field(label).props['onUpdate:modelValue'](value);
+  }
+  set('启用牧场自动化', true);
+  set('补齐棚', true);
+  set('每日最多放养', 3);
+  set('每日最多花费', 25);
+  await h.flush();
+  assert.equal(field('每日最多花费').props.min, 1);
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.equal(f.posts[0].body.stockCoop, false);
+  assert.equal(f.posts[0].body.stockShed, true);
+  assert.equal(f.posts[0].body.buyEnabled, false);
+  assert.equal(f.posts[0].body.cubDailyLimit, 3);
+  assert.equal(f.posts[0].body.currencyDailyLimit, 25);
+  set('补齐棚', false);
+  set('补齐窝', true);
+  await h.flush();
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.equal(f.posts[1].body.stockCoop, true);
+  assert.equal(f.posts[1].body.stockShed, false);
+});

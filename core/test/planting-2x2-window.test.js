@@ -83,7 +83,9 @@ require.cache[farmApiPath] = mockModule(farmApiPath, {
   getShopInfo: async () => ({
     goods_list: [{ id: 11, item_id: 20002, price: 2, unlocked: true, conds: [], limit_count: 0, bought_num: 0 }],
   }),
-  buyGoods: async () => ({ get_items: [], cost_items: [{ id: 1, count: 2 }] }),
+  buyGoods: async (_goodsId, count, price) => ({
+    get_items: [{ id: SEED_1X1, count }], cost_items: [{ id: 1, count: count * price }],
+  }),
   getSeedShopId: async () => 1,
   removePlant: async () => ({}),
 });
