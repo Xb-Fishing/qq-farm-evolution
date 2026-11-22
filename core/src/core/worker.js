@@ -1530,7 +1530,7 @@ async function handleApiCall(msg) {
 
     if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
         || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence'
-        || ['getRanchState', 'getRanchFriend', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
+        || ['getRanchState', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
             sendToMaster({
@@ -1791,7 +1791,6 @@ async function handleApiCall(msg) {
                 result = await getEmailSnapshot(args[0] || {});
                 break;
             }
-            case 'getRanchFriend':
             case 'getRanchState':
             case 'prepareRanchAction':
             case 'operateRanch':
@@ -1802,7 +1801,6 @@ async function handleApiCall(msg) {
                 const ranch = require('../services/ranch-service');
                 if (method === 'getRanchAutomation') result = await ranch.getRanchAutomation();
                 else if (method === 'setRanchAutomation') result = await ranch.setRanchAutomation(args[0]);
-                else if (method === 'getRanchFriend') result = await ranch.getRanchFriend(args[0]);
                 else if (method === 'getRanchState') result = await ranch.getRanchState(args[0], args[1]);
                 else if (method === 'prepareRanchAction') result = await ranch.prepareRanchAction(args[0], args[1]);
                 else if (method === 'operateRanch') result = await ranch.operateRanch(args[0]);
