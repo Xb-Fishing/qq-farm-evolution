@@ -124,6 +124,27 @@ export const useRanchStore = defineStore('ranch', () => {
     error.value = body?.error || e?.message || '牧场请求暂时失败，请稍后重试'
     errorCode.value = body?.code || ''
   }
+  async function readFriend(gid?: string) {
+    const id = accountId.value
+    if (!id)
+      return null
+    const token = generation
+    const request = requestConfig(id, token)
+    try {
+      const { data } = await api.get(gid ? '/api/ranch/friend' : '/api/friends', {
+        ...request.config,
+        ...(gid && { params: { gid } }),
+      })
+      if (generation !== token)
+        return null
+      if (data?.ok !== true || data.data?.sceneRecoveryRequired)
+        throw new Error(data?.error || '好友牧场暂不可用，请稍后刷新')
+      return data.data
+    }
+    finally {
+      controllers.delete(request.controller)
+    }
+  }
   async function automationRequest(policy?: Record<string, any>) {
     const id = accountId.value
     if (!id || savingAutomation.value)
@@ -492,5 +513,5 @@ export const useRanchStore = defineStore('ranch', () => {
       return false
     }
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, readFriend, prepare, execute, acknowledge, closeQuote }
 })

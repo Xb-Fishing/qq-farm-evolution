@@ -975,3 +975,26 @@ test('牧场批量出售和推荐补草从同页打开确认，确认前均不�
   assert.deepEqual(f.posts.at(-1).body, { action: 'addGrass', input: { facilityId: '22', count: 10 } });
   assert.equal(f.posts.filter(post => post.url.endsWith('/operate')).length, 0);
 });
+
+
+test('好友牧场通过当前列表选择好友，并在同一面板预览偷取与清理', async () => {
+  const f = fixture(); await h.flush();
+  f.read(async (url, config) => {
+    if (url === '/api/friends') return { data: { ok: true, data: [{ gid: '73', name: '测试好友' }] } };
+    if (url === '/api/ranch/friend') {
+      assert.equal(config.params.gid, '73');
+      return { data: { ok: true, data: { host: '73', name: '测试好友', stealCount: 2, cleanCount: 1 } } };
+    }
+    return { data: { ok: true, data: state() } };
+  });
+  const panel = h.findAll(f.root, node => node.tag === 'details' && h.textOf(node).includes('好友牧场')).at(-1);
+  panel.props.onToggle({ currentTarget: { open: true } }); await h.flush();
+  const selection = h.findAll(panel, node => node.props['aria-label'] === '选择好友牧场')[0];
+  selection.props.onChange({ target: { value: '73' } }); await h.flush();
+  h.click(button(panel, '偷取产物（2 个货架）')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'stealFriend', input: { hostGid: '73' } });
+  await f.store.closeQuote();
+  h.click(button(panel, '帮好友清理（1 处）')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'cleanFriend', input: { hostGid: '73' } });
+  assert.equal(f.posts.filter(post => post.url.endsWith('/operate')).length, 0);
+});
