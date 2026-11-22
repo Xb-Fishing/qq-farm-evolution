@@ -75,15 +75,16 @@ function fixture(upgrade = false) {
       else if (method === 'ShopInfo') reply = { goods_list: f.goods() };
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: f.tasks } };
       else if (method === 'EnterHomestead') {
-        assert.equal(request.host_gid, '73');
+        assert.ok(f.friendHosts.includes(request.host_gid));
         assert.equal(request.reason, 2);
+        f.friendVisits.push(request.host_gid);
         reply = { basic: { gid: request.host_gid, name: '测试好友' }, is_tourist: f.tourist === true,
           homestead_cells: { facilities: [{ instance_id: '51' }] } };
       } else if (method === 'GetRanchDetail') {
-        assert.equal(request.host_gid, '73');
+        assert.ok(f.friendHosts.includes(request.host_gid));
         reply = { ranches: f.friendRanches };
       } else if (method === 'LeaveHomestead') {
-        assert.equal(request.host_gid, '73');
+        assert.ok(f.friendHosts.includes(request.host_gid));
         reply = {};
       } else {
         if (f.queueFull) throw decode(encode(Object.assign(new Error('synthetic request queue full'), { isLocalRequestRejection: true })));
@@ -119,10 +120,10 @@ function fixture(upgrade = false) {
           reply = { sell_items: request.items.map(({ id, uid, count }) => ({ id, uid, count })),
             get_items: [...earned].map(([id, count]) => ({ id, count: count.toString() })) };
         } else if (method === 'StealProduce') {
-          assert.equal(request.host_gid, '73');
+          assert.ok(f.friendHosts.includes(request.host_gid));
           assert.deepEqual(request.targets, [{ ranch_inst_id: '51', slot_index: 0 }]);
           reply = { op_results: [{ facility_inst_id: '51', kind: 2, target_id: '0', rewards: [{ id: '1060001', count: '1' }] }] };
-        } else if (method === 'CleanAllRanch' && request.host_gid === '73') {
+        } else if (method === 'CleanAllRanch' && f.friendHosts.includes(request.host_gid)) {
           assert.deepEqual(request.ranch_inst_ids, ['51']);
           reply = { op_results: [{ facility_inst_id: '51', kind: 3, target_id: '2' }] };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
@@ -141,8 +142,10 @@ function fixture(upgrade = false) {
       return { body: codec.encode(route.reply, reply) };
     },
   };
-  const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
+  const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed,
+    getFriendTargets: () => f.friendRoster, canVisitFriend: gid => !f.friendQuiet && !f.blockedFriends.includes(gid) });
   const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
+    friendHosts: ['73'], friendVisits: [], friendRoster: [], blockedFriends: [],
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
@@ -152,6 +155,119 @@ async function quoteBuy(f) {
   const result = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 });
   assert.equal(result.ok, true, JSON.stringify(result)); return result.data.id;
 }
+
+async function setOnlyAutomation(f, flags) {
+  const { data: { policy } } = await f.service.getAutomation();
+  const result = await f.service.setAutomation({ ...policy, harvest: false, produce: false, clean: false, tasks: false, enabled: true, ...flags });
+  assert.equal(result.ok, true, result.error);
+  f.advance(31000);
+}
+
+function saleStack(uid, itemId, count, extra = {}) {
+  return { uid, id: itemId, count: String(count), show: { sells: [{ id: '1002', count: '5' }] }, ...extra };
+}
+
+test('automatic ranch sale keeps the egg task gap and skips locked or conditionally priced stacks', async () => {
+  const f = fixture();
+  f.tasks.push({ id: '300006', desc: '出售鸡蛋', progress: '1', total_progress: '3', task_type: 4, is_unlocked: true });
+  f.products.push(saleStack('101', '1060001', 6), saleStack('102', '1060002', 3), saleStack('103', '1060001', 4, { is_locked: true }),
+    saleStack('104', '1060003', 2, { show: { sells: [{ id: '1002', count: '5' }], sell_cond: [{ type: 'fixture' }] } }));
+  await setOnlyAutomation(f, { sellProducts: true });
+  const result = await f.service.automate();
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.data.outcome, 'confirmed');
+  assert.deepEqual(f.products.map(row => row.count), ['2', '0', '4', '2']);
+  assert.equal(f.writes, 1);
+  assert.equal((await f.service.getAutomation()).data.usage['sell:1060002'], '3');
+  f.advance(300001);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 1);
+});
+
+test('manual confirmation owns sales and a confirmed harvest schedules an earlier product sale', async () => {
+  const f = fixture();
+  await setOnlyAutomation(f, { harvest: true, sellProducts: true });
+  f.beforeWrite(() => {
+    if (f.writes === 0) f.products.push(saleStack('101', '1060002', 3));
+  });
+  assert.equal((await f.service.automate()).data.action, 'harvest');
+  const manual = await f.service.prepare('sell', { all: true });
+  assert.equal(manual.ok, true, manual.error);
+  f.advance(31000);
+  assert.equal((await f.service.automate()).data.action, 'harvest');
+  assert.equal(f.products[0].count, '3');
+  assert.equal(f.calls.includes('Sell'), false);
+  assert.equal((await f.service.cancel(manual.data.id)).data.cancelled, true);
+  f.advance(300001);
+  const result = await f.service.automate();
+  assert.equal(result.data.action, 'sell');
+  assert.equal(result.data.outcome, 'confirmed');
+  assert.equal(f.products[0].count, '0');
+});
+
+test('the egg task owns its current gap before the surplus sale while both rules are enabled', async () => {
+  const f = fixture();
+  const task = { id: '300006', desc: '出售鸡蛋', progress: '1', total_progress: '3', task_type: 4, is_unlocked: true };
+  f.tasks.push(task);
+  f.products.push(saleStack('101', '1060001', 6), saleStack('102', '1060002', 3));
+  await setOnlyAutomation(f, { eggSale: true, sellProducts: true });
+  f.beforeWrite(() => { task.progress = '3'; });
+  const taskSale = await f.service.automate();
+  assert.equal(taskSale.data.label, '出售鸡蛋任务');
+  assert.equal(taskSale.data.outcome, 'confirmed');
+  assert.deepEqual(f.products.map(row => row.count), ['4', '3']);
+  f.advance(300001);
+  const surplusSale = await f.service.automate();
+  assert.equal(surplusSale.data.label, '出售可售产物');
+  assert.equal(surplusSale.data.outcome, 'confirmed');
+  assert.deepEqual(f.products.map(row => row.count), ['0', '0']);
+  assert.equal(f.writes, 2);
+});
+
+test('automatic friend ranch rotates each action across eligible friends while respecting quiet hours and blacklist', async () => {
+  const f = fixture();
+  f.friendHosts.push('74');
+  f.friendRoster.push({ gid: '73' }, { gid: '74' }, { gid: '42' }, { gid: '75' }, { gid: null });
+  f.blockedFriends.push('75');
+  f.friendRanches.push({ ranch_inst_id: '51', shelves: [
+    { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
+  ], hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  await setOnlyAutomation(f, { friendSteal: true, friendClean: true });
+  f.friendQuiet = true;
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.deepEqual(f.calls, []);
+  f.friendQuiet = false;
+  for (const [action, gid] of [['stealFriend', '73'], ['cleanFriend', '73'], ['stealFriend', '74'], ['cleanFriend', '74']]) {
+    const result = await f.service.automate();
+    assert.equal(result.data.action, action, result.error);
+    assert.equal(result.data.friendGid, gid);
+    assert.equal(result.data.outcome, 'confirmed');
+    f.advance(300001);
+  }
+  assert.deepEqual(f.friendVisits, ['73', '73', '73', '73', '74', '74', '74', '74']);
+  assert.equal(f.writes, 4);
+});
+
+test('automatic friend ranch keeps prepared manual work and a newly blacklisted target from dispatching', async () => {
+  const f = fixture();
+  f.friendRoster.push({ gid: '73' });
+  f.friendRanches.push({ ranch_inst_id: '51', shelves: [
+    { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
+  ] });
+  await setOnlyAutomation(f, { friendSteal: true });
+  const manual = await f.service.prepare('stealFriend', { hostGid: '73' });
+  assert.equal(manual.ok, true);
+  const before = f.calls.length;
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.calls.length, before);
+  await f.service.cancel(manual.data.id);
+  f.onRead = method => {
+    if (method === 'GetRanchDetail' && f.friendVisits.length === 3) f.blockedFriends.push('73');
+  };
+  assert.equal((await f.service.automate()).code, 'RANCH_AUTOMATION_PAUSED');
+  assert.equal(f.writes, 0);
+});
+
 test('friend ranch verifies visit identity, previews available targets and confirms each write once', async () => {
   const f = fixture();
   f.friendRanches.push({ ranch_inst_id: '51', shelves: [

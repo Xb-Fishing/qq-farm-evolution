@@ -91,12 +91,15 @@ function revealInvalidField(event: Event) {
   if (group)
     group.open = true
 }
-const freeActions = [
+const routineActions = [
   { key: 'harvest', name: '自动收获' },
   { key: 'produce', name: '自动生产' },
   { key: 'clean', name: '自动清理' },
   { key: 'tasks', name: '领取普通任务奖励' },
   { key: 'eggSale', name: '自动出售鸡蛋完成任务（只卖还差的数量）' },
+  { key: 'sellProducts', name: '自动出售剩余可售产物' },
+  { key: 'friendSteal', name: '自动偷取好友牧场产物' },
+  { key: 'friendClean', name: '自动帮好友清理牧场' },
 ]
 </script>
 
@@ -211,10 +214,16 @@ const freeActions = [
       <fieldset class="automation-routine">
         <legend>日常管理</legend>
         <div class="automation-routine-grid">
-          <label v-for="action in freeActions" :key="action.key" class="automation-control">
+          <label v-for="action in routineActions" :key="action.key" class="automation-control">
             <input v-model="draft[action.key]" type="checkbox"><span>{{ action.name }}</span>
           </label>
         </div>
+        <p v-if="draft.sellProducts" class="automation-note">
+          收获后优先出售未锁定、售价已确认的产物，并为进行中的鸡蛋任务留出需要的数量。
+        </p>
+        <p v-if="draft.friendSteal || draft.friendClean" class="automation-note">
+          每轮巡查一位好友，沿用好友黑名单和静默时段。
+        </p>
       </fieldset>
 
       <div class="automation-rule-list">

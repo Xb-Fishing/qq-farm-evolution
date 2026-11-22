@@ -5,7 +5,8 @@ const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: t
   intervalMinutes: 5, smartFeed: false, grassEnabled: false, grassDailyLimit: 0, grassReserve: 0,
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
-  stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live', eggSale: false });
+  stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live', eggSale: false,
+  sellProducts: false, friendSteal: false, friendClean: false });
 const SLOTS = [
   { action: 'harvest', key: 'harvest' }, { action: 'produce', key: 'produce' },
   { action: 'clean', key: 'clean' }, { action: 'claimTasks', key: 'tasks', view: 'tasks' },
@@ -13,6 +14,9 @@ const SLOTS = [
   { action: 'buy', key: 'buyEnabled', view: 'shop' },
   { key: 'stockCoop', type: 1 }, { key: 'stockShed', type: 2 },
   { key: 'smartFeed', feed: true }, { action: 'sell', key: 'eggSale', view: 'tasks' },
+  { action: 'sell', key: 'sellProducts', view: 'tasks' },
+  { action: 'stealFriend', key: 'friendSteal', friend: true },
+  { action: 'cleanFriend', key: 'friendClean', friend: true },
 ];
 const STOCK_SHOP = '5';
 const STOCK_CURRENCY = '1007';
@@ -353,6 +357,8 @@ function allowance(policy, plan, raw, usage, slot, now) {
   const currentSlot = actionSlot(plan.action, slot);
   if (currentSlot.key === 'eggSale') return plan.taskSale?.id === model.EGG_SALE_TASK
     && plan.costItems.every(row => row.id === model.EGG_ITEM);
+  if (currentSlot.key === 'sellProducts') return plan.productSale === true && plan.costItems.length > 0;
+  if (currentSlot.friend) return !!plan.payload.host_gid && plan.costItems.length === 0;
   if (currentSlot.feed || currentSlot.type || plan.action === 'buy') {
     const state = model.normalizeState(raw, now);
     const candidate = currentSlot.feed ? chooseSmartFeed(policy, state).selected
@@ -393,7 +399,10 @@ function chooseAction(policy, state, slot, usage = {}) {
   if (action === 'produce' && state.animals.some(x => x.canProduce)) return { action, input: { all: true } };
   if (action === 'clean' && state.facilities.some(x => x.ranch?.hazards.length)) return { action, input: {} };
   if (action === 'claimTasks' && state.tasks?.some(x => x.canClaim)) return { action, input: { all: true } };
-  if (action === 'sell') {
+  if (SLOTS[slot].key === 'sellProducts') {
+    if (model.automaticSaleItems(state, policy.eggSale).length)
+      return { action, input: { autoProducts: true, deferEggs: policy.eggSale } };
+  } else if (SLOTS[slot].key === 'eggSale') {
     const task = model.eggSaleTask(state.tasks);
     if (task?.unlocked && !task.claimed && !task.canClaim && state.inventory?.some(row => row.id === model.EGG_ITEM && row.canSell))
       return { action, input: { taskId: task.id } };
@@ -425,6 +434,7 @@ function inspectAction(policy, state, slot, usage) {
     const task = model.eggSaleTask(state.tasks);
     return task?.unlocked && !task.claimed && !task.canClaim ? { reason: 'no_sellable_eggs' } : {};
   }
+  if (config.key === 'sellProducts') return { reason: 'no_sellable_products' };
   if (config.action === 'place') {
     const room = state.facilities.find(row => row.id === policy.ranchId && row.active && row.ranch);
     if (!room) return { reason: 'no_facility' };

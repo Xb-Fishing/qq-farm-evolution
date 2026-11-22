@@ -263,6 +263,29 @@ function salePrices(item) {
     return item.show.sells.map(itemDto).sort((a, b) => a.id.localeCompare(b.id) || a.count.localeCompare(b.count));
 }
 
+const AUTO_SALE_BATCH_SIZE = 50;
+
+function automaticSaleItems(state, deferEggs) {
+    if (!Array.isArray(state.tasks)) return [];
+    const eggTask = eggSaleTask(state.tasks);
+    const pending = eggTask?.unlocked && !eggTask.claimed && BigInt(eggTask.total) > BigInt(eggTask.progress);
+    let reservedEggs = pending ? BigInt(eggTask.total) - BigInt(eggTask.progress) : 0n;
+    const selected = [];
+    for (const item of state.inventory) {
+        if (!item.canSell) continue;
+        let count = BigInt(item.count);
+        if (item.id === EGG_ITEM && pending) {
+            if (deferEggs) continue;
+            const reserve = count < reservedEggs ? count : reservedEggs;
+            count -= reserve;
+            reservedEggs -= reserve;
+        }
+        if (count > 0n) selected.push({ uid: item.uid, count: count.toString() });
+        if (selected.length === AUTO_SALE_BATCH_SIZE) break;
+    }
+    return selected;
+}
+
 function selectedFacility(rows, instanceId) {
     const id = positiveId(instanceId, '设施实例');
     const targets = rows.filter(row => String(row.instance_id) === id);
@@ -364,6 +387,12 @@ function planAction(action, input = {}, raw, nowMs = Date.now()) {
             plan.taskSale = { id: task.id, progress: task.progress, total: task.total,
                 expected: (BigInt(task.total) - missing).toString() };
             plan.label = '出售鸡蛋任务';
+        } else if (input.autoProducts === true) {
+            const amounts = new Map(automaticSaleItems(state, input.deferEggs === true).map(row => [row.uid, row.count]));
+            selected = physical.filter(item => amounts.has(String(item.uid)))
+                .map(item => ({ item, prices: salePrices(item), count: amounts.get(String(item.uid)) }));
+            plan.productSale = true;
+            plan.label = '出售可售产物';
         } else if (input.all === true) {
             selected = physical.map(item => ({ item, prices: salePrices(item), count: String(item.count) }))
                 .filter(row => row.prices.length);
@@ -409,4 +438,5 @@ function planAction(action, input = {}, raw, nowMs = Date.now()) {
     return plan;
 }
 
-module.exports = { decimal, positiveId, positiveCount, balance, itemDto, normalizeState, planAction, selectedFacility, metadata, taskList, eggSaleTask, EGG_SALE_TASK, EGG_ITEM };
+module.exports = { decimal, positiveId, positiveCount, balance, itemDto, normalizeState, planAction, selectedFacility, metadata, taskList,
+    eggSaleTask, automaticSaleItems, EGG_SALE_TASK, EGG_ITEM };
