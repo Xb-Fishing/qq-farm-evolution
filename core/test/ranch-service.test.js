@@ -24,6 +24,7 @@ process.env.FARM_SESSION_LOG_DIR = fixturePath('session-logs');
 const codec = require('../src/services/ranch-codec');
 const { encode, decode } = require('../src/runtime/session-codec');
 const { createRanchService } = require('../src/services/ranch-service');
+const { createGameSceneCoordinator } = require('../src/runtime/game-scene-coordinator');
 test.after(() => {
   // Run after the daily-feedback exit flush, which can otherwise recreate the fixture directory.
   process.once('exit', () => {
@@ -53,6 +54,7 @@ function fixture(upgrade = false) {
     getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
     withRanchScene: async (callback, options) => {
       leases.push(options.maxCalls);
+      if (f.realScene) return scene.run(callback, options);
       const value = await callback({ initial: f.initial, assertCurrent() {} });
       now += f.restoreDelayMs || 0;
       return value;
@@ -62,7 +64,12 @@ function fixture(upgrade = false) {
       if (f.onRead) await f.onRead(method);
       const route = Object.values(codec.ROUTES).find(x => x.method === method && x.service === service);
       const request = codec.decode(route.request, wire); let reply;
-      if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
+      if (method === 'PlayerSceneLogin') {
+        const id = request.global_scene_id;
+        reply = { global_scene_id: id, ...(id === 2
+          ? { big_farm_scene_ext_data: codec.encode('SceneData', { homestead_cells: { grid_width: 10, grid_height: 10, facilities } }) }
+          : { farm_scene_ext_data: Buffer.from([1]) }) };
+      } else if (method === 'AllCells') reply = { grid_width: 10, grid_height: 10, facilities: malformed && writes ? [{ ...facilities[0], instance_id: '0' }] : facilities };
       else if (method === 'GetBag') reply = { global_scene_id: 2,
         physical_items: [{ id: '7001', count: String(grass) }, ...[...cubs].map(([id, count]) => ({ id, count: String(count) })), ...f.lockedCubs, ...f.products.filter(row => BigInt(row.count) > 0n)],
         virtual_items: [{ id: '1007', count: String(gold) }, ...(upgrade ? [{ id: '1102', count: '40000' }] : [])] };
@@ -142,9 +149,20 @@ function fixture(upgrade = false) {
       return { body: codec.encode(route.reply, reply) };
     },
   };
+  const send = network.sendMsgAsync;
+  const scene = createGameSceneCoordinator({
+    identity: () => ({ key: 'ranch-fixture', connected: true, level: 30 }),
+    priority: () => f.farmPriority === true,
+    profile: () => ({ totalLimit: 80, perMethodLimit: 30, windowCount: 0, top: [] }),
+    encodeScene: id => codec.encode('PlayerSceneLoginRequest', { global_scene_id: id }),
+    decodeScene: body => codec.decode('PlayerSceneLoginReply', body),
+    send,
+  });
+  network.sendMsgAsync = (...args) => f.realScene ? scene.send(...args) : send(...args);
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed,
-    getFriendTargets: () => f.friendRoster, canVisitFriend: gid => !f.friendQuiet && !f.blockedFriends.includes(gid) });
-  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
+    getFriendTargets: () => { if (f.rosterError) throw f.rosterError; return f.friendRoster; },
+    canVisitFriend: gid => !f.friendQuiet && !f.blockedFriends.includes(gid) });
+  const f = { service: make(), make, calls, leases, scene, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
     friendHosts: ['73'], friendVisits: [], friendRoster: [], blockedFriends: [],
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
@@ -224,28 +242,39 @@ test('the egg task owns its current gap before the surplus sale while both rules
   assert.equal(f.writes, 2);
 });
 
-test('automatic friend ranch rotates each action across eligible friends while respecting quiet hours and blacklist', async () => {
+test('automatic friend ranch runs on its own interval and executes both actions during one visit', async () => {
   const f = fixture();
+  f.realScene = true;
   f.friendHosts.push('74');
   f.friendRoster.push({ gid: '73' }, { gid: '74' }, { gid: '42' }, { gid: '75' }, { gid: null });
   f.blockedFriends.push('75');
   f.friendRanches.push({ ranch_inst_id: '51', shelves: [
     { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
   ], hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
-  await setOnlyAutomation(f, { friendSteal: true, friendClean: true });
+  await setOnlyAutomation(f, { friendSteal: true, friendClean: true, harvest: true, produce: true, clean: true, tasks: true, intervalMinutes: 2 });
   f.friendQuiet = true;
-  assert.equal((await f.service.automate()).data.skipped, true);
-  assert.deepEqual(f.calls, []);
+  assert.equal((await f.service.automate()).data.action, 'harvest');
+  assert.deepEqual(f.friendVisits, []);
+  f.calls.length = 0;
   f.friendQuiet = false;
-  for (const [action, gid] of [['stealFriend', '73'], ['cleanFriend', '73'], ['stealFriend', '74'], ['cleanFriend', '74']]) {
+  f.advance(30000);
+  for (const gid of ['73', '74']) {
+    const before = f.calls.length;
     const result = await f.service.automate();
-    assert.equal(result.data.action, action, result.error);
-    assert.equal(result.data.friendGid, gid);
-    assert.equal(result.data.outcome, 'confirmed');
-    f.advance(300001);
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(result.data.results.map(row => [row.action, row.friendGid, row.outcome]),
+      [['stealFriend', gid, 'confirmed'], ['cleanFriend', gid, 'confirmed']]);
+    assert.deepEqual(f.calls.slice(before), ['PlayerSceneLogin', 'EnterHomestead', 'GetRanchDetail',
+      'StealProduce', 'CleanAllRanch', 'LeaveHomestead', 'PlayerSceneLogin']);
+    assert.equal(f.scene.snapshot().scene, 1);
+    if (gid === '73') {
+      f.advance(90001);
+      assert.equal((await f.service.automate()).data.action, 'produce');
+      f.advance(30000);
+    }
   }
-  assert.deepEqual(f.friendVisits, ['73', '73', '73', '73', '74', '74', '74', '74']);
-  assert.equal(f.writes, 4);
+  assert.deepEqual(f.friendVisits, ['73', '74']);
+  assert.equal(f.writes, 6);
 });
 
 test('automatic friend ranch keeps prepared manual work and a newly blacklisted target from dispatching', async () => {
@@ -262,10 +291,55 @@ test('automatic friend ranch keeps prepared manual work and a newly blacklisted 
   assert.equal(f.calls.length, before);
   await f.service.cancel(manual.data.id);
   f.onRead = method => {
-    if (method === 'GetRanchDetail' && f.friendVisits.length === 3) f.blockedFriends.push('73');
+    if (method === 'GetRanchDetail') f.blockedFriends.push('73');
   };
   assert.equal((await f.service.automate()).code, 'RANCH_AUTOMATION_PAUSED');
   assert.equal(f.writes, 0);
+});
+
+test('an empty steal shelf still lets the same visit clean and a failed roster is reported separately', async t => {
+  const records = ranchLogs(t);
+  const f = fixture();
+  f.friendRoster.push({ gid: '73', name: '测试好友' });
+  f.friendRanches.push({ ranch_inst_id: '51', hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  await setOnlyAutomation(f, { friendSteal: true, friendClean: true, intervalMinutes: 2 });
+  f.rosterError = new Error('upstream fixture');
+  assert.equal((await f.service.automate()).failureStage, 'friendRoster');
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(records.filter(row => row.meta.reason === 'read_failed').map(row => [row.meta.action, row.meta.failureStage]),
+    [['stealFriend', 'friendRoster'], ['cleanFriend', 'friendRoster']]);
+  f.rosterError = null;
+  f.advance(120001);
+  const scan = await f.service.automate();
+  assert.equal(scan.data.action, 'cleanFriend');
+  assert.equal(scan.data.outcome, 'confirmed');
+  assert.equal(f.calls.includes('StealProduce'), false);
+  assert.ok(records.some(row => row.meta.action === 'stealFriend' && row.meta.reason === 'no_friend_targets'));
+  assert.ok(records.some(row => row.meta.action === 'cleanFriend' && row.meta.result === 'confirmed'));
+});
+
+test('friend patrol keeps its candidate during priority deferral and stops after an uncertain result', async () => {
+  const f = fixture();
+  f.realScene = true;
+  f.friendHosts.push('74');
+  f.friendRoster.push({ gid: '73' }, { gid: '74' });
+  f.friendRanches.push({ ranch_inst_id: '51', shelves: [
+    { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
+  ], hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  await setOnlyAutomation(f, { friendSteal: true, friendClean: true });
+  f.farmPriority = true;
+  assert.equal((await f.service.automate()).code, 'RANCH_FARM_PRIORITY');
+  assert.deepEqual(f.calls, []);
+  f.advance(30001);
+  f.farmPriority = false;
+  f.timeout();
+  assert.equal((await f.service.automate()).data.outcome, 'unknown');
+  assert.deepEqual(f.friendVisits, ['73']);
+  assert.equal(f.calls.includes('CleanAllRanch'), false);
+  assert.equal(f.scene.snapshot().scene, 1);
+  f.advance(300001);
+  assert.equal((await f.make().automate()).data.skipped, true);
+  assert.equal(f.writes, 1);
 });
 
 test('friend ranch verifies visit identity, previews available targets and confirms each write once', async () => {

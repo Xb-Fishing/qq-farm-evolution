@@ -329,9 +329,9 @@ function mergeRipeSnapshotsIntoFriends(friends) {
  * Filters out fake NPCs (name "小小农夫" with level 1).
  *
  * 并发（含强制刷新）共享同代在途读取；读取失败释放在途引用并返回空数组，
- * 不缓存失败结果、不自动重试——下一次显式请求可再次发起。
+ * 不缓存失败结果、不自动重试。throwOnError 用于必须区分名单为空和查询失败的调用方。
  */
-async function getFriendsList(forceRefresh = false) {
+async function getFriendsList(forceRefresh = false, { throwOnError = false } = {}) {
   try {
     if (!forceRefresh && friendsListCache) {
       friendsListCache = mergeRipeSnapshotsIntoFriends(friendsListCache);
@@ -360,6 +360,7 @@ async function getFriendsList(forceRefresh = false) {
       }
     }
   } catch (err) {
+    if (throwOnError) throw err;
     log('好友', `获取好友列表失败: ${err.message}`, {
       module: 'friend',
       event: '获取好友列表',

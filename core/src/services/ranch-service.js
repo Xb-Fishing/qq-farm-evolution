@@ -13,6 +13,8 @@ const QUOTE_TTL_MS = 60000;
 const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用';
 // Scene entry, possible AllCells fallback, view reads, and two restoration attempts.
 const READ_CALLS = { animals: 5, tasks: 6, shop: 7 };
+const AUTOMATION_TICK_MS = 30000;
+const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [index] : []);
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
   stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
@@ -31,10 +33,21 @@ const AUTO_STATUS = {
   no_sellable_eggs: '缺少已确认售价的未锁定鸡蛋',
   no_sellable_products: '没有可出售的剩余产物',
   no_ranch_friends: '当前没有可巡查的好友',
-  no_friend_targets: '当前好友牧场没有可操作目标',
+  no_friend_targets: '本次巡查没有可操作目标',
+  friend_unavailable: '该好友的牧场尚未开放或无法访问',
+  friend_quiet: '好友静默时段',
+  manual_review: '等待手动确认',
+  result_unconfirmed: '上一笔牧场操作待核对',
+  scene_busy: '场景正在处理其他操作',
 };
 const AUTO_SCAN_REASONS = { RANCH_FARM_PRIORITY: 'farm_priority', RANCH_BUDGET_BUSY: 'request_budget',
-  RANCH_SCENE_RECOVERING: 'scene_recovery', RANCH_SHOP_UNAVAILABLE: 'shop_unavailable' };
+  RANCH_SCENE_RECOVERING: 'scene_recovery', RANCH_SHOP_UNAVAILABLE: 'shop_unavailable',
+  RANCH_BUSY: 'scene_busy', RANCH_FARM_BUSY: 'scene_busy' };
+const READ_STAGES = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包',
+  shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理', friendRoster: '好友名单',
+  enterFriend: '进入好友牧场', friendDetail: '好友牧场详情', leaveFriend: '离开好友牧场' };
+const readStage = failure => Object.hasOwn(READ_STAGES, failure?.ranchStage) ? failure.ranchStage : 'unknown';
+const readKind = failure => ['encode', 'request', 'decode', 'normalize'].includes(failure?.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
 const AUTOMATION_NOT_SENT = new Set(['RANCH_AUTOMATION_PAUSED', 'RANCH_STATE_CHANGED', 'RANCH_QUOTE_EXPIRED',
   'RANCH_RESULT_UNCONFIRMED', 'RANCH_FARM_PRIORITY', 'RANCH_BUDGET_BUSY', 'RANCH_MANUAL_REVIEW', 'RANCH_NO_ELIGIBLE_TARGET']);
 const AUTOMATION_RESULT_LABELS = { confirmed: '已确认', partial: '部分确认，已暂停并等待人工核对',
@@ -105,34 +118,43 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   const sockets = new WeakMap();
   const inFlight = new Set();
   let autoRunning = false;
-  function noteAutoStatus(slot, reason, revision) {
+  function noteAutoStatus(slot, reason, revision, { friendName, failure } = {}) {
     if (reason && !Object.hasOwn(AUTO_STATUS, reason)) return;
+    const failureStage = readStage(failure);
+    const failureKind = readKind(failure);
+    const serverErrorCode = Number.isSafeInteger(failure?.serverErrorCode) ? failure.serverErrorCode : undefined;
+    const status = reason === 'read_failed' ? [reason, failureStage, failureKind, serverErrorCode].join(':') : reason;
     try {
       const data = read();
       if (data.automation?.revision !== revision) return;
       const statuses = data.automationStatuses || {};
-      if (statuses[slot.key] === reason) return;
-      if (reason) statuses[slot.key] = reason;
+      if (statuses[slot.key] === status) return;
+      if (status) statuses[slot.key] = status;
       else delete statuses[slot.key];
       data.automationStatuses = statuses;
       save(data);
     } catch { return; /* Observation must never block or corrupt automation. */ }
     if (!reason) return;
     const target = slot.feed ? '智能供草' : slot.type === 1 ? '窝补齐' : slot.type === 2 ? '棚补齐' : automaticLabel(slot);
-    const result = ['facility_unconfirmed', 'shop_unconfirmed', 'scene_recovery', 'read_failed'].includes(reason) ? 'paused' : 'skipped';
-    automationLog(`${target}暂缓 · ${AUTO_STATUS[reason]}`,
-      { event: 'ranch_automation_status', logKind: 'status', action: slot.feed ? 'smartFeed' : slot.action || 'stock', result, reason, target }, result === 'paused');
+    const result = ['facility_unconfirmed', 'shop_unconfirmed', 'scene_recovery', 'read_failed', 'result_unconfirmed'].includes(reason) ? 'paused' : 'skipped';
+    const step = reason === 'read_failed' && READ_STAGES[failureStage] ? ` · ${READ_STAGES[failureStage]}` : '';
+    const subject = friendName ? `${target}（${friendName}）` : target;
+    const disposition = reason === 'no_friend_targets' ? '' : '暂缓';
+    automationLog(`${subject}${disposition} · ${AUTO_STATUS[reason]}${step}`,
+      { event: 'ranch_automation_status', logKind: 'status', action: slot.feed ? 'smartFeed' : slot.action || 'stock', result, reason, target,
+        ...(reason === 'read_failed' && { failureStage, failureKind, serverErrorCode }) }, result === 'paused');
   }
   function autoState(data) {
     const state = data.automation || { policy: { ...policyTools.DEFAULT_POLICY }, revision: 0, nextAt: 0, cursor: 0, day: '', usage: {} };
     try {
       state.policy = policyTools.normalizePolicy(state.policy, { fromStorage: true });
-      state.friendCursors ??= {};
+      state.friendNextAt ??= 0;
+      state.friendCursor ??= state.friendCursors?.stealFriend ?? state.friendCursors?.cleanFriend ?? 0;
       if (!Number.isSafeInteger(state.revision) || state.revision < 0 || !Number.isSafeInteger(state.nextAt) || state.nextAt < 0
         || !Number.isSafeInteger(state.cursor) || state.cursor < 0 || !state.usage || typeof state.usage !== 'object' || Array.isArray(state.usage)
         || Object.entries(state.usage).some(([key, value]) => !/^(?:(?:buy|place|addGrass|sell):[1-9]\d*|smartFeed:(?:buy:1007|addGrass:7001))$/.test(key) || !/^\d{1,19}$/.test(String(value)))
-        || typeof state.friendCursors !== 'object' || Array.isArray(state.friendCursors)
-        || Object.entries(state.friendCursors).some(([key, value]) => !friends.actions.has(key) || !Number.isSafeInteger(value) || value < 0))
+        || !Number.isSafeInteger(state.friendNextAt) || state.friendNextAt < 0
+        || !Number.isSafeInteger(state.friendCursor) || state.friendCursor < 0)
         throw new Error('Invalid automation record');
     } catch { throw error('RANCH_STORAGE_ERROR', '自动化记录不完整，已暂停执行'); }
     if (state.day !== policyTools.dayKey(now())) { state.day = policyTools.dayKey(now()); state.usage = {}; }
@@ -147,7 +169,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     const cursor = policy.eggSale && !state.policy.eggSale ? policyTools.SLOTS.findIndex(slot => slot.key === 'eggSale')
       : policy.smartFeed && !state.policy.smartFeed ? policyTools.SLOTS.findIndex(slot => slot.feed)
         : policy.sellProducts && !state.policy.sellProducts ? policyTools.SLOTS.findIndex(slot => slot.key === 'sellProducts') : state.cursor;
-    data.automation = { ...state, policy, revision: state.revision + 1, nextAt: now() + 30000, cursor };
+    const nextAt = now() + AUTOMATION_TICK_MS;
+    data.automation = { ...state, policy, revision: state.revision + 1, nextAt, friendNextAt: nextAt, cursor };
     if (!policy.enabled) delete data.automationStatuses;
     else if (data.automationStatuses) {
       for (const slot of policyTools.SLOTS) if (!policyTools.slotEnabled(policy, slot)) delete data.automationStatuses[slot.key];
@@ -263,11 +286,12 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (action === 'buy') return 'shop';
     return action === 'claimTasks' || (action === 'sell' && (input?.taskId !== undefined || input?.autoProducts === true)) ? 'tasks' : 'animals';
   }
-  async function inActionScene(action, input, callback, maxCalls) {
+  async function inActionScene(action, input, callback, maxCalls, activeScene) {
+    if (activeScene) return callback(activeScene);
     if (!friends.actions.has(action)) return withScene(callback, maxCalls);
     return visitFriend(input.hostGid, callback);
   }
-  async function visitFriend(hostGid, callback) {
+  async function visitFriend(hostGid, callback, maxCalls = 7) {
     const host = model.positiveId(hostGid, '好友');
     const self = String(network.getUserState().gid);
     if (host === self) throw error('RANCH_INVALID_ARGUMENT', '请选择好友牧场');
@@ -280,7 +304,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         friends.verifyEntry(entry, host);
         const detail = await rpc('friendDetail', { host_gid: host });
         context.assertCurrent();
-        return await callback({ ...context, friend: friends.describe(entry, detail, host, self) });
+        const friend = await stage('friendDetail', 'normalize', () => friends.describe(entry, detail, host, self));
+        return await callback({ ...context, friend });
       } finally {
         if (entered) {
           try { await rpc('leaveFriend', { host_gid: host }); }
@@ -290,7 +315,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           }
         }
       }
-    }, 7);
+    }, maxCalls);
   }
   async function getFriend(hostGid) {
     const currentOrigin = origin();
@@ -370,7 +395,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       return { ...snapshot, view, lastOperation: visibleOperation(data.lastOperation) };
     }, READ_CALLS[scan ? 'shop' : view]);
   }
-  async function prepare(action, input = {}, autoRevision, autoSlot) {
+  async function prepare(action, input = {}, autoRevision, autoSlot, activeScene) {
     if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action) && !friends.actions.has(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
     validateInput(input);
     const accountOrigin = origin();
@@ -397,7 +422,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       data.quotes.push(quote); save(data);
       return { id: quote.id, action, label: plan.label, count: plan.count,
         costItems: action === 'sell' ? sumItems(plan.costItems) : plan.costItems, expectedRewards: sumItems(plan.expectedRewards), expiresAt: quote.expiresAt };
-    }, READ_CALLS[policyTools.SLOTS[autoSlot]?.type ? 'shop' : viewFor(action, input)] + (action === 'upgrade' ? 1 : 0));
+    }, READ_CALLS[policyTools.SLOTS[autoSlot]?.type ? 'shop' : viewFor(action, input)] + (action === 'upgrade' ? 1 : 0), activeScene);
     // Device clocks can differ from the game clock. Report time left after scene restoration.
     return { ...prepared, validForMs: Math.min(QUOTE_TTL_MS, Math.max(0, prepared.expiresAt - quoteNow())) };
   }
@@ -497,7 +522,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (quote.expiresAt <= quoteNow()) throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
     return null;
   }
-  async function execute(id, markOperationNotSent) {
+  async function execute(id, markOperationNotSent, activeScene) {
     if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw error('RANCH_INVALID_ARGUMENT', '确认记录无效');
     let data = read(); let quote = data.quotes.find(row => row.id === id);
     const replay = checkQuote(data, quote, id);
@@ -614,13 +639,13 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           if (result.storageWarning) throw error('RANCH_RESULT_UNCONFIRMED', '确认结果未能保存，请刷新牧场核对');
           throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
         }
-        if (friend && result.outcome === 'confirmed' && !result.replayed) {
+        if (friend && quote?.autoRevision === undefined && result.outcome === 'confirmed' && !result.replayed) {
           try { require('../utils/utils').log('牧场', `${plan.label}已确认 · ${result.completed} 项`, { module: 'ranch', event: 'ranch_friend_action' }); } catch {}
         }
         return { ...result, snapshot,
           refreshRequired: !snapshot && !friend, message: !snapshot && !friend && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
       } finally { inFlight.delete(id); }
-    }).catch(failure => {
+    }, undefined, activeScene).catch(failure => {
       if (!operationAttempted && (failure?.isGovernedRejection === true
         || (failure?.isLocalRequestRejection === true && failure.outcome === 'not_sent'))) {
         markOperationNotSent(id);
@@ -761,41 +786,28 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     try { return { ok: true, data: await callback(id => { quoteId = id; }) }; }
     catch (failure) {
       const known = /^RANCH_[A-Z_]{1,64}$/.test(failure.code || '') || LOCAL_CODES.has(failure.code);
-      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包',
-        shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理',
-        enterFriend: '进入好友牧场', friendDetail: '好友牧场详情', leaveFriend: '离开好友牧场' };
-      const failureStage = Object.hasOwn(labels, failure.ranchStage) ? failure.ranchStage : 'unknown';
-      const failureKind = ['encode', 'request', 'decode', 'normalize'].includes(failure.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
+      const failureStage = readStage(failure);
+      const failureKind = readKind(failure);
       if (!known && logReadFailure) {
         try { require('../utils/utils').logWarn('牧场', '牧场读取失败', { module: 'ranch', event: 'ranch_read_failed', failureStage, failureKind }); } catch { /* Diagnostics cannot change request results. */ }
       }
       return { ok: false, failureStage, failureKind, code: known ? (failure.code.startsWith('RANCH_') ? failure.code : `RANCH_${failure.code}`) : 'RANCH_READ_FAILED',
-        error: known ? failure.message : `牧场${labels[failureStage] || '读取'}失败，请稍后重试`, sceneRecoveryRequired: failure.sceneRecoveryRequired === true,
+        error: known ? failure.message : `牧场${READ_STAGES[failureStage] || '读取'}失败，请稍后重试`, sceneRecoveryRequired: failure.sceneRecoveryRequired === true,
         ...(quoteId && { operationNotSent: true, quoteId }) };
     }
   }
-  async function nextFriend(revision, slot) {
+  async function friendCandidates() {
     const self = String(network.getUserState().gid);
-    const roster = await getFriendTargets();
-    if (!Array.isArray(roster)) return null;
+    const roster = await stage('friendRoster', 'request', getFriendTargets);
+    if (!Array.isArray(roster)) return [];
     const targets = new Map();
     for (const row of roster) {
       let gid;
       try { gid = model.positiveId(row?.gid, '好友'); }
       catch { continue; }
-      if (gid !== self && canVisitFriend(gid)) targets.set(gid, row);
+      if (gid !== self && canVisitFriend(gid)) targets.set(gid, { gid, name: String(row.name || '').slice(0, 42) });
     }
-    const candidates = [...targets.keys()].sort((a, b) => a.length - b.length || a.localeCompare(b));
-    if (!candidates.length) return null;
-    const data = read();
-    const current = autoState(data);
-    if (!canAutomate() || unresolved(data) || current.revision !== revision) return null;
-    const index = (current.friendCursors[slot.action] || 0) % candidates.length;
-    const hostGid = candidates[index];
-    current.friendCursors[slot.action] = (index + 1) % candidates.length;
-    data.automation = current;
-    save(data);
-    return { action: slot.action, input: { hostGid }, name: String(targets.get(hostGid).name || hostGid).slice(0, 42) };
+    return [...targets.values()].sort((a, b) => a.gid.length - b.gid.length || a.gid.localeCompare(b.gid));
   }
   function scheduleProductSale(revision, result) {
     if (result.outcome !== 'confirmed' || result.replayed || result.sceneRecoveryRequired) return;
@@ -806,60 +818,135 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       const slot = policyTools.SLOTS.findIndex(row => row.key === 'sellProducts');
       if (manualReviewOwns(data, policyTools.SLOTS[slot])) return;
       state.cursor = slot;
-      state.nextAt = Math.min(state.nextAt, now() + 30000);
+      state.nextAt = Math.min(state.nextAt, now() + AUTOMATION_TICK_MS);
       data.automation = state;
       save(data);
     } catch { /* The saved regular schedule can continue. */ }
+  }
+  async function performAutomatic(selected, revision, slot, target, markOperationNotSent, activeScene) {
+    const context = { action: selected.action, label: automaticLabel(policyTools.SLOTS[slot]), target, requested: selected.input.count };
+    let quoteId;
+    try {
+      const quote = await prepare(selected.action, selected.input, revision, slot, activeScene);
+      quoteId = quote.id;
+      context.requested = quote.count;
+      const result = await execute(quoteId, markOperationNotSent, activeScene);
+      logAutomationResult(context, result);
+      return result;
+    } catch (failure) {
+      let recorded;
+      try {
+        const last = quoteId && read().lastOperation;
+        if (last && last.id === quoteId) recorded = visibleOperation(last);
+      } catch { /* Use the preflight disposition if the ledger cannot be read. */ }
+      const notSent = AUTOMATION_NOT_SENT.has(failure.code) || failure.isGovernedRejection === true || failure.isLocalRequestRejection === true;
+      logAutomationResult(context, recorded, notSent ? 'not_sent' : 'error');
+      throw failure;
+    }
+  }
+  async function automateFriends(state, slots, markOperationNotSent) {
+    const { SLOTS } = policyTools;
+    const handled = new Set();
+    let target;
+    let nextCursor = state.friendCursor;
+    let interval = state.policy.intervalMinutes * 60000;
+    try {
+      const candidates = await friendCandidates();
+      const latest = read();
+      if (!canAutomate() || !canVisitFriend() || unresolved(latest) || latest.automation?.revision !== state.revision)
+        return { skipped: true };
+      if (!candidates.length) {
+        for (const slot of slots) noteAutoStatus(SLOTS[slot], 'no_ranch_friends', state.revision);
+        return { skipped: true };
+      }
+      const index = state.friendCursor % candidates.length;
+      target = candidates[index];
+      nextCursor = (index + 1) % candidates.length;
+      const scan = await visitFriend(target.gid, async scene => {
+        const results = [];
+        const friendName = target.name || String(scene.friend.name || '').slice(0, 42);
+        for (const slot of slots) {
+          const { action } = SLOTS[slot];
+          const targets = action === 'stealFriend' ? scene.friend.stealable : scene.friend.hazards;
+          if (!targets.length) {
+            noteAutoStatus(SLOTS[slot], 'no_friend_targets', state.revision, { friendName });
+            handled.add(slot);
+            continue;
+          }
+          const operation = await performAutomatic({ action, input: { hostGid: target.gid } },
+            state.revision, slot, friendName, markOperationNotSent, scene);
+          results.push(operation);
+          noteAutoStatus(SLOTS[slot], undefined, state.revision);
+          handled.add(slot);
+          if (operation.outcome !== 'confirmed' || operation.storageWarning) break;
+        }
+        return { results };
+      }, slots.length > 1 ? 8 : 7);
+      const steal = scan.results.find(operation => operation.action === 'stealFriend');
+      if (steal) scheduleProductSale(state.revision, { ...steal, sceneRecoveryRequired: scan.sceneRecoveryRequired });
+      if (!scan.results.length) return { skipped: true, sceneRecoveryRequired: scan.sceneRecoveryRequired };
+      return { ...scan.results[0], results: scan.results, sceneRecoveryRequired: scan.sceneRecoveryRequired };
+    } catch (failure) {
+      if (failure.code === 'RANCH_AUTOMATION_PAUSED') throw failure;
+      const reason = failure.code === 'RANCH_FRIEND_UNAVAILABLE' ? 'friend_unavailable' : AUTO_SCAN_REASONS[failure.code]
+        || (failure.isGovernedRejection ? 'request_budget' : 'read_failed');
+      if (['farm_priority', 'request_budget', 'scene_recovery', 'scene_busy'].includes(reason)) {
+        // An interrupted visit can be retried on the next worker tick without losing its place.
+        nextCursor = handled.size ? nextCursor : state.friendCursor;
+        interval = AUTOMATION_TICK_MS;
+      }
+      for (const slot of slots) {
+        if (!handled.has(slot)) noteAutoStatus(SLOTS[slot], reason, state.revision, { friendName: target?.name, failure });
+      }
+      if (reason === 'friend_unavailable') return { skipped: true };
+      throw failure;
+    } finally {
+      const latest = read();
+      if (latest.automation?.revision === state.revision) {
+        latest.automation.friendCursor = nextCursor;
+        latest.automation.friendNextAt = now() + interval;
+        save(latest);
+      }
+    }
   }
   async function automate(markOperationNotSent) {
     if (autoRunning || !canAutomate()) return { skipped: true };
     const data = read(); const state = autoState(data);
     if (unresolved(data)) {
+      for (const slot of FRIEND_SLOTS) {
+        if (state.policy.enabled && policyTools.slotEnabled(state.policy, policyTools.SLOTS[slot]))
+          noteAutoStatus(policyTools.SLOTS[slot], 'result_unconfirmed', state.revision);
+      }
       autoRunning = true;
-      try { return await recheckUnknownFeed(data); } finally { autoRunning = false; }
+      try { return await recheckUnknownFeed(read()); } finally { autoRunning = false; }
     }
-    if (!state.policy.enabled || state.nextAt > now()) return { skipped: true };
+    if (!state.policy.enabled || Math.min(state.nextAt, state.friendNextAt) > now()) return { skipped: true };
     autoRunning = true;
     let viewedSlot;
-    let context;
-    let quoteId;
-    const perform = async (selected, slot, target) => {
-      context = { action: selected.action, label: automaticLabel(policyTools.SLOTS[slot]), target, requested: selected.input.count };
-      const quote = await prepare(selected.action, selected.input, state.revision, slot);
-      quoteId = quote.id;
-      context.requested = quote.count;
-      const result = await execute(quoteId, markOperationNotSent);
-      logAutomationResult(context, result);
-      return result;
-    };
+    let attemptingAction = false;
     try {
       const { SLOTS } = policyTools;
+      const friendSlots = [];
+      if (state.friendNextAt <= now()) {
+        for (const index of FRIEND_SLOTS) {
+          const slot = SLOTS[index];
+          if (!policyTools.slotEnabled(state.policy, slot)) continue;
+          if (!canVisitFriend()) noteAutoStatus(slot, 'friend_quiet', state.revision);
+          else if (manualReviewOwns(data, slot)) noteAutoStatus(slot, 'manual_review', state.revision);
+          else friendSlots.push(index);
+        }
+      }
       const eligibleSlots = SLOTS.flatMap((slot, index) =>
-        policyTools.slotEnabled(state.policy, slot) && !manualReviewOwns(data, slot)
-          && (!slot.friend || canVisitFriend()) ? [index] : []);
-      if (!eligibleSlots.length) return { skipped: true };
+        !slot.friend && policyTools.slotEnabled(state.policy, slot) && !manualReviewOwns(data, slot) ? [index] : []);
+      const ownDue = state.nextAt <= now() && eligibleSlots.length > 0;
+      if (friendSlots.length && (!ownDue || state.friendNextAt <= state.nextAt))
+        return await automateFriends(state, friendSlots, markOperationNotSent);
+      if (!ownDue) return { skipped: true };
       const cursor = eligibleSlots.find(i => i >= state.cursor % SLOTS.length) ?? eligibleSlots[0];
       state.cursor = (cursor + 1) % SLOTS.length;
       state.nextAt = now() + state.policy.intervalMinutes * 60000;
       data.automation = state; save(data);
       viewedSlot = SLOTS[cursor];
-      if (viewedSlot.friend) {
-        const selected = await nextFriend(state.revision, viewedSlot);
-        if (!selected) {
-          noteAutoStatus(viewedSlot, 'no_ranch_friends', state.revision);
-          return { skipped: true };
-        }
-        try {
-          const result = await perform(selected, cursor, selected.name);
-          noteAutoStatus(viewedSlot, undefined, state.revision);
-          if (selected.action === 'stealFriend') scheduleProductSale(state.revision, result);
-          return result;
-        } catch (failure) {
-          if (quoteId || !['RANCH_STATE_CHANGED', 'RANCH_FRIEND_UNAVAILABLE'].includes(failure.code)) throw failure;
-          noteAutoStatus(viewedSlot, 'no_friend_targets', state.revision);
-          return { skipped: true };
-        }
-      }
       const { type, feed, view = 'animals' } = viewedSlot;
       const snapshot = await getState(view, state.policy.shopId, (type || feed) && { ...state, type, feed });
       const fresh = autoState(read());
@@ -879,7 +966,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         if (slot === cursor) noteAutoStatus(viewedSlot, reason, state.revision);
         if (!selected) continue;
         if (slot !== cursor) noteAutoStatus(SLOTS[slot], undefined, state.revision);
-        const result = await perform(selected, slot, automationTarget(selected, snapshot));
+        attemptingAction = true;
+        const result = await performAutomatic(selected, state.revision, slot, automationTarget(selected, snapshot), markOperationNotSent);
         if (selected.action === 'harvest' && result.snapshot?.inventory?.some(row => row.canSell))
           scheduleProductSale(state.revision, result);
         if (SLOTS[slot].key === 'eggSale' && result.outcome === 'confirmed' && state.policy.tasks) {
@@ -907,24 +995,15 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       }
       return { skipped: true };
     } catch (failure) {
-      if (context) {
-        let recorded;
-        try {
-          if (quoteId) {
-            const last = read().lastOperation;
-            if (last?.id === quoteId) recorded = visibleOperation(last);
-          }
-        } catch { /* Use the preflight disposition if the ledger cannot be read. */ }
-        const notSent = AUTOMATION_NOT_SENT.has(failure.code) || failure.isGovernedRejection === true || failure.isLocalRequestRejection === true;
-        logAutomationResult(context, recorded, notSent ? 'not_sent' : 'error');
-      } else if (viewedSlot && canAutomate()) {
+      if (!attemptingAction && viewedSlot && canAutomate()) {
         const reason = Object.hasOwn(AUTO_SCAN_REASONS, failure.code) ? AUTO_SCAN_REASONS[failure.code] : 'read_failed';
-        noteAutoStatus(viewedSlot, reason, state.revision);
+        noteAutoStatus(viewedSlot, reason, state.revision, { failure });
       }
       throw failure;
     } finally { autoRunning = false; }
   }
-  return { getState: (...args) => safe(() => getState(...args)), getFriend: host => safe(() => getFriend(host)), prepare: (...args) => safe(() => prepare(...args)),
+  return { getState: (...args) => safe(() => getState(...args)), getFriend: host => safe(() => getFriend(host)),
+    prepare: (action, input, revision, slot) => safe(() => prepare(action, input, revision, slot)),
     getAutomation: () => safe(getAutomation), setAutomation: value => safe(() => setAutomation(value)), automate: () => safe(automate, false),
     execute: id => safe(markOperationNotSent => execute(id, markOperationNotSent)),
     cancel: (...args) => safe(() => cancel(...args)), acknowledge: (...args) => safe(() => acknowledge(...args)) };
@@ -937,7 +1016,7 @@ function service() {
     const suffix = crypto.createHash('sha256').update(account).digest('hex').slice(0, 24);
     instance = createRanchService({ network: require('../utils/network'),
       canAutomate: () => typeof automationAdmission === 'function' && automationAdmission(),
-      getFriendTargets: () => require('./friend-land-analyzer').getFriendsList(),
+      getFriendTargets: () => require('./friend-land-analyzer').getFriendsList(false, { throwOnError: true }),
       canVisitFriend: gid => !require('./friend-api').inFriendQuietHours()
         && (gid === undefined || !require('../models/store').getFriendBlacklist(account).some(value => String(value) === gid)),
       file: () => require('../config/runtime-paths').getDataFile(`ranch-operations-${suffix}.json`),

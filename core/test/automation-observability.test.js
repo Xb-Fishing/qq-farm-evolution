@@ -181,11 +181,14 @@ test('activity projection rejects empty, replayed and unknown results', () => {
 
 test('only fully confirmed automatic ranch results enter daily events, while all outcomes remain in runtime logs', () => {
   const rows = [];
-  for (const result of ['confirmed', 'unknown', 'partial', 'not_sent', 'error']) {
-    const meta = { module: 'ranch', event: 'ranch_automation_action', action: 'buy', completed: 2, result, logKind: 'action' };
-    const normalized = observe.observeAutomationLog('fixture-ranch', '牧场', '自动购买牧草', false, meta, (...args) => rows.push(args));
-    assert.equal(normalized.meta.result, result);
-    assert.equal(normalized.meta.automationCategory, 'ranch');
+  const actions = { buy: '自动购买牧草', stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
+  for (const [action, message] of Object.entries(actions)) {
+    for (const result of ['confirmed', 'unknown', 'partial', 'not_sent', 'error']) {
+      const meta = { module: 'ranch', event: 'ranch_automation_action', action, completed: 2, result, logKind: 'action' };
+      const normalized = observe.observeAutomationLog('fixture-ranch', '牧场', message, false, meta, (...args) => rows.push(args));
+      assert.equal(normalized.meta.result, result);
+      assert.equal(normalized.meta.automationCategory, 'ranch');
+    }
   }
-  assert.equal(rows.length, 1); assert.equal(rows[0][1], 'ranch');
+  assert.deepEqual(rows.map(row => [row[1], row[2]]), Object.values(actions).map(message => ['ranch', message]));
 });

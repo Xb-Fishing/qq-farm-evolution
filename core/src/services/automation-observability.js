@@ -78,7 +78,7 @@ function actionFromLog(message, meta = {}) {
   if (meta.module !== expectedModule) return null;
   if (event === 'ranch_automation_action') {
     if (meta.result !== 'confirmed' || meta.replayed === true || !Number.isSafeInteger(meta.completed) || meta.completed <= 0
-      || !['harvest', 'produce', 'clean', 'claimTasks', 'addGrass', 'buy', 'place'].includes(meta.action)) return null;
+      || !['harvest', 'produce', 'clean', 'claimTasks', 'addGrass', 'buy', 'place', 'stealFriend', 'cleanFriend'].includes(meta.action)) return null;
     return { category, message: redactExternalText(String(message || '')).slice(0, 280), level: 'info' };
   }
   if (event === 'dog_skill_gift_claim' && (meta.source !== 'automatic' || !(meta.count > 0))) return null;

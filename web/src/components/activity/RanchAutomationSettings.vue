@@ -222,7 +222,7 @@ const routineActions = [
           收获后优先出售未锁定、售价已确认的产物，并为进行中的鸡蛋任务留出需要的数量。
         </p>
         <p v-if="draft.friendSteal || draft.friendClean" class="automation-note">
-          每轮巡查一位好友，沿用好友黑名单和静默时段。
+          好友牧场单独计时，每轮巡查一位好友并执行已开启的操作。沿用好友黑名单和静默时段。
         </p>
       </fieldset>
 
