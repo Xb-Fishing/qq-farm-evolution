@@ -120,7 +120,7 @@ function hazardsById(list) {
     for (const hazard of list) {
         const id = positiveId(hazard.hazard_id);
         if (hazards.has(id)) fail('RANCH_RESPONSE_MISMATCH', '好友牧场的污物重复');
-        if (hazard.hazard_type === MOSQUITO) positiveId(hazard.owner);
+        if (hazard.hazard_type === MOSQUITO) decimal(hazard.owner, '污物来源');
         hazards.set(id, hazard);
     }
     return hazards;

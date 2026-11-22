@@ -107,6 +107,7 @@ test('a mosquito plan needs a supported active room, a unique baseline and avail
 
 test('placement confirmation needs the receipt mosquito and the same new hazard in the visited room', () => {
     const { input, ranch, hazard } = fixture();
+    hazard.owner = '0';
     const plan = social.plan('placeMosquito', input);
     const added = { hazard_id: '9007199254740999', owner: self, hazard_type: 1 };
     const reply = { actual_count: '1', remaining_times: '1', hazards: [hazard, added], rewards: [] };
@@ -117,6 +118,7 @@ test('placement confirmation needs the receipt mosquito and the same new hazard 
     assert.throws(() => social.verify(plan, reply), unknown);
     assert.throws(() => social.verify(plan, reply, current([hazard])), unknown);
     assert.throws(() => social.verify(plan, reply, current([hazard, { ...added, owner: '77' }])), unknown);
+    assert.throws(() => social.verify(plan, reply, current([hazard, { ...added, owner: '0' }])), unknown);
     assert.throws(() => social.verify(plan, reply, current([hazard, { ...added, hazard_id: '19' }])), unknown);
     const wrongRoom = { ranches: [{ ...ranch, ranch_inst_id: '44', hazards: [hazard, added] }] };
     assert.throws(() => social.verify(plan, reply, wrongRoom), unknown);
