@@ -63,6 +63,29 @@ function fixture(initialPolicy = {}) {
   return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; }, operate: fn => { operate = fn; }, acknowledge: fn => { acknowledge = fn; }, cancel: fn => { cancel = fn; } };
 }
 const button = (root, label) => h.buttonsOf(root).find(x => h.textOf(x).includes(label));
+test('friend ranch reads the selected account and uses the existing preview and confirmation flow', async () => {
+  const f = fixture(); await h.flush();
+  const reads = [];
+  f.read(async (url, config) => {
+    reads.push([url, config.headers['x-account-id'], config.params?.gid]);
+    const data = url === '/api/friends' ? [{ gid: 73, name: '测试好友' }]
+      : { host: '73', name: '测试好友', stealCount: 1, cleanCount: 1 };
+    return { data: { ok: true, data } };
+  });
+  const section = h.findAll(f.root, node => node.tag === 'details' && h.textOf(node).includes('好友牧场'))[0];
+  section.props.onToggle({ currentTarget: { open: true } }); await h.flush();
+  const select = h.findAll(section, node => node.props['aria-label'] === '选择好友牧场')[0];
+  select.props.onChange({ target: { value: '73' } }); await h.flush();
+  assert.deepEqual(reads, [['/api/friends', 'account-a', undefined], ['/api/ranch/friend', 'account-a', '73']]);
+  assert.equal(f.posts.length, 0);
+  h.click(button(section, '偷取产物')); await h.flush();
+  assert.deepEqual(f.posts.map(row => row.body), [{ action: 'stealFriend', input: { hostGid: '73' } }]);
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.equal(f.posts.filter(row => row.url.endsWith('/operate')).length, 1);
+  h.click(button(section, '帮好友清理')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'cleanFriend', input: { hostGid: '73' } });
+});
+
 test('real ranch panel prepares then confirms once; free and paid automation preferences save for selected account', async () => {
   const f = fixture(); await h.flush(); assert.equal(f.posts.length, 0);
   h.click(button(f.root, '一键生产')); await h.flush();

@@ -25,6 +25,28 @@ message ShelfRef {
     int64 ranch_inst_id = 1;
     int32 slot_index = 2;
 }
+message EnterHomesteadRequest { int64 host_gid = 1; int32 reason = 2; }
+message RanchFriendBasic { int64 gid = 1; string name = 2; }
+message EnterHomesteadReply {
+    RanchFriendBasic basic = 1;
+    bool is_tourist = 6;
+    AllCellsReply homestead_cells = 8;
+}
+message LeaveHomesteadRequest { int64 host_gid = 1; }
+message LeaveHomesteadReply {}
+message GetRanchDetailRequest {
+    int64 host_gid = 1;
+    repeated int64 ranch_inst_ids = 2;
+}
+message GetRanchDetailReply {
+    repeated RanchDetail ranches = 1;
+    int64 interval = 2;
+}
+message StealProduceRequest { int64 host_gid = 1; repeated ShelfRef targets = 2; }
+message StealProduceReply {
+    repeated RanchDetail ranches = 1;
+    repeated FacilityOpResult op_results = 4;
+}
 message RanchDetail {
     int64 ranch_inst_id = 1;
     int32 capacity = 2;
@@ -449,6 +471,10 @@ const root = protobuf.parse(schema, { keepCase: true }).root;
 root.resolveAll();
 const types = Object.freeze(Object.fromEntries(Object.entries(root.nested).filter(([, value]) => value instanceof protobuf.Type)));
 const ROUTES = Object.freeze({
+    "enterFriend": { service: 'gamepb.visitpb.VisitService', method: 'EnterHomestead', request: 'EnterHomesteadRequest', reply: 'EnterHomesteadReply', writing: false },
+    "leaveFriend": { service: 'gamepb.visitpb.VisitService', method: 'LeaveHomestead', request: 'LeaveHomesteadRequest', reply: 'LeaveHomesteadReply', writing: false },
+    "friendDetail": { service: 'gamepb.animalpb.AnimalService', method: 'GetRanchDetail', request: 'GetRanchDetailRequest', reply: 'GetRanchDetailReply', writing: false },
+    "stealFriend": { service: 'gamepb.animalpb.AnimalService', method: 'StealProduce', request: 'StealProduceRequest', reply: 'StealProduceReply', writing: true },
     "sceneLogin": {
         "service": "gamepb.globalscenepb.GlobalSceneService",
         "method": "PlayerSceneLogin",

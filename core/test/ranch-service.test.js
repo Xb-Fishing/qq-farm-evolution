@@ -74,7 +74,18 @@ function fixture(upgrade = false) {
       else if (method === 'ShopProfiles') reply = { shop_profiles: [5, 6].map(shop_id => ({ shop_id, global_scene_ids: [2] })) };
       else if (method === 'ShopInfo') reply = { goods_list: f.goods() };
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: f.tasks } };
-      else {
+      else if (method === 'EnterHomestead') {
+        assert.equal(request.host_gid, '73');
+        assert.equal(request.reason, 2);
+        reply = { basic: { gid: request.host_gid, name: '测试好友' }, is_tourist: f.tourist === true,
+          homestead_cells: { facilities: [{ instance_id: '51' }] } };
+      } else if (method === 'GetRanchDetail') {
+        assert.equal(request.host_gid, '73');
+        reply = { ranches: f.friendRanches };
+      } else if (method === 'LeaveHomestead') {
+        assert.equal(request.host_gid, '73');
+        reply = {};
+      } else {
         if (f.queueFull) throw decode(encode(Object.assign(new Error('synthetic request queue full'), { isLocalRequestRejection: true })));
         if (f.rejectUnsent) throw Object.assign(new Error('synthetic budget rejection'), { isGovernedRejection: true });
         beforeWrite?.(); writes++;
@@ -107,6 +118,13 @@ function fixture(upgrade = false) {
           }
           reply = { sell_items: request.items.map(({ id, uid, count }) => ({ id, uid, count })),
             get_items: [...earned].map(([id, count]) => ({ id, count: count.toString() })) };
+        } else if (method === 'StealProduce') {
+          assert.equal(request.host_gid, '73');
+          assert.deepEqual(request.targets, [{ ranch_inst_id: '51', slot_index: 0 }]);
+          reply = { op_results: [{ facility_inst_id: '51', kind: 2, target_id: '0', rewards: [{ id: '1060001', count: '1' }] }] };
+        } else if (method === 'CleanAllRanch' && request.host_gid === '73') {
+          assert.deepEqual(request.ranch_inst_ids, ['51']);
+          reply = { op_results: [{ facility_inst_id: '51', kind: 3, target_id: '2' }] };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
         else if (method === 'PlaceAnimal') {
           reply = { op_results: request.items.map(({ ranch_inst_id, animal_id }) => {
@@ -124,7 +142,7 @@ function fixture(upgrade = false) {
     },
   };
   const make = () => createRanchService({ network, file: () => file, now: () => now + gameOffset, quoteNow: () => now, canAutomate: () => allowed });
-  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], upgradeCost: 14000,
+  const f = { service: make(), make, calls, leases, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
     allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
@@ -134,6 +152,63 @@ async function quoteBuy(f) {
   const result = await f.service.prepare('buy', { shopId: '5', goodsId: '10002', count: 1 });
   assert.equal(result.ok, true, JSON.stringify(result)); return result.data.id;
 }
+test('friend ranch verifies visit identity, previews available targets and confirms each write once', async () => {
+  const f = fixture();
+  f.friendRanches.push({ ranch_inst_id: '51', shelves: [
+    { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
+    { slot_index: 1, can_steal: true, lots: [{ item_id: '1060002', can_steal: true, remain_num: '2', stealers: ['42'] }] },
+  ], hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }, { hazard_id: '3', owner: '42', hazard_type: 1 }] });
+  const friend = await f.service.getFriend('73');
+  assert.equal(friend.ok, true, friend.error);
+  assert.deepEqual([friend.data.stealCount, friend.data.cleanCount], [1, 1]);
+  assert.deepEqual(f.calls, ['EnterHomestead', 'GetRanchDetail', 'LeaveHomestead']);
+  for (const action of ['stealFriend', 'cleanFriend']) {
+    const before = f.writes;
+    const quote = await f.service.prepare(action, { hostGid: '73' });
+    assert.equal(quote.ok, true, quote.error);
+    assert.equal(f.writes, before);
+    const result = await f.service.execute(quote.data.id);
+    assert.equal(result.data.outcome, 'confirmed', result.data.message);
+    assert.equal(result.data.completed, 1);
+    assert.equal(f.writes, before + 1);
+    assert.equal(f.calls.at(-1), 'LeaveHomestead');
+    assert.equal((await f.service.execute(quote.data.id)).data.replayed, true);
+    assert.equal(f.writes, before + 1);
+  }
+  f.tourist = true;
+  assert.equal((await f.service.getFriend('73')).code, 'RANCH_FRIEND_UNAVAILABLE');
+  assert.deepEqual(f.calls.slice(-2), ['EnterHomestead', 'LeaveHomestead']);
+  f.tourist = false;
+  f.friendRanches[0].ranch_inst_id = '91';
+  assert.equal((await f.service.getFriend('73')).code, 'RANCH_RESPONSE_MISMATCH');
+  assert.equal(f.calls.at(-1), 'LeaveHomestead');
+  assert.equal((await f.service.prepare('stealFriend', { hostGid: '42' })).code, 'RANCH_INVALID_ARGUMENT');
+  assert.equal(f.writes, 2);
+});
+
+test('friend ranch rechecks targets before dispatch and keeps mismatched receipts unresolved', async () => {
+  const f = fixture();
+  const lot = { item_id: '1060001', can_steal: true, remain_num: '2' };
+  f.friendRanches.push({ ranch_inst_id: '51', shelves: [{ slot_index: 0, can_steal: true, lots: [lot] }] });
+  const quote = await f.service.prepare('stealFriend', { hostGid: '73' });
+  assert.equal(quote.ok, true);
+  lot.can_steal = false;
+  assert.equal((await f.service.execute(quote.data.id)).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 0);
+  lot.can_steal = true;
+  f.mutateReply = reply => ({ ...reply, op_results: [{ ...reply.op_results[0], facility_inst_id: '12' }] });
+  const result = await f.service.execute(quote.data.id);
+  assert.equal(result.data.outcome, 'unknown');
+  assert.equal(result.data.friendGid, '73');
+  assert.equal((await f.service.execute(quote.data.id)).data.replayed, true);
+  assert.equal((await f.service.prepare('stealFriend', { hostGid: '73' })).code, 'RANCH_RESULT_UNCONFIRMED');
+  assert.equal((await f.service.getState()).ok, true);
+  assert.equal((await f.service.acknowledge(quote.data.id)).code, 'RANCH_REFRESH_REQUIRED');
+  assert.equal((await f.service.getFriend('73')).ok, true);
+  assert.equal((await f.service.acknowledge(quote.data.id)).data.outcome, 'acknowledged');
+  assert.equal(f.writes, 1);
+});
+
 test('real service prepares without writes; fresh price changes reject, confirmed receipt is not replayed', async () => {
   const f = fixture(); const id = await quoteBuy(f); assert.equal(f.writes, 0);
   f.price(11); assert.equal((await f.service.execute(id)).code, 'RANCH_STATE_CHANGED'); assert.equal(f.writes, 0);

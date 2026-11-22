@@ -41,6 +41,25 @@ function registerAdminRanchRoutes(context) {
     try { return respond(res, await provider.setRanchAutomation(id, req.body)); }
     catch (error) { return sendProviderError(res, error); }
   });
+  app.get('/api/ranch/friend', async (req, res) => {
+    const id = await account(req, res); if (!id) return;
+    const gid = req.query?.gid;
+    if (typeof gid !== 'string' || !/^[1-9]\d{0,18}$/.test(gid) || BigInt(gid) > (1n << 63n) - 1n)
+      return res.status(400).json({ ok: false, error: '好友账号无效' });
+    if (!stillAuthorized(req, id)) return denyAccess(res);
+    const scope = readScope(id);
+    if (!scope) return unavailable(res);
+    try {
+      const result = await provider.getRanchFriend(id, gid);
+      if (!stillAuthorized(req, id)) return denyAccess(res);
+      if (readScope(id) !== scope) return unavailable(res);
+      return respond(res, result);
+    } catch (error) {
+      if (!stillAuthorized(req, id)) return denyAccess(res);
+      if (readScope(id) !== scope) return unavailable(res);
+      return sendProviderError(res, error);
+    }
+  });
   app.get('/api/ranch/state', async (req, res) => {
     const id = await account(req, res); if (!id) return;
     const view = String(req.query?.view || 'animals'); const shop = String(req.query?.shopId || '5');

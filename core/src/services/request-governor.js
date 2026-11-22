@@ -21,6 +21,13 @@ function configurePolicy(value) { policy = validateRequestPolicy(value); return 
 function isFriendRequest(service, method, body, ownGid) {
     if (service === 'gamepb.friendpb.FriendService' || service === 'gamepb.visitpb.VisitService') return true;
     if (service === 'gamepb.userpb.UserService' && ['BatchGetBasicInfo', 'GetBriefInfo'].includes(method)) return true;
+    if ((service === 'gamepb.animalpb.AnimalService' && ['GetRanchDetail', 'StealProduce'].includes(method))
+        || (service === 'gamepb.animalpb.RanchService' && method === 'CleanAllRanch')) {
+        try {
+            const target = require('./ranch-codec').decode(`${method}Request`, body).host_gid;
+            return target !== '0' && target !== String(ownGid || '0');
+        } catch { return true; }
+    }
     if (service !== 'gamepb.plantpb.PlantService'
         || !['AllLands', 'Harvest', 'WaterLand', 'Farming', 'WeedOut', 'Insecticide', 'PutInsects', 'PutWeeds', 'PutSocialItem', 'CheckCanOperate'].includes(method)) return false;
     try {
@@ -124,7 +131,8 @@ function checkRequest(serviceName, methodName, now = Date.now(), options = {}) {
     pruneWindow(now);
     const key = methodKey(serviceName, methodName);
     if (!policy.enabled) return { allowed: true, reason: 'disabled' };
-    const whitelisted = WHITELIST.has(key) || STEAL_WHITELIST_RE.test(key);
+    const whitelisted = WHITELIST.has(key) || (STEAL_WHITELIST_RE.test(key)
+        && key !== 'gamepb.animalpb.AnimalService.StealProduce');
     // 异常阈值只通知上层降低普通巡查节奏，不在这里整号拒绝业务请求。
     // 成熟抢收仍受下面的 60s 总量/单方法硬预算保护。
     if (whitelisted) return { allowed: true, reason: 'whitelist' };

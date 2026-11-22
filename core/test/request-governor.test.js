@@ -13,6 +13,27 @@ const activityRouteSrc = fs.readFileSync(
     'utf8'
 );
 
+test('friend ranch reads and writes use the friend budget without charging own cleanup as a visit', () => {
+    const codec = require('../src/services/ranch-codec');
+    governor.resetForTest();
+    for (const key of ['friendDetail', 'stealFriend', 'clean']) {
+        const { service, method, request } = codec.ROUTES[key];
+        for (const [host_gid, expected] of [['73', true], ['42', false], ['0', false]]) {
+            assert.equal(governor.isFriendRequest(service, method, codec.encode(request, { host_gid }), '42'), expected, key);
+        }
+    }
+    const actor = { friend: true };
+    const { service, method } = codec.ROUTES.stealFriend;
+    governor.configurePolicy({ enabled: true, total60s: 80, friend60s: 2, method60s: 15 });
+    try {
+        governor.recordSent('gamepb.visitpb.VisitService', 'Enter', true, T0, actor);
+        governor.recordSent('gamepb.visitpb.VisitService', 'Leave', true, T0, actor);
+        assert.equal(governor.checkRequest(service, method, T0, actor).reason, 'budget_friend');
+    } finally {
+        governor.resetForTest();
+    }
+});
+
 test('total budget drops non-whitelisted requests beyond the 60s limit', () => {
     governor.resetForTest();
     for (let i = 0; i < governor.TOTAL_LIMIT; i++) {

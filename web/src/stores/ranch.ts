@@ -124,6 +124,27 @@ export const useRanchStore = defineStore('ranch', () => {
     error.value = body?.error || e?.message || '牧场请求暂时失败，请稍后重试'
     errorCode.value = body?.code || ''
   }
+  async function readFriend(gid?: string) {
+    const id = accountId.value
+    if (!id)
+      return null
+    const token = generation
+    const request = requestConfig(id, token)
+    try {
+      const { data } = await api.get(gid ? '/api/ranch/friend' : '/api/friends', {
+        ...request.config,
+        ...(gid && { params: { gid } }),
+      })
+      if (generation !== token)
+        return null
+      if (data?.ok !== true || data.data?.sceneRecoveryRequired)
+        throw new Error(data?.error || '好友牧场暂不可用，请稍后刷新')
+      return data.data
+    }
+    finally {
+      controllers.delete(request.controller)
+    }
+  }
   async function automationRequest(policy?: Record<string, any>) {
     const id = accountId.value
     if (!id || savingAutomation.value)
@@ -394,7 +415,7 @@ export const useRanchStore = defineStore('ranch', () => {
       }
       const action = selected.intent?.action
       const feedOperation = action === 'addGrass' || (action === 'buy' && String(selected.intent?.input?.goodsId) === '10001' && String(selected.intent?.input?.shopId) === '6')
-      const uncertain = { id: selected.id, action, feedOperation, outcome: 'unknown', label: selected.label, message: feedOperation ? '牧草操作状态暂未确认，程序会自动读取库存，不会重发原单' : '请求状态暂未确认，请刷新核对；不会自动重试' }
+      const uncertain = { id: selected.id, action, feedOperation, friendGid: selected.intent?.input?.hostGid, outcome: 'unknown', label: selected.label, message: feedOperation ? '牧草操作状态暂未确认，程序会自动读取库存，不会重发原单' : '请求状态暂未确认，请刷新核对；不会自动重试' }
       outcomes.set(id, uncertain)
       if (generation === token) {
         if (e?.code !== 'ERR_CANCELED')
@@ -492,5 +513,5 @@ export const useRanchStore = defineStore('ranch', () => {
       return false
     }
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, readFriend, prepare, execute, acknowledge, closeQuote }
 })
