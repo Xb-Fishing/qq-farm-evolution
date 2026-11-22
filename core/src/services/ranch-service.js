@@ -761,7 +761,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     try { return { ok: true, data: await callback(id => { quoteId = id; }) }; }
     catch (failure) {
       const known = /^RANCH_[A-Z_]{1,64}$/.test(failure.code || '') || LOCAL_CODES.has(failure.code);
-      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包', shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理' };
+      const labels = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包',
+        shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理',
+        enterFriend: '进入好友牧场', friendDetail: '好友牧场详情', leaveFriend: '离开好友牧场' };
       const failureStage = Object.hasOwn(labels, failure.ranchStage) ? failure.ranchStage : 'unknown';
       const failureKind = ['encode', 'request', 'decode', 'normalize'].includes(failure.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
       if (!known && logReadFailure) {
