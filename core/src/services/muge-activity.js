@@ -1,5 +1,11 @@
 // Read only: the current List/GetGroup payload proves rules, not personal progress.
 const MUGE_ROOT_ACTIVITY_ID = 2026111700;
+const MUGE_SECTION_ACTIVITY_IDS = Object.freeze({
+  celebration: '2026111702',
+  friends: '2026111703',
+  handbook: '2026111704',
+  survey: '2026111705',
+});
 const { timestamp, unavailable } = require('./friend-recall-activity');
 const MODULES = ['兴牧庆典', '牧友同行', '成长手册', '牧场人格'];
 function text(value) {
@@ -25,4 +31,4 @@ function normalizeMuge(root, now = Date.now() / 1000) {
     notes: lines.filter(line => /邮件|补发/.test(line)),
   };
 }
-module.exports = { MUGE_ROOT_ACTIVITY_ID, timestamp, unavailable, findRoot, normalizeMuge };
+module.exports = { MUGE_ROOT_ACTIVITY_ID, MUGE_SECTION_ACTIVITY_IDS, timestamp, unavailable, findRoot, normalizeMuge };

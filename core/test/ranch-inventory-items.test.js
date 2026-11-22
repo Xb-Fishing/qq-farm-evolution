@@ -18,6 +18,8 @@ process.env.FARM_LOG_DIR = fixtureLogDir; process.env.FARM_PRIVATE_CONFIG_FILE =
 const config = require('../src/config/gameConfig');
 const { auditBagSeedCoverage } = require('../src/services/seed-catalog-audit');
 const { loadProto, types } = require('../src/utils/proto');
+const { itemDto } = require('../src/services/ranch-model');
+const { pngResourceInfo } = require('../src/services/privacy-guard');
 const sources = require('../src/gameConfig/seed_images_named/event-seed-sources.json');
 const files = ['../src/gameConfig/EventItems.json', '../src/services/warehouse.js'].map(f => path.resolve(__dirname, f));
 const before = files.map(f => [fs.readFileSync(f), fs.statSync(f).mode]);
@@ -29,6 +31,11 @@ test.after(() => {
   assert.equal(path.dirname(path.resolve(data)), temp); fs.rmSync(data, { recursive: true, force: true });
 });
 const rows = [[1007, '金券', 102], [1102, '牧场经验', 3], [3003, '动物普通收藏点', 12]];
+const pinecone = {
+  id: 1008,
+  file: '1008_ranch_pinecone.png',
+  sha256: '349bd3886684d4c5ff5f9d7cd4c0f5a6a3d7cbe99cb3ad05cb79fcd929670c00',
+};
 function fixture(t, items) {
   const paths = ['../src/utils/network', '../src/models/store', '../src/services/warehouse'].map(require.resolve);
   const saved = paths.map(p => [p, require.cache[p]]), calls = [];
@@ -53,6 +60,43 @@ test('real BagReply now names reviewed ranch inventory without seed gaps; unknow
   }
   assert.deepEqual(f.warehouse.getBagSeedsFromItems(items), []); assert.deepEqual(bag.seedRecognition.issues, []);
   assert.deepEqual(auditBagSeedCoverage([...items, { id: 987654321, count: 1 }], []).issues, [{ itemId: 987654321, kind: 'unclassified_item' }]);
+});
+test('real BagReply recognizes ranch pinecones without planting, selling or using them', async t => {
+  const { id, file } = pinecone;
+  const stack = { id, uid: 10080, count: 17 };
+  const { warehouse, calls } = fixture(t, [stack]);
+  const bag = await warehouse.getBagDetail();
+  const item = bag.items.find(row => row.id === id);
+  const image = `/game-config/seed_images_named/${file}`;
+
+  assert.equal(item.name, '松果');
+  assert.equal(item.category, 'item');
+  assert.equal(item.itemType, 2);
+  assert.equal(item.count, 17);
+  assert.equal(item.countDec, '17');
+  assert.equal(item.image, image);
+  assert.equal(item.sellable, false);
+  assert.equal(item.usable, false);
+  assert.equal(config.isSeedItem(id), false);
+  assert.equal(config.getPlantBySeedId(id), undefined);
+  assert.equal(config.getPlantByFruitId(id), undefined);
+  assert.deepEqual(warehouse.getBagSeedsFromItems(bag.originalItems), []);
+  assert.deepEqual(bag.seedRecognition.issues, []);
+  const unknown = { id: 987654321, count: 1 };
+  assert.deepEqual(auditBagSeedCoverage([...bag.originalItems, unknown], []).issues, [
+    { itemId: unknown.id, kind: 'unclassified_item' },
+  ]);
+  assert.deepEqual(itemDto(bag.originalItems[0]), { id: '1008', count: '17', name: '松果', image });
+
+  const goods = require('../src/gameConfig/MallCatalog.json').goods.find(row => row.id === id);
+  assert.equal(goods.name, '有机化肥(4小时)');
+  assert.deepEqual(goods.items, [{ id: 80012, count: '1' }]);
+
+  assert.deepEqual(calls.splice(0), ['Bag']);
+  await warehouse.sellAllFruits();
+  assert.deepEqual(calls.splice(0), ['Bag']);
+  assert.equal(await warehouse.openFertilizerGiftPacksSilently(), 0);
+  assert.deepEqual(calls, ['Bag']);
 });
 test('牧场每日礼包道具在实际背包命名，保留普通物品安全边界', async t => {
   const id = 80021;
@@ -93,12 +137,49 @@ test('reviewed snapshot records exact source and original item sprite bytes', ()
   assert.equal(shared.spriteFrame, config.getItemById(3001)?.icon_res);
 });
 
-test('real static HTTP delivers all three mapped PNGs with the reviewed content type and hash', async t => {
+test('pinecone icon is the reviewed client snapshot PNG with publication-safe metadata', () => {
+  const { id, file, sha256 } = pinecone;
+  const row = sources.reviewedResources.find(resource => resource.itemId === id);
+  const sourceCommit = '6ac7a3d7930018058d201af86beea8de6a9f8507';
+  const repositoryAlias = 'public-reference-2';
+  assert.deepEqual(row, {
+    itemId: id,
+    file,
+    kind: 'item',
+    sourceGrade: 'reviewed_public_client_snapshot',
+    repositoryAlias,
+    sourceCommit,
+    sourcePath: 'core/src/gameConfig/seed_images_named/seed_images/1008.png',
+    gitBlob: 'e45bd3c90c878f6dd218fdf9bf91157a5126203a',
+    sha256,
+    width: 100,
+    height: 100,
+    spriteFrame: 'gui/texture/icon/1008/spriteFrame',
+    bundleName: 'mcRes',
+  });
+  assert.ok(sources.references.some(ref => ref.repositoryAlias === repositoryAlias && ref.commit === sourceCommit));
+  const item = config.getItemById(id);
+  assert.equal(item.icon_res, row.spriteFrame);
+  assert.equal(item.bundle_name, row.bundleName);
+  for (const key of ['asset_name', 'sells', 'sell_cond', 'cond_sells', 'can_use']) assert.equal(item[key], null);
+
+  const iconPath = path.join(__dirname, '../src/gameConfig/seed_images_named', file);
+  const stat = fs.lstatSync(iconPath);
+  assert.ok(stat.isFile());
+  assert.equal(stat.mode & 0o111, 0);
+  const bytes = fs.readFileSync(iconPath);
+  assert.deepEqual(pngResourceInfo(bytes, { runtimeTerms: [] }), { width: row.width, height: row.height });
+  assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), sha256);
+  const gitBlob = Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes]);
+  assert.equal(crypto.createHash('sha1').update(gitBlob).digest('hex'), row.gitBlob);
+});
+
+test('real static HTTP delivers mapped ranch PNGs with the reviewed content type and hash', async t => {
   const app = require('express')();
   app.use('/game-config', require('express').static(path.join(__dirname, '../src/gameConfig')));
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  for (const [id] of rows) {
+  for (const id of [...rows.map(([id]) => id), pinecone.id]) {
     const response = await new Promise((resolve, reject) => {
       http.get({ host: '127.0.0.1', port: server.address().port, path: config.getItemImageById(id) }, res => {
         const chunks = []; res.on('data', bytes => chunks.push(bytes));

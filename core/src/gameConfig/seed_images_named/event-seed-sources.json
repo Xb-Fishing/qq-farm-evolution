@@ -2083,6 +2083,21 @@
       "bundleName": "mcRes"
     },
     {
+      "itemId": 1008,
+      "file": "1008_ranch_pinecone.png",
+      "kind": "item",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1008.png",
+      "gitBlob": "e45bd3c90c878f6dd218fdf9bf91157a5126203a",
+      "sha256": "349bd3886684d4c5ff5f9d7cd4c0f5a6a3d7cbe99cb3ad05cb79fcd929670c00",
+      "width": 100,
+      "height": 100,
+      "spriteFrame": "gui/texture/icon/1008/spriteFrame",
+      "bundleName": "mcRes"
+    },
+    {
       "itemId": 1102,
       "file": "1102_ranch_experience.png",
       "kind": "item",
@@ -2481,6 +2496,18 @@
       "sha256": "5ea12d657bed9a342650b39d01c64fea38ec1057a94585caf36ba8fc548282de"
     },
     "note": "404 直领与问答奖励核对种子 ID 26038。自然背包只核对果实 ID 46038 和 1046038，售价与资产身份以固定快照为据。阶段图沿用通用回退，专属阶段图待核。26084 仅登记物品，等待当前背包果实或土地证据。"
+  },
+  "reviewedRanchPineconeItem": {
+    "itemId": 1008,
+    "name": "松果",
+    "type": 2,
+    "sourceGrade": "reviewed_public_client_snapshot",
+    "repositoryAlias": "public-reference-2",
+    "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+    "sourcePath": "core/src/gameConfig/ItemInfo.json",
+    "gitBlob": "4efa5e008fc617556d558f3acc0af59728ffb41f",
+    "sha256": "b69d10841b69a5b5cb7e94948d950319dce6038b10079982ac7365845006a659",
+    "corroboration": "另一固定客户端提取表、牧场手册与公告交叉核对物品身份。"
   },
   "reviewedRanchInventoryItems": {
     "sourceGrade": "reviewed_public_client_snapshot",

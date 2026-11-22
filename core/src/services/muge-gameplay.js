@@ -4,13 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const codec = require('./muge-codec');
-const { MUGE_ROOT_ACTIVITY_ID, normalizeMuge, unavailable } = require('./muge-activity');
+const { MUGE_ROOT_ACTIVITY_ID, MUGE_SECTION_ACTIVITY_IDS: sections, normalizeMuge, unavailable } = require('./muge-activity');
 const { decimal, itemDto, positiveId } = require('./ranch-model');
 
 const questions = require('../gameConfig/MugeQuestions.json').map(({ id, title, options }) =>
   ({ id, title, options: options.map((text, index) => ({ value: index + 1, text })) }));
 const rootId = String(MUGE_ROOT_ACTIVITY_ID);
-const sections = { celebration: '2026111702', friends: '2026111703', handbook: '2026111704', survey: '2026111705' };
 const claims = {
   claimCelebration: { section: 'celebration', field: 'celebration', cmd: 85, rows: 'tiers', label: '领取兴牧庆典奖励' },
   claimFriends: { section: 'friends', field: 'friends', cmd: 84, rows: 'tiers', label: '领取牧友同行奖励' },

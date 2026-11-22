@@ -106,6 +106,73 @@ test('real activity scan routes remain available and ordinary admins retain upda
   assert.equal(installations, 2);
 });
 
+test('the actual scanner reviews the established Muge root once and still discovers unknown child modules', async t => {
+  const monitor = require('../src/services/activity-update-monitor');
+  t.after(() => monitor.stopActivityUpdateMonitor());
+  const { registerAdminActivityUpdateRoutes, selectKnownActivityReviewRoots } = require('../src/controllers/admin-activity-update-routes');
+  const now = Math.floor(Date.now() / 1000);
+  const rootId = 2026111700;
+  const registered = [rootId, 2026111702, 2026111703, 2026111704, 2026111705];
+  const active = registered.map(id => ({
+    id, parentId: id === rootId ? 0 : rootId,
+    startTime: now - 60, endTime: now + 600, visible: true, enabled: false,
+  }));
+  const newRoot = { ...active[0], id: 9099123100 };
+  const newChild = { ...active[1], id: 9099123101 };
+  let listed = [...active, newRoot];
+  let groupResult = id => ({ id });
+  const calls = [];
+  const app = require('express')();
+  registerAdminActivityUpdateRoutes({ app, requireAdminToken: (_req, _res, next) => next(), provider: {
+    getAccounts: () => ({ accounts: [{ id: 'fixture', running: true }] }),
+    isAccountRunning: () => true,
+    getStatus: () => ({ connection: { connected: true } }),
+    getActivityDiscoveryList: async () => { calls.push('List'); return listed; },
+    getActivityGroupSnapshot: async (_id, id) => { calls.push(id); return groupResult(id); },
+    getBag: async () => { calls.push('Bag'); return {}; },
+  } });
+
+  const current = await monitor.runActivityUpdateScan();
+  assert.deepEqual(current.unknownActivityIds, [newRoot.id]);
+  assert.deepEqual(current.online.checkedActivityIds, [rootId]);
+  assert.deepEqual(current.online.groups, [
+    { id: newRoot.id, reviewKind: 'candidate' }, { id: rootId, reviewKind: 'known-active' },
+  ]);
+  assert.deepEqual(calls.splice(0), ['List', newRoot.id, rootId, 'Bag']);
+
+  listed = [...active, newChild];
+  const newModule = await monitor.runActivityUpdateScan();
+  assert.deepEqual(newModule.unknownActivityIds, [newChild.id]);
+  assert.deepEqual(newModule.online.groups, [{ id: rootId, reviewKind: 'candidate' }]);
+  assert.deepEqual(calls.splice(0), ['List', rootId, 'Bag']);
+
+  for (const result of [null, {}, { id: newRoot.id }]) {
+    groupResult = () => result;
+    const failed = await monitor.runActivityUpdateScan();
+    assert.deepEqual(failed.unknownActivityIds, [newChild.id]);
+    assert.equal(failed.online.groups.length, 1);
+    assert.equal(failed.online.groups[0].id, rootId);
+    assert.equal(failed.online.groups[0].error, '活动详情与列表不匹配');
+    assert.deepEqual(calls.splice(0), ['List', rootId, 'Bag']);
+  }
+  groupResult = () => { throw new Error('fixture read failed'); };
+  const thrown = await monitor.runActivityUpdateScan();
+  assert.equal(thrown.online.groups[0].error, 'fixture read failed');
+  assert.deepEqual(calls.splice(0), ['List', rootId, 'Bag']);
+
+  const cutoff = Math.floor(Date.now() / 1000);
+  const ended = active.map(item => ({ ...item, endTime: cutoff }));
+  assert.deepEqual(selectKnownActivityReviewRoots(ended, registered, cutoff), []);
+  const orphan = { ...newChild, id: 9099123102, parentId: 9099123103 };
+  listed = [...ended, newChild, orphan];
+  const expired = await monitor.runActivityUpdateScan();
+  assert.deepEqual(expired.unknownActivityIds, [orphan.id, newChild.id]);
+  assert.equal(expired.endedActivities.find(item => item.id === rootId)?.reason, 'expired');
+  assert.deepEqual(expired.online.checkedActivityIds, []);
+  assert.deepEqual(expired.online.groups, []);
+  assert.deepEqual(calls, ['List', 'Bag']);
+});
+
 test('the actual activity SFC compiles with ordinary gameplay and no optional control imports', () => {
   const compiler = require(path.join(repo, 'web/node_modules/vue/compiler-sfc'));
   const filename = path.join(repo, 'web/src/views/Activity.vue');

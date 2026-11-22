@@ -146,7 +146,9 @@ test('future calendar reward items: isolated real codecs and exact assets', asyn
       }]);
       const png = path.join(base, 'seed_images_named', goldImage);
       const bytes = fs.readFileSync(png);
-      assert.equal(fs.statSync(png).mode & 0o777, 0o644);
+      const stat = fs.lstatSync(png);
+      assert.ok(stat.isFile());
+      assert.equal(stat.mode & 0o111, 0);
       assert.equal(sha(bytes), goldSha);
       const blob = Buffer.concat([Buffer.from(`blob ${bytes.length}`), Buffer.from([0]), bytes]);
       assert.equal(crypto.createHash('sha1').update(blob).digest('hex'), goldBlob);

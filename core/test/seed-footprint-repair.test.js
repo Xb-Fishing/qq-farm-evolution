@@ -116,7 +116,8 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   // Unknown-seed controls remain covered by bag-seed-safety.test.js.
   // These additional non-seeds have independent real Bag/Sell/icon coverage in
   // ranch-inventory-items.test.js; keep the original historical-row hash intact.
-  const ranchInventoryItems = new Set([1007, 1102, 3003]);
+  const ranchInventoryItems = new Set([1007, 1008, 1102, 3003]);
+  assert.equal(items.filter(row => row.id === 1008).length, 1);
   // Exact calendar seed and winter fruit rows and images: future-calendar-seed-items.test.js.
   const futureCalendarSeeds = new Set([26038, 26084]);
   const winterFruits = new Set([46038, 1046038]);

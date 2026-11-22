@@ -1,5 +1,6 @@
 const { validClientVersion } = require('../runtime/client-runtime-version');
 const activity = require('../services/activity');
+const { MUGE_ROOT_ACTIVITY_ID, MUGE_SECTION_ACTIVITY_IDS } = require('../services/muge-activity');
 const {
   getActivityUpdateState,
   MANUAL_SCAN_UPSTREAM_CACHE_MS,
@@ -18,6 +19,11 @@ function selectUnknownOnlineActivities(activities, knownIds) {
   });
 }
 
+function activityEnded(item, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const endTime = Number(item?.endTime);
+  return endTime > 0 && endTime <= nowSeconds;
+}
+
 function selectActivitySnapshotRoots(activities, candidates) {
   const byId = new Map((activities || []).map(item => [Number(item?.id), item]));
   const roots = new Map();
@@ -31,7 +37,7 @@ function selectActivitySnapshotRoots(activities, candidates) {
       current = parent;
     }
     const rootId = Number(current?.id);
-    if (rootId > 0 && !roots.has(rootId)) roots.set(rootId, current);
+    if (rootId > 0 && !Number(current.parentId) && !roots.has(rootId)) roots.set(rootId, current);
   }
   return [...roots.values()].slice(0, 20);
 }
@@ -43,13 +49,12 @@ function selectKnownActivityReviewRoots(activities, knownIds, nowSeconds = Math.
       const id = Number(item?.id);
       const parentId = Number(item?.parentId) || 0;
       const startTime = Number(item?.startTime) || 0;
-      const endTime = Number(item?.endTime) || 0;
       return id > 0
         && known.has(id)
         && parentId === 0
         && item?.visible !== false
         && (!startTime || startTime <= nowSeconds)
-        && (!endTime || endTime >= nowSeconds);
+        && !activityEnded(item, nowSeconds);
     })
     .sort((a, b) => Number(b?.enabled) - Number(a?.enabled) || Number(b?.endTime) - Number(a?.endTime))
     .slice(0, 4);
@@ -83,9 +88,14 @@ function anonymizeGameUpdateEvidence(evidence) {
 }
 
 function registerAdminActivityUpdateRoutes({ app, provider, requireAdminToken }) {
-  const knownActivityIds = Object.entries(activity)
+  const sharedActivityIds = Object.entries(activity)
     .filter(([key, value]) => key.endsWith('_ACTIVITY_ID') && Number.isFinite(Number(value)))
     .map(([, value]) => Number(value));
+  const knownActivityIds = [
+    ...sharedActivityIds,
+    MUGE_ROOT_ACTIVITY_ID,
+    ...Object.values(MUGE_SECTION_ACTIVITY_IDS).map(Number),
+  ];
   const scanOnlineActivities = async (knownIds) => {
     const accounts = provider.getAccounts()?.accounts || [];
     const account = accounts.find((item) => {
@@ -122,34 +132,27 @@ function registerAdminActivityUpdateRoutes({ app, provider, requireAdminToken })
     // 才开放 7 月批次 ID；在线 List 已经是权威发现源，不能再用历史最大 ID 过滤。
     const unknown = selectUnknownOnlineActivities(activities, knownIds);
     const groups = [];
-    // 只读取 List 已明确下发的活动根节点。子节点随根 GetGroup 一次返回，禁止按
-    // 日期枚举未发布 ID，也禁止逐个对子节点做试探请求，避免命中风控诱导接口。
-    for (const item of selectActivitySnapshotRoots(activities, unknown)) {
+    const requestedRoots = new Set();
+    async function readGroup(item, reviewKind) {
+      const id = Number(item.id);
+      if (requestedRoots.has(id) || activityEnded(item)) return;
+      requestedRoots.add(id);
       try {
-        groups.push({
-          ...await provider.getActivityGroupSnapshot(account.id, item.id, ''),
-          reviewKind: 'candidate',
-        });
+        const snapshot = await provider.getActivityGroupSnapshot(account.id, item.id, '');
+        if (Number(snapshot?.id) !== id) throw new Error('活动详情与列表不匹配');
+        groups.push({ ...snapshot, reviewKind });
       } catch (error) {
-        groups.push({ id: item.id, title: item.title, reviewKind: 'candidate', error: error.message || String(error) });
+        groups.push({ id: item.id, title: item.title, reviewKind, error: error.message || String(error) });
       }
     }
+    // 只读取 List 已明确下发的活动根节点。子节点随根 GetGroup 一次返回，禁止按
+    // 日期枚举未发布 ID，也禁止逐个对子节点做试探请求，避免命中风控诱导接口。
+    for (const item of selectActivitySnapshotRoots(activities, unknown)) await readGroup(item, 'candidate');
     // 每 30 分钟的既有活动扫描顺带复核最多 4 个当前活动根节点。这样活动 ID
     // 已登记后，活动说明、玩法和 UI 完整性仍有证据可供每日 Agent 检查；不会对
     // 每个子节点逐个请求，也不会改变任何活动状态。
     const reviewRoots = selectKnownActivityReviewRoots(activities, knownIds);
-    const groupedIds = new Set(groups.map(item => Number(item?.id)));
-    for (const item of reviewRoots) {
-      if (groupedIds.has(Number(item.id))) continue;
-      try {
-        groups.push({
-          ...await provider.getActivityGroupSnapshot(account.id, item.id, ''),
-          reviewKind: 'known-active',
-        });
-      } catch (error) {
-        groups.push({ id: item.id, title: item.title, reviewKind: 'known-active', error: error.message || String(error) });
-      }
-    }
+    for (const item of reviewRoots) await readGroup(item, 'known-active');
     // 每轮既有低频活动扫描只补一次 Bag，报告保留匿名识别缺口。
     // Worker 内同一份 Bag 同时生成详情和种子列表，避免跨回包数量漂移。
     let seedRecognition = { available: false, issues: [] };
