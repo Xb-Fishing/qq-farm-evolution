@@ -63,6 +63,47 @@ function fixture(initialPolicy = {}) {
   return { root, store, posts, mount, read: fn => { read = fn; }, prepare: fn => { prepare = fn; }, operate: fn => { operate = fn; }, acknowledge: fn => { acknowledge = fn; }, cancel: fn => { cancel = fn; } };
 }
 const button = (root, label) => h.buttonsOf(root).find(x => h.textOf(x).includes(label));
+test('每日礼包入口按账号读取可领状态，确认后清除红点并显示回执', async () => {
+  const f = fixture();
+  await h.flush();
+  const reward = { id: '80021', name: '无机罐头（1小时）', count: '1' };
+  f.read(async (url, config) => {
+    assert.equal(url, '/api/ranch/state');
+    assert.equal(config.headers['x-account-id'], 'account-a');
+    assert.equal(config.params.view, 'mallGift');
+    return { data: { ok: true, data: { ...state(), mallGift: { status: 'ready', reward } } } };
+  });
+  f.prepare(() => ({ data: { ok: true, data: { id: 'gift-quote', label: '领取牧场每日礼包', count: 1,
+    costItems: [], expectedRewards: [reward], validForMs: 60000 } } }));
+  f.operate(() => ({ data: { ok: true, data: { id: 'gift-quote', action: 'claimMallGift', outcome: 'confirmed', completed: 1,
+    message: '操作已确认', rewards: [reward], snapshot: { ...state(), mallGift: { status: 'claimed', reward } } } } }));
+  h.click(button(f.root, '每日礼包'));
+  await h.flush();
+  assert.match(h.textOf(f.root), /今日可领取/);
+  assert.equal(h.findAll(f.root, node => node.props['aria-label'] === '可领取').length, 1);
+  h.click(button(f.root, '免费领取'));
+  await h.flush();
+  assert.deepEqual(f.posts.map(row => row.body), [{ action: 'claimMallGift', input: {} }]);
+  assert.match(h.textOf(f.root), /预计获得：无机罐头（1小时） × 1/);
+  h.click(button(f.root, '确认执行'));
+  await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { quoteId: 'gift-quote' });
+  assert.match(h.textOf(f.root), /今日已领取/);
+  assert.match(h.textOf(f.root), /已获得：无机罐头（1小时） × 1/);
+  assert.equal(h.findAll(f.root, node => node.props['aria-label'] === '可领取').length, 0);
+  assert.equal(button(f.root, '免费领取').props.disabled, true);
+
+  const form = h.findAll(f.root, node => node.tag === 'form')[0];
+  const option = h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === '领取免费每日礼包')[0];
+  assert.equal(f.store.automation.policy.mallGift, false);
+  h.findAll(option, node => node.tag === 'input')[0].props['onUpdate:modelValue'](true);
+  await h.flush();
+  form.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.equal(f.posts.at(-1).body.mallGift, true);
+  assert.equal(f.posts.at(-1).body.buyEnabled, false);
+});
+
 test('friend ranch reads the selected account and uses the existing preview and confirmation flow', async () => {
   const f = fixture(); await h.flush();
   const reads = [];

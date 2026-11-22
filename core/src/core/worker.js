@@ -346,9 +346,11 @@ function canRunRanchAutomation() {
 async function onTimer_ranch_automation() {
     if (!canRunRanchAutomation()) return;
     await require('../services/ranch-service').runRanchAutomation();
+    await require('../services/muge-gameplay').runMugeAutomation();
 }
 function startRanchAutomationTimer() {
     require('../services/ranch-service').bindRanchAutomation(canRunRanchAutomation);
+    require('../services/muge-gameplay').bindMugeAutomation(canRunRanchAutomation);
     if (!loginReady || workerScheduler.has('ranch_automation')) return;
     workerScheduler.setIntervalTask('ranch_automation', 30000, onTimer_ranch_automation);
 }
@@ -1530,6 +1532,7 @@ async function handleApiCall(msg) {
 
     if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
         || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence'
+        || method === 'getMugeActivity' || method === 'operateMuge'
         || ['getRanchState', 'getRanchFriend', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
@@ -1778,6 +1781,12 @@ async function handleApiCall(msg) {
             case 'getActivityDiscoveryList': {
                 const { getActivityDiscoveryList } = require('../services/activity');
                 result = await getActivityDiscoveryList();
+                break;
+            }
+            case 'getMugeActivity':
+            case 'operateMuge': {
+                const muge = require('../services/muge-gameplay');
+                result = method === 'getMugeActivity' ? await muge.getMugeActivity() : await muge.operateMuge(args[0], args[1]);
                 break;
             }
             case 'getOfficialAnnouncements': {

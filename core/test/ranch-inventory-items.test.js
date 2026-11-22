@@ -54,6 +54,19 @@ test('real BagReply now names reviewed ranch inventory without seed gaps; unknow
   assert.deepEqual(f.warehouse.getBagSeedsFromItems(items), []); assert.deepEqual(bag.seedRecognition.issues, []);
   assert.deepEqual(auditBagSeedCoverage([...items, { id: 987654321, count: 1 }], []).issues, [{ itemId: 987654321, kind: 'unclassified_item' }]);
 });
+test('牧场每日礼包道具在实际背包命名，保留普通物品安全边界', async t => {
+  const id = 80021;
+  const stack = { id, uid: 8021, count: 1 };
+  const f = fixture(t, [stack]);
+  const bag = await f.warehouse.getBagDetail();
+  const item = bag.items.find(row => row.id === id);
+  assert.equal(item.name, '无机罐头（1小时）');
+  assert.equal(item.category, 'item');
+  assert.equal(item.sellable, false);
+  assert.equal(config.isSeedItem(id), false);
+  assert.equal(config.getItemImageById(id), '');
+  assert.deepEqual(auditBagSeedCoverage([stack], []).issues, []);
+});
 test('reviewed snapshot records exact source and original item sprite bytes', () => {
   const proof = sources.reviewedRanchInventoryItems;
   assert.equal(proof.sourceGrade, 'reviewed_public_client_snapshot'); assert.equal(proof.sourceCommit, '545bbcfd209546ffc1594e65cd6d32d30137cddd');

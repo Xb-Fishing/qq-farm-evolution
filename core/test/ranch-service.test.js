@@ -80,6 +80,12 @@ function fixture(upgrade = false) {
       }
       else if (method === 'ShopProfiles') reply = { shop_profiles: [5, 6].map(shop_id => ({ shop_id, global_scene_ids: [2] })) };
       else if (method === 'ShopInfo') reply = { goods_list: f.goods() };
+      else if (method === 'GetMallListBySlotType') {
+        assert.equal(request.slot_type, 6);
+        assert.equal(request.global_scene_id, 2);
+        f.mallOpens.push(request.is_manual_open);
+        reply = { goods_list: f.mallGoods };
+      }
       else if (method === 'TaskInfo') reply = { task_info: { growth_tasks: f.tasks } };
       else if (method === 'EnterHomestead') {
         assert.ok(f.friendHosts.includes(request.host_gid));
@@ -116,6 +122,11 @@ function fixture(upgrade = false) {
           cubs.set(good.item_id, (cubs.get(good.item_id) || 0) + quantity);
           if (good.limit_count) good.bought_num = String(Number(good.bought_num ?? 0) + count);
           reply = { goods: { id: good.id }, cost_items: [{ id: '1007', count: String(cost) }], get_items: [{ id: good.item_id, count: String(quantity) }] };
+        } else if (method === 'Purchase') {
+          assert.deepEqual(request, { goods_id: '2001', count: '1' });
+          reply = { goods_id: '2001', success: true, reward_items: [{ id: '80021', count: '1' }],
+            purchase_limit: { type: 1, bought_count: '1', limit_count: '1' } };
+          if (!f.keepMallCatalogStale) f.mallGoods[0].purchase_limit.bought_count = '1';
         } else if (method === 'Sell') {
           const earned = new Map();
           for (const stack of request.items) {
@@ -163,6 +174,7 @@ function fixture(upgrade = false) {
     getFriendTargets: () => { if (f.rosterError) throw f.rosterError; return f.friendRoster; },
     canVisitFriend: gid => !f.friendQuiet && !f.blockedFriends.includes(gid) });
   const f = { service: make(), make, calls, leases, scene, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
+    mallGoods: [], mallOpens: [],
     friendHosts: ['73'], friendVisits: [], friendRoster: [], blockedFriends: [],
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
     price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
@@ -180,6 +192,152 @@ async function setOnlyAutomation(f, flags) {
   assert.equal(result.ok, true, result.error);
   f.advance(31000);
 }
+
+function dailyMallGift(overrides = {}) {
+  return { goods_id: '2001', is_free: true, is_available: true, price: { count: '0' },
+    reward_items: [{ id: '80021', count: '1' }], purchase_limit: { type: 1, bought_count: '0', limit_count: '1' }, ...overrides };
+}
+
+test('牧场每日礼包手动领取验证槽位、预检、实际回执和当天去重', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  f.keepMallCatalogStale = true;
+  f.realScene = true;
+  const state = await f.service.getState('mallGift');
+  assert.deepEqual(state.data.mallGift, { status: 'ready', reward: { id: '80021', count: '1', name: '无机罐头（1小时）' } });
+  assert.deepEqual(f.mallOpens, [true]);
+  const prepared = await f.service.prepare('claimMallGift');
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.deepEqual(prepared.data.costItems, []);
+  assert.equal(f.writes, 0);
+  const result = await f.service.execute(prepared.data.id);
+  assert.equal(result.data.outcome, 'confirmed');
+  assert.equal(result.data.snapshot.mallGift.status, 'claimed');
+  assert.deepEqual(result.data.rewards, prepared.data.expectedRewards);
+  assert.deepEqual(f.mallOpens, [true, false, false, false]);
+  const replacement = f.make();
+  assert.equal((await replacement.getState('mallGift')).data.mallGift.status, 'claimed');
+  assert.equal((await replacement.execute(prepared.data.id)).data.replayed, true);
+  assert.equal((await replacement.prepare('claimMallGift')).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 1);
+  f.advance(86400000);
+  assert.equal((await replacement.getState('mallGift')).data.mallGift.status, 'ready');
+});
+
+test('牧场礼包写前拦截收费、广告、分享、已购和未知配置', async () => {
+  const f = fixture();
+  for (const override of [
+    { goods_id: '2002' }, { is_free: false }, { price: undefined }, { price: { count: '1' } },
+    { ad_only: true }, { share_only: true }, { is_owned: true }, { is_available: false },
+    { purchase_limit: { type: 4, bought_count: '0', limit_count: '1' } },
+    { purchase_limit: { type: 1, bought_count: '0', limit_count: '1', share_only: true } },
+    { purchase_limit: { type: 1, bought_count: '1', limit_count: '1' } },
+    { reward_items: [{ id: '80021', count: '2' }] },
+  ]) {
+    f.mallGoods = [dailyMallGift()];
+    const prepared = await f.service.prepare('claimMallGift');
+    assert.equal(prepared.ok, true);
+    const changed = dailyMallGift(override);
+    if (override.price === undefined && Object.hasOwn(override, 'price')) delete changed.price;
+    f.mallGoods = [changed];
+    const result = await f.service.execute(prepared.data.id);
+    assert.equal(result.code, 'RANCH_STATE_CHANGED');
+  }
+  f.mallGoods = [dailyMallGift(), dailyMallGift()];
+  assert.equal((await f.service.prepare('claimMallGift')).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 0);
+});
+
+test('牧场礼包严格检查回执，商城限购可确认领取状态但不报告未经证明的到账', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  f.mutateReply = reply => ({ ...reply, success: false });
+  const { data: quote } = await f.service.prepare('claimMallGift');
+  const { data: result } = await f.service.execute(quote.id);
+  assert.equal(result.outcome, 'unknown');
+  assert.equal(result.snapshot.mallGift.status, 'claimed');
+  assert.equal(result.rewards, undefined);
+  const state = await f.make().getState('mallGift');
+  assert.equal(state.data.lastOperation.outcome, 'acknowledged');
+  assert.deepEqual(state.data.lastOperation.rewards, []);
+  assert.equal((await f.make().prepare('claimMallGift')).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 1);
+});
+
+test('超时后只核对商城，同日手工核对可恢复其他操作但不会再发礼包领取', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  f.timeout();
+  const { data: quote } = await f.service.prepare('claimMallGift');
+  assert.equal((await f.service.execute(quote.id)).data.outcome, 'unknown');
+  const replacement = f.make();
+  await replacement.getState('animals');
+  assert.equal((await replacement.acknowledge(quote.id)).code, 'RANCH_REFRESH_REQUIRED');
+  const state = await replacement.getState('mallGift');
+  assert.equal(state.data.mallGift.status, 'unknown');
+  assert.equal((await replacement.acknowledge(quote.id)).data.outcome, 'acknowledged');
+  assert.equal((await replacement.prepare('claimMallGift')).code, 'RANCH_STATE_CHANGED');
+  assert.equal((await replacement.execute(quote.id)).data.replayed, true);
+  assert.equal(f.writes, 1);
+});
+
+test('礼包回执超时后自动流程只读，多次查询仍不会再次领取', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  await setOnlyAutomation(f, { mallGift: true });
+  f.timeout();
+  assert.equal((await f.service.automate()).data.outcome, 'unknown');
+  const replacement = f.make();
+  f.advance(31000);
+  assert.equal((await replacement.automate()).data.skipped, true);
+  assert.equal((await replacement.getState('mallGift')).data.lastOperation.outcome, 'unknown');
+  f.mallGoods[0].purchase_limit.bought_count = '1';
+  f.advance(31000);
+  assert.equal((await replacement.automate()).data.skipped, true);
+  assert.equal((await replacement.getState('mallGift')).data.lastOperation.outcome, 'acknowledged');
+  assert.equal(f.writes, 1);
+});
+
+test('牧场礼包跨日重新确认，明确未发出才可在同一天重试', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  const { data: previousDay } = await f.service.prepare('claimMallGift');
+  f.correctGameClock(86400000);
+  assert.equal((await f.service.execute(previousDay.id)).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 0);
+  const { data: newDay } = await f.service.prepare('claimMallGift');
+  f.rejectUnsent = true;
+  assert.equal((await f.service.execute(newDay.id)).data.outcome, 'not_sent');
+  assert.equal((await f.service.getState('mallGift')).data.mallGift.status, 'ready');
+  f.rejectUnsent = false;
+  const { data: retry } = await f.service.prepare('claimMallGift');
+  assert.equal((await f.service.execute(retry.id)).data.outcome, 'confirmed');
+  assert.equal(f.writes, 1);
+});
+
+test('自动领取每日礼包默认关闭，尊重账号暂停、手动确认和同日去重', async () => {
+  const f = fixture();
+  f.mallGoods = [dailyMallGift()];
+  assert.equal((await f.service.getAutomation()).data.policy.mallGift, false);
+  await setOnlyAutomation(f, {});
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.deepEqual(f.mallOpens, []);
+  await setOnlyAutomation(f, { mallGift: true });
+  f.allow(false);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  f.allow(true);
+  const manual = await f.service.prepare('claimMallGift');
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 0);
+  await f.service.cancel(manual.data.id);
+  assert.equal((await f.service.automate()).data.outcome, 'confirmed');
+  assert.ok(f.mallOpens.every(value => value === false));
+  f.advance(300001);
+  const calls = f.mallOpens.length;
+  assert.equal((await f.make().automate()).data.skipped, true);
+  assert.equal(f.mallOpens.length, calls);
+  assert.equal(f.writes, 1);
+});
 
 function saleStack(uid, itemId, count, extra = {}) {
   return { uid, id: itemId, count: String(count), show: { sells: [{ id: '1002', count: '5' }] }, ...extra };

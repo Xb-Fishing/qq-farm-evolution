@@ -71,12 +71,11 @@ onMounted(() => {
         <a href="#festival-sign-in">节日签到与节令日历</a>
       </nav>
       <RanchPanel :account-id="String(currentAccountId)" />
-      <details class="rounded-lg bg-white p-3 dark:bg-gray-800">
-        <summary class="cursor-pointer text-sm">
-          牧歌初启活动说明
-        </summary>
-        <MugeActivityPanel :activity="mugeStore.activity" :loading="mugeStore.loading" :error="mugeStore.error" @refresh="mugeStore.refresh(String(currentAccountId))" />
-      </details>
+      <MugeActivityPanel
+        :key="`muge-${currentAccountId}`" :activity="mugeStore.activity" :loading="mugeStore.loading" :error="mugeStore.error"
+        :pending="mugeStore.pending" :ready="mugeStore.ready" :refresh-required="mugeStore.refreshRequired" :feedback="mugeStore.feedback" :rewards="mugeStore.rewards"
+        @refresh="mugeStore.refresh(String(currentAccountId))" @operate="mugeStore.operate(String(currentAccountId), $event)"
+      />
       <FriendRecallActivityPanel :activity="friendRecallStore.activity" :loading="friendRecallStore.loading" :error="friendRecallStore.error" @refresh="friendRecallStore.refresh(String(currentAccountId))" />
       <GameUpdatePanel :key="`update-${currentAccountId}`" :account-id="String(currentAccountId || '')" />
       <FestivalSignInPanel :key="`festival-${currentAccountId}`" :account-id="String(currentAccountId)" />

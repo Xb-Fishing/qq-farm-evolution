@@ -59,6 +59,32 @@ test('private codec uses exact independent field tags and preserves int64/defaul
     assert.equal(codec.ROUTES.sceneLogin.method, 'PlayerSceneLogin');
 });
 
+test('牧场商场礼包 wire 区分场景、限购、状态和零价格', () => {
+    assert.deepEqual([...codec.encode('RanchMallListRequest', { slot_type: 6, is_manual_open: true, global_scene_id: 2 })],
+        [8, 6, 16, 1, 24, 2]);
+    assert.deepEqual([...codec.encode('RanchMallPurchaseRequest', { goods_id: '2001', count: '1' })], [8, 209, 15, 16, 1]);
+    const makeList = price => {
+        const wire = protobuf.Writer.create().uint32(10).fork()
+            .uint32(8).int64(2001).uint32(34).fork().uint32(8).int64(80021).uint32(16).int64(1).ldelim()
+            .uint32(48).bool(true).uint32(58).fork().uint32(8).int32(1).uint32(24).int64(1).ldelim()
+            .uint32(64).bool(true);
+        if (price) wire.uint32(42).bytes(price);
+        return codec.decode('RanchMallListReply', wire.ldelim().finish());
+    };
+    assert.equal(model.mallGiftStatus(makeList(Buffer.from([16, 0]))), 'ready');
+    assert.equal(model.mallGiftStatus(makeList(Buffer.alloc(0))), 'ready');
+    assert.equal(model.mallGiftStatus(makeList()), 'unconfirmed');
+    assert.equal(model.mallGiftStatus(makeList(Buffer.from([16, 1]))), 'unconfirmed');
+    assert.equal(model.mallGiftStatus(makeList(Buffer.from([8, 1]))), 'unconfirmed');
+    assert.equal(model.mallGiftStatus(makeList(Buffer.from([8, 1, 16, 0]))), 'ready');
+    const receipt = codec.decode('RanchMallPurchaseReply', protobuf.Writer.create().uint32(8).int64(2001).uint32(16).bool(true)
+        .uint32(26).fork().uint32(8).int64(80021).uint32(16).int64(1).ldelim()
+        .uint32(42).fork().uint32(8).int32(1).uint32(16).int64(1).uint32(24).int64(1).ldelim().finish());
+    assert.equal(receipt.success, true);
+    assert.equal(model.mallGiftReward(receipt.reward_items), true);
+    assert.equal(model.dailyMallLimit(receipt.purchase_limit, '1'), true);
+});
+
 test('numeric validation and balance distinguish known zero, locked and unavailable', () => {
     assert.equal(model.decimal('0009007199254740993'), HUGE);
     for (const bad of [-1, Number(HUGE), '1.2', '', null, {}, '9223372036854775808']) assert.throws(() => model.decimal(bad));

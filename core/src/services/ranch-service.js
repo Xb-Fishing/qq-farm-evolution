@@ -12,11 +12,12 @@ const error = (code, message) => Object.assign(new Error(message), { code });
 const QUOTE_TTL_MS = 60000;
 const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用';
 // Scene entry, possible AllCells fallback, view reads, and two restoration attempts.
-const READ_CALLS = { animals: 5, tasks: 6, shop: 7 };
+const READ_CALLS = { animals: 5, tasks: 6, shop: 7, mallGift: 6 };
 const AUTOMATION_TICK_MS = 30000;
 const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [index] : []);
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
+  claimMallGift: '自动领取牧场每日礼包',
   stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
 const automaticLabel = slot => slot?.key === 'eggSale' ? '自动出售鸡蛋（任务）' : AUTOMATION_LABELS[slot?.action];
 const AUTO_STATUS = {
@@ -39,12 +40,14 @@ const AUTO_STATUS = {
   manual_review: '等待手动确认',
   result_unconfirmed: '上一笔牧场操作待核对',
   scene_busy: '场景正在处理其他操作',
+  mall_gift_claimed: '牧场每日礼包已领取', mall_gift_unavailable: '今日暂不可领取牧场礼包',
+  mall_gift_unconfirmed: '牧场礼包资格待确认',
 };
 const AUTO_SCAN_REASONS = { RANCH_FARM_PRIORITY: 'farm_priority', RANCH_BUDGET_BUSY: 'request_budget',
   RANCH_SCENE_RECOVERING: 'scene_recovery', RANCH_SHOP_UNAVAILABLE: 'shop_unavailable',
   RANCH_BUSY: 'scene_busy', RANCH_FARM_BUSY: 'scene_busy' };
 const READ_STAGES = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包',
-  shopProfiles: '商店目录', shop: '商店', tasks: '任务', state: '状态整理', friendRoster: '好友名单',
+  shopProfiles: '商店目录', shop: '商店', mallGift: '牧场每日礼包', tasks: '任务', state: '状态整理', friendRoster: '好友名单',
   enterFriend: '进入好友牧场', friendDetail: '好友牧场详情', leaveFriend: '离开好友牧场' };
 const readStage = failure => Object.hasOwn(READ_STAGES, failure?.ranchStage) ? failure.ranchStage : 'unknown';
 const readKind = failure => ['encode', 'request', 'decode', 'normalize'].includes(failure?.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
@@ -56,7 +59,7 @@ const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)
 const planIdentity = plan => digest({ action: plan.action, route: plan.route, payload: plan.payload,
   costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null,
   ...(plan.upgradeTarget && { upgradeTarget: plan.upgradeTarget }), ...(plan.friendOffers && { friendOffers: plan.friendOffers }),
-  ...(plan.taskSale && { taskSale: plan.taskSale }) });
+  ...(plan.taskSale && { taskSale: plan.taskSale }), ...(plan.mallGiftDay && { mallGiftDay: plan.mallGiftDay }) });
 function sumItems(items = []) {
   const values = new Map();
   for (const item of items) {
@@ -178,10 +181,10 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     save(data); return { ...data.automation, targetTypes: policyTools.targetTypes };
   }
   function manualReviewOwns(data, slot) {
-    if (!slot?.type && !slot?.feed && !slot?.friend && slot?.action !== 'sell') return false;
+    if (!slot?.type && !slot?.feed && !slot?.friend && !['sell', 'claimMallGift'].includes(slot?.action)) return false;
     return data.quotes.some(quote => {
       if (quote.autoRevision !== undefined || quote.status !== 'prepared' || quote.expiresAt <= quoteNow()) return false;
-      if (slot.action === 'sell') return quote.action === 'sell' && quote.origin === origin();
+      if (['sell', 'claimMallGift'].includes(slot.action)) return quote.action === slot.action && quote.origin === origin();
       if (slot.friend) return friends.actions.has(quote.action) && quote.origin === origin();
       if (slot.feed) return (quote.action === 'addGrass' || (quote.action === 'buy'
         && String(quote.input?.shopId) === policyTools.FEED_SHOP && String(quote.input?.goodsId) === policyTools.FEED_GOODS))
@@ -197,6 +200,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (manualReviewOwns(data, automationSlot))
       throw error('RANCH_AUTOMATION_PAUSED', automationSlot.feed ? '牧草操作正在手动确认，智能供草暂缓'
         : automationSlot.action === 'sell' ? '出售正在手动确认，自动出售暂缓'
+          : automationSlot.action === 'claimMallGift' ? '礼包正在手动确认，自动领取暂缓'
           : automationSlot.friend ? '好友牧场操作正在手动确认，自动巡查暂缓' : '同类幼崽正在手动确认，智能补栏暂缓');
     if (!canAutomate() || state.revision !== revision || !policyTools.isAutomaticActionEnabled(state.policy, action, slot))
       throw error('RANCH_AUTOMATION_PAUSED', '该动作的自动化设置已变化或已由智能规则接管');
@@ -260,7 +264,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     });
     return stage(routeName, 'decode', () => codec.decode(route.reply, response.body));
   }
-  async function loadRaw(initial, view = 'animals', shopId = '5') {
+  async function loadRaw(initial, view = 'animals', shopId = '5', manualOpen = false) {
     let cells;
     if (initial) cells = (await stage('scene_data', 'decode', () => codec.decode('SceneData', initial))).homestead_cells;
     if (!cells) cells = await rpc('cells');
@@ -271,6 +275,13 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     const raw = { cells, bag };
     if (view === 'shop') await loadShop(raw, shopId);
     if (view === 'tasks') raw.tasks = await rpc('tasks', { global_scene_id: 2 });
+    if (view === 'mallGift') {
+      const day = model.ranchDay(now());
+      raw.mallGift = await rpc('mallGift', { slot_type: 6, is_manual_open: manualOpen, global_scene_id: 2 });
+      if (day !== model.ranchDay(now())) throw error('RANCH_STATE_CHANGED', '牧场礼包已切换日期，请刷新后重试');
+      raw.mallGiftDay = day;
+      applyMallGiftAttempt(raw, read());
+    }
     return raw;
   }
   async function loadShop(raw, shopId) {
@@ -282,7 +293,15 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     raw.shopId = id;
     raw.shop = await rpc('shop', { shop_id: id });
   }
+  function mallGiftAttempt(data, day) {
+    const attempt = data.mallGiftAttempt;
+    return attempt?.owner === String(network.getUserState().gid) && attempt.day === day ? attempt : null;
+  }
+  function applyMallGiftAttempt(raw, data) {
+    raw.mallGiftOutcome = mallGiftAttempt(data, raw.mallGiftDay)?.outcome;
+  }
   function viewFor(action, input) {
+    if (action === 'claimMallGift') return 'mallGift';
     if (action === 'buy') return 'shop';
     return action === 'claimTasks' || (action === 'sell' && (input?.taskId !== undefined || input?.autoProducts === true)) ? 'tasks' : 'animals';
   }
@@ -371,11 +390,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (typeof network.withRanchScene !== 'function') throw error('RANCH_CONNECTION_UPDATE_REQUIRED', '当前连接尚未支持牧场，请更新程序后重试');
     return stage('scene', 'request', () => network.withRanchScene(callback, { maxCalls }));
   }
-  async function getState(view = 'animals', shopId = '5', scan) {
-    if (!['animals', 'shop', 'tasks'].includes(view)) throw error('RANCH_INVALID_ARGUMENT', '牧场页面无效');
+  async function getState(view = 'animals', shopId = '5', scan, manualOpen = false) {
+    if (!Object.hasOwn(READ_CALLS, view)) throw error('RANCH_INVALID_ARGUMENT', '牧场页面无效');
     const observedId = read().lastOperation?.id;
     return withScene(async ({ initial, assertCurrent }) => {
-      const raw = await loadRaw(initial, view, shopId); assertCurrent();
+      const raw = await loadRaw(initial, view, shopId, manualOpen); assertCurrent();
       let snapshot = await stage('state', 'normalize', () => model.normalizeState(raw, now()));
       const needsShop = scan?.feed ? policyTools.chooseSmartFeed(scan.policy, snapshot).needsShop
         : scan?.type && policyTools.chooseStock(scan.policy, snapshot, scan.type, scan.usage).needsShop;
@@ -386,17 +405,20 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       }
       const data = read();
       const reconciled = reconcileObserved(data, raw, observedId);
-      if (!data.lastOperation?.friendGid) {
+      const giftReconciled = reconcileMallGift(data, raw, observedId);
+      if (!data.lastOperation?.friendGid && (data.lastOperation?.action !== 'claimMallGift' || raw.mallGift != null)) {
         data.lastObservedAt = now();
         data.lastObservedOperationId = data.lastOperation?.id === observedId ? observedId || null : null;
       }
       save(data);
       logFeedCheck(reconciled);
+      if (giftReconciled) automationLog(giftReconciled.message, { event: 'ranch_mall_gift_reconciled',
+        action: 'claimMallGift', result: giftReconciled.outcome });
       return { ...snapshot, view, lastOperation: visibleOperation(data.lastOperation) };
     }, READ_CALLS[scan ? 'shop' : view]);
   }
   async function prepare(action, input = {}, autoRevision, autoSlot, activeScene) {
-    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action) && !friends.actions.has(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
+    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'claimMallGift', 'upgrade', 'completeUpgrade'].includes(action) && !friends.actions.has(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
     validateInput(input);
     const accountOrigin = origin();
     const previous = read();
@@ -429,7 +451,12 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   function verifyReply(plan, reply, before, after) {
     const unknown = message => { throw error('RANCH_RESULT_UNKNOWN', message); };
     let rewards = []; let costs = plan.costItems; let completed = plan.count;
-    if (plan.action === 'buy') {
+    if (plan.action === 'claimMallGift') {
+      if (reply.success !== true || reply.goods_id !== plan.payload.goods_id
+        || !model.dailyMallLimit(reply.purchase_limit, '1') || !model.mallGiftReward(reply.reward_items))
+        unknown('礼包回执未完全匹配，请刷新商城核对领取状态');
+      rewards = reply.reward_items;
+    } else if (plan.action === 'buy') {
       if (String(reply.goods?.id) !== plan.payload.goods_id || !sameItems(reply.cost_items, plan.costItems)
         || !sameItems(reply.get_items, plan.expectedRewards)) unknown('购买回执的商品、费用或数量未完全匹配，请核对库存');
       rewards = reply.get_items;
@@ -547,13 +574,17 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         data.automation = state;
         quote.autoReservation = { day: state.day, costs: plan.costItems };
       }
+      if (plan.mallGiftDay && (plan.mallGiftDay !== model.ranchDay(now()) || mallGiftAttempt(data, plan.mallGiftDay)))
+        throw error('RANCH_STATE_CHANGED', '牧场礼包领取状态或日期已变化，请刷新后再核对');
       assertCurrent();
       const baseline = feedAudit.capture(plan, before, quoteNow());
       if (!baseline && plan.action === 'addGrass') throw error('RANCH_STATE_CHANGED', '牧草机数据尚未完整，待刷新后再投喂');
       if (baseline) quote.feedBefore = { ...baseline, owner: String(network.getUserState().gid) };
       const pending = { id, action: quote.action, label: plan.label, outcome: 'pending', at: now(), requested: plan.count,
         ...(friend && { friendGid: friend.host }) };
-      quote.status = 'pending'; quote.result = pending; data.lastOperation = pending; save(data); inFlight.add(id);
+      quote.status = 'pending'; quote.result = pending; data.lastOperation = pending;
+      if (plan.mallGiftDay) data.mallGiftAttempt = { id, owner: String(network.getUserState().gid), day: plan.mallGiftDay, outcome: 'unknown' };
+      save(data); inFlight.add(id);
       let result; let reply; let after = null; let expiredBeforeDispatch = false;
       try {
         try {
@@ -571,6 +602,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
                 || (friend && !canVisitFriend(friend.host)))
                 throw Object.assign(error('RANCH_AUTOMATION_PAUSED', '自动化设置或额度日期已变化'), { isLocalRequestRejection: true });
             }
+            if (plan.mallGiftDay && plan.mallGiftDay !== model.ranchDay(now()))
+              throw Object.assign(error('RANCH_STATE_CHANGED', '牧场礼包已切换日期，请刷新后重试'), { isLocalRequestRejection: true });
             assertCurrent();
             operationAttempted = true;
           });
@@ -584,7 +617,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         let receiptProof;
         if (reply || (baseline && operationAttempted && result?.outcome === 'unknown')) {
           if (!friend) {
-            try { after = await loadRaw(null, plan.taskSale ? 'tasks' : 'animals'); assertCurrent(); } catch { after = null; }
+            const view = plan.taskSale ? 'tasks' : plan.mallGiftDay ? 'mallGift' : 'animals';
+            try { after = await loadRaw(null, view); assertCurrent(); } catch { after = null; }
           }
           if (baseline) {
             receiptProof = feedAudit.receiptEvidence(plan, reply);
@@ -609,6 +643,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
             try { after.shop = await rpc('shop', { shop_id: before.shopId }); after.shopId = before.shopId; } catch { /* Keep the confirmed purchase and refreshable inventory. */ }
           }
         }
+        if (after?.mallGiftDay === plan.mallGiftDay && plan.mallGiftDay && result.outcome === 'confirmed')
+          after.mallGiftOutcome = 'confirmed';
         let snapshot = null;
         try { if (after) snapshot = model.normalizeState(after, now()); } catch { /* Preserve a confirmed write when the refreshed DTO is invalid. */ }
 
@@ -626,7 +662,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           if (receiptProof) quote.feedReceipt = receiptProof;
         }
         data.lastOperation = result;
-        if (snapshot) { data.lastObservedAt = now(); data.lastObservedOperationId = id; }
+        if (plan.mallGiftDay && data.mallGiftAttempt?.id === id) {
+          if (result.outcome === 'not_sent') delete data.mallGiftAttempt;
+          else if (result.outcome === 'confirmed') data.mallGiftAttempt.outcome = 'confirmed';
+        }
+        if (snapshot && !plan.mallGiftDay) { data.lastObservedAt = now(); data.lastObservedOperationId = id; }
         try { save(data); } catch { result.storageWarning = true; }
         if (plan.action === 'sell' && result.outcome === 'confirmed') {
           try {
@@ -638,6 +678,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         if (expiredBeforeDispatch) {
           if (result.storageWarning) throw error('RANCH_RESULT_UNCONFIRMED', '确认结果未能保存，请刷新牧场核对');
           throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
+        }
+        if (plan.mallGiftDay && quote?.autoRevision === undefined && result.outcome === 'confirmed') {
+          automationLog(`牧场每日礼包已领取 · ${result.rewards[0].name}×${result.rewards[0].count}`, { event: 'ranch_mall_gift_claimed', action: 'claimMallGift', source: 'manual' });
         }
         if (friend && quote?.autoRevision === undefined && result.outcome === 'confirmed' && !result.replayed) {
           try { require('../utils/utils').log('牧场', `${plan.label}已确认 · ${result.completed} 项`, { module: 'ranch', event: 'ranch_friend_action' }); } catch {}
@@ -683,7 +726,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       throw error('RANCH_AUTO_RECONCILING', '牧草账目由程序自动读取并核对');
     }
     if (data.lastObservedOperationId !== op.id)
-      throw error('RANCH_REFRESH_REQUIRED', op.friendGid ? '请先刷新本次操作的好友牧场并核对' : '请先刷新牧场并核对库存与动物状态');
+      throw error('RANCH_REFRESH_REQUIRED', op.friendGid ? '请先刷新本次操作的好友牧场并核对'
+        : op.action === 'claimMallGift' ? '请先刷新牧场每日礼包并核对领取状态' : '请先刷新牧场并核对库存与动物状态');
     data.lastOperation = { ...data.lastOperation, outcome: 'acknowledged', message: '已由用户核对，不会重放原请求' }; save(data);
     return visibleOperation(data.lastOperation);
   }
@@ -698,6 +742,19 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   function taskSaleProgressReached(plan, raw) {
     const task = raw?.tasks && model.eggSaleTask(model.taskList(raw.tasks));
     return task?.total === plan.taskSale.total && (task.claimed || BigInt(task.progress) >= BigInt(plan.taskSale.expected));
+  }
+
+  function reconcileMallGift(data, raw, observedId) {
+    const entry = data.lastOperation;
+    const attempt = mallGiftAttempt(data, raw.mallGiftDay);
+    if (!attempt || attempt.id !== observedId || entry?.id !== observedId || inFlight.has(observedId)
+      || !unresolved(data) || model.mallGiftStatus(raw.mallGift) !== 'claimed') return null;
+    const result = { ...entry, outcome: 'acknowledged', message: '商城限购显示今日礼包已领取，到账回执待核实' };
+    const quote = data.quotes.find(row => row.id === observedId);
+    if (quote) { quote.status = result.outcome; quote.result = result; }
+    attempt.outcome = 'confirmed';
+    data.lastOperation = result;
+    return result;
   }
 
   function reconcileObserved(data, raw, observedId) {
@@ -751,9 +808,19 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       action: result.action, source: automatic ? 'automatic' : 'manual' }, result.outcome === 'unknown');
   }
 
-  async function recheckUnknownFeed(data) {
+  async function recheckUnknownOperation(data) {
     const quote = data.quotes.find(row => row.id === data.lastOperation?.id);
     if (!quote || inFlight.has(quote.id)) return { skipped: true };
+    if (quote.plan?.mallGiftDay && mallGiftAttempt(data, model.ranchDay(now()))?.id === quote.id) {
+      const at = quoteNow();
+      const checks = quote.mallGiftChecks || 0;
+      if (checks >= 3 || at - (quote.mallGiftCheckedAt ?? quote.at) < AUTOMATION_TICK_MS) return { skipped: true };
+      quote.mallGiftChecks = checks + 1;
+      quote.mallGiftCheckedAt = at;
+      save(data);
+      await getState('mallGift');
+      return { skipped: true };
+    }
     if (quote.plan?.taskSale && data.lastOperation?.taskSaleReceipt === true) {
       if (quoteNow() - (quote.taskSaleCheckedAt || quote.at) < 30000) return { skipped: true };
       quote.taskSaleCheckedAt = quoteNow(); save(data);
@@ -918,7 +985,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           noteAutoStatus(policyTools.SLOTS[slot], 'result_unconfirmed', state.revision);
       }
       autoRunning = true;
-      try { return await recheckUnknownFeed(read()); } finally { autoRunning = false; }
+      try { return await recheckUnknownOperation(read()); } finally { autoRunning = false; }
     }
     if (!state.policy.enabled || Math.min(state.nextAt, state.friendNextAt) > now()) return { skipped: true };
     autoRunning = true;
@@ -951,6 +1018,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       state.nextAt = Math.max(at + AUTOMATION_TICK_MS, Math.floor(scheduledAt + turnInterval));
       data.automation = state; save(data);
       viewedSlot = SLOTS[cursor];
+      const giftAttempt = viewedSlot.key === 'mallGift' && mallGiftAttempt(data, model.ranchDay(at));
+      if (giftAttempt) {
+        noteAutoStatus(viewedSlot, giftAttempt.outcome === 'confirmed' ? 'mall_gift_claimed' : 'result_unconfirmed', state.revision);
+        return { skipped: true };
+      }
       const { type, feed, view = 'animals' } = viewedSlot;
       const snapshot = await getState(view, state.policy.shopId, (type || feed) && { ...state, type, feed });
       const fresh = autoState(read());
@@ -1006,7 +1078,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       throw failure;
     } finally { autoRunning = false; }
   }
-  return { getState: (...args) => safe(() => getState(...args)), getFriend: host => safe(() => getFriend(host)),
+  return { getState: (view, shopId) => safe(() => getState(view, shopId, undefined, true)), getFriend: host => safe(() => getFriend(host)),
     prepare: (action, input, revision, slot) => safe(() => prepare(action, input, revision, slot)),
     getAutomation: () => safe(getAutomation), setAutomation: value => safe(() => setAutomation(value)), automate: () => safe(automate, false),
     execute: id => safe(markOperationNotSent => execute(id, markOperationNotSent)),

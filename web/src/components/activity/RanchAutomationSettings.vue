@@ -6,7 +6,7 @@ const props = defineProps<{ automation: any, state: any, shops: Record<string, a
 const emit = defineEmits<{ save: [policy: Record<string, any>], retryPolicy: [], load: [shopId: string, force?: boolean] }>()
 const draft = ref<Record<string, any>>({})
 watch(() => props.automation, (value) => {
-  draft.value = value ? { ...value.policy, smartFeed: value.policy.smartFeed === true } : {}
+  draft.value = value ? { ...value.policy, smartFeed: value.policy.smartFeed === true, mallGift: value.policy.mallGift === true } : {}
 }, { immediate: true })
 const opened = ref(false)
 watch([opened, () => draft.value.shopId], ([open, id]) => {
@@ -96,6 +96,7 @@ const routineActions = [
   { key: 'produce', name: '自动生产' },
   { key: 'clean', name: '自动清理' },
   { key: 'tasks', name: '领取普通任务奖励' },
+  { key: 'mallGift', name: '领取免费每日礼包' },
   { key: 'eggSale', name: '自动出售鸡蛋完成任务（只卖还差的数量）' },
   { key: 'sellProducts', name: '自动出售剩余可售产物' },
   { key: 'friendSteal', name: '自动偷取好友牧场产物' },

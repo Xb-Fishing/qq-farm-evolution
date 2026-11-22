@@ -41,131 +41,169 @@ test('pure DTO uses proven rule lines only, validates root and keeps personal st
   assert.equal(service.normalizeMuge(fixture(99), 100).available, false);
   assert.throws(() => service.findRoot({}), /格式/);
 });
-// Real Express registration and middleware; transport is intercepted without opening a socket.
-function harness(errorMapper) {
+// Exercise the authenticated controller without a listening socket.
+function harness() {
   const app = express();
-  const counts = { list: 0, group: 0, running: 0 };
-  const bodies = new Map();
+  let reads = 0;
   const provider = {
     getStatus: () => ({ connection: { connected: true } }),
-    isAccountRunning: async () => { counts.running++; return true; },
-    getActivityDiscoveryList: async id => { assert.match(id, /^synthetic-/); counts.list++; return [bodies.get(id) || fixture()]; },
-    getActivityGroupSnapshot: async (id, root, uid) => { assert.match(id, /^synthetic-/); assert.equal(root, 2026111700); assert.equal(uid, ''); counts.group++; return bodies.get(id) || fixture(); },
+    getGamePanelReadScope: () => 'synthetic-epoch',
+    isAccountRunning: async () => true,
+    getMugeActivity: async id => {
+      assert.match(id, /^synthetic-/); reads++;
+      return { ok: true, activity: service.normalizeMuge(fixture()) };
+    },
+    operateMuge: async () => ({ ok: true, rewards: [{ id: '80021', count: '1' }] }),
   };
   app.use((req, res, next) => { if (!req.user) return res.status(401).json({ ok: false }); next(); });
-  registerAdminMugeActivityRoutes({ app, provider, activityReader: createActivityReadCache(), getAccountIdFromRequest: req => req.headers['x-account-id'], canAccessAccount: req => req.user?.allowed === true, sendProviderError: errorMapper || ((res, error) => res.status(502).json({ ok: false, error: error.message })) });
-  const handler = app._router;
-  const read = (id = 'synthetic-a', user = { allowed: true }) => new Promise((resolve, reject) => {
-    const req = { method: 'GET', url: '/api/activity/muge', headers: { 'x-account-id': id }, user };
-    const res = { statusCode: 200, setHeader(key, value) { this.headers ||= {}; this.headers[key] = value; }, getHeader(key) { return this.headers?.[key]; }, end() {}, status(n) { this.statusCode = n; return this; }, json(body) { resolve({ status: this.statusCode, headers: this.headers || {}, ...body }); return this; } };
-    handler.handle(req, res, reject);
+  registerAdminMugeActivityRoutes({ app, provider, activityReader: createActivityReadCache(),
+    getAccountIdFromRequest: req => req.headers['x-account-id'], canAccessAccount: req => req.user?.allowed === true,
+    sendProviderError: (res, error) => res.status(502).json({ ok: false, error: error.message }) });
+  const request = ({ id = 'synthetic-a', user = { allowed: true }, body } = {}) => new Promise((resolve, reject) => {
+    const method = body ? 'POST' : 'GET';
+    const url = body ? '/api/activity/muge/operate' : '/api/activity/muge';
+    const req = { method, url, headers: { 'x-account-id': id }, user, body };
+    const res = { statusCode: 200, setHeader(key, value) { this.headers ||= {}; this.headers[key] = value; },
+      getHeader(key) { return this.headers?.[key]; }, end() {}, status(n) { this.statusCode = n; return this; },
+      json(value) { resolve({ status: this.statusCode, headers: this.headers || {}, ...value }); return this; } };
+    app._router.handle(req, res, reject);
   });
-  return { provider, counts, bodies, read };
+  return { provider, request, reads: () => reads };
 }
-test('route auth, disconnected and stopped accounts read zero upstream', async () => {
-  const h = harness(); assert.equal((await h.read('synthetic-a', null)).status, 401);
-  assert.equal((await h.read('synthetic-a', { allowed: false })).status, 403);
-  assert.equal((await h.read('')).status, 400);
-  h.provider.getStatus = () => null; assert.equal((await h.read()).ok, false);
-  h.provider.getStatus = () => ({ connection: { connected: true } }); h.provider.isAccountRunning = async () => false;
-  assert.equal((await h.read()).status, 409); assert.equal(h.counts.list, 0); assert.equal(h.counts.group, 0);
+
+test('activity route guards GET and POST, coalesces by account and session, and clears old state after mutation', async () => {
+  const h = harness();
+  assert.equal((await h.request({ user: null })).status, 401);
+  assert.equal((await h.request({ user: { allowed: false }, body: { action: 'claimCelebration' } })).status, 403);
+  h.provider.getStatus = () => null;
+  assert.equal((await h.request()).ok, false);
+  assert.equal(h.reads(), 0);
+  h.provider.getStatus = () => ({ connection: { connected: true } });
+  const requests = await Promise.all([h.request(), h.request(), h.request()]);
+  assert.ok(requests.every(result => result.ok && result.activity.available));
+  assert.equal(h.reads(), 1);
+  assert.equal((await h.request({ body: { action: 'claimCelebration' } })).rewards[0].id, '80021');
+  await h.request();
+  await h.request({ id: 'synthetic-b' });
+  h.provider.getGamePanelReadScope = () => 'next-epoch';
+  await h.request();
+  assert.equal(h.reads(), 4);
 });
-test('route cache coalesces reads with bare account loader and isolates accounts', async () => {
-  const h = harness(); const replies = await Promise.all([h.read(), h.read(), h.read()]);
-  assert.ok(replies.every(r => r.ok && r.activity.available)); assert.equal(h.counts.list, 1); assert.equal(h.counts.group, 1);
-  await h.read(); assert.equal(h.counts.list, 1); await h.read('synthetic-b'); assert.equal(h.counts.list, 2);
+
+test('a confirmed cutoff survives later failures and prevents writes after expiry', async t => {
+  const at = Date.now();
+  let now = at;
+  t.mock.method(Date, 'now', () => now);
+  const h = harness();
+  const end = Math.floor(at / 1000) + 100;
+  h.provider.getMugeActivity = async () => ({ ok: true, activity: service.normalizeMuge(fixture(end)) });
+  assert.equal((await h.request()).activity.endTime, end);
+  now = at + 65000;
+  h.provider.getMugeActivity = async () => { throw new Error('network'); };
+  const failed = await h.request();
+  assert.equal(failed.error, 'network');
+  assert.equal(failed.headers['x-activity-end-time'], String(end));
+  now = at + 105000;
+  h.provider.operateMuge = async () => assert.fail('expired operation reached worker');
+  assert.equal((await h.request()).activity.available, false);
+  assert.equal((await h.request({ body: { action: 'claimFriends' } })).code, 'MUGE_UNAVAILABLE');
 });
-test('missing root skips Group; malformed/failed List is an error and bounded by failure cache', async () => {
-  for (const response of [[], null, { wrong: true }]) {
-    const h = harness(); h.provider.getActivityDiscoveryList = async () => response;
-    const result = await h.read(); assert.equal(result.ok, Array.isArray(response)); assert.equal(h.counts.group, 0);
-  }
-  const h = harness(); let reads = 0; h.provider.getActivityDiscoveryList = async () => { reads++; throw new Error('ordinary-failure'); };
-  assert.equal((await h.read()).error, 'ordinary-failure'); assert.equal((await h.read()).error, 'ordinary-failure'); assert.equal(reads, 1);
-});
-test('deadline survives failures and cache; expiry before and across every await stops reads', async () => {
-  const realNow = Date.now; let now = 2000000000000; Date.now = () => now;
-  try {
-    const h = harness(); h.bodies.set('synthetic-a', fixture(now / 1000 + 120));
-    assert.equal((await h.read()).activity.available, true);
-    now += 61000; h.provider.getActivityDiscoveryList = async () => { throw new Error('network'); };
-    assert.equal((await h.read()).error, 'network'); now += 60000;
-    const previous = { ...h.counts }; assert.equal((await h.read()).activity.available, false); assert.deepEqual(h.counts, previous);
-    for (const stage of ['running', 'list', 'group']) {
-      const x = harness(); const end = now / 1000 + 1;
-      x.bodies.set('synthetic-a', fixture(end));
-      if (stage === 'running') {
-        await x.read(); x.provider.isAccountRunning = async () => { now += 2000; return true; };
+
+const codec = require('../src/services/muge-codec');
+const { createMugeGameplay } = require('../src/services/muge-gameplay');
+function gameFixture() {
+  const at = 1800000000;
+  const head = (id, parent_id) => ({ id, parent_id, title: '牧歌初启', start_time: at - 60, end_time: at + 3600, status: 1 });
+  const reward = { id: '80021', count: '1' };
+  const tier = { id: '1', threshold: '5', status: 2, rewards: [reward] };
+  const group = { head: { ...head('2026111700', '0'), payload: JSON.stringify(fixture().payload) },
+    children: [{ head: head('2026111702', '2026111700'), celebration: { total: '9007199254740993', tiers: [tier] } },
+      { head: head('2026111703', '2026111700'), friends: { counted: [{ gid: '60001' }], tiers: [] } },
+      { head: head('2026111704', '2026111700'), handbook: { tiers: [], points: '9', tasks: [
+        { id: '5', progress: '1', target: '2', status: 1, description: '抚摸好友的小鸭子', unlock_day: '0', rewards: [reward] },
+      ] } },
+      { head: head('2026111705', '2026111700'), survey: { answers: {}, personality_id: '0', settle_count: '0' } }],
+  };
+  const file = () => path.join(privateDir, crypto.randomUUID() + '.json');
+  const ledger = file();
+  const logs = [];
+  const calls = [];
+  const ws = {};
+  const network = {
+    getWs: () => ws, isConnected: () => true,
+    async sendMsgAsync(service, method, wire) {
+      assert.equal(service, 'gamepb.activitypb.ActivityService');
+      calls.push(method);
+      if (method === 'List') {
+        assert.equal(codec.decode('ListRequest', wire).game_scene_id, 1);
+        return { body: codec.encode('ListReply', { groups: [group] }) };
       }
-      if (stage === 'list') x.provider.getActivityDiscoveryList = async () => { now += 2000; return [fixture(end)]; };
-      if (stage === 'group') x.provider.getActivityGroupSnapshot = async () => { now += 2000; return fixture(end); };
-      assert.equal((await x.read()).activity.available, false);
-      if (stage === 'list') assert.equal(x.counts.group, 0);
-    }
-  } finally { Date.now = realNow; }
+      const operation = codec.decode('Operation', wire);
+      if (f.reject) throw f.reject;
+      const child = group.children.find(node => node.head.id === operation.id);
+      if (operation.cmd === '85') {
+        assert.equal(operation.celebration.target, '0');
+        tier.status = 3;
+        return { body: codec.encode('Receipt', { id: operation.id, cmd: operation.cmd, state: child,
+          celebration: { claimed_ids: ['1'], awards: [reward] } }) };
+      }
+      if (operation.cmd === '86') {
+        const save = operation.save;
+        child.survey.answers = save.clear ? {} : Object.fromEntries(Object.entries(save.answers).map(([id, value]) => [codec.decimalKey(id), value]));
+        return { body: codec.encode('Receipt', { id: operation.id, cmd: operation.cmd, state: child, save: {} }) };
+      }
+      if (operation.cmd === '87') {
+        child.survey.settle_count = String(Number(child.survey.settle_count) + 1);
+        child.survey.personality_id = '2';
+        return { body: codec.encode('Receipt', { id: operation.id, cmd: operation.cmd, state: child, settle: { personality_id: '2' } }) };
+      }
+      assert.fail('unexpected operation');
+    },
+  };
+  const make = () => createMugeGameplay({ network, file: () => ledger, now: () => at, log: (...args) => logs.push(args) });
+  const f = { game: make(), make, calls, logs, group, tier };
+  return f;
+}
+
+test('real Muge service reads confirmed fields, redacts counted friends, and auto claims one eligible reward', async () => {
+  const f = gameFixture();
+  const board = await f.game.read();
+  assert.equal(board.personal.celebration.total, '9007199254740993');
+  assert.equal(board.personal.friends.count, 1);
+  assert.doesNotMatch(JSON.stringify(board.personal.friends), /60001/);
+  assert.match(board.personal.handbook.tasks[0].description, /小鸭子/);
+  await f.game.automate();
+  assert.equal(f.calls.filter(call => call === 'Operate').length, 0);
+  await f.game.operate('setAutomation', { enabled: true });
+  await f.game.automate();
+  assert.equal(f.calls.filter(call => call === 'Operate').length, 1);
+  const result = await f.game.read();
+  assert.equal(result.personal.celebration.tiers[0].status, 3);
+  assert.equal(f.logs[0][2][0].name, '无机罐头（1小时）');
+  await assert.rejects(f.game.operate('claimCelebration'), { code: 'MUGE_NOT_CLAIMABLE' });
 });
 
-test('Group failures retain successful List deadline, retry only after 60s; unknown end stays readable', async () => {
-  const realNow = Date.now; let now = 2000000000000; Date.now = () => now;
-  try {
-    const h = harness(); const end = now / 1000 + 130; let groupReads = 0;
-    h.bodies.set('synthetic-a', fixture(end));
-    h.provider.getActivityGroupSnapshot = async () => { groupReads++; throw new Error('Group failed'); };
-    assert.equal((await h.read()).error, 'Group failed');
-    await h.read(); assert.equal(groupReads, 1);
-    now += 61000; await h.read(); assert.equal(groupReads, 2);
-    now += 70000; assert.equal((await h.read()).activity.available, false); assert.equal(groupReads, 2);
-    const unknown = harness(); await unknown.read(); now += 1000000;
-    assert.equal((await unknown.read()).activity.available, true); assert.equal(unknown.counts.list, 2);
-    assert.equal((await unknown.read('synthetic-b')).activity.available, true);
-  } finally { Date.now = realNow; }
+test('unknown Muge reward blocks same claim across replacement until fresh status shows it claimed', async () => {
+  const f = gameFixture();
+  f.reject = new Error('synthetic timeout');
+  await assert.rejects(f.game.operate('claimCelebration'), { code: 'MUGE_RESULT_UNKNOWN' });
+  f.reject = null;
+  await assert.rejects(f.make().operate('claimCelebration'), { code: 'MUGE_RESULT_UNKNOWN' });
+  assert.equal(f.calls.filter(call => call === 'Operate').length, 1);
+  f.tier.status = 3;
+  assert.deepEqual((await f.make().read()).pendingActions, []);
+  assert.equal(f.logs.length, 0);
 });
 
-test('Group UID mismatch and missing payload are errors, not retirement', async () => {
-  for (const payload of [null, { uid: 'wrong' }, { uid: 'MugeUI' }]) {
-    const h = harness(); const root = fixture(); root.payload = payload;
-    h.bodies.set('synthetic-a', root);
-    const reply = await h.read(); assert.equal(reply.ok, false); assert.equal(reply.status, 502); assert.match(reply.error, /规则/); assert.equal(reply.activity, undefined);
-  }
-});
-
-test('connection lookup failures are caught and disconnect across await does not read the next stage', async () => {
-  const h = harness(); h.provider.getStatus = () => { throw new Error('status failed'); };
-  assert.equal((await h.read()).error, 'status failed'); assert.equal(h.counts.list, 0);
-  for (const stage of ['running', 'list']) {
-    const x = harness(); let online = true;
-    x.provider.getStatus = () => ({ connection: { connected: online } });
-    if (stage === 'running') x.provider.isAccountRunning = async () => { online = false; return true; };
-    else x.provider.getActivityDiscoveryList = async () => { online = false; return [fixture()]; };
-    assert.equal((await x.read()).ok, false);
-    assert.equal(x.counts.group, 0); assert.equal(x.counts.list, 0);
-  }
-});
-
-test('successful Group deadline is remembered even when List deadline is unknown and Group already ended', async () => {
-  const h = harness(); let reads = 0;
-  h.provider.getActivityGroupSnapshot = async () => { reads++; return fixture(Math.floor(Date.now() / 1000) - 1); };
-  assert.equal((await h.read()).activity.available, false);
-  assert.equal((await h.read()).activity.available, false);
-  assert.equal(reads, 1); assert.equal(h.counts.list, 1); assert.equal(h.counts.running, 1);
-});
-
-
-test('List newly known cutoff reaches Group error responses without changing error classification', async () => {
-  const h = harness(); const end = Math.floor(Date.now() / 1000) + 60;
-  h.bodies.set('synthetic-a', fixture(end));
-  h.provider.getActivityGroupSnapshot = async () => { throw new Error('group read failed'); };
-  const first = await h.read(); assert.equal(first.status, 502); assert.equal(first.error, 'group read failed');
-  assert.equal(first.headers['x-activity-end-time'], String(end));
-  const cached = await h.read(); assert.equal(cached.headers['x-activity-end-time'], String(end));
-});
-
-test('real shared error mapper keeps expected-200 and unexpected-500 while carrying cutoff', async () => {
-  const { createAdminRouteHelpers } = require('../src/controllers/admin-route-helpers');
-  for (const [message, status] of [['API Timeout', 200], ['ordinary failure', 500]]) {
-    const h = harness(createAdminRouteHelpers({}).sendProviderError); const end = Math.floor(Date.now() / 1000) + 60;
-    h.bodies.set('synthetic-a', fixture(end)); h.provider.getActivityGroupSnapshot = async () => { throw new Error(message); };
-    const reply = await h.read(); assert.equal(reply.status, status); assert.equal(reply.ok, false); assert.equal(reply.error, message);
-    assert.equal(reply.headers['x-activity-end-time'], String(end));
-  }
+test('personality answers validate and settle against returned detail before restoring the page', async () => {
+  const f = gameFixture();
+  await assert.rejects(f.game.operate('finishSurvey', { answers: { 1: 5 } }), { code: 'MUGE_INVALID_ARGUMENT' });
+  const board = await f.game.read();
+  const answers = Object.fromEntries(board.questions.map(q => [q.id, q.options[0].value]));
+  const done = await f.game.operate('finishSurvey', { answers });
+  assert.equal(done.activity.personal.personality.personalityId, 2);
+  assert.equal(done.activity.personal.personality.settleCount, '1');
+  assert.deepEqual(done.activity.personal.personality.answers, answers);
+  const reset = await f.game.operate('resetSurvey');
+  assert.deepEqual(reset.activity.personal.personality.answers, {});
 });

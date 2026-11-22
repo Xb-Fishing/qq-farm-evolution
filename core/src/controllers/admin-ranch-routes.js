@@ -1,5 +1,5 @@
 const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
-const RANCH_VIEWS = ['animals', 'shop', 'tasks'];
+const RANCH_VIEWS = ['animals', 'shop', 'tasks', 'mallGift'];
 const RANCH_SHOPS = ['5', '6'];
 const validQuoteId = id => typeof id === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id);
 

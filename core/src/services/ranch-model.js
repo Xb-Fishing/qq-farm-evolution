@@ -18,6 +18,39 @@ const facilityTypes = new Map([[6, 'MODULE_TYPE_RANCH_COOP'], [7, 'MODULE_TYPE_R
 const MAX = (1n << 63n) - 1n;
 const EGG_SALE_TASK = '300006';
 const EGG_ITEM = '1060001';
+const MALL_GIFT_ID = '2001';
+const MALL_GIFT_ITEM = '80021';
+const ranchDay = now => new Date(now + 8 * 3600000).toISOString().slice(0, 10);
+
+function dailyMallLimit(limit, boughtCount) {
+    return limit?.type === 1 && limit.limit_count === '1' && limit.bought_count === boughtCount && limit.share_only === false;
+}
+
+function mallGiftReward(items) {
+    return items?.length === 1 && items[0]?.id === MALL_GIFT_ITEM && items[0].count === '1';
+}
+
+function mallGiftStatus(reply) {
+    const rows = reply?.goods_list?.filter(row => row.goods_id === MALL_GIFT_ID);
+    if (!rows || rows.length > 1) return 'unconfirmed';
+    if (!rows.length) return 'unavailable';
+    const [gift] = rows;
+    const price = gift.price;
+    // An empty Item is the proto3 zero value. A currency without an amount remains unconfirmed.
+    const zeroPrice = price && (price.count === '0' || (price.count === undefined && price.id === '0'));
+    if (gift.is_free !== true || !zeroPrice || price.id.startsWith('-') || gift.ad_only !== false || gift.share_only !== false
+        || !mallGiftReward(gift.reward_items)) return 'unconfirmed';
+    if (dailyMallLimit(gift.purchase_limit, '1')) return 'claimed';
+    if (!dailyMallLimit(gift.purchase_limit, '0')) return 'unconfirmed';
+    return gift.is_available === true && gift.is_owned === false ? 'ready' : 'unavailable';
+}
+
+function mallGiftState(raw) {
+    const live = mallGiftStatus(raw.mallGift);
+    const status = live === 'claimed' || raw.mallGiftOutcome === 'confirmed' ? 'claimed'
+        : raw.mallGiftOutcome ? 'unknown' : live;
+    return { status, reward: itemDto({ id: MALL_GIFT_ITEM, count: '1' }) };
+}
 
 function fail(code, message) {
     throw Object.assign(new Error(message), { code });
@@ -252,6 +285,7 @@ function normalizeState(raw, nowMs = Date.now()) {
         facilities: ownFacilities, animals: ownFacilities.flatMap(row => row.ranch?.animals || []), inventory, bag: inventory,
         cubs: inventory.filter(item => item.animalId), grass: balance(raw.bag, '7001').available,
         currencies: ['1007', '1002', '1005', '1008', '7002'].map(id => ({ ...itemDto({ id, count: balance(raw.bag, id).total }), ...balance(raw.bag, id) })),
+        ...(raw.mallGift !== undefined && { mallGift: mallGiftState(raw) }),
         shop: shopCards(raw, nowMs), tasks: taskList(raw.tasks), tasksState: raw.tasks ? 'known' : 'unavailable' };
 }
 
@@ -296,10 +330,16 @@ function selectedFacility(rows, instanceId) {
 function planAction(action, input = {}, raw, nowMs = Date.now()) {
     const state = normalizeState(raw, nowMs);
     const labels = { buy: '购买牧场商品', place: '放养幼崽', addGrass: '补充牧草', produce: '牧场生产', harvest: '牧场收获', clean: '清理牧场',
-        claimTasks: '领取牧场任务', sell: '出售牧场产物', upgrade: '开始升级', completeUpgrade: '完成升级' };
+        claimTasks: '领取牧场任务', claimMallGift: '领取牧场每日礼包', sell: '出售牧场产物', upgrade: '开始升级', completeUpgrade: '完成升级' };
     if (!labels[action]) fail('INVALID_ARGUMENT', '不支持的牧场操作');
     const plan = { action, label: labels[action], route: action, payload: {}, costItems: [], expectedRewards: [], marker: null, count: 1 };
-    if (action === 'buy') {
+    if (action === 'claimMallGift') {
+        if (Object.keys(input).length) fail('INVALID_ARGUMENT', '每日礼包无需指定商品或数量');
+        if (state.mallGift?.status !== 'ready') fail('RANCH_STATE_CHANGED', '当前没有可领取的牧场每日礼包');
+        plan.payload = { goods_id: MALL_GIFT_ID, count: '1' };
+        plan.expectedRewards = [state.mallGift.reward];
+        plan.mallGiftDay = ranchDay(nowMs);
+    } else if (action === 'buy') {
         if (input.autoPlace === true || input.auto_add === true) fail('INVALID_ARGUMENT', '请先购买入包再放养');
         const shopId = positiveId(input.shopId); const id = positiveId(input.goodsId); const count = positiveCount(input.count);
         const card = state.shop?.shopId === shopId && state.shop.goods.find(row => row.id === id);
@@ -439,4 +479,4 @@ function planAction(action, input = {}, raw, nowMs = Date.now()) {
 }
 
 module.exports = { decimal, positiveId, positiveCount, balance, itemDto, normalizeState, planAction, selectedFacility, metadata, taskList,
-    eggSaleTask, automaticSaleItems, EGG_SALE_TASK, EGG_ITEM };
+    eggSaleTask, automaticSaleItems, EGG_SALE_TASK, EGG_ITEM, ranchDay, mallGiftStatus, dailyMallLimit, mallGiftReward };

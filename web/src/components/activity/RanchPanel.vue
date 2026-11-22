@@ -116,6 +116,16 @@ onBeforeUnmount(() => {
 })
 const feedReview = computed(() => ranch.result?.action === 'addGrass' || !!ranch.result?.reconciliation || ranch.result?.feedOperation === true)
 const eggReview = computed(() => ranch.result?.taskSaleReceipt === true)
+const giftReview = computed(() => ranch.result?.action === 'claimMallGift')
+const mallGiftLabels: Record<string, string> = {
+  ready: '今日可领取',
+  claimed: '今日已领取',
+  unavailable: '今日暂无可领礼包',
+  unknown: '本次领取待核对，今日暂停再次领取',
+  unconfirmed: '礼包状态待确认，请刷新',
+}
+const mallGift = computed(() => ranch.state?.mallGift)
+const mallGiftLabel = computed(() => mallGiftLabels[mallGift.value?.status] || '尚未读取礼包状态')
 async function refreshForReview() {
   const gid = ranch.result?.friendGid
   if (gid) {
@@ -125,7 +135,7 @@ async function refreshForReview() {
     await readFriend(gid)
   }
   else {
-    await refresh(eggReview.value ? 'tasks' : ranch.view)
+    await refresh(eggReview.value ? 'tasks' : giftReview.value ? 'mallGift' : ranch.view)
   }
 }
 watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && feedReview.value] as const, ([id, operation, pending], _, onCleanup) => {
@@ -279,7 +289,8 @@ defineExpose({ refresh })
       @load="ranch.loadOptions" @retry-policy="ranch.loadAutomation" @save="ranch.saveAutomation"
     />
     <nav class="my-4 flex flex-wrap gap-2" aria-label="牧场功能">
-      <BaseButton v-for="tab in [{ id: 'animals', name: '动物与库存' }, { id: 'shop', name: '幼崽与饲料商店' }, { id: 'tasks', name: '牧场任务' }]" :key="tab.id" :variant="ranch.view === tab.id ? 'primary' : 'secondary'" :disabled="ranch.operating || ranch.preparing || ranch.acknowledging" @click="refresh(tab.id)">
+      <BaseButton v-for="tab in [{ id: 'animals', name: '动物与库存' }, { id: 'shop', name: '幼崽与饲料商店' }, { id: 'tasks', name: '牧场任务' }, { id: 'mallGift', name: '每日礼包' }]" :key="tab.id" :variant="ranch.view === tab.id ? 'primary' : 'secondary'" :disabled="ranch.operating || ranch.preparing || ranch.acknowledging" @click="refresh(tab.id)">
+        <span v-if="tab.id === 'mallGift' && mallGift?.status === 'ready'" role="img" aria-label="可领取" class="mr-1 inline-block h-2 w-2 rounded-full bg-red-500" />
         {{ tab.name }}
       </BaseButton>
     </nav>
@@ -344,7 +355,7 @@ defineExpose({ refresh })
       </p>
       <div v-if="ranch.uncertain" class="mt-2 flex flex-wrap gap-2">
         <BaseButton :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy" @click="refreshForReview">
-          {{ ranch.result.friendGid ? '刷新好友牧场' : eggReview ? '查看任务进度' : feedReview ? '查看最新数量' : '刷新并核对' }}
+          {{ ranch.result.friendGid ? '刷新好友牧场' : eggReview ? '查看任务进度' : giftReview ? '刷新礼包状态' : feedReview ? '查看最新数量' : '刷新并核对' }}
         </BaseButton>
         <BaseButton v-if="!feedReview && !eggReview" :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy" @click="ranch.acknowledge()">
           已核对，允许继续
@@ -509,6 +520,24 @@ defineExpose({ refresh })
               {{ !good.available ? '尚未解锁、已售罄或当前不可购买' : '余额不足' }}
             </p>
           </article>
+        </div>
+      </template>
+      <template v-else-if="ranch.view === 'mallGift'">
+        <div class="flex flex-wrap items-center justify-between gap-3 border rounded-lg p-3 dark:border-gray-700">
+          <div>
+            <h3 class="font-medium">
+              牧场每日礼包
+            </h3>
+            <p v-if="mallGift?.reward" class="mt-1 text-sm">
+              {{ mallGift.reward.name }} × {{ mallGift.reward.count }}
+            </p>
+            <p class="mt-1 text-sm text-gray-500" role="status">
+              {{ ranch.loading ? '正在读取礼包状态…' : mallGiftLabel }}
+            </p>
+          </div>
+          <BaseButton :disabled="ranch.blocked || !!ranch.quote || mallGift?.status !== 'ready'" @click="ranch.prepare('claimMallGift')">
+            免费领取
+          </BaseButton>
         </div>
       </template>
       <template v-else-if="ranch.view === 'tasks'">

@@ -6,7 +6,7 @@ const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: t
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
   stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live', eggSale: false,
-  sellProducts: false, friendSteal: false, friendClean: false });
+  sellProducts: false, friendSteal: false, friendClean: false, mallGift: false });
 const SLOTS = [
   { action: 'harvest', key: 'harvest' }, { action: 'produce', key: 'produce' },
   { action: 'clean', key: 'clean' }, { action: 'claimTasks', key: 'tasks', view: 'tasks' },
@@ -17,6 +17,7 @@ const SLOTS = [
   { action: 'sell', key: 'sellProducts', view: 'tasks' },
   { action: 'stealFriend', key: 'friendSteal', friend: true },
   { action: 'cleanFriend', key: 'friendClean', friend: true },
+  { action: 'claimMallGift', key: 'mallGift', view: 'mallGift' },
 ];
 const STOCK_SHOP = '5';
 const STOCK_CURRENCY = '1007';
@@ -117,7 +118,7 @@ function normalizePolicy(value, { previous, fromStorage = false } = {}) {
   }
   return result;
 }
-const dayKey = now => new Date(now + 8 * 3600000).toISOString().slice(0, 10);
+const dayKey = model.ranchDay;
 
 function remaining(policy, usage, action, id) {
   const prefix = { addGrass: 'grass', place: 'cub', buy: 'currency' }[action];
@@ -398,6 +399,7 @@ function chooseAction(policy, state, slot, usage = {}) {
   if (action === 'harvest' && (state.animals.some(x => x.canHarvest) || state.facilities.some(x => x.ranch?.shelves.some(s => s.canCollect)))) return { action, input: { all: true } };
   if (action === 'produce' && state.animals.some(x => x.canProduce)) return { action, input: { all: true } };
   if (action === 'clean' && state.facilities.some(x => x.ranch?.hazards.length)) return { action, input: {} };
+  if (action === 'claimMallGift' && state.mallGift?.status === 'ready') return { action, input: {} };
   if (action === 'claimTasks' && state.tasks?.some(x => x.canClaim)) return { action, input: { all: true } };
   if (SLOTS[slot].key === 'sellProducts') {
     if (model.automaticSaleItems(state, policy.eggSale).length)
@@ -434,6 +436,9 @@ function inspectAction(policy, state, slot, usage) {
     const task = model.eggSaleTask(state.tasks);
     return task?.unlocked && !task.claimed && !task.canClaim ? { reason: 'no_sellable_eggs' } : {};
   }
+  if (config.key === 'mallGift') return { reason: {
+    claimed: 'mall_gift_claimed', unavailable: 'mall_gift_unavailable', unconfirmed: 'mall_gift_unconfirmed', unknown: 'result_unconfirmed',
+  }[state.mallGift?.status] };
   if (config.key === 'sellProducts') return { reason: 'no_sellable_products' };
   if (config.action === 'place') {
     const room = state.facilities.find(row => row.id === policy.ranchId && row.active && row.ranch);

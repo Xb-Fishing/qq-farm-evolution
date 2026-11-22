@@ -7,6 +7,27 @@ const h = require('./activity-availability.test');
 const { normalizeMuge } = require('../src/services/muge-activity');
 // Synthetic fixture only; no production reports or identities copied.
 const dto = endTime => ({ available: true, title: '牧歌初启', endTime, personal: null, phase: 'open', notes: ['未领活动奖励邮件补发'], sections: ['兴牧庆典', '牧友同行', '成长手册', '牧场人格'].map((title, key) => ({ key: String(key), title, lines: ['<img onerror=attack>长文本'.repeat(100)] })) });
+const reward = { id: '1', count: '3', name: '测试奖励', image: '/game/assets/item/1.png' };
+const tier = (id, threshold, status) => ({ id, threshold, status, rewards: [reward] });
+const completeDto = (endTime = null) => ({
+  ...dto(endTime),
+  personal: {
+    celebration: { total: '7', tiers: [tier('101', '5', 2), tier('102', '7', 3), tier('103', '10', 1)] },
+    friends: { count: 4, tiers: [tier('201', '3', 2), tier('202', '9', 1)] },
+    handbook: {
+      points: '30', tiers: [tier('301', '30', 2)], tasks: [
+        { id: '401', description: '完成一次测试任务', progress: '1', target: '1', status: 2, unlockDay: '1', rewards: [reward] },
+        { id: '402', description: '累计测试任务', progress: '0', target: '3', status: 4, unlockDay: '5', rewards: [reward] },
+      ],
+    },
+    personality: { answers: { 11: 0 }, personalityId: 0, settleCount: '0', shareRewardClaimed: false },
+  },
+  questions: [
+    { id: 11, title: '第一题', options: [{ value: 0, text: '选项甲' }, { value: 1, text: '选项乙' }] },
+    { id: 12, title: '第二题', options: [{ value: 0, text: '选项丙' }, { value: 1, text: '选项丁' }] },
+  ],
+  automation: { enabled: false },
+});
 const files = ['stores/muge.ts', 'components/activity/MugeActivityPanel.vue', 'views/Activity.vue'].map(p => path.join(h.WEB, 'src', p));
 const fingerprint = file => [fs.statSync(file).mode, crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')];
 const before = files.map(fingerprint);
@@ -77,7 +98,7 @@ test('production Activity view reads and renders current Muge on mount, refreshe
     assert.equal(api.calls.get.filter(c => c.url === '/api/activity/muge').length, 1);
     assert.match(h.textOf(page.root), /兴牧庆典/);
     assert.equal(api.calls.post.length, 0);
-    const refresh = h.buttonsOf(page.root).find(b => h.textOf(b).trim() === '刷新牧歌规则');
+    const refresh = h.buttonsOf(page.root).find(b => h.textOf(b).trim() === '刷新牧歌活动');
     h.click(refresh); await h.flush();
     assert.equal(api.calls.get.filter(c => c.url === '/api/activity/muge').length, 2);
     page.accountRef.value = 'synthetic-b'; await h.flush();
@@ -131,4 +152,154 @@ test('malformed cutoff headers never invent or erase a known deadline', async ()
   api.setGet(async () => ({ data: { ok: true, activity: dto(end) } })); await store.refresh('synthetic-a');
   api.setGet(async () => ({ data: { ok: false, error: 'failed' }, headers: { 'x-activity-end-time': 'NaN' } }));
   await store.refresh('synthetic-a'); assert.equal(store.activity.endTime, end); assert.equal(store.error, 'failed');
+});
+
+const findButton = (root, label) => h.buttonsOf(root).find(button => h.textOf(button).trim() === label);
+const ok = activity => ({ data: { ok: true, activity } });
+
+test('activity routes fresh qualified batches, automation preference, survey answers, and sharing through real panel controls', async () => {
+  const api = h.apiMock();
+  let activity = completeDto();
+  api.setGet(async url => ok(url.includes('/muge') ? activity : { available: false, endTime: null, personal: null }));
+  api.setPost(async (url, { action, input }) => {
+    assert.equal(url, '/api/activity/muge/operate');
+    const next = structuredClone(activity);
+    const { celebration, friends, handbook, personality } = next.personal;
+    switch (action) {
+      case 'claimCelebration': celebration.tiers[0].status = 3; break;
+      case 'claimFriends': friends.tiers[0].status = 3; break;
+      case 'claimTask': handbook.tasks[0].status = 3; break;
+      case 'claimHandbook': handbook.tiers[0].status = 3; break;
+      case 'setAutomation': next.automation.enabled = input.enabled; break;
+      case 'finishSurvey': personality.answers = input.answers; personality.personalityId = 12; break;
+      case 'claimShare': personality.shareRewardClaimed = true; break;
+      case 'resetSurvey': personality.answers = {}; personality.personalityId = 0; break;
+      default: assert.fail(action);
+    }
+    activity = next;
+    return { data: { ok: true, activity: next, ...(action.startsWith('claim') ? { rewards: [reward] } : {}) } };
+  });
+  const page = h.mountActivityPage(api);
+  try {
+    await h.flush();
+    for (const label of ['累计饲养 7 只', '好友 4 人', '累计积分 30', '5 天解锁', '可领取', '已领取', '未达标', '未解锁', '测试奖励 × 3']) {
+      assert.ok(h.textOf(page.root).includes(label), label);
+    }
+    assert.equal(findButton(page.root, '提交人格测评').props.disabled, true);
+    assert.equal(findButton(page.root, '领取首次分享奖励'), undefined);
+    for (const [label, action] of [
+      ['领取庆典奖励', 'claimCelebration'], ['领取牧友奖励', 'claimFriends'],
+      ['领取任务奖励', 'claimTask'], ['领取积分奖励', 'claimHandbook'],
+    ]) {
+      h.click(findButton(page.root, label));
+      await h.flush();
+      assert.equal(api.calls.post.at(-1).body.action, action);
+      assert.equal(findButton(page.root, label), undefined);
+    }
+    h.click(findButton(page.root, '开启自动领取'));
+    await h.flush();
+    assert.deepEqual(api.calls.post.at(-1).body.input, { enabled: true });
+    assert.ok(findButton(page.root, '关闭自动领取'));
+    const chooseAnswer = () => h.findAll(page.root, n => n.tag === 'input'
+      && n.props.name === 'muge-question-12' && n.props.value === 1)[0].props.onChange({});
+    chooseAnswer();
+    h.click(findButton(page.root, '刷新牧歌活动'));
+    await h.flush();
+    assert.equal(findButton(page.root, '提交人格测评').props.disabled, false, 'refresh preserves same-account draft');
+    page.accountRef.value = 'synthetic-b'; await h.flush();
+    assert.equal(findButton(page.root, '提交人格测评').props.disabled, true, 'switching accounts drops the previous draft');
+    page.accountRef.value = 'acc-1'; await h.flush();
+    chooseAnswer(); await h.flush();
+    h.findAll(page.root, n => n.tag === 'form' && n.props.onSubmit)[0].props.onSubmit({ preventDefault() {} });
+    await h.flush();
+    assert.deepEqual(api.calls.post.at(-1).body, { action: 'finishSurvey', input: { answers: { 11: 0, 12: 1 } } });
+    assert.match(h.textOf(page.root), /结果编号 12/);
+    assert.equal(api.calls.post.some(call => call.body.action === 'claimShare'), false);
+    h.click(findButton(page.root, '领取首次分享奖励'));
+    await h.flush();
+    assert.match(h.textOf(page.root), /首次分享奖励已领取/);
+    assert.equal(findButton(page.root, '领取首次分享奖励'), undefined);
+    h.click(findButton(page.root, '重新作答'));
+    await h.flush();
+    assert.equal(api.calls.post.at(-1).body.action, 'resetSurvey');
+    assert.equal(findButton(page.root, '提交人格测评').props.disabled, true);
+    assert.ok(api.calls.post.every(call => call.accountId === 'acc-1'));
+  } finally { h.render(null, page.root); }
+});
+
+test('uncertain writes and malformed snapshots preserve progress and require a successful read before another write', async () => {
+  const { store, api } = setup();
+  const activity = completeDto();
+  api.setGet(async () => ok(activity));
+  await store.refresh('synthetic-a');
+  assert.equal(store.ready, true);
+  const pending = h.deferred();
+  api.setPost(() => pending.promise);
+  const first = store.operate('synthetic-a', { action: 'claimCelebration' });
+  await store.operate('synthetic-a', { action: 'claimCelebration' });
+  await store.refresh('synthetic-a');
+  assert.equal(api.calls.post.length, 1);
+  assert.equal(api.calls.get.length, 1);
+  pending.reject(new Error('timeout')); await first;
+  assert.equal(store.activity.personal.celebration.tiers[0].status, 2);
+  assert.equal(store.refreshRequired, true);
+  assert.equal(store.ready, false);
+  await store.operate('synthetic-a', { action: 'claimCelebration' });
+  assert.equal(api.calls.post.length, 1);
+  api.setGet(async () => ok({ ...activity, personal: { celebration: [] } }));
+  await store.refresh('synthetic-a');
+  assert.match(store.error, /活动状态格式异常/);
+  assert.equal(store.ready, false);
+  assert.equal(store.refreshRequired, true);
+  api.setGet(async () => ok(activity));
+  await store.refresh('synthetic-a');
+  assert.equal(store.error, '');
+  assert.equal(store.ready, true);
+  assert.equal(store.refreshRequired, false);
+  api.setPost(async () => ({ data: { ok: true, rewards: [reward], refreshRequired: true } }));
+  await store.operate('synthetic-a', { action: 'claimCelebration' });
+  assert.equal(store.rewards[0].name, reward.name);
+  assert.equal(store.ready, false);
+  assert.equal(store.refreshRequired, true);
+  await store.refresh('synthetic-a');
+  api.setPost(async () => ({ data: { ok: false, code: 'MUGE_RESULT_UNKNOWN', error: '状态待确认', activity } }));
+  await store.operate('synthetic-a', { action: 'claimCelebration' });
+  assert.equal(store.error, '状态待确认');
+  assert.equal(store.ready, false);
+});
+
+test('late writes never change another account or reopen an expired activity', async () => {
+  let now = 2000000000000;
+  class FakeDate extends Date { static now() { return now; } }
+  const { store, api } = setup({ Date: FakeDate });
+  const end = now / 1000 + 60;
+  api.setGet(async () => ok(completeDto(end)));
+  await store.refresh('synthetic-a');
+  const old = h.deferred();
+  let oldTransform;
+  api.setPost((_url, body, config) => {
+    oldTransform = config.transformRequest[0];
+    const headers = { 'x-account-id': 'stale-interceptor-selection' };
+    assert.deepEqual(JSON.parse(oldTransform(body, headers)), { action: 'claimCelebration' });
+    assert.equal(headers['x-account-id'], 'synthetic-a');
+    return old.promise;
+  });
+  const prior = store.operate('synthetic-a', { action: 'claimCelebration' });
+  await store.refresh('synthetic-b');
+  assert.throws(() => oldTransform({ action: 'claimCelebration' }, {}), { code: 'ERR_CANCELED' });
+  old.resolve({ data: { ok: true, activity: completeDto(1), rewards: [reward] } });
+  await prior;
+  assert.equal(store.accountId, 'synthetic-b');
+  assert.equal(store.activity.endTime, end);
+  assert.deepEqual(store.rewards, []);
+  const pending = h.deferred();
+  api.setPost(() => pending.promise);
+  const current = store.operate('synthetic-b', { action: 'claimTask' });
+  now = end * 1000;
+  pending.resolve({ data: { ok: true, activity: completeDto(end + 60), rewards: [reward] } });
+  await current;
+  assert.equal(store.activity.available, false);
+  assert.equal(store.pending, null);
+  assert.equal(store.ready, false);
+  assert.deepEqual(store.rewards, []);
 });

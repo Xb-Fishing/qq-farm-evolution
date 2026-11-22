@@ -410,6 +410,52 @@ message BuyGoodsReply {
     repeated Item get_items = 2;   
     repeated Item cost_items = 3;  
 }
+message RanchMallListRequest {
+    int32 slot_type = 1;
+    bool is_manual_open = 2;
+    int32 global_scene_id = 3;
+}
+message RanchMallListReply {
+    repeated RanchMallGoods goods_list = 1;
+}
+message RanchMallGoods {
+    int64 goods_id = 1;
+    string name = 2;
+    int32 goods_type = 3;
+    repeated RanchMallItem reward_items = 4;
+    RanchMallPrice price = 5;
+    bool is_free = 6;
+    RanchMallPurchaseLimit purchase_limit = 7;
+    bool is_available = 8;
+    bool ad_only = 18;
+    bool share_only = 19;
+    bool is_owned = 20;
+}
+message RanchMallItem {
+    int64 id = 1;
+    int64 count = 2;
+}
+message RanchMallPrice {
+    int64 id = 1;
+    optional int64 count = 2;
+}
+message RanchMallPurchaseLimit {
+    int32 type = 1;
+    int64 bought_count = 2;
+    int64 limit_count = 3;
+    bool share_only = 4;
+}
+message RanchMallPurchaseRequest {
+    int64 goods_id = 1;
+    int64 count = 2;
+}
+message RanchMallPurchaseReply {
+    int64 goods_id = 1;
+    bool success = 2;
+    repeated RanchMallItem reward_items = 3;
+    bool is_first_buy = 4;
+    RanchMallPurchaseLimit purchase_limit = 5;
+}
 message Task {
     repeated Item extra_rewards = 14;
     int64 id = 1;                    
@@ -537,6 +583,20 @@ const ROUTES = Object.freeze({
         "request": "ShopInfoRequest",
         "reply": "ShopInfoReply",
         "writing": false
+    },
+    "mallGift": {
+        "service": "gamepb.mallpb.MallService",
+        "method": "GetMallListBySlotType",
+        "request": "RanchMallListRequest",
+        "reply": "RanchMallListReply",
+        "writing": false
+    },
+    "claimMallGift": {
+        "service": "gamepb.mallpb.MallService",
+        "method": "Purchase",
+        "request": "RanchMallPurchaseRequest",
+        "reply": "RanchMallPurchaseReply",
+        "writing": true
     },
     "buy": {
         "service": "gamepb.shoppb.ShopService",

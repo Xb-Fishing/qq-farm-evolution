@@ -255,6 +255,8 @@ function createDataProvider(deps) {
         acknowledgeRanch: (ref, id) => callWorkerApi(resolveAccountId(ref), 'acknowledgeRanch', id),
 
         // ========== Activity ==========
+        getMugeActivity: ref => callWorkerApi(resolveAccountId(ref), 'getMugeActivity', { _timeoutMs: 15000 }),
+        operateMuge: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMuge', action, input, { _timeoutMs: 45000 }),
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),
         // 只读双箱邮件快照与一次有界更新证据采集（Worker 侧 60s 缓存共享）

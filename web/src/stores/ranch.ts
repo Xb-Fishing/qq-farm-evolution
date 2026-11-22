@@ -357,7 +357,7 @@ export const useRanchStore = defineStore('ranch', () => {
     error.value = ''
     // A re-entered panel can observe a newer result before this HTTP request settles.
     const lastOutcome = outcomes.get(id)
-    const pendingOutcome = { id: selected.id, outcome: 'unknown', label: selected.label, message: '请求结果正在确认；不会自动重试' }
+    const pendingOutcome = { id: selected.id, action: selected.intent.action, outcome: 'unknown', label: selected.label, message: '请求结果正在确认；不会自动重试' }
     outcomes.set(id, pendingOutcome)
     const ownsOutcome = () => toRaw(outcomes.get(id)) === pendingOutcome
     const request = requestConfig(id, token)
