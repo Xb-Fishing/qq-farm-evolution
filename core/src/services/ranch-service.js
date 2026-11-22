@@ -5,7 +5,6 @@ const crypto = require('node:crypto');
 const codec = require('./ranch-codec');
 const model = require('./ranch-model');
 const feedAudit = require('./ranch-feed-reconciliation');
-const friends = require('./ranch-friend');
 const policyTools = require('./ranch-policy');
 const LOCAL_CODES = new Set(['INVALID_ARGUMENT', 'GOODS_UNAVAILABLE', 'PURCHASE_LIMIT_EXCEEDED', 'INSUFFICIENT_BALANCE']);
 const error = (code, message) => Object.assign(new Error(message), { code });
@@ -37,7 +36,7 @@ const AUTOMATION_RESULT_LABELS = { confirmed: '已确认', partial: '部分确�
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const planIdentity = plan => digest({ action: plan.action, route: plan.route, payload: plan.payload,
   costs: plan.costItems, rewards: plan.expectedRewards, targets: plan.resultKeys || null,
-  ...(plan.upgradeTarget && { upgradeTarget: plan.upgradeTarget }), ...(plan.friendOffers && { friendOffers: plan.friendOffers }),
+  ...(plan.upgradeTarget && { upgradeTarget: plan.upgradeTarget }),
   ...(plan.taskSale && { taskSale: plan.taskSale }) });
 function sumItems(items = []) {
   const values = new Map();
@@ -247,41 +246,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (action === 'buy') return 'shop';
     return action === 'claimTasks' || (action === 'sell' && input?.taskId !== undefined) ? 'tasks' : 'animals';
   }
-  async function inActionScene(action, input, callback, maxCalls) {
-    if (!friends.actions.has(action)) return withScene(callback, maxCalls);
-    return visitFriend(input.hostGid, callback);
-  }
-  async function visitFriend(hostGid, callback) {
-    const host = model.positiveId(hostGid, '好友');
-    const self = String(network.getUserState().gid);
-    if (host === self) throw error('RANCH_INVALID_ARGUMENT', '请选择好友牧场');
-    return withScene(async context => {
-      let entered = false;
-      try {
-        const entry = await rpc('enterFriend', { host_gid: host, reason: 2 });
-        entered = true;
-        context.assertCurrent();
-        if (String(entry.basic?.gid) !== host || entry.is_tourist === true)
-          throw error('RANCH_FRIEND_UNAVAILABLE', '当前不能访问该好友牧场');
-        const detail = await rpc('friendDetail', { host_gid: host });
-        context.assertCurrent();
-        return await callback({ ...context, friend: friends.describe(entry, detail, host, self) });
-      } finally {
-        if (entered) {
-          try { await rpc('leaveFriend', { host_gid: host }); }
-          catch {
-            try { require('../utils/utils').logWarn('牧场', '好友牧场离场未确认，等待恢复原场景', { module: 'ranch', event: 'ranch_friend_leave' }); } catch {}
-          }
-        }
-      }
-    });
-  }
-  async function getFriend(hostGid) {
-    return visitFriend(hostGid, ({ friend }) => ({ name: friend.name, host: friend.host,
-      stealCount: friend.stealable.length, cleanCount: friend.hazards.length }));
-  }
-  async function loadAction(initial, action, input, assertCurrent, rechecking = false, autoSlot, autoRevision, friend) {
-    if (friend) return { raw: null, plan: friends.plan(action, friend) };
+  async function loadAction(initial, action, input, assertCurrent, rechecking = false, autoSlot, autoRevision) {
     const raw = await loadRaw(initial, viewFor(action, input), input.shopId);
     assertCurrent();
     try {
@@ -342,14 +307,14 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     }, READ_CALLS[scan ? 'shop' : view]);
   }
   async function prepare(action, input = {}, autoRevision, autoSlot) {
-    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action) && !friends.actions.has(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
+    if (!['buy', 'place', 'addGrass', 'produce', 'harvest', 'clean', 'sell', 'claimTasks', 'upgrade', 'completeUpgrade'].includes(action)) throw error('RANCH_INVALID_ARGUMENT', '不支持的牧场操作');
     validateInput(input);
     const accountOrigin = origin();
     const previous = read();
     if (unresolved(previous)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对，请先刷新并确认');
     if (autoRevision !== undefined) checkAutomaticAction(previous, action, autoRevision, autoSlot);
-    const prepared = await inActionScene(action, input, async ({ initial, assertCurrent, friend }) => {
-      const { raw, plan } = await loadAction(initial, action, input, assertCurrent, false, autoSlot, autoRevision, friend);
+    const prepared = await withScene(async ({ initial, assertCurrent }) => {
+      const { raw, plan } = await loadAction(initial, action, input, assertCurrent, false, autoSlot, autoRevision);
       if (origin() !== accountOrigin) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请重新确认');
       if (plan.count > 50 && ['place', 'produce', 'harvest', 'clean', 'claimTasks'].includes(action))
         throw error('RANCH_INVALID_ARGUMENT', '本次目标数量过多，请分次操作');
@@ -385,8 +350,6 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       if (stacks(reply.sell_items) !== stacks(plan.payload.items) || !sameItems(reply.get_items, plan.expectedRewards))
         unknown('出售回执的产物、数量或所得未完全匹配，请刷新核对');
       rewards = reply.get_items;
-    } else if (friends.actions.has(plan.action)) {
-      ({ rewards, completed } = friends.verify(plan, reply));
     } else if (plan.action === 'claimTasks') {
       rewards = reply.items || [];
       if (!sameItems(rewards, plan.expectedRewards)) unknown('任务奖励回执未完全匹配，请核对领取状态');
@@ -475,8 +438,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (replay) return replay;
     if (quote.autoRevision !== undefined) checkAutomaticAction(data, quote.action, quote.autoRevision, quote.autoSlot);
     let operationAttempted = false;
-    return inActionScene(quote.action, quote.input, async ({ initial, assertCurrent, friend }) => {
-      const { raw: before, plan } = await loadAction(initial, quote.action, quote.input, assertCurrent, true, quote.autoSlot, quote.autoRevision, friend);
+    return withScene(async ({ initial, assertCurrent }) => {
+      const { raw: before, plan } = await loadAction(initial, quote.action, quote.input, assertCurrent, true, quote.autoSlot, quote.autoRevision);
       data = read(); quote = data.quotes.find(row => row.id === id);
       const settled = checkQuote(data, quote, id);
       if (settled) return settled;
@@ -527,9 +490,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         }
         let receiptProof;
         if (reply || (baseline && operationAttempted && result?.outcome === 'unknown')) {
-          if (!friend) {
-            try { after = await loadRaw(null, plan.taskSale ? 'tasks' : 'animals'); assertCurrent(); } catch { after = null; }
-          }
+          try { after = await loadRaw(null, plan.taskSale ? 'tasks' : 'animals'); assertCurrent(); } catch { after = null; }
           if (baseline) {
             receiptProof = feedAudit.receiptEvidence(plan, reply);
             const comparison = feedAudit.compare(plan, baseline, receiptProof, after, quoteNow());
@@ -583,11 +544,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           if (result.storageWarning) throw error('RANCH_RESULT_UNCONFIRMED', '确认结果未能保存，请刷新牧场核对');
           throw error('RANCH_QUOTE_EXPIRED', EXPIRED_MESSAGE);
         }
-        if (friend && result.outcome === 'confirmed' && !result.replayed) {
-          try { require('../utils/utils').log('牧场', `${plan.label}已确认 · ${result.completed} 项`, { module: 'ranch', event: 'ranch_friend_action' }); } catch {}
-        }
         return { ...result, snapshot,
-          refreshRequired: !snapshot && !friend, message: !snapshot && !friend && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
+          refreshRequired: !snapshot, message: !snapshot && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
       } finally { inFlight.delete(id); }
     }).catch(failure => {
       if (!operationAttempted && (failure?.isGovernedRejection === true
@@ -829,7 +787,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       throw failure;
     } finally { autoRunning = false; }
   }
-  return { getState: (...args) => safe(() => getState(...args)), getFriend: host => safe(() => getFriend(host)), prepare: (...args) => safe(() => prepare(...args)),
+  return { getState: (...args) => safe(() => getState(...args)), prepare: (...args) => safe(() => prepare(...args)),
     getAutomation: () => safe(getAutomation), setAutomation: value => safe(() => setAutomation(value)), automate: () => safe(automate, false),
     execute: id => safe(markOperationNotSent => execute(id, markOperationNotSent)),
     cancel: (...args) => safe(() => cancel(...args)), acknowledge: (...args) => safe(() => acknowledge(...args)) };
@@ -854,10 +812,10 @@ module.exports = { createRanchService, planIdentity, sumItems,
   bindRanchAutomation: callback => { automationAdmission = callback; },
   runRanchAutomation: () => service().automate(), getRanchAutomation: () => service().getAutomation(),
   setRanchAutomation: value => service().setAutomation(value),
-  getRanchState: (...args) => service().getState(...args), getRanchFriend: host => service().getFriend(host), prepareRanchAction: (...args) => service().prepare(...args),
+  getRanchState: (...args) => service().getState(...args), prepareRanchAction: (...args) => service().prepare(...args),
   operateRanch: id => service().execute(id), cancelRanchAction: id => service().cancel(id), acknowledgeRanch: id => service().acknowledge(id) };
 if (process.env.FARM_SESSION_BUSINESS === '1') {
   const { wrapBusinessFunction } = require('./business-state');
-  for (const name of ['runRanchAutomation', 'getRanchState', 'getRanchFriend', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
+  for (const name of ['runRanchAutomation', 'getRanchState', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
     module.exports[name] = wrapBusinessFunction(`ranch:${name}`, module.exports[name]);
 }

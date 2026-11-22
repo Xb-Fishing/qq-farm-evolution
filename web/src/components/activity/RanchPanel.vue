@@ -12,64 +12,6 @@ const selectedRanch = reactive<Record<string, string>>({})
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retries = 0
 let viewGeneration = 0
-let friendSequence = 0
-const friendOptions = ref<Array<{ gid: string, name: string }>>([])
-const selectedFriend = ref('')
-const friendLoaded = ref(false)
-const friendBusy = ref(false)
-const friendError = ref('')
-const friendState = ref<{ name: string, host: string, stealCount: number, cleanCount: number } | null>(null)
-async function readFriend(gid?: string) {
-  const attempt = ++friendSequence
-  friendBusy.value = true
-  friendError.value = ''
-  try {
-    const snapshot = await ranch.readFriend(gid)
-    if (attempt !== friendSequence || !snapshot)
-      return
-    if (gid) {
-      if (String(snapshot.host) === gid)
-        friendState.value = snapshot
-    }
-    else {
-      friendOptions.value = (Array.isArray(snapshot) ? snapshot : []).flatMap(row => {
-        const id = String(row?.gid || '')
-        return /^[1-9]\d*$/.test(id) && (typeof row.gid !== 'number' || Number.isSafeInteger(row.gid))
-          ? [{ gid: id, name: String(row.remark || row.name || id) }]
-          : []
-      })
-      friendLoaded.value = true
-    }
-  }
-  catch (cause: any) {
-    if (attempt === friendSequence) {
-      if (gid)
-        friendState.value = null
-      friendError.value = cause?.response?.data?.error || cause?.message || '好友牧场暂不可用'
-    }
-  }
-  finally {
-    if (attempt === friendSequence)
-      friendBusy.value = false
-  }
-}
-function selectFriend(gid: string) {
-  selectedFriend.value = gid
-  friendState.value = null
-  if (gid)
-    void readFriend(gid)
-  else {
-    friendSequence++
-    friendBusy.value = false
-  }
-}
-async function executeQuote() {
-  const host = ranch.quote?.intent?.input?.hostGid
-  const generation = viewGeneration
-  const confirmed = await ranch.execute()
-  if (host && confirmed && generation === viewGeneration && selectedFriend.value === host)
-    await readFriend(host)
-}
 function clearRetry() {
   if (retryTimer)
     clearTimeout(retryTimer)
@@ -92,13 +34,6 @@ watch(() => props.accountId, (id) => {
   clearRetry()
   retries = 0
   ranch.bind(id)
-  friendSequence++
-  friendOptions.value = []
-  selectedFriend.value = ''
-  friendState.value = null
-  friendLoaded.value = false
-  friendBusy.value = false
-  friendError.value = ''
   for (const key of Object.keys(quantities)) delete quantities[key]
   for (const key of Object.keys(selectedRanch)) delete selectedRanch[key]
   if (id)
@@ -108,7 +43,6 @@ watch(() => props.accountId, (id) => {
 }, { immediate: true, flush: 'sync' })
 onBeforeUnmount(() => {
   viewGeneration++
-  friendSequence++
   clearRetry()
   ranch.cancel()
 })
@@ -269,29 +203,6 @@ defineExpose({ refresh })
         {{ tab.name }}
       </BaseButton>
     </nav>
-    <details class="mb-4 border rounded-lg p-3" @toggle="($event.currentTarget as HTMLDetailsElement).open && !friendLoaded && !friendBusy && readFriend()">
-      <summary class="cursor-pointer font-medium">好友牧场</summary>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <select :value="selectedFriend" class="ranch-select" aria-label="选择好友牧场" :disabled="ranch.operating || ranch.preparing || !!ranch.quote" @change="selectFriend(($event.target as HTMLSelectElement).value)">
-          <option value="">选择好友</option>
-          <option v-for="row in friendOptions" :key="row.gid" :value="row.gid">{{ row.name }}</option>
-        </select>
-        <BaseButton variant="secondary" :disabled="friendBusy || ranch.operating || ranch.preparing || !!ranch.quote" @click="readFriend(selectedFriend || undefined)">
-          {{ selectedFriend ? '刷新好友牧场' : '刷新好友列表' }}
-        </BaseButton>
-      </div>
-      <p v-if="friendError" role="alert" class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ friendError }}</p>
-      <p v-else-if="friendBusy" role="status" class="mt-2 text-sm text-gray-500">正在读取好友牧场…</p>
-      <p v-else-if="friendLoaded && !friendOptions.length" class="mt-2 text-sm text-gray-500">当前账号没有好友。</p>
-      <div v-if="friendState" class="mt-2 flex flex-wrap gap-2">
-        <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.stealCount" @click="ranch.prepare('stealFriend', { hostGid: friendState.host })">
-          偷取产物（{{ friendState.stealCount }} 个货架）
-        </BaseButton>
-        <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.cleanCount" @click="ranch.prepare('cleanFriend', { hostGid: friendState.host })">
-          帮好友清理（{{ friendState.cleanCount }} 处）
-        </BaseButton>
-      </div>
-    </details>
     <p v-if="ranch.error" role="alert" class="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-100">
       {{ ranch.error }}
     </p>
@@ -518,7 +429,7 @@ defineExpose({ refresh })
     <p v-if="ranch.operating" class="mt-3 text-sm text-gray-500" role="status">
       正在执行，请等待确认结果…
     </p>
-    <ConfirmModal :show="!!ranch.quote" :title="ranch.quote?.label || '确认牧场操作'" :message="message" type="primary" :confirm-text="ranch.reviewNotice ? '重新核对' : '确认执行'" :loading="ranch.preparing" @confirm="executeQuote()" @close="ranch.closeQuote()" @cancel="ranch.closeQuote()" />
+    <ConfirmModal :show="!!ranch.quote" :title="ranch.quote?.label || '确认牧场操作'" :message="message" type="primary" :confirm-text="ranch.reviewNotice ? '重新核对' : '确认执行'" :loading="ranch.preparing" @confirm="ranch.execute()" @close="ranch.closeQuote()" @cancel="ranch.closeQuote()" />
   </section>
 </template>
 
