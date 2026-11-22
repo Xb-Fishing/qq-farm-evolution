@@ -148,6 +148,45 @@ test('real modal saves confirmed Code with the matching QR session and selected 
     } finally { h.app.unmount(); }
 });
 
+test('refreshing the same account while exchanging the scanned QR does not close the modal or drop the save', async () => {
+    const h = modalHarness(true, { id: 'account-a', name: 'fixture', platform: 'wx', running: false });
+    try {
+        await vue.nextTick();
+        const poll = h.intervals[0].callback();
+        await vue.nextTick();
+        assert.equal(h.codeCalls(), 1);
+
+        h.props.editData = { ...h.props.editData, running: true };
+        await vue.nextTick();
+        assert.deepEqual(h.emitted, []);
+        assert.equal(h.wx.uuid, 'session-1');
+
+        h.pendingCode.resolve({ success: true, code: 'fixture-code' });
+        await poll;
+        assert.equal(h.saves.length, 1);
+        assert.equal(h.saves[0].id, 'account-a');
+        assert.equal(h.saves[0].wxSessionId, 'session-1');
+        assert.deepEqual(h.emitted, ['account-a', 'close']);
+    } finally { h.app.unmount(); }
+});
+
+test('changing the target account while exchanging the scanned QR cancels the save', async () => {
+    const h = modalHarness(true, { id: 'account-a', name: 'fixture', platform: 'wx' });
+    try {
+        await vue.nextTick();
+        const poll = h.intervals[0].callback();
+        await vue.nextTick();
+        assert.equal(h.codeCalls(), 1);
+
+        h.props.editData = { id: 'account-b', name: 'another', platform: 'wx' };
+        await vue.nextTick();
+        h.pendingCode.resolve({ success: true, code: 'fixture-code' });
+        await poll;
+        assert.deepEqual(h.emitted, ['close']);
+        assert.equal(h.saves.length, 0);
+    } finally { h.app.unmount(); }
+});
+
 
 test('hidden modal mount and unmount never reset another modal shared QR session', async () => {
     const h = modalHarness(false);

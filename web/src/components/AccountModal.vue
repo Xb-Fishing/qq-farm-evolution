@@ -632,7 +632,7 @@ watch([() => props.show, activeTab], ([show, tab]) => {
     void cancelCaptureSession()
 }, { immediate: true })
 
-watch(() => [props.editData?.id, props.editData?.platform], () => {
+watch([() => props.editData?.id, () => props.editData?.platform], () => {
   checkQqSession()
   if (props.show && activeTab.value === 'wx')
     close()
