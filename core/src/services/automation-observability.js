@@ -19,7 +19,7 @@ const ACTIONS = {
   sell_success: 'warehouse', sell_done: 'warehouse',
   '神秘商人自动购买': 'shop', '帮助好友': 'friend', '照顾好友': 'friend', '在线自动捣乱': 'friend',
   '放置黄金虫': 'friend', '自动同意好友': 'friend', milk_tea_operate: 'activity', activity_confirmed: 'activity',
-  muge_reward_claimed: 'activity',
+  muge_reward_claimed: 'activity', muge_task_advanced: 'activity',
 };
 const MILK_ACTIONS = { createShop: '创建店铺', renameShop: '修改店名', hire: '雇佣',
   hireSetting: '调整雇佣设置', claimCashier: '领取营业收益', boost: '加速营业', upgrade: '升级店铺',
@@ -92,7 +92,8 @@ function actionFromLog(message, meta = {}) {
         : meta.result !== 'ok') return null;
   if (event === 'activity_confirmed' && (!Object.hasOwn(ACTIVITY_ACTIONS, meta.action)
     || !(Number(meta.count) > 0) || meta.replayed === true)) return null;
-  if (event === 'muge_reward_claimed' && (!Number.isSafeInteger(meta.count) || meta.count <= 0 || meta.replayed === true)) return null;
+  if (['muge_reward_claimed', 'muge_task_advanced'].includes(event)
+    && (!Number.isSafeInteger(meta.count) || meta.count <= 0 || meta.replayed === true)) return null;
   if (event === 'vip_daily_gift' && (!Array.isArray(meta.vipTypes) || !meta.vipTypes.length)) return null;
   if (event === '购买化肥' && meta.automationAction !== true) return null;
   if (['开启化肥礼包', '购买化肥', '施肥', '常规施肥', '多季节施肥', '放置黄金虫', '自动同意好友', 'email_rewards', 'mall_free_gifts', '领取活跃奖励', '神秘商人自动购买'].includes(event)

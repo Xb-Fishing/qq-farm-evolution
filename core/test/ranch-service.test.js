@@ -96,6 +96,8 @@ function fixture(upgrade = false) {
       } else if (method === 'GetRanchDetail') {
         assert.ok(f.friendHosts.includes(request.host_gid));
         reply = { ranches: f.friendRanches };
+      } else if (method === 'GetRanchOpTimes') {
+        reply = { ops: [{ op_id: '11009', times_limit: '2', used_times: '0', remaining_times: '2' }] };
       } else if (method === 'LeaveHomestead') {
         assert.ok(f.friendHosts.includes(request.host_gid));
         reply = {};
@@ -137,6 +139,13 @@ function fixture(upgrade = false) {
           }
           reply = { sell_items: request.items.map(({ id, uid, count }) => ({ id, uid, count })),
             get_items: [...earned].map(([id, count]) => ({ id, count: count.toString() })) };
+        } else if (method === 'StrokeAnimal') {
+          const room = f.friendRanches[0];
+          const animal = room.animals.find(row => row.animal_inst_id === request.target.animal_inst_id);
+          assert.ok(animal);
+          animal.mutation.stroked_gids = ['42'];
+          reply = { ranches: [room], op_result: { facility_inst_id: room.ranch_inst_id, kind: 1, target_id: String(animal.animal_inst_id) },
+            remaining_times: '1' };
         } else if (method === 'StealProduce') {
           assert.ok(f.friendHosts.includes(request.host_gid));
           assert.deepEqual(request.targets, [{ ranch_inst_id: '51', slot_index: 0 }]);
@@ -472,6 +481,36 @@ test('automatic friend ranch keeps prepared manual work and a newly blacklisted 
   };
   assert.equal((await f.service.automate()).code, 'RANCH_AUTOMATION_PAUSED');
   assert.equal(f.writes, 0);
+});
+
+test('handbook care visits one real scene, prefers an eligible duck, and verifies the actor and quota in the receipt', async () => {
+  const f = fixture();
+  f.realScene = true;
+  f.friendRoster.push({ gid: '73' });
+  f.friendRanches.push({ ranch_inst_id: '51', husbandry_type: 1, animals: [
+    { animal_inst_id: 2, animal_id: '60001', ranch_inst_id: '51', mutation: { strokable: true } },
+    { animal_inst_id: 3, animal_id: '60002', ranch_inst_id: '51', mutation: { strokable: true } },
+  ] });
+  assert.equal((await f.service.prepare('careFriend', { hostGid: '73' })).code, 'RANCH_INVALID_ARGUMENT');
+  const result = await f.service.runFriendTask('careFriend', 0, () => true);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.data.outcome, 'confirmed');
+  assert.deepEqual(f.friendRanches[0].animals[1].mutation.stroked_gids, ['42']);
+  assert.deepEqual(f.calls, ['PlayerSceneLogin', 'EnterHomestead', 'GetRanchDetail', 'GetRanchOpTimes',
+    'StrokeAnimal', 'LeaveHomestead', 'PlayerSceneLogin']);
+  assert.equal(f.scene.snapshot().scene, 1);
+});
+
+test('handbook stocking obeys the task gap, uses inventory, and leaves the payment shop untouched', async () => {
+  const f = fixture();
+  f.realScene = true;
+  f.cubs.set('60001', 3);
+  const result = await f.service.runOwnTask('stockAnimals', 2, () => true);
+  assert.equal(result.data.outcome, 'confirmed', result.data.message);
+  assert.equal(result.data.completed, 2);
+  assert.equal(f.cubs.get('60001'), 1);
+  assert.equal(f.calls.includes('ShopInfo'), false);
+  assert.equal(f.scene.snapshot().scene, 1);
 });
 
 test('an empty steal shelf still lets the same visit clean and a failed roster is reported separately', async t => {

@@ -21,11 +21,17 @@ const personal = computed(() => props.activity?.personal)
 const personality = computed(() => personal.value?.personality)
 const questions = computed(() => props.activity?.questions || [])
 const surveyEdits = ref<Record<string, number>>({})
+const retaking = ref(false)
+const sharingMessage = ref('')
+watch(() => personality.value?.settleCount, (next, previous) => {
+  if (next !== previous)
+    retaking.value = false
+})
 watch(() => personality.value?.personalityId, (next, previous) => {
   if (next != null && (next > 0 || (previous != null && previous > 0)))
     surveyEdits.value = {}
 })
-const surveyAnswers = computed(() => ({ ...personality.value?.answers, ...surveyEdits.value }))
+const surveyAnswers = computed(() => retaking.value ? surveyEdits.value : { ...personality.value?.answers, ...surveyEdits.value })
 const validAnswers = computed(() => {
   const answers: Record<string, number> = {}
   for (const question of questions.value) {
@@ -43,8 +49,61 @@ function operate(operation: MugeOperation) {
 }
 
 function submitSurvey() {
-  if (personality.value && personality.value.personalityId === 0 && surveyComplete.value)
+  if (personality.value && (personality.value.personalityId === 0 || retaking.value) && surveyComplete.value)
     operate({ action: 'finishSurvey', input: { answers: validAnswers.value } })
+}
+
+function resetSurvey() {
+  retaking.value = true
+  surveyEdits.value = {}
+  operate({ action: 'resetSurvey' })
+}
+
+async function sharePersonality() {
+  if (!personality.value?.personalityId)
+    return
+  const text = `我在牧歌初启测出了牧场人格，结果编号 ${personality.value.personalityId}。`
+  try {
+    if (typeof navigator.share === 'function') {
+      await navigator.share({ title: '我的牧场人格', text })
+      sharingMessage.value = '已打开分享'
+    }
+    else {
+      await navigator.clipboard.writeText(text)
+      sharingMessage.value = '已复制测评结果'
+    }
+  }
+  catch (error) {
+    if (!(error instanceof Error) || error.name !== 'AbortError')
+      sharingMessage.value = '暂时无法分享，可下载结果海报'
+  }
+}
+
+function downloadPersonality() {
+  const result = personality.value?.personalityId
+  if (!result)
+    return
+  const canvas = document.createElement('canvas')
+  canvas.width = 720
+  canvas.height = 400
+  const context = canvas.getContext('2d')
+  if (!context)
+    return
+  context.fillStyle = '#124538'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.fillStyle = '#d2f5d5'
+  context.font = '26px sans-serif'
+  context.fillText('牧歌初启', 56, 85)
+  context.fillStyle = '#ffffff'
+  context.font = 'bold 58px sans-serif'
+  context.fillText('我的牧场人格', 56, 218)
+  context.fillStyle = '#d2f5d5'
+  context.font = '30px sans-serif'
+  context.fillText(`测评结果编号 ${result}`, 56, 304)
+  const link = document.createElement('a')
+  link.download = '牧场人格.png'
+  link.href = canvas.toDataURL('image/png')
+  link.click()
 }
 
 function dateLabel(value: unknown) {
@@ -70,6 +129,8 @@ interface DisplayRow {
   detail?: string
   status: number
   rewards: MugeReward[]
+  advanceLabel?: string
+  advancePending?: boolean
 }
 
 function tierRows(tiers: MugeRewardRow[], label: (threshold: string) => string): DisplayRow[] {
@@ -194,6 +255,29 @@ const rewardSections = computed<RewardSection[]>(() => {
             {{ activity.automation.enabled ? '关闭自动领取' : '开启自动领取' }}
           </BaseButton>
         </div>
+        <div v-if="activity.automation?.tasksEnabled !== undefined && personal?.handbook" class="mt-3 flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-lg p-3 dark:border-gray-700">
+          <div>
+            <h3 class="text-sm font-semibold">
+              自动推进成长手册
+            </h3>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              按已解锁任务巡查好友和自家牧场，使用现有库存推进。新建栏舍升级仍需确认费用。
+            </p>
+          </div>
+          <BaseButton
+            variant="outline" class="min-h-11" :loading="pending === 'setTaskAutomation'" :disabled="!canOperate"
+            @click="operate({ action: 'setTaskAutomation', input: { enabled: !activity.automation?.tasksEnabled } })"
+          >
+            {{ activity.automation.tasksEnabled ? '关闭任务自动推进' : '开启任务自动推进' }}
+          </BaseButton>
+          <label v-if="activity.automation.cansEnabled !== undefined" class="flex w-full items-center gap-2 text-sm">
+            <input
+              type="checkbox" :checked="activity.automation.cansEnabled" :disabled="!canOperate"
+              @change="operate({ action: 'setCanAutomation', input: { enabled: ($event.target as HTMLInputElement).checked } })"
+            >
+            允许任务自动使用库存罐头
+          </label>
+        </div>
         <div class="grid mt-4 min-w-0 gap-3 md:grid-cols-2">
           <section v-for="section in rewardSections" :key="section.title" class="min-w-0 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/50">
             <h3 class="font-bold">
@@ -219,6 +303,15 @@ const rewardSections = computed<RewardSection[]>(() => {
                     <p v-if="row.detail" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                       {{ row.detail }}
                     </p>
+                    <p v-if="row.advancePending" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      等待游戏更新任务进度
+                    </p>
+                    <BaseButton
+                      v-else-if="group.action === 'claimTask' && row.status === 1 && row.advanceLabel" variant="outline"
+                      class="mt-2 min-h-11" :disabled="!canOperate" @click="operate({ action: 'advanceTask', input: { taskId: row.id } })"
+                    >
+                      {{ row.advanceLabel }}
+                    </BaseButton>
                     <ul v-if="row.rewards.length" class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
                       <li v-for="reward in row.rewards" :key="reward.id" class="inline-flex items-center gap-1">
                         <img v-if="reward.image" :src="reward.image" alt="" loading="lazy" class="h-5 w-5 object-contain">
@@ -246,7 +339,7 @@ const rewardSections = computed<RewardSection[]>(() => {
             <p v-if="!personality" class="mt-2 text-sm text-gray-500 dark:text-gray-400">
               个人进度未取得
             </p>
-            <template v-else-if="personality.personalityId > 0">
+            <template v-else-if="personality.personalityId > 0 && !retaking">
               <p class="mt-2 text-sm">
                 人格测评已完成 · 结果编号 {{ personality.personalityId }}
               </p>
@@ -254,6 +347,12 @@ const rewardSections = computed<RewardSection[]>(() => {
                 首次分享奖励已领取
               </p>
               <div class="mt-3 flex flex-wrap gap-2">
+                <BaseButton variant="outline" class="min-h-11" @click="sharePersonality">
+                  分享结果
+                </BaseButton>
+                <BaseButton variant="outline" class="min-h-11" @click="downloadPersonality">
+                  下载结果海报
+                </BaseButton>
                 <BaseButton
                   v-if="!personality.shareRewardClaimed" variant="primary" class="min-h-11"
                   :loading="pending === 'claimShare'" :disabled="!canOperate" @click="operate({ action: 'claimShare' })"
@@ -262,11 +361,14 @@ const rewardSections = computed<RewardSection[]>(() => {
                 </BaseButton>
                 <BaseButton
                   variant="outline" class="min-h-11" :loading="pending === 'resetSurvey'" :disabled="!canOperate || !questions.length"
-                  @click="operate({ action: 'resetSurvey' })"
+                  @click="resetSurvey"
                 >
                   重新作答
                 </BaseButton>
               </div>
+              <p v-if="sharingMessage" class="mt-2 text-sm" role="status">
+                {{ sharingMessage }}
+              </p>
             </template>
             <form v-else-if="questions.length" class="mt-2" @submit.prevent="submitSurvey">
               <p class="text-sm text-gray-600 dark:text-gray-300">

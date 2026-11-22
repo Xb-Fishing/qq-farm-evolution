@@ -24,6 +24,8 @@ export interface MugeTaskRow {
   status: number
   unlockDay: string
   rewards: MugeReward[]
+  advanceLabel?: string
+  advancePending?: boolean
 }
 
 export interface MugeQuestion {
@@ -57,13 +59,14 @@ export interface MugeActivity {
   personal: MugePersonal | null
   sections?: { key: string, title: string, lines: string[] }[]
   questions?: MugeQuestion[]
-  automation?: { enabled: boolean }
+  automation?: { enabled: boolean, tasksEnabled?: boolean, cansEnabled?: boolean }
 }
 
 export type MugeOperation
   = | { action: 'claimCelebration' | 'claimFriends' | 'claimTask' | 'claimHandbook' | 'resetSurvey' | 'claimShare', input?: never }
     | { action: 'finishSurvey', input: { answers: Record<string, number> } }
-    | { action: 'setAutomation', input: { enabled: boolean } }
+    | { action: 'setAutomation' | 'setTaskAutomation' | 'setCanAutomation', input: { enabled: boolean } }
+    | { action: 'advanceTask', input: { taskId: string } }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -94,6 +97,8 @@ function isRewardRow(value: unknown): value is MugeRewardRow {
 function isTaskRow(value: unknown): value is MugeTaskRow {
   return isRecord(value) && isText(value.id) && isText(value.description) && isCount(value.progress)
     && isCount(value.target) && Number.isInteger(value.status) && isCount(value.unlockDay) && isList(value.rewards, isReward)
+    && (value.advanceLabel === undefined || isText(value.advanceLabel))
+    && (value.advancePending === undefined || typeof value.advancePending === 'boolean')
 }
 
 function isQuestion(value: unknown): value is MugeQuestion {
@@ -125,7 +130,9 @@ function parseActivity(value: unknown): MugeActivity {
       throw new Error('活动规则格式异常')
     if ((value.phase !== 'upcoming' && value.phase !== 'open') || !isList(value.notes, isText) || !isPersonal(value.personal)
       || (value.questions !== undefined && !isList(value.questions, isQuestion))
-      || (value.automation !== undefined && (!isRecord(value.automation) || typeof value.automation.enabled !== 'boolean'))) {
+      || (value.automation !== undefined && (!isRecord(value.automation) || typeof value.automation.enabled !== 'boolean'
+        || (value.automation.tasksEnabled !== undefined && typeof value.automation.tasksEnabled !== 'boolean')
+        || (value.automation.cansEnabled !== undefined && typeof value.automation.cansEnabled !== 'boolean')))) {
       throw new Error('活动状态格式异常')
     }
   }
@@ -289,7 +296,7 @@ export const useMugeStore = defineStore('muge', () => {
     refreshRequired.value = data.refreshRequired === true || data.code === 'MUGE_RESULT_UNKNOWN' || data.activity == null
     ready.value = !refreshRequired.value
     if (data.ok)
-      feedback.value = '操作已完成'
+      feedback.value = typeof data.advancement === 'string' ? data.advancement : '操作已完成'
     else
       error.value = typeof data.error === 'string' ? data.error : '操作结果待确认'
   }

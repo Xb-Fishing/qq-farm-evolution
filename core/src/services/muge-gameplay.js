@@ -25,7 +25,23 @@ const surveyOperations = {
 const rewardRows = rows => rows.map(itemDto).filter(item => item.count !== '0');
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const unavailableResult = () => fail('MUGE_RESULT_UNKNOWN', '结果待核对，请刷新活动查看进度');
-const allowedInput = new Set(['claimCelebration', 'claimFriends', 'claimTask', 'claimHandbook', 'finishSurvey', 'resetSurvey', 'claimShare', 'setAutomation']);
+const allowedInput = new Set(['claimCelebration', 'claimFriends', 'claimTask', 'claimHandbook',
+  'finishSurvey', 'resetSurvey', 'claimShare', 'setAutomation', 'setTaskAutomation', 'setCanAutomation', 'advanceTask']);
+const interactions = [
+  { action: 'petDuck', label: '抚摸好友的小鸭子', match: /抚摸[^。！\n]*好友[^。！\n]*鸭/u },
+  { action: 'careFriend', label: '照料好友动物', match: /^累计照料好友动物\d+次$/u },
+  { action: 'placeMosquito', label: '对好友牧场使坏', match: /^累计使坏好友\d+次$/u },
+  { action: 'cleanFriend', label: '帮助好友清理牧场', match: /(?:好友[^。！\n]*牧场[^。！\n]*清理|清理[^。！\n]*好友[^。！\n]*牧场)/u },
+  { action: 'stealFriend', label: '偷取好友牧场产物', match: /^累计偷取好友副产物\d+次$/u },
+  { action: 'stockAnimals', label: '从库存放养动物', match: /^累计饲养动物\d+只$/u },
+  { action: 'collectProducts', label: '生产或收获副产物', match: /^累计收获副产物\d+次$/u },
+  { action: 'gainRanchXp', label: '获取牧场经验', match: /^牧场等级达到\d+级$/u },
+  { action: 'growAlbum', label: '饲养或收获未点亮的动物', match: /^累计点亮牧场普通图鉴\d+种动物$/u },
+  { action: 'finishBuildings', label: '完成已开始的栏舍升级', match: /^累计牧场窝\+棚升级\d+次$/u },
+  { action: 'useCans', label: '使用现有罐头', match: /^累计使用罐头\d+次$/u },
+];
+const interactionFor = task => interactions.find(rule => rule.match.test(task.description));
+const needsProgress = task => task.status === 1 && BigInt(task.progress) < BigInt(task.target);
 
 function uniqueRows(rows, map) {
   const result = rows.map(map);
@@ -83,17 +99,29 @@ function readBoard(group, now) {
     sections: rules.sections || [], notes: rules.notes || [], questions: personal?.personality ? questions : [], personal };
 }
 
-function createMugeGameplay({ network, file, now, automationAllowed = () => true,
+function createMugeGameplay({ network, file, now, automationAllowed = () => true, advanceInteraction,
   log = () => {} }) {
   let running = false;
   function load() {
     try {
       const data = JSON.parse(fs.readFileSync(file(), 'utf8'));
+      data.tasksEnabled ??= false;
+      data.cansEnabled ??= false;
+      data.taskAttempts ??= {};
+      data.friendCursor ??= 0;
+      data.taskCursor ??= 0;
+      data.endTime ??= 0;
       if (data.version !== 1 || typeof data.enabled !== 'boolean' || !Number.isSafeInteger(data.nextAt)
-        || !data.pending || typeof data.pending !== 'object' || Array.isArray(data.pending)) throw new Error('invalid');
+        || !data.pending || typeof data.pending !== 'object' || Array.isArray(data.pending)
+        || typeof data.tasksEnabled !== 'boolean' || typeof data.cansEnabled !== 'boolean'
+        || !data.taskAttempts || typeof data.taskAttempts !== 'object' || Array.isArray(data.taskAttempts)
+        || !Number.isSafeInteger(data.friendCursor) || data.friendCursor < 0 || !Number.isSafeInteger(data.taskCursor) || data.taskCursor < 0
+        || !Number.isSafeInteger(data.endTime) || data.endTime < 0)
+        throw new Error('invalid');
       return data;
     } catch (cause) {
-      if (cause.code === 'ENOENT') return { version: 1, enabled: false, nextAt: 0, pending: {} };
+      if (cause.code === 'ENOENT') return { version: 1, enabled: false, tasksEnabled: false, cansEnabled: false, nextAt: 0,
+        pending: {}, taskAttempts: {}, friendCursor: 0, taskCursor: 0, endTime: 0 };
       fail('MUGE_STORAGE_FAILED', '牧歌操作记录暂不可读');
     }
   }
@@ -109,13 +137,20 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
     } finally { fs.rmSync(tmp, { force: true }); }
   }
   async function read() {
+    const previousEnd = load().endTime;
+    if (previousEnd && now() >= previousEnd) return { ...unavailable('活动已结束', previousEnd), personal: null };
     const { body } = await network.sendMsgAsync('gamepb.activitypb.ActivityService', 'List',
       codec.encode('ListRequest', { game_scene_id: 1 }), 9000);
     const reply = codec.decode('ListReply', body);
     const group = reply.groups.find(node => node.head?.id === rootId && node.head?.parent_id === '0');
     const board = readBoard(group, now());
     const data = load();
-    const prior = Object.keys(data.pending).length;
+    let changed = false;
+    if (board.endTime && (!data.endTime || board.endTime < data.endTime)) {
+      data.endTime = board.endTime;
+      changed = true;
+    }
+    const newlyConfirmed = [];
     const personal = board.personal;
     if (personal) {
       for (const [key, value] of Object.entries(data.pending)) {
@@ -126,11 +161,30 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
           || (key === 'share' && survey?.shareRewardClaimed)
           || (key === 'save' && survey && Object.entries(value.answers).every(([id, answer]) => survey.answers[id] === answer))
           || (key === 'reset' && survey && !Object.keys(survey.answers).length)
-          || (key === 'settle' && survey && BigInt(survey.settleCount) > BigInt(value.count))) delete data.pending[key];
+          || (key === 'settle' && survey && BigInt(survey.settleCount) > BigInt(value.count))) {
+          delete data.pending[key];
+          changed = true;
+        }
+      }
+      for (const task of personal.handbook?.tasks || []) {
+        const previous = data.taskAttempts[task.id];
+        if (previous && (task.status === 2 || task.status === 3 || BigInt(task.progress) > BigInt(previous.progress))) {
+          if (previous.confirmed) newlyConfirmed.push(previous.confirmed);
+          delete data.taskAttempts[task.id];
+          changed = true;
+        }
+        const rule = interactionFor(task);
+        if (rule) {
+          task.advanceLabel = rule.label;
+          task.advancePending = Boolean(data.taskAttempts[task.id]);
+        }
       }
     }
-    if (prior !== Object.keys(data.pending).length) save(data);
-    return { ...board, automation: { enabled: data.enabled }, pendingActions: Object.keys(data.pending) };
+    if (changed) save(data);
+    for (const confirmed of newlyConfirmed)
+      log(confirmed.label, confirmed.count, confirmed.rewards, confirmed.automatic, 'muge_task_advanced');
+    return { ...board, automation: { enabled: data.enabled, tasksEnabled: data.tasksEnabled, cansEnabled: data.cansEnabled },
+      pendingActions: Object.keys(data.pending) };
   }
 
   async function dispatch(board, socket, key, rule, payload, pending, validate, automatic) {
@@ -182,13 +236,67 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
     }, automatic);
   }
 
+  async function advanceTask(board, socket, task, automatic) {
+    const interaction = task && interactionFor(task);
+    if (!interaction || !needsProgress(task) || !advanceInteraction)
+      fail('MUGE_TASK_UNAVAILABLE', '该任务当前没有可执行的牧场互动');
+    const data = load();
+    if (data.taskAttempts[task.id]) unavailableResult();
+    const admitted = () => {
+      if (network.getWs() !== socket || !network.isConnected() || now() >= board.endTime) return false;
+      if (!automatic) return true;
+      const current = load();
+      return automationAllowed() && current.tasksEnabled && (interaction.action !== 'useCans' || current.cansEnabled);
+    };
+    if (!admitted()) fail('MUGE_PAUSED', '活动任务暂缓');
+    data.taskAttempts[task.id] = { progress: task.progress };
+    save(data);
+    const remaining = BigInt(task.target) - BigInt(task.progress);
+    const stillPending = () => admitted() && load().taskAttempts[task.id]?.progress === task.progress;
+    const result = await advanceInteraction(interaction.action, data.friendCursor, stillPending, Number(remaining > 50n ? 50n : remaining));
+    const latest = load();
+    if (Number.isSafeInteger(result?.data?.nextCursor)) latest.friendCursor = result.data.nextCursor;
+    if (result?.ok !== true || !['confirmed', 'unknown', 'partial'].includes(result.data.outcome)) {
+      delete latest.taskAttempts[task.id];
+      save(latest);
+      if (result?.ok !== true) fail('MUGE_TASK_DEFERRED', result?.error || '本轮牧场互动暂缓');
+      const message = result.data.reason || (interaction.action === 'finishBuildings' ? '没有可完工的栏舍，请在牧场核对升级费用后启动'
+        : result.data.outcome === 'no_friends' ? '当前没有可巡查的好友' : '本轮暂无合适的目标，稍后可继续检查');
+      return { activity: board, rewards: [], advancement: message };
+    }
+    if (result.data.outcome === 'confirmed' && !result.data.preparing) latest.taskAttempts[task.id] = {
+      progress: task.progress, confirmed: { label: interaction.label, count: result.data.completed, rewards: result.data.rewards, automatic },
+    };
+    save(latest);
+    if (result.data.outcome !== 'confirmed') unavailableResult();
+    let state;
+    try { state = await read(); }
+    catch { return { activity: null, rewards: result.data.rewards, refreshRequired: true, advancement: '牧场互动已确认，任务进度待刷新' }; }
+    const current = state.personal?.handbook?.tasks.find(row => row.id === task.id);
+    const increased = current && (BigInt(current.progress) > BigInt(task.progress) || current.status === 2 || current.status === 3);
+    if (increased) {
+      if (result.data.preparing) log(interaction.label, result.data.completed, result.data.rewards, automatic, 'muge_task_advanced');
+      return { activity: state, rewards: result.data.rewards, advancement: `任务进度 ${current.progress}/${current.target}` };
+    }
+    if (result.data.preparing) {
+      const pending = load();
+      delete pending.taskAttempts[task.id];
+      save(pending);
+      if (current) current.advancePending = false;
+      return { activity: state, rewards: result.data.rewards, advancement: interaction.action === 'useCans'
+        ? '已装入罐头桶，下一轮查看可喂养动物' : '准备操作已确认，等待生长或产物就绪' };
+    }
+    return { activity: state, rewards: result.data.rewards, advancement: '牧场互动已确认，任务进度待游戏同步' };
+  }
+
   async function operate(action, input = {}, automatic = false) {
     if (!allowedInput.has(action) || !input || typeof input !== 'object' || Array.isArray(input))
       fail('MUGE_INVALID_ARGUMENT', '牧歌操作参数无效');
-    if (action === 'setAutomation') {
+    const setting = { setAutomation: 'enabled', setTaskAutomation: 'tasksEnabled', setCanAutomation: 'cansEnabled' }[action];
+    if (setting) {
       if (typeof input.enabled !== 'boolean') fail('MUGE_INVALID_ARGUMENT', '自动领取设置无效');
       const data = load();
-      data.enabled = input.enabled;
+      data[setting] = input.enabled;
       data.nextAt = 0;
       save(data);
       try { return { activity: await read() }; }
@@ -201,6 +309,10 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
     try {
       const board = await read();
       if (board.phase !== 'open' || !board.personal) fail('MUGE_UNAVAILABLE', '牧歌初启当前无法操作');
+      if (action === 'advanceTask') {
+        const task = board.personal.handbook?.tasks.find(row => row.id === input.taskId);
+        return await advanceTask(board, socket, task, automatic);
+      }
       let rewards = [];
       if (Object.hasOwn(claims, action)) {
         rewards = await claim(board, socket, action, automatic);
@@ -240,7 +352,8 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
   async function automate() {
     const at = now();
     const data = load();
-    if (!data.enabled || data.nextAt > at || running || !automationAllowed()) return;
+    if ((!data.enabled && !data.tasksEnabled) || (data.endTime && at >= data.endTime)
+      || data.nextAt > at || running || !automationAllowed()) return;
     data.nextAt = at + 300;
     save(data);
     running = true;
@@ -249,15 +362,29 @@ function createMugeGameplay({ network, file, now, automationAllowed = () => true
       if (!socket || !network.isConnected()) return;
       const board = await read();
       if (board.phase !== 'open' || !board.personal) return;
-      for (const [action, rule] of Object.entries(claims)) {
-        if (!board.pendingActions.includes(action) && board.personal[rule.section]?.[rule.rows].some(row => row.status === 2)) {
-          await claim(board, socket, action, true);
-          const latest = load();
-          if (latest.enabled) {
+      if (board.automation.enabled) {
+        for (const [action, rule] of Object.entries(claims)) {
+          if (!board.pendingActions.includes(action) && board.personal[rule.section]?.[rule.rows].some(row => row.status === 2)) {
+            await claim(board, socket, action, true);
+            const latest = load();
             latest.nextAt = Math.min(latest.nextAt, now() + 30);
             save(latest);
+            return;
           }
-          break;
+        }
+      }
+      const tasks = board.personal.handbook?.tasks.filter(row => row.advanceLabel && !row.advancePending && needsProgress(row)
+        && (board.automation.cansEnabled || interactionFor(row)?.action !== 'useCans'));
+      if (board.automation.tasksEnabled && tasks?.length) {
+        const latest = load();
+        const index = latest.taskCursor % tasks.length;
+        latest.taskCursor = (index + 1) % tasks.length;
+        save(latest);
+        const result = await advanceTask(board, socket, tasks[index], true);
+        if (result.activity?.personal?.handbook) {
+          const next = load();
+          next.nextAt = Math.min(next.nextAt, now() + 30);
+          save(next);
         }
       }
     } finally { running = false; }
@@ -276,10 +403,15 @@ function gameplay() {
     instance = createMugeGameplay({ network: require('../utils/network'), now: getServerTimeSec,
       file: () => require('../config/runtime-paths').getDataFile(`muge-operations-${suffix}.json`),
       automationAllowed: () => canAutomate?.() === true,
-      log: (label, count, rewards, automatic) => {
+      advanceInteraction: (action, cursor, allowed, remaining) => {
+        const ranch = require('./ranch-service');
+        return require('./ranch-handbook').ACTIONS.has(action) ? ranch.runRanchOwnTask(action, remaining, allowed)
+          : ranch.runRanchFriendTask(action, cursor, allowed);
+      },
+      log: (label, count, rewards, automatic, event = 'muge_reward_claimed') => {
         const detail = rewards.map(item => `${item.name}×${item.count}`).join('、');
         log('活动', `牧歌初启 · ${label}${detail ? ` · ${detail}` : ''}`,
-          { module: 'activity', event: 'muge_reward_claimed', result: 'ok', count, automatic });
+          { module: 'activity', event, result: 'ok', count, automatic });
       },
     });
   }

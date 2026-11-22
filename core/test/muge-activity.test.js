@@ -160,7 +160,8 @@ function gameFixture() {
       assert.fail('unexpected operation');
     },
   };
-  const make = () => createMugeGameplay({ network, file: () => ledger, now: () => at, log: (...args) => logs.push(args) });
+  const make = () => createMugeGameplay({ network, file: () => ledger, now: () => at, log: (...args) => logs.push(args),
+    advanceInteraction: (...args) => f.advance(...args) });
   const f = { game: make(), make, calls, logs, group, tier };
   return f;
 }
@@ -206,4 +207,42 @@ test('personality answers validate and settle against returned detail before res
   assert.deepEqual(done.activity.personal.personality.answers, answers);
   const reset = await f.game.operate('resetSurvey');
   assert.deepEqual(reset.activity.personal.personality.answers, {});
+});
+
+test('handbook automation uses a recognized live task, checks admission, and records actual progress only', async () => {
+  const f = gameFixture();
+  const task = f.group.children[2].handbook.tasks[0];
+  task.description = '累计照料好友动物2次';
+  let attempts = 0;
+  f.advance = async (action, _cursor, admitted, remaining) => {
+    assert.equal(action, 'careFriend');
+    assert.equal(remaining, 1);
+    assert.equal(admitted(), true);
+    attempts++;
+    task.progress = '2'; task.status = 2;
+    return { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [] } };
+  };
+  await f.game.automate();
+  assert.equal(attempts, 0);
+  await f.game.operate('setTaskAutomation', { enabled: true });
+  await f.game.automate();
+  assert.equal(attempts, 1);
+  assert.equal(f.logs[0][4], 'muge_task_advanced');
+  assert.equal((await f.game.read()).personal.handbook.tasks[0].advancePending, false);
+  await assert.rejects(f.game.operate('advanceTask', { taskId: task.id }), { code: 'MUGE_TASK_UNAVAILABLE' });
+});
+
+test('confirmed ranch interaction with delayed progress is not repeated by a replacement worker', async () => {
+  const f = gameFixture();
+  const task = f.group.children[2].handbook.tasks[0];
+  let attempts = 0;
+  f.advance = async () => {
+    attempts++;
+    return { ok: true, data: { outcome: 'confirmed', completed: 1, rewards: [] } };
+  };
+  const first = await f.game.operate('advanceTask', { taskId: task.id });
+  assert.equal(first.activity.personal.handbook.tasks[0].advancePending, true);
+  assert.equal(f.logs.length, 0);
+  await assert.rejects(f.make().operate('advanceTask', { taskId: task.id }), { code: 'MUGE_RESULT_UNKNOWN' });
+  assert.equal(attempts, 1);
 });

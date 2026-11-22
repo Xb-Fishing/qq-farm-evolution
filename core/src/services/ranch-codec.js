@@ -1,6 +1,9 @@
 'use strict';
 
 const protobuf = require('protobufjs');
+const social = require('./ranch-social');
+const handbook = require('./ranch-handbook');
+const cans = require('./ranch-task-cans');
 
 // A separate protobuf root keeps scene 2 wire definitions separate from the farm codec.
 // Proto3 scalar defaults are explicit: absent booleans decode as false, int64
@@ -512,11 +515,17 @@ message BatchClaimTaskRewardReply {
     repeated Item items = 1;
     TaskInfo task_info = 2;
     repeated Item compensated_items = 3;
-}`;
+}
+${social.SCHEMA}
+${handbook.SCHEMA}
+${cans.SCHEMA}`;
 const root = protobuf.parse(schema, { keepCase: true }).root;
 root.resolveAll();
 const types = Object.freeze(Object.fromEntries(Object.entries(root.nested).filter(([, value]) => value instanceof protobuf.Type)));
 const ROUTES = Object.freeze({
+    ...social.ROUTES,
+    ...handbook.ROUTES,
+    ...cans.ROUTES,
     "enterFriend": { service: 'gamepb.visitpb.VisitService', method: 'EnterHomestead', request: 'EnterHomesteadRequest', reply: 'EnterHomesteadReply', writing: false },
     "leaveFriend": { service: 'gamepb.visitpb.VisitService', method: 'LeaveHomestead', request: 'LeaveHomesteadRequest', reply: 'LeaveHomesteadReply', writing: false },
     "friendDetail": { service: 'gamepb.animalpb.AnimalService', method: 'GetRanchDetail', request: 'GetRanchDetailRequest', reply: 'GetRanchDetailReply', writing: false },

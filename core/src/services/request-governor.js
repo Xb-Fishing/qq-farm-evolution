@@ -22,7 +22,7 @@ function isFriendRequest(service, method, body, ownGid) {
     if (service === 'gamepb.friendpb.FriendService' || service === 'gamepb.visitpb.VisitService') return true;
     if (service === 'gamepb.userpb.UserService' && ['BatchGetBasicInfo', 'GetBriefInfo'].includes(method)) return true;
     if ((service === 'gamepb.animalpb.AnimalService' && ['GetRanchDetail', 'StealProduce'].includes(method))
-        || (service === 'gamepb.animalpb.RanchService' && method === 'CleanAllRanch')) {
+        || (service === 'gamepb.animalpb.RanchService' && ['CleanAllRanch', 'StrokeAnimal', 'PutHazard'].includes(method))) {
         try {
             const target = require('./ranch-codec').decode(`${method}Request`, body).host_gid;
             return target !== '0' && target !== String(ownGid || '0');
