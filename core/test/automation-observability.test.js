@@ -185,10 +185,19 @@ test('only fully confirmed automatic ranch results enter daily events, while all
   for (const [action, message] of Object.entries(actions)) {
     for (const result of ['confirmed', 'unknown', 'partial', 'not_sent', 'error']) {
       const meta = { module: 'ranch', event: 'ranch_automation_action', action, completed: 2, result, logKind: 'action' };
-      const normalized = observe.observeAutomationLog('fixture-ranch', '牧场', message, false, meta, (...args) => rows.push(args));
+      const detail = action === 'buy' ? message : `${message}（测试好友昵称）`;
+      const normalized = observe.observeAutomationLog('fixture-ranch', '牧场', detail, false, meta, (...args) => rows.push(args));
       assert.equal(normalized.meta.result, result);
       assert.equal(normalized.meta.automationCategory, 'ranch');
     }
   }
-  assert.deepEqual(rows.map(row => [row[1], row[2]]), Object.values(actions).map(message => ['ranch', message]));
+  assert.deepEqual(rows.map(row => [row[1], row[2]]), [
+    ['ranch', actions.buy], ['ranch', `${actions.stealFriend}已确认 · 2 项`], ['ranch', `${actions.cleanFriend}已确认 · 2 项`],
+  ]);
+  const exported = events.buildShareableDailyEventLog(['stealFriend', 'cleanFriend'].map(action => ({
+    type: 'auto_ranch', message: `${actions[action]}（测试好友昵称）已确认 · 2/2 项`,
+  })), { runtimeTerms: [] });
+  assert.doesNotMatch(exported, /测试好友昵称/);
+  assert.match(exported, /自动偷取好友牧场产物已确认 · 2 项/);
+  assert.match(exported, /自动帮好友清理牧场已确认 · 2 项/);
 });

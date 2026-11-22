@@ -30,6 +30,7 @@ const ACTIVITY_ACTIONS = {
   qingmei_seed: '青梅活动：领取种子', qingmei_wine: '青梅活动：售出青梅酿',
   season_passport: '荷风游记：领取奖励', solar_terms: '节令小札：领取奖励', star_record: '观星礼录：领取奖励',
 };
+const RANCH_FRIEND_ACTIONS = { stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
 // Call only after a positive action is confirmed, never for a query or replay.
 function logActivityAction(action, count) {
   if (!Object.hasOwn(ACTIVITY_ACTIONS, action) || !(Number(count) > 0)) return false;
@@ -77,8 +78,10 @@ function actionFromLog(message, meta = {}) {
       : category === 'fertilizer' ? (['购买化肥', '开启化肥礼包'].includes(event) ? 'warehouse' : 'farm') : category;
   if (meta.module !== expectedModule) return null;
   if (event === 'ranch_automation_action') {
-    if (meta.result !== 'confirmed' || meta.replayed === true || !Number.isSafeInteger(meta.completed) || meta.completed <= 0
-      || !['harvest', 'produce', 'clean', 'claimTasks', 'addGrass', 'buy', 'place', 'stealFriend', 'cleanFriend'].includes(meta.action)) return null;
+    if (meta.result !== 'confirmed' || meta.replayed === true || !Number.isSafeInteger(meta.completed) || meta.completed <= 0) return null;
+    if (Object.hasOwn(RANCH_FRIEND_ACTIONS, meta.action))
+      return { category, message: `${RANCH_FRIEND_ACTIONS[meta.action]}已确认 · ${meta.completed} 项`, level: 'info' };
+    if (!['harvest', 'produce', 'clean', 'claimTasks', 'addGrass', 'buy', 'place'].includes(meta.action)) return null;
     return { category, message: redactExternalText(String(message || '')).slice(0, 280), level: 'info' };
   }
   if (event === 'dog_skill_gift_claim' && (meta.source !== 'automatic' || !(meta.count > 0))) return null;

@@ -198,6 +198,13 @@ function sanitizeShareableMessage(event, runtimeTerms) {
       message = `偷取 好友 ${countMatch[1]} 个${suffix}`;
     }
   }
+  if (type === 'auto_ranch') {
+    const label = ['自动偷取好友牧场产物', '自动帮好友清理牧场'].find(value => message.startsWith(`${value}（`));
+    if (label) {
+      const receipt = message.match(/）已确认 · (\d+)\/\d+ 项/u);
+      message = `${label}已确认${receipt ? ` · ${receipt[1]} 项` : ''}`;
+    }
+  }
   return message
     .replace(/\b(gid|openid|uin|wxid)\s*[:=：]\s*[\w-]+/gi, '$1=[IDENTIFIER]')
     .replace(/\b[\w.%+-]+@[\w.-]+\.[A-Z]{2,}\b/gi, '[EMAIL]')
