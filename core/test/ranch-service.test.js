@@ -277,6 +277,25 @@ test('automatic friend ranch runs on its own interval and executes both actions 
   assert.equal(f.writes, 6);
 });
 
+test('the own ranch rotation shares a two-minute setting across enabled slots with one turn per worker tick', async () => {
+  const f = fixture();
+  Object.assign(f.facilities[0].ranch.animals[0], { can_harvest: false, can_deliver: false });
+  await setOnlyAutomation(f, { harvest: true, produce: true, clean: true, tasks: true, eggSale: true,
+    sellProducts: true, stockCoop: true, stockShed: true, buyMissingCubs: false, intervalMinutes: 2 });
+  for (const cursor of [11, 12, 1, 2, 3, 4, 8, 9]) {
+    const before = f.calls.length;
+    assert.equal((await f.service.automate()).data.skipped, true);
+    assert.equal((await f.service.getAutomation()).data.cursor, cursor);
+    assert.ok(f.calls.length > before);
+    const after = f.calls.length;
+    f.advance(29999);
+    assert.equal((await f.service.automate()).data.skipped, true);
+    assert.equal(f.calls.length, after);
+    f.advance(1);
+  }
+  assert.equal(f.writes, 0);
+});
+
 test('automatic friend ranch keeps prepared manual work and a newly blacklisted target from dispatching', async () => {
   const f = fixture();
   f.friendRoster.push({ gid: '73' });

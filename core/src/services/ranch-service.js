@@ -944,7 +944,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       if (!ownDue) return { skipped: true };
       const cursor = eligibleSlots.find(i => i >= state.cursor % SLOTS.length) ?? eligibleSlots[0];
       state.cursor = (cursor + 1) % SLOTS.length;
-      state.nextAt = now() + state.policy.intervalMinutes * 60000;
+      // The configured interval is for the rotation. Each tick still admits only one turn.
+      const at = now();
+      const turnInterval = Math.max(AUTOMATION_TICK_MS, state.policy.intervalMinutes * 60000 / eligibleSlots.length);
+      const scheduledAt = Math.max(state.nextAt, at - AUTOMATION_TICK_MS);
+      state.nextAt = Math.max(at + AUTOMATION_TICK_MS, Math.floor(scheduledAt + turnInterval));
       data.automation = state; save(data);
       viewedSlot = SLOTS[cursor];
       const { type, feed, view = 'animals' } = viewedSlot;

@@ -121,11 +121,14 @@ const routineActions = [
           <span>启用牧场自动化</span>
         </label>
         <label class="automation-interval">
-          <span>巡检间隔</span>
+          <span>整轮巡检间隔</span>
           <input v-model.number="draft.intervalMinutes" type="number" min="2" max="60" required>
           <span class="automation-unit">分钟</span>
         </label>
       </div>
+      <p class="automation-note">
+        自家项目轮流巡检。项目较多或请求预算不足时，实际轮巡时间会延长。
+      </p>
 
       <div class="automation-cards">
         <section class="automation-card automation-stock-card" aria-label="智能补栏">
