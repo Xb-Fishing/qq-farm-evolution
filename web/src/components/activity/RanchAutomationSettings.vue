@@ -96,6 +96,7 @@ const freeActions = [
   { key: 'produce', name: '自动生产' },
   { key: 'clean', name: '自动清理' },
   { key: 'tasks', name: '领取普通任务奖励' },
+  { key: 'eggSale', name: '自动出售鸡蛋完成任务（只卖还差的数量）' },
 ]
 </script>
 

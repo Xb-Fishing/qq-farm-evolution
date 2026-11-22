@@ -16,6 +16,8 @@ const goods = new Map(manual.goods.map(row => [String(row.id), row]));
 const facilities = new Map(manual.facilities.map(row => [String(row.facility_id), row]));
 const facilityTypes = new Map([[6, 'MODULE_TYPE_RANCH_COOP'], [7, 'MODULE_TYPE_RANCH_SHED'], [8, 'MODULE_TYPE_FEED_MACHINE']]);
 const MAX = (1n << 63n) - 1n;
+const EGG_SALE_TASK = '300006';
+const EGG_ITEM = '1060001';
 
 function fail(code, message) {
     throw Object.assign(new Error(message), { code });
@@ -99,6 +101,10 @@ function taskList(reply) {
             rewards: (row.rewards || []).map(itemDto) });
     }
     return [...result.values()];
+}
+
+function eggSaleTask(tasks) {
+    return tasks?.find(row => row.id === EGG_SALE_TASK && row.desc === '出售鸡蛋');
 }
 
 function shopCards(raw, nowMs) {
@@ -339,7 +345,26 @@ function planAction(action, input = {}, raw, nowMs = Date.now()) {
     } else if (action === 'sell') {
         const physical = raw.bag.physical_items;
         let selected;
-        if (input.all === true) {
+        if (input.taskId !== undefined) {
+            const task = eggSaleTask(state.tasks);
+            if (String(input.taskId) !== EGG_SALE_TASK || !task?.unlocked || task.claimed || task.canClaim)
+                fail('RANCH_STATE_CHANGED', '出售鸡蛋任务尚未解锁、已完成或已变化');
+            let missing = BigInt(task.total) - BigInt(task.progress);
+            if (missing <= 0n) fail('RANCH_STATE_CHANGED', '出售鸡蛋任务已经完成');
+            selected = [];
+            for (const item of physical) {
+                if (!missing) break;
+                if (String(item.id) !== EGG_ITEM) continue;
+                const prices = salePrices(item);
+                if (!prices.length) continue;
+                const count = BigInt(item.count) < missing ? BigInt(item.count) : missing;
+                selected.push({ item, prices, count: count.toString() });
+                missing -= count;
+            }
+            plan.taskSale = { id: task.id, progress: task.progress, total: task.total,
+                expected: (BigInt(task.total) - missing).toString() };
+            plan.label = '出售鸡蛋任务';
+        } else if (input.all === true) {
             selected = physical.map(item => ({ item, prices: salePrices(item), count: String(item.count) }))
                 .filter(row => row.prices.length);
         } else {
@@ -384,4 +409,4 @@ function planAction(action, input = {}, raw, nowMs = Date.now()) {
     return plan;
 }
 
-module.exports = { decimal, positiveId, positiveCount, balance, itemDto, normalizeState, planAction, selectedFacility, metadata };
+module.exports = { decimal, positiveId, positiveCount, balance, itemDto, normalizeState, planAction, selectedFacility, metadata, taskList, eggSaleTask, EGG_SALE_TASK, EGG_ITEM };

@@ -21,6 +21,12 @@ function configurePolicy(value) { policy = validateRequestPolicy(value); return 
 function isFriendRequest(service, method, body, ownGid) {
     if (service === 'gamepb.friendpb.FriendService' || service === 'gamepb.visitpb.VisitService') return true;
     if (service === 'gamepb.userpb.UserService' && ['BatchGetBasicInfo', 'GetBriefInfo'].includes(method)) return true;
+    if (service === 'gamepb.animalpb.AnimalService' && ['GetRanchDetail', 'StealProduce', 'CleanAllRanch'].includes(method)) {
+        try {
+            const target = require('./ranch-codec').decode(`${method}Request`, body).host_gid;
+            return target !== '0' && target !== String(ownGid || '0');
+        } catch { return true; }
+    }
     if (service !== 'gamepb.plantpb.PlantService'
         || !['AllLands', 'Harvest', 'WaterLand', 'Farming', 'WeedOut', 'Insecticide', 'PutInsects', 'PutWeeds', 'PutSocialItem', 'CheckCanOperate'].includes(method)) return false;
     try {
