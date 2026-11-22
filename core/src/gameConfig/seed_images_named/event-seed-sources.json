@@ -2142,6 +2142,20 @@
       "sha256": "8338326682a80908a2ac6605cd68d1f7c4f615129a82714c01e20bb9792d6dad",
       "width": 100,
       "height": 100
+    },
+    {
+      "itemId": 1046038,
+      "file": "1046038_Crop_6038_Gold.png",
+      "assetName": "gold/Crop_6038",
+      "kind": "fruit",
+      "sourceGrade": "reviewed_public_client_snapshot",
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/1046038.png",
+      "gitBlob": "f812ffeaf1ba216680024bbb10456dad116e7288",
+      "sha256": "18c487dd62b0d9f4357f8a86430c9fbe6fa733f8059be70367718e0db4e4f170",
+      "width": 100,
+      "height": 100
     }
   ],
   "reviewedPlantMappings": {
@@ -2409,6 +2423,64 @@
     "sizeEvidence": "reviewed_client_default_single_plot",
     "sizeRule": "复用既有已核客户端missing/null默认单格规则；本固定新版六个单格锚点逐行size:null，23个非默认四格仍显式size:2；仅为本条已匹配seed/plant/fruit登记size:1，不构成未知种子全局回退。",
     "sellingPolicy": "7001新快照type6/sells1001:5与较早type101无售价有版本差异。保留官方当前元数据，但本地auto_sell=false保护动物口粮；普通果实出售策略不变。"
+  },
+  "reviewedWinterPlantMapping": {
+    "reviewedAt": "2026-11-22",
+    "sourceGrade": "reviewed_public_client_snapshot",
+    "repositoryAlias": "public-reference-c",
+    "sourceCommit": "1cef35dfe062bbfe83ad4c8a7014b36f5c795bb2",
+    "configSources": [
+      {
+        "name": "Plant",
+        "sourcePath": "core/src/gameConfig/Plant.json",
+        "gitBlob": "46057ed01131733857292031c0c4ffd2fcde2eeb",
+        "sha256": "a36cc0a4ff813b1a536f48a277c6142da9b084d7e50f022b249df90437fbcf90"
+      },
+      {
+        "name": "ItemInfo",
+        "sourcePath": "core/src/gameConfig/ItemInfo.json",
+        "gitBlob": "4efa5e008fc617556d558f3acc0af59728ffb41f",
+        "sha256": "b69d10841b69a5b5cb7e94948d950319dce6038b10079982ac7365845006a659"
+      }
+    ],
+    "mapping": {
+      "seedId": 26038,
+      "plantId": 1026038,
+      "fruitId": 46038,
+      "fruitCount": 48,
+      "size": 1,
+      "sourceSize": null,
+      "landLevelNeed": 1,
+      "itemDisplayLevel": 41,
+      "mutation": {
+        "effectId": 5,
+        "plantId": 1126038,
+        "seedId": null,
+        "fruitId": 1046038,
+        "fruitCount": 10,
+        "size": 1,
+        "sourceSize": null
+      }
+    },
+    "anchors": [20516, 25995, 21625, 26030, 20435, 21072],
+    "sizeEvidence": "reviewed_client_default_single_plot",
+    "sizeRule": "与 reviewedPasturePlantMapping 的两份配置字节相同。六个已核单格锚点及两条款冬花记录的源 size 均为 null，23 条四格记录显式为 2。仅为已匹配的款冬花记录写入单格默认。",
+    "sharedFruitImage": {
+      "itemId": 46038,
+      "seedItemId": 26038,
+      "assetName": "Crop_6038",
+      "iconRes": null,
+      "bundleName": null,
+      "repositoryAlias": "public-reference-2",
+      "sourceCommit": "6ac7a3d7930018058d201af86beea8de6a9f8507",
+      "sourcePath": "core/src/gameConfig/seed_images_named/seed_images/46038.png",
+      "seedSourcePath": "core/src/gameConfig/seed_images_named/seed_images/26038.png",
+      "file": "26038_Crop_6038_Seed.png",
+      "byteIdentical": true,
+      "gitBlob": "de9088303dbd92fa0254931b3c2fb896876b75d6",
+      "sha256": "5ea12d657bed9a342650b39d01c64fea38ec1057a94585caf36ba8fc548282de"
+    },
+    "note": "404 直领与问答奖励核对种子 ID 26038。自然背包只核对果实 ID 46038 和 1046038，售价与资产身份以固定快照为据。阶段图沿用通用回退，专属阶段图待核。26084 仅登记物品，等待当前背包果实或土地证据。"
   },
   "reviewedRanchInventoryItems": {
     "sourceGrade": "reviewed_public_client_snapshot",

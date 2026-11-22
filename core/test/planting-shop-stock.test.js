@@ -34,6 +34,8 @@ test.after(() => {
 const realUtils = require('../src/utils/utils');
 
 const SEED_ID = 20002; // 白萝卜：1x1，本地目录与植物配置都存在
+const UNKNOWN_SIZE_SEED_ID = 999998; // 合成商店商品，真实植物配置无对应行
+const TWO_BY_TWO_SEED_ID = 29003; // 星语铃花：Plant 显式配置 size: 2
 const GOODS_ID = 11;
 const PRICE = 3;
 
@@ -232,6 +234,64 @@ async function callShop(landIds, gold) {
   const result = await service.plantFromShop(landIds, userState, undefined, state.account);
   return { result, userState };
 }
+
+test('只有占地未知的合成商品时，首次与模块重载后均不购买、不种植', async () => {
+  resetAll();
+  // 合成商店列表，仅验证候选筛选行为。
+  const { getPlantBySeedId } = require('../src/config/gameConfig');
+  assert.equal(getPlantBySeedId(UNKNOWN_SIZE_SEED_ID), undefined);
+  state.shopGoods[0].item_id = UNKNOWN_SIZE_SEED_ID;
+  let balance = 100;
+  let balanceReads = 0;
+  const userState = {
+    accountId: state.account,
+    level: state.level,
+    get gold() { balanceReads++; return balance; },
+    set gold(value) { balance = value; },
+  };
+  const firstService = await loadService();
+  const first = await firstService.plantFromShop([1, 2], userState, undefined, state.account);
+  const service = await reloadService();
+  const afterReload = await service.plantFromShop([1, 2], userState, undefined, state.account);
+
+  assert.equal(state.shopReads, 2);
+  assert.deepEqual(state.buyCalls, []);
+  assert.deepEqual(state.plantCalls, []);
+  assert.deepEqual(state.walletCorrections, []);
+  assert.equal(state.bagReads, 0, '无候选时无需读取背包或走本地回退');
+  assert.equal(balanceReads, 0);
+  assert.equal(balance, 100);
+  for (const result of [first, afterReload]) {
+    assert.deepEqual(result, { plantedLands: [], plantedCount: 0, occupiedCount: 0 });
+  }
+  assert.equal(service.getPlantSizeBySeedId(UNKNOWN_SIZE_SEED_ID), 0);
+});
+
+test('等级条件更高的未知占地和四格商品不参与单格补种，单格库存只补缺口', async () => {
+  resetAll();
+  state.shopGoods[0].conds = [{ type: 1, param: 2 }];
+  state.shopGoods.push(
+    { id: GOODS_ID + 1, item_id: UNKNOWN_SIZE_SEED_ID, price: 7, unlocked: true, conds: [{ type: 1, param: 41 }] },
+    { id: GOODS_ID + 2, item_id: TWO_BY_TWO_SEED_ID, price: 9, unlocked: true, conds: [{ type: 1, param: 50 }] },
+  );
+  state.bag.set(SEED_ID, 1);
+
+  const { result, userState } = await callShop([1, 2], 100);
+
+  assert.equal(state.shopReads, 1);
+  assert.deepEqual(state.buyCalls, [{ goodsId: GOODS_ID, num: 1, price: PRICE }]);
+  assert.deepEqual(state.plantCalls, [
+    { seedId: SEED_ID, landIds: [1] },
+    { seedId: SEED_ID, landIds: [2] },
+  ]);
+  assert.deepEqual(result, { plantedLands: [1, 2], plantedCount: 2, occupiedCount: 2 });
+  assert.equal(state.bagReads, 1);
+  assert.equal(state.bag.size, 0);
+  assert.equal(userState.gold, 100 - PRICE);
+  const service = await loadService();
+  assert.equal(service.getPlantSizeBySeedId(SEED_ID), 1);
+  assert.equal(service.getPlantSizeBySeedId(TWO_BY_TWO_SEED_ID), 2);
+});
 
 test('购买成功但全部 Plant 失败：第二轮与模块重载后都复用已购库存，只买一次', async () => {
   resetAll();

@@ -100,7 +100,8 @@ function encodePlantRequest(seedId, landIds) {
 /** 根据种子 ID 获取植物占地大小（用于合并种植） */
 function getPlantSizeBySeedId(seedId) {
   const plant = getPlantBySeedId(toNum(seedId));
-  return Math.max(1, toNum(plant && plant.size) || 1);
+  if (!plant) return 0;
+  return Math.max(1, toNum(plant.size) || 1);
 }
 
 function isSeedLockedByLevel(seed, userLevel) {
