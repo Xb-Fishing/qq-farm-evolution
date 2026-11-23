@@ -115,6 +115,7 @@ onBeforeUnmount(() => {
   ranch.cancel()
 })
 const feedReview = computed(() => ranch.result?.action === 'addGrass' || !!ranch.result?.reconciliation || ranch.result?.feedOperation === true)
+const cleanReview = computed(() => ranch.result?.action === 'cleanFriend')
 const eggReview = computed(() => ranch.result?.taskSaleReceipt === true)
 const giftReview = computed(() => ranch.result?.action === 'claimMallGift')
 const mallGiftLabels: Record<string, string> = {
@@ -138,8 +139,8 @@ async function refreshForReview() {
     await refresh(eggReview.value ? 'tasks' : giftReview.value ? 'mallGift' : ranch.view)
   }
 }
-watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && feedReview.value] as const, ([id, operation, pending], _, onCleanup) => {
-  if (!id || !operation || !pending)
+watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && (cleanReview.value ? 'clean' : feedReview.value && 'feed')] as const, ([id, operation, mode], _, onCleanup) => {
+  if (!id || !operation || !mode)
     return
   let closed = false
   let timer: ReturnType<typeof setTimeout>
@@ -148,10 +149,12 @@ watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && feedReview.va
     timer = setTimeout(async () => {
       if (closed)
         return
-      if (!ranch.operating && !ranch.loading && !ranch.quote)
+      if (mode === 'clean')
+        await ranch.refreshCleanOperation()
+      else if (!ranch.operating && !ranch.loading && !ranch.quote)
         await ranch.refresh()
-      if (!closed && index + 1 < delays.length)
-        schedule(index + 1)
+      if (!closed && (mode === 'clean' || index + 1 < delays.length))
+        schedule(Math.min(index + 1, delays.length - 1))
     }, delays[index])
   }
   schedule(0)
@@ -336,7 +339,7 @@ defineExpose({ refresh })
       正在读取牧场状态…
     </p>
     <div v-if="ranch.result" role="status" class="mb-3 rounded-lg bg-slate-100 p-3 text-sm dark:bg-slate-900">
-      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : feedReview && ranch.uncertain ? '程序正在自动核账' : ranch.result.outcome === 'replanned' ? '已按最新库存恢复巡检' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
+      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : cleanReview && ranch.uncertain ? '程序正在核对清理结果' : feedReview && ranch.uncertain ? '程序正在自动核账' : ranch.result.outcome === 'replanned' ? '已按最新库存恢复巡检' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
       <p>{{ ranch.result.label }} · {{ ranch.result.message }}</p>
       <dl v-if="ranch.result.reconciliation" class="ranch-audit" aria-label="牧草核账明细">
         <div><dt>{{ ranch.result.action === 'buy' ? '背包入账' : '背包扣草' }}</dt><dd>预计 {{ ranch.result.reconciliation.expectedGrass }} · 实测 {{ ranch.result.reconciliation.observedGrass ?? '未能确定' }}</dd></div>
@@ -353,7 +356,7 @@ defineExpose({ refresh })
       <p v-if="ranch.result.rewards?.length">
         已获得：{{ ranch.result.rewards.map((item: any) => `${item.name} × ${item.count}`).join('、') }}
       </p>
-      <div v-if="ranch.uncertain" class="mt-2 flex flex-wrap gap-2">
+      <div v-if="ranch.uncertain && !cleanReview" class="mt-2 flex flex-wrap gap-2">
         <BaseButton :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy" @click="refreshForReview">
           {{ ranch.result.friendGid ? '刷新好友牧场' : eggReview ? '查看任务进度' : giftReview ? '刷新礼包状态' : feedReview ? '查看最新数量' : '刷新并核对' }}
         </BaseButton>

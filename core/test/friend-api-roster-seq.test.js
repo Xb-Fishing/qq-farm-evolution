@@ -12,6 +12,8 @@ test('getAllFriends 共享快照：新空表先成功后旧全表迟到不写回
   const networkPath = require.resolve('../src/utils/network');
   const protoPath = require.resolve('../src/utils/proto');
   const apiPath = require.resolve('../src/services/friend-api');
+  const governor = require('../src/services/request-governor');
+  governor.resetForTest();
   const prev = {
     network: require.cache[networkPath],
     proto: require.cache[protoPath],
@@ -21,6 +23,7 @@ test('getAllFriends 共享快照：新空表先成功后旧全表迟到不写回
   // 每次调用消费一项 { delay, reply?, reject? }；reply 在延迟结束后生效
   const behaviors = [];
   require.cache[networkPath] = mockModule(networkPath, {
+    getUserState: () => ({ gid: 999 }),
     sendMsgAsync: async () => {
       const b = behaviors.shift();
       if (!b) throw new Error('测试未排队回包行为');
@@ -62,6 +65,7 @@ test('getAllFriends 共享快照：新空表先成功后旧全表迟到不写回
     assert.deepEqual(replyB.game_friends, [], 'B 返回空表');
     let snap = friendApi.getRosterSnapshot();
     assert.deepEqual(snap.gids, [], '旧全表迟到不得覆盖新空表');
+    assert.equal(governor.getRequestProfile().rosterSize, 0);
     assert.ok(snap.at > 0, '快照带真实成功时刻');
 
     // 场景 2：C(旧请求, 全表, 成功但迟到) + D(最新请求, 失败)——
@@ -76,7 +80,18 @@ test('getAllFriends 共享快照：新空表先成功后旧全表迟到不写回
     snap = friendApi.getRosterSnapshot();
     assert.deepEqual(snap.gids, [111], '新请求失败不得阻止旧请求合法成功发布');
     assert.ok(snap.at > 0);
+    assert.equal(governor.getRequestProfile().rosterSize, 1);
+
+    behaviors.push({ delay: 0, reply: { game_friends: [
+      { gid: 111 }, { gid: 111 }, { gid: 999 }, { gid: 123, name: '小小农夫', level: 1 },
+      ...[211, 212, 213, 214].map(gid => ({ gid })),
+    ] } });
+    await friendApi.getAllFriends();
+    const profile = governor.getRequestProfile();
+    assert.equal(profile.rosterSize, 5);
+    assert.equal(profile.totalLimit, profile.policy.total60s + 1);
   } finally {
+    governor.resetForTest();
     if (prevPlatform !== undefined) {
       try { require('../src/config/config').CONFIG.platform = prevPlatform; } catch { /* ignore */ }
     }

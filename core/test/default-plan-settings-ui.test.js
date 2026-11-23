@@ -415,7 +415,9 @@ function loadHistoricalAutomation(resolve) {
 
 test('request thresholds survive mixed draft save and fresh mount; disabling requires explicit risk confirmation', async t => {
   const page = await mountPage(t, completeConfig());
-  await setInput(page, '总请求 / 60 秒', 123);
+  assert.equal(input(page.root, '每 100 位好友新增请求').props.value, 20);
+  await setInput(page, '基础总请求 / 60 秒', 123);
+  await setInput(page, '每 100 位好友新增请求', 60);
   await setInput(page, '好友请求 / 60 秒', 41);
   await setInput(page, '单接口 / 60 秒', 37);
   click(button(page.root, '完全解除本地限速')); await flush();
@@ -428,13 +430,17 @@ test('request thresholds survive mixed draft save and fresh mount; disabling req
   await section(page, '自动控制');
   await setSwitch(page, '自动做任务', true);
   const saved = await save(page);
-  assert.deepEqual(saved.requestPolicy, { enabled: false, total60s: 123, friend60s: 41, method60s: 37 });
+  assert.deepEqual(saved.requestPolicy, { enabled: false, total60s: 123, friend60s: 41, method60s: 37, rosterBonusPer100: 60 });
   assert.equal(saved.automation.task, true);
   await page.reload();
   assert.match(textOf(page.root), /设置：本地限流关闭/);
   assert.equal(input(page.root, '好友请求 / 60 秒').props.value, 41);
+  assert.equal(input(page.root, '每 100 位好友新增请求').props.value, 60);
+  await setInput(page, '每 100 位好友新增请求', 0);
   click(button(page.root, '恢复本地限流')); await flush();
-  assert.equal((await save(page)).requestPolicy.enabled, true);
+  const enabledPolicy = (await save(page)).requestPolicy;
+  assert.equal(enabledPolicy.enabled, true);
+  assert.equal(enabledPolicy.rosterBonusPer100, 0);
 });
 
 

@@ -9,7 +9,7 @@ const STATS_METHODS = new Set(['recordOperation', 'recordTongQiGift', 'getTongQi
   'initStats', 'initStatsWithPersistence', 'updateStats', 'setInitialValues', 'recordGoldExp', 'resetSessionGains',
   'getStats', 'saveStats', 'getTodayKey', 'loadPersistedStats', 'checkAndResetDailyStats']);
 const GOVERNOR_METHODS = new Set(['getRequestProfile', 'getBreakerState', 'clearBreaker', 'setWatchMode',
-  'setContentionMode', 'setUrgentMode', 'urgentModeActive']);
+  'setContentionMode', 'setUrgentMode', 'urgentModeActive', 'setRosterSize']);
 const STATUS_METHODS = new Set(['setStatusPlatform', 'updateStatus', 'updateStatusFromLogin', 'updateStatusGold', 'updateStatusLevel']);
 const NETWORK_READ_METHODS = new Set(['getWsErrorState', 'getAceStatus', 'getRequestProfile', 'getBreakerState',
   'buildLoginDeviceInfo', 'buildWebSocketHeaders', 'extractServerClientVersion']);

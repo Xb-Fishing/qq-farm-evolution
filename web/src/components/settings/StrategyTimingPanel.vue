@@ -4,6 +4,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
+import { defaultRequestPolicy } from '@/utils/request-policy'
 
 interface StrategyTimingSettings {
   requestPolicy?: import('@/stores/setting').RequestPolicy
@@ -37,15 +38,19 @@ const showDisableConfirmation = ref(false)
 let active = true
 onBeforeUnmount(() => { active = false; showDisableConfirmation.value = false })
 const policy = computed({
-  get: () => settings.value.requestPolicy || { enabled: true, total60s: 80, friend60s: 80, method60s: 30 },
+  get: () => ({ ...defaultRequestPolicy(), ...settings.value.requestPolicy }),
   set: value => { settings.value = { ...settings.value, requestPolicy: value } },
 })
-function budgetModel(key: 'total60s' | 'friend60s' | 'method60s') {
-  return computed({ get: () => policy.value[key], set: (value: number | string) => { policy.value = { ...policy.value, [key]: Number(value) } } })
+function budgetModel(key: 'total60s' | 'friend60s' | 'method60s' | 'rosterBonusPer100') {
+  return computed({ get: () => policy.value[key], set: (value: number | string) => {
+    if (value !== '')
+      policy.value = { ...policy.value, [key]: Number(value) }
+  } })
 }
 const totalBudget = budgetModel('total60s')
 const friendBudget = budgetModel('friend60s')
 const methodBudget = budgetModel('method60s')
+const rosterBonus = budgetModel('rosterBonusPer100')
 function disableBudgets() {
   if (!active) return
   policy.value = { ...policy.value, enabled: false }
@@ -139,12 +144,13 @@ async function restartAccount() {
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h4 class="font-semibold">通信预算</h4>
-          <p class="text-xs text-slate-500 dark:text-slate-400">按账号共享 60 秒窗口；好友阈值统计所有好友 RPC，包含查询和操作。</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">每账号共享 60 秒窗口。总预算按好友数比例增加，最高 10000。增量为 0 时使用基础总预算。</p>
         </div>
         <span :class="policy.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'" class="text-sm font-medium">{{ policy.enabled ? '设置：本地限流开启' : '设置：本地限流关闭' }}</span>
       </div>
-      <div class="grid gap-3 sm:grid-cols-3">
-        <BaseInput v-model.number="totalBudget" type="number" min="1" max="10000" label="总请求 / 60 秒" />
+      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <BaseInput v-model.number="totalBudget" type="number" min="1" max="10000" label="基础总请求 / 60 秒" />
+        <BaseInput v-model.number="rosterBonus" type="number" min="0" max="10000" step="1" label="每 100 位好友新增请求" />
         <BaseInput v-model.number="friendBudget" type="number" min="1" max="10000" label="好友请求 / 60 秒" />
         <BaseInput v-model.number="methodBudget" type="number" min="1" max="10000" label="单接口 / 60 秒" />
       </div>

@@ -1,7 +1,9 @@
+import type { RequestPolicy } from '@/utils/request-policy'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '@/api'
 import { useAccountStore } from '@/stores/account'
+import { defaultRequestPolicy } from '@/utils/request-policy'
 
 export interface MilkTeaSeedPolicy {
   targetSeedIds: number[]
@@ -119,8 +121,7 @@ export interface AutoCodeRefreshConfig {
   intervalMinutes: number
 }
 
-export interface RequestPolicy { enabled: boolean, total60s: number, friend60s: number, method60s: number }
-const defaultRequestPolicy = (): RequestPolicy => ({ enabled: true, total60s: 80, friend60s: 80, method60s: 30 })
+export type { RequestPolicy } from '@/utils/request-policy'
 
 export interface SettingsState {
   requestPolicy: RequestPolicy

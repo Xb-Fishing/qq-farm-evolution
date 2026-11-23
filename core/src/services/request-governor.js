@@ -11,11 +11,20 @@
 const WINDOW_MS = 60 * 1000;
 // 预算从 40/15 放宽到 80/30：正常多账号巡查 + 收获 + ACE 上报的合理峰值
 // 不该被拦，预算只削真正的异常风暴
-const { DEFAULT_REQUEST_POLICY, validateRequestPolicy } = require('./request-policy');
+const { DEFAULT_REQUEST_POLICY, validateRequestPolicy, totalBudgetForRoster } = require('./request-policy');
 const TOTAL_LIMIT = DEFAULT_REQUEST_POLICY.total60s;
 const PER_METHOD_LIMIT = DEFAULT_REQUEST_POLICY.method60s;
 let policy = { ...DEFAULT_REQUEST_POLICY };
+let rosterSize = 0;
 function configurePolicy(value) { policy = validateRequestPolicy(value); return { ...policy }; }
+function setRosterSize(count) {
+    if (!Number.isSafeInteger(count) || count < 0) return false;
+    rosterSize = count;
+    return true;
+}
+function effectiveTotalBudget(totalLimit, now) {
+    return watchModeActive(now) ? Math.floor(totalLimit * 1.5) : totalLimit;
+}
 
 // Classify the encoded target at the physical transport, including manual and fallback callers.
 function isFriendRequest(service, method, body, ownGid) {
@@ -145,7 +154,7 @@ function checkRequest(serviceName, methodName, now = Date.now(), options = {}) {
 
     // 施肥 HOT 内总预算同步放宽（目标好友需要高频往返，80/min 的常规预算
     // 会被盯梢+常规巡查挤满，导致 Enter 被拦、盯哨失明）
-    const totalLimit = watchModeActive(now) ? Math.floor(policy.total60s * 1.5) : policy.total60s;
+    const totalLimit = effectiveTotalBudget(totalBudgetForRoster(policy, rosterSize), now);
     if (windowEvents.length >= totalLimit) {
         droppedTotal++;
         return { allowed: false, reason: 'budget_total' };
@@ -233,6 +242,7 @@ function clearBreaker() {
 /** 画像：给每日安全巡检的事实输入 */
 function getRequestProfile(now = Date.now()) {
     pruneWindow(now);
+    const totalLimit = totalBudgetForRoster(policy, rosterSize);
     const byMethod = new Map();
     for (const e of windowEvents) {
         const item = byMethod.get(e.key) || { count: 0, errCount: 0 };
@@ -249,8 +259,9 @@ function getRequestProfile(now = Date.now()) {
         policySupported: true,
         enabled: policy.enabled,
         policy: { ...policy },
-        totalLimit: policy.total60s,
-        effectiveTotalLimit: watchModeActive(now) ? Math.floor(policy.total60s * 1.5) : policy.total60s,
+        rosterSize,
+        totalLimit,
+        effectiveTotalLimit: effectiveTotalBudget(totalLimit, now),
         friendLimit: policy.friend60s,
         effectiveFriendLimit: watchModeActive(now) ? Math.floor(policy.friend60s * 1.5) : policy.friend60s,
         friendCount: windowEvents.filter(e => e.friend).length,
@@ -285,6 +296,7 @@ function getBreakerState(now = Date.now()) {
 /** 测试用：清空全部状态 */
 function resetForTest() {
     policy = { ...DEFAULT_REQUEST_POLICY };
+    rosterSize = 0;
     windowEvents.length = 0;
     errEvents.length = 0;
     slowdownUntil = 0;
@@ -295,7 +307,7 @@ function resetForTest() {
 }
 
 module.exports = {
-    configurePolicy, isFriendRequest,
+    configurePolicy, setRosterSize, isFriendRequest,
     checkRequest,
     recordSent,
     getRequestProfile,

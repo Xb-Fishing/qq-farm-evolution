@@ -15,6 +15,7 @@ function verifyEntry(entry, host) {
 function describe(entry, detail, host, self) {
   const facilities = new Set(entry.homestead_cells.facilities.map(row => row.instance_id));
   const seen = new Set();
+  const hazardKeys = new Set();
   const stealable = [];
   const hazards = [];
   for (const ranch of detail.ranches) {
@@ -30,13 +31,17 @@ function describe(entry, detail, host, self) {
         items: [...new Set(lots.map(lot => model.positiveId(lot.item_id)))].sort() });
     }
     for (const hazard of ranch.hazards) {
+      const hazardId = model.positiveId(hazard.hazard_id);
+      const key = `${ranchId}:${hazardId}`;
+      if (hazardKeys.has(key)) fail('RANCH_RESPONSE_MISMATCH', '好友牧场污物信息重复');
+      hazardKeys.add(key);
       if (hazard.hazard_type === 1 && String(hazard.owner) === self) continue;
-      hazards.push({ ranchId, hazardId: model.positiveId(hazard.hazard_id) });
+      hazards.push({ ranchId, hazardId });
     }
   }
   stealable.sort((a, b) => `${a.ranchId}:${a.slot}`.localeCompare(`${b.ranchId}:${b.slot}`));
   hazards.sort((a, b) => `${a.ranchId}:${a.hazardId}`.localeCompare(`${b.ranchId}:${b.hazardId}`));
-  return { host, name: entry.basic.name, stealable, hazards };
+  return { host, name: entry.basic.name, stealable, hazards, ranchIds: seen, hazardKeys };
 }
 
 function plan(action, data) {
@@ -58,17 +63,41 @@ function verify(plan, reply) {
   const steal = plan.action === 'stealFriend';
   const rows = reply.op_results || [];
   const seen = new Set();
+  if (!rows.length) fail('RANCH_RESULT_UNKNOWN', '服务端未返回完成目标');
+  if (!steal) {
+    // CleanAllRanch sends facility IDs. The server can report hazards that appeared after the preview.
+    const facilities = new Set(plan.payload.ranch_inst_ids);
+    const rewards = [];
+    for (const row of rows) {
+      const key = `${row.facility_inst_id}:${model.positiveId(row.target_id)}`;
+      if (row.kind !== 3 || !facilities.has(row.facility_inst_id) || seen.has(key) || row.costs.length)
+        fail('RANCH_RESULT_UNKNOWN', '清理回执与所选栏舍不匹配');
+      seen.add(key);
+      for (const item of row.rewards) {
+        if (model.decimal(item.count) === '0') continue;
+        model.positiveId(item.id);
+        rewards.push(item);
+      }
+    }
+    return { completed: rows.length, rewards };
+  }
   for (const row of rows) {
     const key = `${row.facility_inst_id}:${row.target_id}`;
     const index = plan.resultKeys.indexOf(key);
-    if (index < 0 || seen.has(key) || row.kind !== (steal ? 2 : 3) || row.costs.length
-      || (steal && !row.rewards.length) || row.rewards.some(item => BigInt(model.decimal(item.count)) <= 0n
-        || (steal && !plan.friendOffers[index].items.includes(String(item.id)))))
+    if (index < 0 || seen.has(key) || row.kind !== 2 || row.costs.length
+      || !row.rewards.length || row.rewards.some(item => BigInt(model.decimal(item.count)) <= 0n
+        || !plan.friendOffers[index].items.includes(String(item.id))))
       fail('RANCH_RESULT_UNKNOWN', '好友牧场回执与确认范围不匹配，请刷新核对');
     seen.add(key);
   }
-  if (!rows.length) fail('RANCH_RESULT_UNKNOWN', '服务端未返回完成目标，请刷新好友牧场核对');
   return { completed: rows.length, rewards: rows.flatMap(row => row.rewards) };
 }
 
-module.exports = { actions, verifyEntry, describe, plan, verify };
+function cleaningGoalMet(plan, friend) {
+  return plan?.action === 'cleanFriend' && plan.payload?.host_gid === friend.host
+    && plan.payload.ranch_inst_ids?.length > 0 && plan.resultKeys?.length > 0
+    && plan.payload.ranch_inst_ids.every(id => friend.ranchIds.has(id))
+    && plan.resultKeys.every(key => !friend.hazardKeys.has(key));
+}
+
+module.exports = { actions, verifyEntry, describe, plan, verify, cleaningGoalMet };

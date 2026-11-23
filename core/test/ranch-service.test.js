@@ -592,6 +592,51 @@ test('friend ranch verifies visit identity, previews available targets and confi
   assert.equal(f.writes, 2);
 });
 
+test('friend cleanup confirms every valid receipt row in the requested facility, even when hazards changed', async () => {
+  const f = fixture();
+  f.friendRanches.push({ ranch_inst_id: '51', hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  const { data: quote } = await f.service.prepare('cleanFriend', { hostGid: '73' });
+  f.mutateReply = reply => ({ ...reply, op_results: [
+    ...reply.op_results, { facility_inst_id: '51', kind: 3, target_id: '4', rewards: [{ id: '1102', count: '0' }] },
+  ] });
+  const { data: result } = await f.service.execute(quote.id);
+  assert.equal(result.outcome, 'confirmed');
+  assert.equal(result.completed, 2);
+  assert.equal(result.requested, 1);
+  assert.deepEqual(result.rewards, []);
+  assert.equal(f.writes, 1);
+});
+
+test('friend cleanup rechecks a durable uncertain result after restart and resumes without repeating the request', async () => {
+  const f = fixture();
+  f.realScene = true;
+  const room = { ranch_inst_id: '51', hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] };
+  f.friendRanches.push(room);
+  const { data: quote } = await f.service.prepare('cleanFriend', { hostGid: '73' });
+  f.mutateReply = reply => ({ ...reply, op_results: [{ ...reply.op_results[0], facility_inst_id: '99' }] });
+  assert.equal((await f.service.execute(quote.id)).data.outcome, 'unknown');
+  assert.equal((await f.service.acknowledge(quote.id)).code, 'RANCH_AUTO_RECONCILING');
+  f.service = f.make();
+  f.advance(30001);
+  await f.service.automate();
+  assert.equal((await f.service.getCleanOperation(quote.id)).data.outcome, 'unknown');
+  f.friendRanches.length = 0;
+  f.advance(30001);
+  await f.service.automate();
+  assert.equal((await f.service.getCleanOperation(quote.id)).data.outcome, 'unknown', 'a missing facility cannot prove removal');
+  room.hazards = [{ hazard_id: '4', owner: '50', hazard_type: 1 }];
+  f.friendRanches.push(room);
+  f.advance(30001);
+  await f.service.automate();
+  const { data: outcome } = await f.service.getCleanOperation(quote.id);
+  assert.equal(outcome.outcome, 'acknowledged');
+  assert.equal(outcome.completed, 0);
+  assert.deepEqual(outcome.rewards, []);
+  assert.equal((await f.service.execute(quote.id)).data.replayed, true);
+  assert.equal(f.writes, 1);
+  assert.equal(f.scene.snapshot().scene, 1);
+});
+
 test('friend ranch rechecks targets before dispatch and keeps mismatched receipts unresolved', async () => {
   const f = fixture();
   const lot = { item_id: '1060001', can_steal: true, remain_num: '2' };

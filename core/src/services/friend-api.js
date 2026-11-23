@@ -37,7 +37,7 @@ const {
   getFriendBlacklist,
   removeFriendFromCache,
 } = require('../models/store');
-const { sendMsgAsync } = require('../utils/network');
+const { sendMsgAsync, getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, randomDelay } = require('../utils/utils');
 const { getInteractRecords } = require('./interact');
@@ -761,6 +761,15 @@ async function getAllFriends(_forceRefresh = false, observer = null) {
   let ok = false;
   try {
     const reply = await getAllFriendsObserved(reqSeq, obs);
+    if (!obs.state.partial && reqSeq === latestSuccessfulSeq) {
+      try {
+        const self = toNum(getUserState?.()?.gid);
+        const realFriends = extractReplyFriends(reply).filter(friend => friend && toNum(friend.gid) !== self
+          && !(toNum(friend.level) === 1 && (friend.name === '小小农夫' || friend.remark === '小小农夫')));
+        const count = normalizeFriendGids(realFriends.map(friend => friend.gid)).length;
+        require('./request-governor').setRosterSize?.(count);
+      } catch { /* Existing resident hosts may not support roster-based budgets yet. */ }
+    }
     ok = true;
     return reply;
   } catch (err) {

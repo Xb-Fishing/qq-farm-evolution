@@ -108,7 +108,8 @@ function logAutomationResult(context, operation, fallback = 'error') {
   const costs = automationItems(operation?.costs);
   const rewards = automationItems(operation?.rewards);
   const details = [];
-  if (requested || completed) details.push(`${completed}/${requested || completed} 项`);
+  if (action === 'cleanFriend' && completed > requested) details.push(`清理 ${completed} 项`);
+  else if (requested || completed) details.push(`${completed}/${requested || completed} 项`);
   const format = items => items.map(item => `${item.name}×${item.count}`).join('、');
   if (costs.length) details.push(`消耗 ${format(costs)}`);
   if (rewards.length) details.push(`获得 ${format(rewards)}`);
@@ -243,10 +244,26 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       ...(value.friendGid && { friendGid: value.friendGid }),
       ...(value.reconciliation && { reconciliation: value.reconciliation }),
       ...(value.taskSaleReceipt && { taskSaleReceipt: true }),
-      message: value.message || (outcome === 'unknown' ? '上一笔操作结果尚未确认，请刷新核对后再操作' : ''), at: value.at };
+      message: value.action === 'cleanFriend' && ['pending', 'unknown', 'partial'].includes(outcome)
+        ? '程序将读取好友牧场自动核对，原请求保持单次执行'
+        : value.message || (outcome === 'unknown' ? '上一笔操作结果尚未确认，请刷新核对后再操作' : ''), at: value.at };
   }
   function unresolved(data) {
     return data.lastOperation && ['pending', 'unknown', 'partial'].includes(visibleOperation(data.lastOperation).outcome);
+  }
+  function ownsCleanQuote(quote, playerOrigin) {
+    return quote?.action === 'cleanFriend' && typeof quote.origin === 'string'
+      && quote.origin.split(':')[0] === playerOrigin.split(':')[0];
+  }
+  function getCleanOperation(id) {
+    const data = read();
+    const quote = data.quotes.find(row => row.id === id);
+    if (!ownsCleanQuote(quote, origin())) throw error('RANCH_CONFIRMATION_MISSING', '清理记录暂不可用');
+    const result = data.lastOperation?.id === id ? data.lastOperation : quote.result;
+    if (result) return visibleOperation(result);
+    const expired = quote.status === 'prepared' && quote.expiresAt <= quoteNow();
+    return visibleOperation({ id, action: quote.action, label: quote.plan.label, friendGid: quote.input.hostGid,
+      outcome: expired ? 'not_sent' : 'unknown', message: expired ? '确认单已过期，本次清理未发出' : '', at: quote.at });
   }
   async function stage(name, kind, callback) {
     try { return await callback(); }
@@ -341,13 +358,28 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   }
   async function getFriend(hostGid) {
     const currentOrigin = origin();
-    const op = read().lastOperation;
-    const snapshot = await visitFriend(hostGid, ({ friend }) => ({ name: friend.name, host: friend.host,
-      stealCount: friend.stealable.length, cleanCount: friend.hazards.length }));
+    const previous = read();
+    const op = previous.lastOperation;
+    const quote = previous.quotes.find(row => row.id === op?.id);
+    let goalMet = false;
+    const snapshot = await visitFriend(hostGid, ({ friend }) => {
+      goalMet = ownsCleanQuote(quote, currentOrigin) && friends.cleaningGoalMet(quote.plan, friend);
+      return { name: friend.name, host: friend.host, stealCount: friend.stealable.length, cleanCount: friend.hazards.length };
+    });
     if (op?.friendGid === snapshot.host && !snapshot.sceneRecoveryRequired && currentOrigin === origin()) {
       const data = read();
       if (data.lastOperation?.id === op.id && unresolved(data) && !inFlight.has(op.id)) {
-        data.lastObservedAt = now(); data.lastObservedOperationId = op.id; save(data);
+        data.lastObservedAt = now(); data.lastObservedOperationId = op.id;
+        const latest = data.quotes.find(row => row.id === op.id);
+        const settled = goalMet && ownsCleanQuote(latest, currentOrigin);
+        if (settled) {
+          latest.status = 'acknowledged';
+          latest.result = data.lastOperation = { ...data.lastOperation, outcome: 'acknowledged',
+            message: '自动核对完成，原清理目标已消失，恢复正常巡查' };
+        }
+        save(data);
+        if (settled) automationLog(data.lastOperation.message, { event: 'ranch_automation_status', logKind: 'status',
+          action: 'cleanFriend', result: 'acknowledged', reason: 'friend_clean_reconciled' });
       }
     }
     return snapshot;
@@ -430,7 +462,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     validateInput(input);
     const accountOrigin = origin();
     const previous = read();
-    if (unresolved(previous)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对，请先刷新并确认');
+    if (unresolved(previous)) throw error('RANCH_RESULT_UNCONFIRMED', previous.lastOperation.action === 'cleanFriend'
+      ? '程序正在核对上一次好友牧场清理' : '上一笔操作结果待核对，请先刷新并确认');
     if (autoRevision !== undefined) checkAutomaticAction(previous, action, autoRevision, autoSlot, input);
     const prepared = await inActionScene(action, input, async ({ initial, assertCurrent, friend }) => {
       const { raw, plan } = await loadAction(initial, action, input, assertCurrent, false, autoSlot, autoRevision, friend, activeScene);
@@ -542,8 +575,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         unknown('库存变化与本次费用未匹配，请核对结果');
     }
     const success = { upgrade: '已开始升级，到时可在设施卡完成升级', completeUpgrade: '设施升级已完成' };
-    return { outcome: completed < plan.count ? 'partial' : 'confirmed', completed, requested: plan.count,
-      rewards: sumItems(rewards), costs, message: completed < plan.count ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : success[plan.action] || '操作已确认' };
+    const partial = completed < plan.count && plan.action !== 'cleanFriend';
+    return { outcome: partial ? 'partial' : 'confirmed', completed, requested: plan.count,
+      rewards: sumItems(rewards), costs, message: partial ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : success[plan.action] || '操作已确认' };
   }
   function checkQuote(data, quote, id) {
     if (!quote) {
@@ -746,6 +780,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     }
     if (!op || op.id !== id || !['unknown', 'partial'].includes(op.outcome) || inFlight.has(id))
       throw error('RANCH_INVALID_ARGUMENT', '没有可核对的未确认结果');
+    if (op.action === 'cleanFriend') throw error('RANCH_AUTO_RECONCILING', '程序正在自动核对好友牧场清理');
     if (op.taskSaleReceipt) throw error('RANCH_AUTO_RECONCILING', '鸡蛋出售已确认，程序将自动刷新任务进度');
     if (quote?.feedBefore || quote?.action === 'addGrass' || op.reconciliation) {
       throw error('RANCH_AUTO_RECONCILING', '牧草账目由程序自动读取并核对');
@@ -836,6 +871,19 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   async function recheckUnknownOperation(data) {
     const quote = data.quotes.find(row => row.id === data.lastOperation?.id);
     if (!quote || inFlight.has(quote.id)) return { skipped: true };
+    if (quote.action === 'cleanFriend') {
+      const host = data.lastOperation.friendGid;
+      if (!host || !ownsCleanQuote(quote, origin()) || !canVisitFriend(host)) return { skipped: true };
+      const at = quoteNow();
+      const checks = quote.cleanChecks || 0;
+      if (at - (quote.cleanCheckedAt ?? quote.at) < (checks < 3 ? AUTOMATION_TICK_MS : 5 * 60000))
+        return { skipped: true };
+      quote.cleanChecks = Math.min(3, checks + 1);
+      quote.cleanCheckedAt = at;
+      save(data);
+      await getFriend(host);
+      return { skipped: true };
+    }
     if (quote.plan?.mallGiftDay && mallGiftAttempt(data, model.ranchDay(now()))?.id === quote.id) {
       const at = quoteNow();
       const checks = quote.mallGiftChecks || 0;
@@ -1165,6 +1213,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     } finally { autoRunning = false; }
   }
   return { getState: (view, shopId) => safe(() => getState(view, shopId, undefined, true)), getFriend: host => safe(() => getFriend(host)),
+    getCleanOperation: id => safe(() => getCleanOperation(id), false),
     runFriendTask: (...args) => safe(() => runFriendTask(...args), false),
     runOwnTask: (...args) => safe(() => runOwnTask(...args), false),
     prepare: (action, input, revision, slot) => safe(() => prepare(action, input, revision, slot)),
@@ -1198,9 +1247,10 @@ module.exports = { createRanchService, planIdentity, sumItems,
   runRanchAutomation: () => service().automate(), getRanchAutomation: () => service().getAutomation(),
   setRanchAutomation: value => service().setAutomation(value),
   getRanchState: (...args) => service().getState(...args), getRanchFriend: host => service().getFriend(host), prepareRanchAction: (...args) => service().prepare(...args),
+  getRanchCleanOperation: id => service().getCleanOperation(id),
   operateRanch: id => service().execute(id), cancelRanchAction: id => service().cancel(id), acknowledgeRanch: id => service().acknowledge(id) };
 if (process.env.FARM_SESSION_BUSINESS === '1') {
   const { wrapBusinessFunction } = require('./business-state');
-  for (const name of ['runRanchAutomation', 'runRanchFriendTask', 'runRanchOwnTask', 'getRanchState', 'getRanchFriend', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
+  for (const name of ['runRanchAutomation', 'runRanchFriendTask', 'runRanchOwnTask', 'getRanchState', 'getRanchFriend', 'getRanchCleanOperation', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
     module.exports[name] = wrapBusinessFunction(`ranch:${name}`, module.exports[name]);
 }

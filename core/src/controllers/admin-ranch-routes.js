@@ -60,6 +60,20 @@ function registerAdminRanchRoutes(context) {
       return sendProviderError(res, error);
     }
   });
+  app.get('/api/ranch/clean-operation', async (req, res) => {
+    const id = await account(req, res); if (!id) return;
+    const operationId = req.query?.operationId;
+    if (!validQuoteId(operationId)) return res.status(400).json({ ok: false, error: '清理记录无效' });
+    if (!stillAuthorized(req, id)) return denyAccess(res);
+    const scope = readScope(id);
+    if (!scope) return unavailable(res);
+    try {
+      const result = await provider.getRanchCleanOperation(id, operationId);
+      if (!stillAuthorized(req, id)) return denyAccess(res);
+      if (readScope(id) !== scope) return unavailable(res);
+      return respond(res, result);
+    } catch (error) { return sendProviderError(res, error); }
+  });
   app.get('/api/ranch/state', async (req, res) => {
     const id = await account(req, res); if (!id) return;
     const view = String(req.query?.view || 'animals'); const shop = String(req.query?.shopId || '5');

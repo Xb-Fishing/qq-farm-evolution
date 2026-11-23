@@ -76,14 +76,16 @@ test('the real adapter refuses business before login and rechecks login/policy a
   const account = { id: 'synthetic-adapter', platform: 'wx', credentialGeneration: 'synthetic-grant' };
   const state = {}; const socket = { readyState: 1 }; let hooks; let ready; let sent = 0; let encoding;
   let requestPolicy = { enabled: true, total60s: 80, friend60s: 80, method60s: 30 };
+  const governor = require('../src/services/request-governor');
   const network = { setSessionTransportHooks: value => { hooks = value; }, networkEvents: new EventEmitter(),
     getWs: () => socket, isConnected: () => true, getUserState: () => state, getWsErrorState: () => ({}), getAceStatus: () => ({}),
+    getRequestProfile: governor.getRequestProfile,
     connect: (_code, callback) => { ready = callback; }, stopNetwork: () => {},
     sendMsgAsync: async (service, method) => { if (encoding) await encoding.promise; hooks.assertSend(service, method); sent++; return { body: Buffer.from('ok') }; } };
   // connect starts from no socket, then the fixture exposes an OPEN socket.
   let socketPresent = false; network.getWs = () => socketPresent ? socket : null;
   const replacements = { '../utils/network': network, '../services/stats': {}, '../services/status': { setStatusPlatform: () => {}, setRecordGoldExpHook: () => {}, statusData: {} },
-    '../services/request-governor': require('../src/services/request-governor'), '../models/store': { getAccounts: () => ({ accounts: [account] }),
+    '../services/request-governor': governor, '../models/store': { getAccounts: () => ({ accounts: [account] }),
       getConfigSnapshot: () => ({ requestPolicy }),
       applyConfigSnapshot: config => { if (config.requestPolicy) requestPolicy = config.requestPolicy; }, getFriendQuietHours: () => ({ idleProtectionEnabled: true }) },
     '../utils/idle-protection': { getIdleProtectionUntil: () => 0 },
@@ -104,10 +106,16 @@ test('the real adapter refuses business before login and rechecks login/policy a
     await assert.rejects(stale, { code: 'SESSION_CONFIG_CHANGED' }); assert.equal(sent, 0);
     encoding = null; const fresh = { ...args, configRevision: adapter.snapshot().configRevision };
     assert.deepEqual((await adapter.request(fresh, () => {})).body, Buffer.from('ok')); assert.equal(sent, 1);
-    const changed = { enabled: false, total60s: 140, friend60s: 60, method60s: 45 };
+    const changed = { enabled: false, total60s: 140, friend60s: 60, method60s: 45, rosterBonusPer100: 60 };
     adapter.syncConfig({ requestPolicy: changed });
     assert.equal(adapter.snapshot().requestPolicy.supported, true);
     assert.equal(adapter.snapshot().requestPolicy.enabled, false);
     assert.equal(adapter.query('governor.getRequestProfile').policy.friend60s, 60);
-  } finally { adapter.dispose(); }
+    assert.equal(adapter.command('governor.setRosterSize', [500]), true);
+    const profile = adapter.query('network.getRequestProfile');
+    assert.equal(profile.totalLimit, 440);
+    assert.equal(profile.policy.total60s, 140);
+    assert.equal(profile.perMethodLimit, 45);
+    assert.equal(profile.friendLimit, 60);
+  } finally { governor.resetForTest(); adapter.dispose(); }
 });

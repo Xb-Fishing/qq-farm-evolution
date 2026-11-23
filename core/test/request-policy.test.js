@@ -12,7 +12,7 @@ const { createDataProvider } = require('../src/runtime/data-provider');
 const { createRuntimeState } = require('../src/runtime/runtime-state');
 const proto = require('../src/utils/proto');
 test.before(() => proto.loadProto());
-const policy = { enabled: true, total60s: 8, friend60s: 2, method60s: 5 };
+const policy = { enabled: true, total60s: 8, friend60s: 2, method60s: 5, rosterBonusPer100: 20 };
 const at = 1700000000000;
 test('friend aggregate and total budgets are independent and expire; disabling bypasses budgets and slowdown without erasing telemetry', () => {
   governor.resetForTest(); governor.configurePolicy(policy);
@@ -52,16 +52,18 @@ test('settings save validates before mutation and account snapshots, default pla
     nextConfigRevision: runtime.nextConfigRevision,
     broadcastConfigToWorkers: id => broadcasts.push({ id, config: runtime.buildConfigSnapshotForAccount(id) }),
     buildDefaultStatus: () => ({}), normalizeStatusForPanel: value => value });
-  for (const bad of [null, { ...policy, enabled: 0 }, { ...policy, total60s: 0 }, { ...policy, friend60s: 1.5 }, { ...policy, method60s: '5' }]) {
+  for (const bad of [null, { ...policy, enabled: 0 }, { ...policy, total60s: 0 }, { ...policy, friend60s: 1.5 },
+    { ...policy, method60s: '5' }, ...[-1, 1.5, null, '60', 10001].map(rosterBonusPer100 => ({ ...policy, rosterBonusPer100 }))]) {
     assert.throws(() => validateRequestPolicy(bad));
     await assert.rejects(provider.saveSettings('fixture', { requestPolicy: bad }));
   }
   assert.equal(broadcasts.length, 0);
-  await provider.saveSettings('fixture', { requestPolicy: policy });
+  const configured = { ...policy, rosterBonusPer100: 60 };
+  await provider.saveSettings('fixture', { requestPolicy: configured });
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].id, 'fixture');
-  assert.deepEqual(broadcasts[0].config.requestPolicy, policy);
-  assert.deepEqual(store.getConfigSnapshot('fixture').requestPolicy, policy);
+  assert.deepEqual(broadcasts[0].config.requestPolicy, configured);
+  assert.deepEqual(store.getConfigSnapshot('fixture').requestPolicy, configured);
   const otherPolicy = store.getConfigSnapshot('other').requestPolicy;
   assert.notDeepEqual(otherPolicy, policy);
   assert.deepEqual(runtime.buildConfigSnapshotForAccount('other').requestPolicy, otherPolicy);
@@ -69,7 +71,11 @@ test('settings save validates before mutation and account snapshots, default pla
   workers.fixture.process.sessionFacts.game.requestPolicy = { supported: true, ...policy };
   assert.equal(provider.getStatus('fixture').sessionUpgrade.requiresRescan, false);
   const loaded = JSON.parse(fs.readFileSync(path.join(root, 'store.json')));
-  assert.deepEqual(loaded.accountConfigs.fixture.requestPolicy, policy);
+  assert.deepEqual(loaded.accountConfigs.fixture.requestPolicy, configured);
+  const { rosterBonusPer100, ...legacy } = policy;
+  assert.equal(validateRequestPolicy(legacy).rosterBonusPer100, rosterBonusPer100);
+  await provider.saveSettings('fixture', { requestPolicy: legacy });
+  assert.equal(store.getConfigSnapshot('fixture').requestPolicy.rosterBonusPer100, 60);
 });
 test('friend rejection survives the real session codec and strict Worker/HTTP metadata path', () => {
   const codec = require('../src/runtime/session-codec');
@@ -94,9 +100,12 @@ test('HOT preserves the existing boost for aggregate friend traffic and reports 
   governor.resetForTest();
 });
 test('default plan rejects invalid request policy before mutation instead of silently coercing thresholds', () => {
-  store.setUserDefaultAccountPlan('synthetic-owner', { requestPolicy: policy });
+  const configured = { ...policy, rosterBonusPer100: 0 };
+  store.setUserDefaultAccountPlan('synthetic-owner', { requestPolicy: configured });
   const before = store.getUserDefaultAccountPlan('synthetic-owner');
-  for (const bad of [{ ...policy, method60s: true }, { ...policy, friend60s: '20' }, { ...policy, total60s: 0 }]) {
+  assert.deepEqual(before.config.requestPolicy, configured);
+  assert.deepEqual(store.applyUserDefaultAccountPlan('synthetic-owner', 'from-plan').requestPolicy, configured);
+  for (const bad of [{ ...policy, method60s: true }, { ...policy, friend60s: '20' }, { ...policy, total60s: 0 }, { ...policy, rosterBonusPer100: -1 }]) {
     assert.throws(() => store.setUserDefaultAccountPlan('synthetic-owner', { requestPolicy: { ...bad, enabled: false } }), { code: 'REQUEST_POLICY_INVALID' });
     assert.deepEqual(store.getUserDefaultAccountPlan('synthetic-owner'), before);
   }

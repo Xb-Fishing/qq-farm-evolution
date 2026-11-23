@@ -145,6 +145,25 @@ export const useRanchStore = defineStore('ranch', () => {
       controllers.delete(request.controller)
     }
   }
+  async function refreshCleanOperation() {
+    const id = accountId.value
+    const operation = result.value
+    if (!id || operation?.action !== 'cleanFriend' || !uncertain.value)
+      return
+    const token = generation
+    const request = requestConfig(id, token)
+    try {
+      const { data } = await api.get('/api/ranch/clean-operation', { ...request.config, params: { operationId: operation.id } })
+      if (generation !== token || result.value !== operation || data?.ok !== true || data.data?.id !== operation.id)
+        return
+      result.value = data.data
+      outcomes.set(id, data.data)
+    }
+    catch { /* The account worker will continue reconciling the receipt. */ }
+    finally {
+      controllers.delete(request.controller)
+    }
+  }
   async function automationRequest(policy?: Record<string, any>) {
     const id = accountId.value
     if (!id || savingAutomation.value)
@@ -415,7 +434,9 @@ export const useRanchStore = defineStore('ranch', () => {
       }
       const action = selected.intent?.action
       const feedOperation = action === 'addGrass' || (action === 'buy' && String(selected.intent?.input?.goodsId) === '10001' && String(selected.intent?.input?.shopId) === '6')
-      const uncertain = { id: selected.id, action, feedOperation, friendGid: selected.intent?.input?.hostGid, outcome: 'unknown', label: selected.label, message: feedOperation ? '牧草操作状态暂未确认，程序会自动读取库存，不会重发原单' : '请求状态暂未确认，请刷新核对；不会自动重试' }
+      const message = action === 'cleanFriend' ? '程序将自动核对清理结果'
+        : feedOperation ? '牧草操作状态暂未确认，程序会自动读取库存，不会重发原单' : '请求状态暂未确认，请刷新核对；不会自动重试'
+      const uncertain = { id: selected.id, action, feedOperation, friendGid: selected.intent?.input?.hostGid, outcome: 'unknown', label: selected.label, message }
       outcomes.set(id, uncertain)
       if (generation === token) {
         if (e?.code !== 'ERR_CANCELED')
@@ -513,5 +534,5 @@ export const useRanchStore = defineStore('ranch', () => {
       return false
     }
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, readFriend, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, refreshCleanOperation, readFriend, prepare, execute, acknowledge, closeQuote }
 })
