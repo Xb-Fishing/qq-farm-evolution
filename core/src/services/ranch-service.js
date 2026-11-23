@@ -17,6 +17,7 @@ const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用'
 // Scene entry, possible AllCells fallback, view reads, and two restoration attempts.
 const READ_CALLS = { animals: 5, tasks: 6, shop: 7, mallGift: 6 };
 const AUTOMATION_TICK_MS = 30000;
+const CLEAN_CHECK_LIMIT = 4;
 const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [index] : []);
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
@@ -236,34 +237,57 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     finally { fs.closeSync(fd); }
     try { fs.renameSync(temporary, target); } finally { fs.rmSync(temporary, { force: true }); }
   }
-  function visibleOperation(value) {
+  function visibleOperation(value, quote) {
     if (!value) return null;
     const outcome = value.outcome === 'pending' && !inFlight.has(value.id) ? 'unknown' : value.outcome;
+    const cleanReviewStatus = value.action === 'cleanFriend' && ['pending', 'unknown', 'partial'].includes(outcome)
+      ? quote?.status === 'prepared' ? 'not_admitted' : value.cleanHeld ? 'deferred' : 'checking'
+      : null;
     return { id: value.id, action: value.action, label: value.label, outcome, completed: value.completed || 0,
       requested: value.requested || 0, rewards: value.rewards || [], costs: value.costs || [],
       ...(value.friendGid && { friendGid: value.friendGid }),
       ...(value.reconciliation && { reconciliation: value.reconciliation }),
       ...(value.taskSaleReceipt && { taskSaleReceipt: true }),
-      message: value.action === 'cleanFriend' && ['pending', 'unknown', 'partial'].includes(outcome)
-        ? '程序将读取好友牧场自动核对，原请求保持单次执行'
-        : value.message || (outcome === 'unknown' ? '上一笔操作结果尚未确认，请刷新核对后再操作' : ''), at: value.at };
+      ...(value.cleanHeld === true && { cleanHeld: true }),
+      ...(cleanReviewStatus && { cleanReview: cleanReviewStatus }),
+      message: cleanReviewStatus === 'deferred' ? '程序将在后续正常访问时核对原目标，期间暂停清理这位好友的牧场'
+        : cleanReviewStatus === 'checking' ? '程序将读取好友牧场自动核对，原请求保持单次执行'
+          : value.message || (outcome === 'unknown' ? '上一笔操作结果尚未确认，请刷新核对后再操作' : ''), at: value.at };
   }
   function unresolved(data) {
-    return data.lastOperation && ['pending', 'unknown', 'partial'].includes(visibleOperation(data.lastOperation).outcome);
+    const op = data.lastOperation;
+    return op && !(op.action === 'cleanFriend' && op.cleanHeld === true)
+      && ['pending', 'unknown', 'partial'].includes(visibleOperation(op).outcome);
   }
   function ownsCleanQuote(quote, playerOrigin) {
     return quote?.action === 'cleanFriend' && typeof quote.origin === 'string'
       && quote.origin.split(':')[0] === playerOrigin.split(':')[0];
   }
+  function storedCleanReceipt(data, id, playerOrigin) {
+    const owner = playerOrigin.split(':')[0];
+    const held = Object.entries(data.friendCleanHolds || {})
+      .find(([key, hold]) => key.startsWith(`${owner}:`) && hold.result.id === id)?.[1].result;
+    if (held) return held;
+    const last = data.lastOperation;
+    if (last?.action === 'cleanFriend' && last.id === id && data.lastCleanOwner?.id === id && data.lastCleanOwner.owner === owner)
+      return last;
+    return null;
+  }
   function getCleanOperation(id) {
     const data = read();
     const quote = data.quotes.find(row => row.id === id);
-    if (!ownsCleanQuote(quote, origin())) throw error('RANCH_CONFIRMATION_MISSING', '清理记录暂不可用');
+    const currentOrigin = origin();
+    if (!ownsCleanQuote(quote, currentOrigin)) {
+      const stored = storedCleanReceipt(data, id, currentOrigin);
+      if (stored) return visibleOperation(stored);
+      throw error('RANCH_CONFIRMATION_MISSING', '清理记录暂不可用');
+    }
     const result = data.lastOperation?.id === id ? data.lastOperation : quote.result;
-    if (result) return visibleOperation(result);
+    if (result) return visibleOperation(result, quote);
     const expired = quote.status === 'prepared' && quote.expiresAt <= quoteNow();
     return visibleOperation({ id, action: quote.action, label: quote.plan.label, friendGid: quote.input.hostGid,
-      outcome: expired ? 'not_sent' : 'unknown', message: expired ? '确认单已过期，本次清理未发出' : '', at: quote.at });
+      outcome: expired ? 'not_sent' : 'unknown',
+      message: expired ? '确认单已过期，本次清理未发出' : '尚未发出清理，可取消本次确认单', at: quote.at }, quote);
   }
   async function stage(name, kind, callback) {
     try { return await callback(); }
@@ -334,7 +358,10 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     const host = model.positiveId(hostGid, '好友');
     const self = String(network.getUserState().gid);
     if (host === self) throw error('RANCH_INVALID_ARGUMENT', '请选择好友牧场');
-    return withScene(async context => {
+    const visitOrigin = origin();
+    let observedFriend;
+    let observedHoldId;
+    const result = await withScene(async context => {
       let entered = false;
       try {
         const entry = await rpc('enterFriend', { host_gid: host, reason: 2 });
@@ -344,6 +371,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         const detail = await rpc('friendDetail', { host_gid: host });
         context.assertCurrent();
         const friend = await stage('friendDetail', 'normalize', () => friends.describe(entry, detail, host, self));
+        observedFriend = { ...friend, self };
+        observedHoldId = read().friendCleanHolds?.[cleanHoldKey(self, host)]?.result.id;
         return await callback({ ...context, friend: { ...friend, entry, detail, self } });
       } finally {
         if (entered) {
@@ -355,6 +384,41 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         }
       }
     }, maxCalls);
+    if (observedHoldId && !result.sceneRecoveryRequired && visitOrigin === origin()) {
+      const resolved = reconcileCleanHold(observedFriend, observedHoldId);
+      if (resolved && result.host === observedFriend.host) {
+        result.cleanOperation = resolved;
+        delete result.cleanHeld;
+      }
+    }
+    return result;
+  }
+  function cleanHoldKey(owner, host) { return `${owner}:${host}`; }
+  function friendCleanHeld(friend) {
+    const data = read();
+    return Boolean(data.friendCleanHolds?.[cleanHoldKey(friend.self, friend.host)]);
+  }
+  function reconcileCleanHold(friend, observedId) {
+    const data = read();
+    const key = cleanHoldKey(friend.self, friend.host);
+    const hold = data.friendCleanHolds?.[key];
+    if (hold?.result.id !== observedId || !friends.cleaningGoalMet(hold.plan, friend)) return null;
+    const result = cleanAcknowledged(hold.result);
+    const quote = data.quotes.find(row => row.id === hold.result.id);
+    if (quote) { quote.status = result.outcome; quote.result = result; }
+    if (data.lastOperation?.id === result.id) data.lastOperation = result;
+    delete data.friendCleanHolds[key];
+    save(data);
+    logCleanAcknowledged(result);
+    return visibleOperation(result);
+  }
+  function cleanAcknowledged(operation) {
+    return { ...operation, outcome: 'acknowledged', cleanHeld: false, completed: 0, rewards: [], costs: [],
+      message: '自动核对完成，原清理目标已消失，恢复正常巡查' };
+  }
+  function logCleanAcknowledged(operation) {
+    automationLog(operation.message, { event: 'ranch_automation_status', logKind: 'status',
+      action: 'cleanFriend', result: 'acknowledged', reason: 'friend_clean_reconciled' });
   }
   async function getFriend(hostGid) {
     const currentOrigin = origin();
@@ -364,29 +428,37 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     let goalMet = false;
     const snapshot = await visitFriend(hostGid, ({ friend }) => {
       goalMet = ownsCleanQuote(quote, currentOrigin) && friends.cleaningGoalMet(quote.plan, friend);
-      return { name: friend.name, host: friend.host, stealCount: friend.stealable.length, cleanCount: friend.hazards.length };
+      return { name: friend.name, host: friend.host, stealCount: friend.stealable.length, cleanCount: friend.hazards.length,
+        ...(friendCleanHeld(friend) && { cleanHeld: true }) };
     });
     if (op?.friendGid === snapshot.host && !snapshot.sceneRecoveryRequired && currentOrigin === origin()) {
       const data = read();
       if (data.lastOperation?.id === op.id && unresolved(data) && !inFlight.has(op.id)) {
-        data.lastObservedAt = now(); data.lastObservedOperationId = op.id;
         const latest = data.quotes.find(row => row.id === op.id);
-        const settled = goalMet && ownsCleanQuote(latest, currentOrigin);
-        if (settled) {
-          latest.status = 'acknowledged';
-          latest.result = data.lastOperation = { ...data.lastOperation, outcome: 'acknowledged',
-            message: '自动核对完成，原清理目标已消失，恢复正常巡查' };
+        if (op.action === 'cleanFriend') {
+          if (goalMet && ownsCleanQuote(latest, currentOrigin)) {
+            latest.status = 'acknowledged';
+            latest.result = data.lastOperation = cleanAcknowledged(data.lastOperation);
+            data.lastCleanOwner = { id: op.id, owner: currentOrigin.split(':')[0] };
+            save(data);
+            snapshot.cleanOperation = visibleOperation(latest.result);
+            logCleanAcknowledged(latest.result);
+          }
+        } else {
+          data.lastObservedAt = now(); data.lastObservedOperationId = op.id;
+          save(data);
         }
-        save(data);
-        if (settled) automationLog(data.lastOperation.message, { event: 'ranch_automation_status', logKind: 'status',
-          action: 'cleanFriend', result: 'acknowledged', reason: 'friend_clean_reconciled' });
       }
     }
     return snapshot;
   }
   async function loadAction(initial, action, input, assertCurrent, rechecking = false, autoSlot, autoRevision, friend, activeScene) {
     if (friend && social.ACTIONS.has(action)) return { raw: null, plan: friend.taskPlan };
-    if (friend) return { raw: null, plan: friends.plan(action, friend) };
+    if (friend) {
+      if (action === 'cleanFriend' && friendCleanHeld(friend))
+        throw error('RANCH_RESULT_UNCONFIRMED', '本好友上次清理结果仍未知，原目标消失后才能再次清理');
+      return { raw: null, plan: friends.plan(action, friend) };
+    }
     const raw = activeScene?.taskRaw || await loadRaw(initial, viewFor(action, input), input.shopId);
     assertCurrent();
     if (activeScene?.taskPlan?.action === action) return { raw, plan: activeScene.taskPlan };
@@ -451,7 +523,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       logFeedCheck(reconciled);
       if (giftReconciled) automationLog(giftReconciled.message, { event: 'ranch_mall_gift_reconciled',
         action: 'claimMallGift', result: giftReconciled.outcome });
-      return { ...snapshot, view, lastOperation: visibleOperation(data.lastOperation) };
+      const operation = data.lastOperation;
+      const quote = data.quotes.find(row => row.id === operation?.id);
+      const playerOrigin = operation?.action === 'cleanFriend' ? origin() : null;
+      const visible = !playerOrigin || ownsCleanQuote(quote, playerOrigin) || storedCleanReceipt(data, operation.id, playerOrigin);
+      return { ...snapshot, view, lastOperation: visible ? visibleOperation(operation, quote) : null };
     }, READ_CALLS[scan ? 'shop' : view]);
   }
   async function prepare(action, input = {}, autoRevision, autoSlot, activeScene) {
@@ -581,13 +657,20 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   }
   function checkQuote(data, quote, id) {
     if (!quote) {
-      if (data.lastOperation?.id === id) return { ...visibleOperation(data.lastOperation), replayed: true };
+      if (data.lastOperation?.id === id && data.lastOperation.action !== 'cleanFriend')
+        return { ...visibleOperation(data.lastOperation), replayed: true };
+      if ((data.friendCleanHolds || data.lastCleanOwner?.id === id) && network.isConnected()) {
+        const stored = storedCleanReceipt(data, id, origin());
+        if (stored) return { ...visibleOperation(stored), replayed: true };
+      }
       throw error('RANCH_CONFIRMATION_MISSING', '确认记录已失效，请刷新牧场核对结果');
     }
     if (quote.status !== 'prepared') {
+      if (quote.action === 'cleanFriend' && (!network.isConnected() || !ownsCleanQuote(quote, origin())))
+        throw error('RANCH_CONFIRMATION_MISSING', '清理记录暂不可用');
       const result = quote.result || (data.lastOperation?.id === id && data.lastOperation);
       if (!result) throw error('RANCH_RESULT_UNCONFIRMED', '执行结果待核对，请刷新牧场');
-      return { ...visibleOperation(result), replayed: true };
+      return { ...visibleOperation(result, quote), replayed: true };
     }
     if (unresolved(data)) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔操作结果待核对');
     if (quote.origin !== origin()) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请刷新牧场后重新选择操作');
@@ -633,6 +716,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       const pending = { id, action: quote.action, label: plan.label, outcome: 'pending', at: now(), requested: plan.count,
         ...(friend && { friendGid: friend.host }) };
       quote.status = 'pending'; quote.result = pending; data.lastOperation = pending;
+      if (quote.action === 'cleanFriend') data.lastCleanOwner = { id, owner: friend.self };
       if (plan.mallGiftDay) data.mallGiftAttempt = { id, owner: String(network.getUserState().gid), day: plan.mallGiftDay, outcome: 'unknown' };
       save(data); inFlight.add(id);
       let result; let reply; let after = null; let expiredBeforeDispatch = false;
@@ -744,7 +828,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         if (friend && quote?.autoRevision === undefined && result.outcome === 'confirmed' && !result.replayed) {
           try { require('../utils/utils').log('牧场', `${plan.label}已确认 · ${result.completed} 项`, { module: 'ranch', event: 'ranch_friend_action' }); } catch {}
         }
-        return { ...result, snapshot,
+        const cleanReview = plan.action === 'cleanFriend' && visibleOperation(result, quote).cleanReview;
+        return { ...result, ...(cleanReview && { cleanReview }), snapshot,
           refreshRequired: !snapshot && !friend, message: !snapshot && !friend && result.outcome === 'confirmed' ? '操作已确认，页面刷新失败，请稍后刷新' : result.message };
       } finally { inFlight.delete(id); }
     }, undefined, activeScene).catch(failure => {
@@ -761,7 +846,10 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       const data = read();
       const quote = data.quotes.find(row => row.id === receiptId);
       if (!quote) {
-        if (data.lastOperation?.id === receiptId) return visibleOperation(data.lastOperation);
+        if (data.lastOperation?.id === receiptId) {
+          if (data.lastOperation.action === 'cleanFriend') throw error('RANCH_INVALID_ARGUMENT', '此单据不属于牧草核账');
+          return visibleOperation(data.lastOperation);
+        }
         return { id: receiptId, outcome: 'replanned', completed: 0, message: '旧单据已失效，按当前库存继续，原单不会重发' };
       }
       if (!(quote.action === 'addGrass' || (quote.action === 'buy' && String(quote.input?.shopId) === '6'
@@ -774,6 +862,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     // A lost HTTP admission can leave only an unconsumed quote. Explicitly
     // cancel it so an older preflight can never dispatch after this response.
     if (!unresolved(data) && !inFlight.has(id)) {
+      if (quote?.action === 'cleanFriend' && !ownsCleanQuote(quote, origin()))
+        throw error('RANCH_CONFIRMATION_MISSING', '清理记录暂不可用');
       if (quote?.status === 'cancelled' && quote.result?.outcome === 'not_sent') return visibleOperation(quote.result);
       if (quote?.status === 'prepared' && cancel(id).cancelled)
         return visibleOperation(read().quotes.find(row => row.id === id).result);
@@ -868,20 +958,43 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       action: result.action, source: automatic ? 'automatic' : 'manual' }, result.outcome === 'unknown');
   }
 
+  function deferCleanRecheck(id, playerOrigin) {
+    const data = read();
+    const quote = data.quotes.find(row => row.id === id);
+    if (!ownsCleanQuote(quote, playerOrigin) || data.lastOperation?.id !== id || !unresolved(data) || inFlight.has(id)) return;
+    const { action, payload, resultKeys } = quote.plan;
+    const owner = playerOrigin.split(':')[0];
+    const result = { ...data.lastOperation, outcome: 'unknown', cleanHeld: true, completed: 0, rewards: [], costs: [] };
+    data.friendCleanHolds ||= {};
+    data.friendCleanHolds[cleanHoldKey(owner, payload.host_gid)] = { plan: { action, payload, resultKeys }, result };
+    data.lastCleanOwner = { id, owner };
+    quote.status = result.outcome;
+    quote.result = data.lastOperation = result;
+    save(data);
+  }
   async function recheckUnknownOperation(data) {
     const quote = data.quotes.find(row => row.id === data.lastOperation?.id);
     if (!quote || inFlight.has(quote.id)) return { skipped: true };
     if (quote.action === 'cleanFriend') {
       const host = data.lastOperation.friendGid;
-      if (!host || !ownsCleanQuote(quote, origin()) || !canVisitFriend(host)) return { skipped: true };
+      const currentOrigin = origin();
+      if (!host || !ownsCleanQuote(quote, currentOrigin)) return { skipped: true };
       const at = quoteNow();
       const checks = quote.cleanChecks || 0;
-      if (at - (quote.cleanCheckedAt ?? quote.at) < (checks < 3 ? AUTOMATION_TICK_MS : 5 * 60000))
+      if (checks >= CLEAN_CHECK_LIMIT) {
+        deferCleanRecheck(quote.id, currentOrigin);
         return { skipped: true };
-      quote.cleanChecks = Math.min(3, checks + 1);
+      }
+      if (!canVisitFriend(host) || at - (quote.cleanCheckedAt ?? quote.at) < (checks < 3 ? AUTOMATION_TICK_MS : 5 * 60000))
+        return { skipped: true };
+      quote.cleanChecks = checks + 1;
       quote.cleanCheckedAt = at;
       save(data);
-      await getFriend(host);
+      try { await getFriend(host); }
+      finally {
+        if (quote.cleanChecks === CLEAN_CHECK_LIMIT && network.isConnected() && currentOrigin === origin())
+          deferCleanRecheck(quote.id, currentOrigin);
+      }
       return { skipped: true };
     }
     if (quote.plan?.mallGiftDay && mallGiftAttempt(data, model.ranchDay(now()))?.id === quote.id) {
@@ -967,7 +1080,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           scene.friend.taskPlan = social.plan(action, { ...scene.friend, times });
         } else {
           const offers = action === 'stealFriend' ? scene.friend.stealable : scene.friend.hazards;
-          if (offers.length) scene.friend.taskPlan = friends.plan(action, scene.friend);
+          if (offers.length && (action !== 'cleanFriend' || !friendCleanHeld(scene.friend)))
+            scene.friend.taskPlan = friends.plan(action, scene.friend);
         }
         if (!scene.friend.taskPlan) return { outcome: 'no_target', nextCursor };
         scene.taskAdmission = taskAdmission;
@@ -1069,6 +1183,11 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         for (const slot of slots) {
           const { action } = SLOTS[slot];
           const targets = action === 'stealFriend' ? scene.friend.stealable : scene.friend.hazards;
+          if (action === 'cleanFriend' && friendCleanHeld(scene.friend)) {
+            noteAutoStatus(SLOTS[slot], 'result_unconfirmed', state.revision, { friendName });
+            handled.add(slot);
+            continue;
+          }
           if (!targets.length) {
             noteAutoStatus(SLOTS[slot], 'no_friend_targets', state.revision, { friendName });
             handled.add(slot);

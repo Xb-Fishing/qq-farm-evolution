@@ -28,9 +28,12 @@ async function historicalFixture(t) {
       } return { data: { ok: true } }; },
   };
   const useAccountStore = pinia.defineStore('account', () => ({ currentAccountId: account }));
+  const policyPath = path.join(WEB, 'src/utils/request-policy.ts');
+  const requestPolicy = evaluateModule(fs.readFileSync(policyPath, 'utf8'), () => undefined, policyPath);
   let settingModule;
   const resolve = spec => spec === 'vue' ? vue : spec === 'pinia' ? pinia : spec === '@/api' ? { __esModule: true, default: api }
-    : spec === '@/stores/account' ? { useAccountStore } : spec === '@/stores/setting' ? settingModule : undefined;
+    : spec === '@/stores/account' ? { useAccountStore } : spec === '@/stores/setting' ? settingModule
+      : spec === '@/utils/request-policy' ? requestPolicy : undefined;
   settingModule = evaluateModule(fs.readFileSync(path.join(WEB, 'src/stores/setting.ts'), 'utf8'), resolve);
   const composition = evaluateModule(fs.readFileSync(path.join(WEB, 'src/composables/settings/useAutomationSettings.ts'), 'utf8'), resolve);
   const testPinia = pinia.createPinia(); pinia.setActivePinia(testPinia);

@@ -128,6 +128,126 @@ test('friend ranch reads the selected account and uses the existing preview and 
   assert.deepEqual(f.posts.at(-1).body, { action: 'cleanFriend', input: { hostGid: '73' } });
 });
 
+const cleanReceipt = (cleanReview = 'checking') => ({
+  id: 'clean-review', action: 'cleanFriend', friendGid: '73', outcome: 'unknown', cleanReview,
+  label: '帮好友清理牧场', rewards: [], completed: 0,
+});
+
+test('clean review polls only the local receipt a bounded number of times and can explicitly retry', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  await h.flush();
+  const reads = [];
+  let status = cleanReceipt();
+  f.read(async (url, config) => {
+    reads.push([url, config.params?.operationId]);
+    if (url.endsWith('/clean-operation')) return { data: { ok: true, data: status } };
+    return { data: { ok: true, data: { ...state(), lastOperation: status } } };
+  });
+  await f.store.refresh();
+  await h.flush();
+  assert.match(h.textOf(f.root), /程序正在核对清理结果/);
+  assert.equal(button(f.root, '已核对，允许继续'), undefined);
+  for (const delay of [15000, 30000, 60000, 120000, 240000, 900000]) {
+    t.mock.timers.tick(delay);
+    await h.flush();
+  }
+  const checks = reads.filter(([url]) => url.endsWith('/clean-operation'));
+  assert.deepEqual(checks, Array.from({ length: 5 }, () => ['/api/ranch/clean-operation', 'clean-review']));
+  assert.equal(reads.some(([url]) => url.endsWith('/friend')), false);
+  status = cleanReceipt('deferred');
+  h.click(button(f.root, '检查清理状态'));
+  await h.flush();
+  assert.match(h.textOf(f.root), /清理结果仍未知/);
+  assert.equal(button(f.root, '已核对，允许继续'), undefined);
+  h.render(null, f.root);
+  t.mock.timers.tick(900000);
+  await h.flush();
+  assert.equal(reads.filter(([url]) => url.endsWith('/clean-operation')).length, 6);
+});
+
+test('deferred clean review leaves other work available and ignores late local status after switching accounts', async () => {
+  const f = fixture();
+  await h.flush();
+  let status = cleanReceipt('deferred');
+  let receipt = async () => ({ data: { ok: true, data: status } });
+  let localReads = 0;
+  f.read(async (url, config) => {
+    if (url.endsWith('/clean-operation')) {
+      localReads++;
+      return receipt();
+    }
+    assert.equal(url.endsWith('/friend'), false);
+    return { data: { ok: true, data: { ...state(), lastOperation: config.headers['x-account-id'] === 'account-a' ? status : null } } };
+  });
+  await f.store.refresh();
+  await h.flush();
+  assert.equal(f.store.blocked, false);
+  assert.equal(await f.store.acknowledge(), false);
+  assert.equal(button(f.root, '已核对，允许继续'), undefined);
+  assert.equal(button(f.root, '刷新好友牧场'), undefined);
+
+  h.render(null, f.root);
+  f.mount('account-a');
+  await h.flush();
+  assert.match(h.textOf(f.root), /清理结果仍未知/);
+  const late = h.deferred();
+  receipt = () => late.promise;
+  h.click(button(f.root, '检查清理状态'));
+  await h.flush();
+  assert.equal(button(f.root, '检查清理状态').props.disabled, true);
+  f.mount('account-b');
+  await h.flush();
+  late.resolve({ data: { ok: true, data: { ...status, outcome: 'acknowledged', cleanReview: undefined } } });
+  await h.flush();
+  assert.equal(f.store.result, null);
+
+  f.mount('account-a');
+  await h.flush();
+  assert.equal(f.store.result.outcome, 'unknown');
+  receipt = async () => ({ data: { ok: false, error: '演示状态暂不可用' } });
+  h.click(button(f.root, '检查清理状态'));
+  await h.flush();
+  const alerts = h.findAll(f.root, node => node.props.role === 'alert' && h.textOf(node) === '演示状态暂不可用');
+  assert.equal(alerts.length, 1);
+  assert.equal(f.store.error, '', 'local receipt failures stay with the cleanup status card');
+  assert.equal(f.store.blocked, false);
+  status = { ...status, outcome: 'acknowledged', cleanReview: undefined };
+  receipt = async () => ({ data: { ok: true, data: status } });
+  h.click(button(f.root, '检查清理状态'));
+  await h.flush();
+  assert.match(h.textOf(f.root), /已核对结果/);
+  assert.equal(f.store.result.outcome, 'acknowledged');
+  assert.equal(f.store.cleanOperationError, '');
+  assert.equal(localReads, 3);
+  assert.deepEqual(f.posts, []);
+});
+
+test('a lost clean admission offers cancellation only after the local receipt finds a prepared quote', async () => {
+  const f = fixture();
+  await h.flush();
+  f.prepare(async () => quoteReply('clean-review', 60000));
+  f.operate(async () => { throw new Error('synthetic lost admission'); });
+  assert.equal(await f.store.prepare('cleanFriend', { hostGid: '73' }), true);
+  await f.store.execute();
+  await h.flush();
+  assert.equal(button(f.root, '取消未发送的确认单'), undefined);
+  f.read(async (url) => {
+    assert.equal(url, '/api/ranch/clean-operation');
+    return { data: { ok: true, data: cleanReceipt('not_admitted') } };
+  });
+  h.click(button(f.root, '检查清理状态'));
+  await h.flush();
+  f.acknowledge(async ({ operationId }) => ({
+    data: { ok: true, data: { id: operationId, action: 'cleanFriend', outcome: 'not_sent' } },
+  }));
+  h.click(button(f.root, '取消未发送的确认单'));
+  await h.flush();
+  assert.equal(f.store.result.outcome, 'not_sent');
+  assert.equal(f.store.blocked, false);
+  assert.equal(f.posts.filter(post => post.url.endsWith('/operate')).length, 1);
+});
+
 test('ranch sale and friend switches are initially disabled and save as independent account options', async () => {
   const f = fixture();
   await h.flush();

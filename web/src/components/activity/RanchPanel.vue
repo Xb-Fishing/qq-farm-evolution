@@ -19,7 +19,7 @@ const selectedFriend = ref('')
 const friendLoaded = ref(false)
 const friendBusy = ref(false)
 const friendError = ref('')
-const friendState = ref<{ name: string, host: string, stealCount: number, cleanCount: number } | null>(null)
+const friendState = ref<{ name: string, host: string, stealCount: number, cleanCount: number, cleanHeld?: boolean } | null>(null)
 async function readFriend(gid?: string) {
   const attempt = ++friendSequence
   friendBusy.value = true
@@ -116,6 +116,8 @@ onBeforeUnmount(() => {
 })
 const feedReview = computed(() => ranch.result?.action === 'addGrass' || !!ranch.result?.reconciliation || ranch.result?.feedOperation === true)
 const cleanReview = computed(() => ranch.result?.action === 'cleanFriend')
+const cleanDeferred = computed(() => cleanReview.value && ranch.result?.cleanReview === 'deferred')
+const cleanNotAdmitted = computed(() => cleanReview.value && ranch.result?.cleanReview === 'not_admitted')
 const eggReview = computed(() => ranch.result?.taskSaleReceipt === true)
 const giftReview = computed(() => ranch.result?.action === 'claimMallGift')
 const mallGiftLabels: Record<string, string> = {
@@ -128,6 +130,10 @@ const mallGiftLabels: Record<string, string> = {
 const mallGift = computed(() => ranch.state?.mallGift)
 const mallGiftLabel = computed(() => mallGiftLabels[mallGift.value?.status] || '尚未读取礼包状态')
 async function refreshForReview() {
+  if (cleanReview.value) {
+    await ranch.refreshCleanOperation(true)
+    return
+  }
   const gid = ranch.result?.friendGid
   if (gid) {
     selectedFriend.value = gid
@@ -139,12 +145,14 @@ async function refreshForReview() {
     await refresh(eggReview.value ? 'tasks' : giftReview.value ? 'mallGift' : ranch.view)
   }
 }
-watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && (cleanReview.value ? 'clean' : feedReview.value && 'feed')] as const, ([id, operation, mode], _, onCleanup) => {
+watch([() => props.accountId, () => ranch.result?.id, () => ranch.uncertain && (
+  cleanReview.value ? !cleanNotAdmitted.value && 'clean' : feedReview.value && 'feed'
+)] as const, ([id, operation, mode], _, onCleanup) => {
   if (!id || !operation || !mode)
     return
   let closed = false
   let timer: ReturnType<typeof setTimeout>
-  const delays = [15000, 30000, 60000]
+  const delays = mode === 'clean' ? [15000, 30000, 60000, 120000, 240000] : [15000, 30000, 60000]
   const schedule = (index: number) => {
     timer = setTimeout(async () => {
       if (closed)
@@ -153,8 +161,8 @@ watch(() => [props.accountId, ranch.result?.id, ranch.uncertain && (cleanReview.
         await ranch.refreshCleanOperation()
       else if (!ranch.operating && !ranch.loading && !ranch.quote)
         await ranch.refresh()
-      if (!closed && (mode === 'clean' || index + 1 < delays.length))
-        schedule(Math.min(index + 1, delays.length - 1))
+      if (!closed && index + 1 < delays.length)
+        schedule(index + 1)
     }, delays[index])
   }
   schedule(0)
@@ -297,7 +305,7 @@ defineExpose({ refresh })
         {{ tab.name }}
       </BaseButton>
     </nav>
-    <details ref="friendPanel" class="mb-4 border rounded-lg p-3" @toggle="($event.currentTarget as HTMLDetailsElement).open && !friendLoaded && !friendBusy && readFriend()">
+    <details ref="friendPanel" class="mb-4 border rounded-lg p-3" @toggle="($event.currentTarget as HTMLDetailsElement).open && !selectedFriend && !friendLoaded && !friendBusy && readFriend()">
       <summary class="cursor-pointer font-medium">
         好友牧场
       </summary>
@@ -327,10 +335,13 @@ defineExpose({ refresh })
         <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.stealCount" @click="ranch.prepare('stealFriend', { hostGid: friendState.host })">
           偷取产物（{{ friendState.stealCount }} 个货架）
         </BaseButton>
-        <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.cleanCount" @click="ranch.prepare('cleanFriend', { hostGid: friendState.host })">
+        <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.cleanCount || friendState.cleanHeld" @click="ranch.prepare('cleanFriend', { hostGid: friendState.host })">
           帮好友清理（{{ friendState.cleanCount }} 处）
         </BaseButton>
       </div>
+      <p v-if="friendState?.cleanHeld" class="mt-2 text-sm text-amber-700 dark:text-amber-300">
+        上次清理结果仍未知。原目标消失后可再次清理这位好友的牧场。
+      </p>
     </details>
     <p v-if="ranch.error" role="alert" class="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-100">
       {{ ranch.error }}
@@ -339,8 +350,11 @@ defineExpose({ refresh })
       正在读取牧场状态…
     </p>
     <div v-if="ranch.result" role="status" class="mb-3 rounded-lg bg-slate-100 p-3 text-sm dark:bg-slate-900">
-      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : cleanReview && ranch.uncertain ? '程序正在核对清理结果' : feedReview && ranch.uncertain ? '程序正在自动核账' : ranch.result.outcome === 'replanned' ? '已按最新库存恢复巡检' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
+      <strong>{{ ranch.result.outcome === 'confirmed' ? '操作已确认' : cleanDeferred ? '清理结果仍未知' : cleanNotAdmitted ? '清理确认单待处理' : cleanReview && ranch.uncertain ? '程序正在核对清理结果' : feedReview && ranch.uncertain ? '程序正在自动核账' : ranch.result.outcome === 'replanned' ? '已按最新库存恢复巡检' : ranch.result.outcome === 'acknowledged' ? '已核对结果' : ranch.result.outcome === 'not_sent' ? '操作未发出' : '操作结果待核对' }}</strong>
       <p>{{ ranch.result.label }} · {{ ranch.result.message }}</p>
+      <p v-if="ranch.cleanOperationError && (ranch.uncertain || cleanDeferred)" role="alert" class="mt-2 text-sm text-amber-700 dark:text-amber-300">
+        {{ ranch.cleanOperationError }}
+      </p>
       <dl v-if="ranch.result.reconciliation" class="ranch-audit" aria-label="牧草核账明细">
         <div><dt>{{ ranch.result.action === 'buy' ? '背包入账' : '背包扣草' }}</dt><dd>预计 {{ ranch.result.reconciliation.expectedGrass }} · 实测 {{ ranch.result.reconciliation.observedGrass ?? '未能确定' }}</dd></div>
         <div v-if="ranch.result.action === 'buy'">
@@ -356,12 +370,12 @@ defineExpose({ refresh })
       <p v-if="ranch.result.rewards?.length">
         已获得：{{ ranch.result.rewards.map((item: any) => `${item.name} × ${item.count}`).join('、') }}
       </p>
-      <div v-if="ranch.uncertain && !cleanReview" class="mt-2 flex flex-wrap gap-2">
-        <BaseButton :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy" @click="refreshForReview">
-          {{ ranch.result.friendGid ? '刷新好友牧场' : eggReview ? '查看任务进度' : giftReview ? '刷新礼包状态' : feedReview ? '查看最新数量' : '刷新并核对' }}
+      <div v-if="ranch.uncertain || cleanDeferred" class="mt-2 flex flex-wrap gap-2">
+        <BaseButton v-if="!cleanNotAdmitted" :disabled="ranch.operating || ranch.loading || ranch.acknowledging || ranch.readingCleanOperation || friendBusy" @click="refreshForReview">
+          {{ cleanReview ? '检查清理状态' : ranch.result.friendGid ? '刷新好友牧场' : eggReview ? '查看任务进度' : giftReview ? '刷新礼包状态' : feedReview ? '查看最新数量' : '刷新并核对' }}
         </BaseButton>
-        <BaseButton v-if="!feedReview && !eggReview" :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy" @click="ranch.acknowledge()">
-          已核对，允许继续
+        <BaseButton v-if="!feedReview && !eggReview && (!cleanReview || cleanNotAdmitted)" :loading="ranch.acknowledging" :disabled="ranch.operating || ranch.loading || ranch.acknowledging || friendBusy || ranch.readingCleanOperation" @click="ranch.acknowledge()">
+          {{ cleanNotAdmitted ? '取消未发送的确认单' : '已核对，允许继续' }}
         </BaseButton>
       </div>
     </div>

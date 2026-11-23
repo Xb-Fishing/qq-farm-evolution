@@ -39,7 +39,7 @@ function fixture(upgrade = false) {
   let gold = upgrade ? 50000 : 100; let price = 10; let grass = 50; let writes = 0;
   let nextAnimal = 8;
   const cubs = new Map();
-  const calls = []; const leases = []; const ws = {}; let beforeWrite;
+  const calls = []; const leases = []; let ws = {}; let gid = 42; let epoch = 0; let beforeWrite;
   const facilities = [
     { instance_id: '11', facility_id: 6001002, module_type: 6, state: 1, level: 2, capacity: 4,
       ranch: { ranch_inst_id: '11', capacity: 4, animal_count: 1, husbandry_type: 1,
@@ -51,7 +51,8 @@ function fixture(upgrade = false) {
     facilities[0].ranch.capacity = 3;
   }
   const network = {
-    getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid: 42 }),
+    getWs: () => ws, isConnected: () => true, getUserState: () => ({ gid }),
+    getRanchSceneState: () => scene.snapshot(),
     withRanchScene: async (callback, options) => {
       leases.push(options.maxCalls);
       if (f.realScene) return scene.run(callback, options);
@@ -66,6 +67,7 @@ function fixture(upgrade = false) {
       const request = codec.decode(route.request, wire); let reply;
       if (method === 'PlayerSceneLogin') {
         const id = request.global_scene_id;
+        if (id === 1 && f.failRestore) throw new Error('synthetic farm restoration failure');
         reply = { global_scene_id: id, ...(id === 2
           ? { big_farm_scene_ext_data: codec.encode('SceneData', { homestead_cells: { grid_width: 10, grid_height: 10, facilities } }) }
           : { farm_scene_ext_data: Buffer.from([1]) }) };
@@ -92,7 +94,7 @@ function fixture(upgrade = false) {
         assert.equal(request.reason, 2);
         f.friendVisits.push(request.host_gid);
         reply = { basic: { gid: request.host_gid, name: '测试好友' }, is_tourist: f.tourist === true,
-          homestead_cells: { facilities: [{ instance_id: '51' }] } };
+          homestead_cells: { facilities: f.friendFacilityIds.map(instance_id => ({ instance_id })) } };
       } else if (method === 'GetRanchDetail') {
         assert.ok(f.friendHosts.includes(request.host_gid));
         reply = { ranches: f.friendRanches };
@@ -151,7 +153,7 @@ function fixture(upgrade = false) {
           assert.deepEqual(request.targets, [{ ranch_inst_id: '51', slot_index: 0 }]);
           reply = { op_results: [{ facility_inst_id: '51', kind: 2, target_id: '0', rewards: [{ id: '1060001', count: '1' }] }] };
         } else if (method === 'CleanAllRanch' && f.friendHosts.includes(request.host_gid)) {
-          assert.deepEqual(request.ranch_inst_ids, ['51']);
+          assert.deepEqual(request.ranch_inst_ids, f.cleanFacilityIds);
           reply = { op_results: [{ facility_inst_id: '51', kind: 3, target_id: '2' }] };
         } else if (method === 'AddFeed') { grass -= request.add_count; reply = { consumed: [{ id: '7001', count: String(request.add_count) }] }; }
         else if (method === 'PlaceAnimal') {
@@ -171,7 +173,7 @@ function fixture(upgrade = false) {
   };
   const send = network.sendMsgAsync;
   const scene = createGameSceneCoordinator({
-    identity: () => ({ key: 'ranch-fixture', connected: true, level: 30 }),
+    identity: () => ({ key: `ranch-fixture:${gid}:${epoch}`, connected: true, level: 30 }),
     priority: () => f.farmPriority === true,
     profile: () => ({ totalLimit: 80, perMethodLimit: 30, windowCount: 0, top: [] }),
     encodeScene: id => codec.encode('PlayerSceneLoginRequest', { global_scene_id: id }),
@@ -184,10 +186,11 @@ function fixture(upgrade = false) {
     canVisitFriend: gid => !f.friendQuiet && !f.blockedFriends.includes(gid) });
   const f = { service: make(), make, calls, leases, scene, file, cubs, facilities, lockedCubs: [], products: [], tasks: [], friendRanches: [], upgradeCost: 14000,
     mallGoods: [], mallOpens: [],
-    friendHosts: ['73'], friendVisits: [], friendRoster: [], blockedFriends: [],
+    friendHosts: ['73'], friendVisits: [], friendRoster: [], blockedFriends: [], friendFacilityIds: ['51'], cleanFacilityIds: ['51'],
     goods: () => [{ id: '10002', item_id: '60001', item_count: '1', price: String(price), unlocked: true }], get writes() { return writes; }, advance: ms => { now += ms; }, correctGameClock: ms => { gameOffset = ms; },
-    price: n => { price = n; }, gold: n => { gold = n; }, timeout: () => { failure = true; }, malformed: () => { malformed = true; },
-    allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; } };
+    price: n => { price = n; }, gold: n => { gold = n; }, timeout: (value = true) => { failure = value; }, malformed: () => { malformed = true; },
+    allow: value => { allowed = value; }, beforeWrite: fn => { beforeWrite = fn; },
+    reconnect: (player = gid) => { ws = {}; gid = player; epoch++; } };
   return f;
 }
 async function quoteBuy(f) {
@@ -637,6 +640,167 @@ test('friend cleanup rechecks a durable uncertain result after restart and resum
   assert.equal(f.scene.snapshot().scene, 1);
 });
 
+async function unknownClean(f) {
+  f.realScene = true;
+  f.friendRanches.push({ ranch_inst_id: '51', hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  const { data: quote } = await f.service.prepare('cleanFriend', { hostGid: '73' });
+  f.timeout();
+  const result = await f.service.execute(quote.id);
+  assert.equal(result.data.outcome, 'unknown');
+  return quote.id;
+}
+
+for (const failFinal of [false, true]) {
+  test(`friend cleanup admits exactly four spaced checks and persists the cap (${failFinal ? 'final read failure' : 'targets remain'})`, async () => {
+    const f = fixture();
+    const id = await unknownClean(f);
+    const visits = f.friendVisits.length;
+    for (const [index, delay] of [30000, 30000, 30000, 300000].entries()) {
+      f.advance(delay - 1);
+      assert.equal((await f.service.automate()).ok, true);
+      assert.equal(f.friendVisits.length, visits + index);
+      f.advance(1);
+      if (index === 3 && failFinal) f.onRead = method => {
+        if (method === 'GetRanchDetail') throw new Error('synthetic detail failure');
+      };
+      assert.equal((await f.service.automate()).ok, !(index === 3 && failFinal));
+      assert.equal(f.friendVisits.length, visits + index + 1);
+    }
+    f.onRead = undefined;
+    f.service = f.make();
+    for (const delay of [30000, 300000, 900000]) {
+      f.advance(delay);
+      assert.equal((await f.service.automate()).ok, true);
+    }
+    assert.equal(f.friendVisits.length, visits + 4, 'the former five-minute loop must stop');
+    const { data } = await f.service.getCleanOperation(id);
+    assert.equal(data.cleanReview, 'deferred');
+    assert.equal(data.outcome, 'unknown');
+    assert.equal(data.completed, 0);
+    assert.deepEqual(data.rewards, []);
+    assert.equal((await f.service.getState()).data.lastOperation.cleanReview, 'deferred');
+    assert.equal((await f.service.acknowledge(id)).ok, false);
+    assert.equal((await f.service.execute(id)).data.replayed, true);
+    assert.equal(f.writes, 1);
+  });
+}
+
+test('the fourth clean check is booked durably before it can finish', async () => {
+  const f = fixture();
+  const id = await unknownClean(f);
+  for (const delay of [30000, 30000, 30000]) {
+    f.advance(delay);
+    await f.service.automate();
+  }
+  f.advance(300000);
+  f.friendQuiet = true;
+  const visits = f.friendVisits.length;
+  assert.equal((await f.service.automate()).ok, true);
+  assert.equal(f.friendVisits.length, visits);
+  f.friendQuiet = false;
+  f.blockedFriends.push('73');
+  assert.equal((await f.service.automate()).ok, true);
+  assert.equal(f.friendVisits.length, visits);
+  f.blockedFriends.length = 0;
+
+  let release;
+  let notify;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const reading = new Promise(resolve => { notify = resolve; });
+  f.onRead = method => {
+    if (method === 'GetRanchDetail') { notify(); return blocked; }
+  };
+  const finalCheck = f.service.automate();
+  await reading;
+  try {
+    assert.equal((await f.service.getCleanOperation(id)).data.cleanReview, 'checking');
+    assert.equal((await f.service.acknowledge(id)).code, 'RANCH_AUTO_RECONCILING');
+    const replacement = f.make();
+    assert.equal((await replacement.getCleanOperation(id)).data.cleanReview, 'checking');
+    f.advance(300000);
+    assert.equal((await replacement.automate()).ok, true);
+    assert.equal(f.friendVisits.length, visits + 1);
+    assert.equal((await replacement.getCleanOperation(id)).data.cleanReview, 'deferred');
+  } finally {
+    release();
+    await finalCheck;
+  }
+});
+
+test('a deferred friend cleanup waits for complete evidence in the current restored scene', async () => {
+  const f = fixture();
+  f.friendFacilityIds.push('52');
+  f.cleanFacilityIds.push('52');
+  const second = { ranch_inst_id: '52', hazards: [{ hazard_id: '3', owner: '50', hazard_type: 1 }] };
+  f.friendRanches.push(second);
+  f.cleanFacilityIds.reverse();
+  const id = await unknownClean(f);
+  for (const delay of [30000, 30000, 30000, 300000]) {
+    f.advance(delay);
+    await f.service.automate();
+  }
+  const receipt = () => f.service.getCleanOperation(id);
+  const assertDeferred = async () => {
+    assert.equal((await receipt()).data.cleanReview, 'deferred');
+    assert.equal((await f.service.acknowledge(id)).ok, false);
+  };
+  await assertDeferred();
+  const original = f.friendRanches.find(row => row.ranch_inst_id === '51');
+  original.hazards = [];
+  second.hazards = [];
+  f.friendHosts.push('74');
+  assert.equal((await f.service.getFriend('74')).ok, true);
+  await assertDeferred();
+  f.friendRanches.splice(f.friendRanches.indexOf(second), 1);
+  assert.equal((await f.service.getFriend('73')).data.cleanHeld, true);
+  await assertDeferred();
+  f.friendRanches.push(second);
+
+  f.failRestore = true;
+  assert.equal((await f.service.getFriend('73')).data.sceneRecoveryRequired, true);
+  await assertDeferred();
+  f.failRestore = false;
+  assert.equal(await f.scene.recover(), true);
+  await assertDeferred();
+
+  let release;
+  let notify;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const reading = new Promise(resolve => { notify = resolve; });
+  f.onRead = method => {
+    if (method === 'GetRanchDetail') { notify(); return blocked; }
+  };
+  const inFlight = f.service.getFriend('73');
+  await reading;
+  f.reconnect(43);
+  release();
+  assert.equal((await inFlight).ok, false);
+  assert.equal((await receipt()).code, 'RANCH_CONFIRMATION_MISSING');
+  f.onRead = undefined;
+  f.reconnect(42);
+  await assertDeferred();
+  const revision = (await f.service.getAutomation()).data.revision;
+  const { data: observed } = await f.service.getFriend('73');
+  assert.equal(observed.cleanOperation.outcome, 'acknowledged');
+  assert.equal(observed.cleanOperation.completed, 0);
+  assert.deepEqual(observed.cleanOperation.rewards, []);
+  assert.equal((await f.service.getAutomation()).data.revision, revision);
+  assert.equal((await f.service.getState()).data.lastOperation.outcome, 'acknowledged');
+  assert.equal(f.writes, 1);
+});
+
+test('lost clean admission can cancel the still-prepared quote without visiting or dispatching again', async () => {
+  const f = fixture();
+  f.friendRanches.push({ ranch_inst_id: '51', hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
+  const { data: quote } = await f.service.prepare('cleanFriend', { hostGid: '73' });
+  assert.equal((await f.service.getCleanOperation(quote.id)).data.cleanReview, 'not_admitted');
+  const calls = f.calls.length;
+  assert.equal((await f.service.acknowledge(quote.id)).data.outcome, 'not_sent');
+  assert.equal((await f.service.execute(quote.id)).data.replayed, true);
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.writes, 0);
+});
+
 test('friend ranch rechecks targets before dispatch and keeps mismatched receipts unresolved', async () => {
   const f = fixture();
   const lot = { item_id: '1060001', can_steal: true, remain_num: '2' };
@@ -657,6 +821,108 @@ test('friend ranch rechecks targets before dispatch and keeps mismatched receipt
   assert.equal((await f.service.acknowledge(quote.data.id)).code, 'RANCH_REFRESH_REQUIRED');
   assert.equal((await f.service.getFriend('73')).ok, true);
   assert.equal((await f.service.acknowledge(quote.data.id)).data.outcome, 'acknowledged');
+  assert.equal(f.writes, 1);
+});
+
+test('archived friend cleaning protects the original target through restart and later operations', async () => {
+  const f = fixture();
+  const id = await unknownClean(f);
+  for (const delay of [30000, 30000, 30000, 300000]) {
+    f.advance(delay);
+    await f.service.automate();
+  }
+  const readTarget = () => f.service.getFriend('73');
+  const prepareTarget = () => f.service.prepare('cleanFriend', { hostGid: '73' });
+  const { data: archived } = await f.service.getCleanOperation(id);
+  assert.equal(archived.cleanHeld, true);
+  assert.equal(archived.completed, 0);
+  f.timeout(false);
+  f.service = f.make();
+  assert.equal((await prepareTarget()).code, 'RANCH_RESULT_UNCONFIRMED');
+  assert.equal((await readTarget()).data.cleanHeld, true);
+
+  f.friendHosts.push('74');
+  f.friendRoster.push({ gid: '73' }, { gid: '74' });
+  assert.equal((await f.service.runFriendTask('cleanFriend', 0, () => true)).data.outcome, 'no_target');
+  await setOnlyAutomation(f, { friendClean: true });
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 1, 'the same unknown targets cannot be sent on a new confirmation');
+
+  f.advance(60 * 60000);
+  const other = await f.service.automate();
+  assert.equal(other.data.outcome, 'confirmed');
+  assert.equal(other.data.friendGid, '74', 'another friend can use the same facility and hazard IDs');
+  assert.equal(f.writes, 2);
+
+  const original = f.friendRanches.shift();
+  assert.equal((await readTarget()).data.cleanHeld, true, 'missing original facilities cannot release the hold');
+  original.hazards = [{ hazard_id: '4', owner: '50', hazard_type: 1 }];
+  f.friendRanches.push(original);
+  f.advance(60 * 60000);
+  assert.equal((await f.service.automate()).data.skipped, true, 'normal scheduled visits settle the hold without writing');
+  assert.equal((await f.service.getCleanOperation(id)).data.outcome, 'acknowledged');
+  assert.equal(f.writes, 2);
+  assert.equal((await f.service.getState()).data.lastOperation.friendGid, '74', 'an older hold cannot replace a newer receipt');
+  const { data: newQuote } = await prepareTarget();
+  f.mutateReply = reply => ({ ...reply, op_results: [{ ...reply.op_results[0], target_id: '4' }] });
+  assert.equal((await f.service.execute(newQuote.id)).data.outcome, 'confirmed');
+  assert.equal((await f.service.execute(id)).data.replayed, true);
+  assert.equal(f.writes, 3);
+});
+
+test('the owning player can still read and replay a held cleanup after later quotes evict it from the recent list', async () => {
+  const f = fixture();
+  const id = await unknownClean(f);
+  for (const delay of [30000, 30000, 30000, 300000]) {
+    f.advance(delay);
+    await f.service.automate();
+  }
+  f.reconnect(43);
+  assert.equal((await f.service.execute(id)).code, 'RANCH_CONFIRMATION_MISSING');
+  f.reconnect(42);
+  let newerId;
+  for (let index = 0; index < 21; index++) newerId = await quoteBuy(f);
+  f.timeout(false);
+  assert.equal((await f.service.execute(newerId)).data.outcome, 'confirmed');
+  const persisted = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+  assert.equal(persisted.quotes.some(row => row.id === id), false);
+  assert.equal(persisted.lastOperation.id, newerId);
+  f.service = f.make();
+  const { data: original } = await f.service.getCleanOperation(id);
+  assert.equal(original.cleanReview, 'deferred');
+  const { data: replay } = await f.service.execute(id);
+  assert.deepEqual(replay, { ...original, replayed: true });
+  f.reconnect(43);
+  assert.equal((await f.service.getCleanOperation(id)).code, 'RANCH_CONFIRMATION_MISSING');
+  assert.equal((await f.service.execute(id)).code, 'RANCH_CONFIRMATION_MISSING');
+  assert.equal(f.writes, 2, 'the held request and unrelated purchase were sent once each');
+});
+
+test('a recently reconciled cleanup outside the quote list remains bound to its player', async () => {
+  const f = fixture();
+  const id = await unknownClean(f);
+  for (const delay of [30000, 30000, 30000, 300000]) {
+    f.advance(delay);
+    await f.service.automate();
+  }
+  for (let index = 0; index < 21; index++) await quoteBuy(f);
+  assert.equal(JSON.parse(fs.readFileSync(f.file, 'utf8')).quotes.some(row => row.id === id), false);
+  f.friendRanches[0].hazards = [];
+  assert.equal((await f.service.getFriend('73')).data.cleanOperation.outcome, 'acknowledged');
+  const read = async () => (await f.service.getState()).data.lastOperation;
+  const { data: result } = await f.service.getCleanOperation(id);
+  assert.equal(result.outcome, 'acknowledged');
+  assert.deepEqual(await read(), result);
+  assert.equal(Object.hasOwn(result, 'owner'), false);
+  assert.deepEqual((await f.service.execute(id)).data, { ...result, replayed: true });
+  assert.equal((await f.service.acknowledge({ feedReceiptId: id })).code, 'RANCH_INVALID_ARGUMENT');
+  f.reconnect(43);
+  assert.equal((await f.service.getCleanOperation(id)).code, 'RANCH_CONFIRMATION_MISSING');
+  assert.equal((await f.service.execute(id)).code, 'RANCH_CONFIRMATION_MISSING');
+  const wrongReceiptType = await f.service.acknowledge({ feedReceiptId: id });
+  assert.equal(wrongReceiptType.code, 'RANCH_INVALID_ARGUMENT');
+  assert.equal(wrongReceiptType.data, undefined);
+  assert.equal(await read(), null);
   assert.equal(f.writes, 1);
 });
 
