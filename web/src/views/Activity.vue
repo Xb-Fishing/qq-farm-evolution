@@ -2,38 +2,32 @@
 import { storeToRefs } from 'pinia'
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import FestivalSignInPanel from '@/components/activity/FestivalSignInPanel.vue'
-import FriendRecallActivityPanel from '@/components/activity/FriendRecallActivityPanel.vue'
 import GameUpdatePanel from '@/components/activity/GameUpdatePanel.vue'
 import MugeActivityPanel from '@/components/activity/MugeActivityPanel.vue'
 import RanchPanel from '@/components/activity/RanchPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useActivityStore } from '@/stores/activity'
-import { useFriendRecallStore } from '@/stores/friend-recall'
 import { useMugeStore } from '@/stores/muge'
 
 const accountStore = useAccountStore()
 const activityStore = useActivityStore()
-const friendRecallStore = useFriendRecallStore()
 const mugeStore = useMugeStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 async function refreshAll() {
   if (currentAccountId.value)
-    await Promise.all([friendRecallStore.refresh(String(currentAccountId.value)), mugeStore.refresh(String(currentAccountId.value))])
+    await mugeStore.refresh(String(currentAccountId.value))
 }
 onBeforeUnmount(() => {
-  friendRecallStore.cancel()
   mugeStore.cancel()
   activityStore.cancelActivityReads()
 })
 watch(currentAccountId, () => {
   activityStore.clearActivityData()
-  friendRecallStore.bind(String(currentAccountId.value || ''))
   mugeStore.bind(String(currentAccountId.value || ''))
   refreshAll()
 }, { flush: 'sync' })
 onMounted(() => {
-  friendRecallStore.bind(String(currentAccountId.value || ''))
   mugeStore.bind(String(currentAccountId.value || ''))
   refreshAll()
 })
@@ -55,7 +49,7 @@ onMounted(() => {
             </div>
           </div>
         </div>
-        <BaseButton variant="primary" :loading="friendRecallStore.loading || mugeStore.loading" :disabled="!currentAccountId" @click="refreshAll">
+        <BaseButton variant="primary" :loading="mugeStore.loading" :disabled="!currentAccountId" @click="refreshAll">
           刷新
         </BaseButton>
       </div>
@@ -67,7 +61,6 @@ onMounted(() => {
       <nav class="activity-nav" aria-label="活动快速导航">
         <a href="#ranch">牧场经营</a>
         <a v-if="mugeStore.activity?.available" href="#muge">牧歌初启</a>
-        <a v-if="friendRecallStore.activity?.available" href="#friend-recall">故友重逢</a>
         <a href="#festival-sign-in">节日签到与节令日历</a>
       </nav>
       <RanchPanel :account-id="String(currentAccountId)" />
@@ -76,10 +69,9 @@ onMounted(() => {
         :pending="mugeStore.pending" :ready="mugeStore.ready" :refresh-required="mugeStore.refreshRequired" :feedback="mugeStore.feedback" :rewards="mugeStore.rewards"
         @refresh="mugeStore.refresh(String(currentAccountId))" @operate="mugeStore.operate(String(currentAccountId), $event)"
       />
-      <FriendRecallActivityPanel :activity="friendRecallStore.activity" :loading="friendRecallStore.loading" :error="friendRecallStore.error" @refresh="friendRecallStore.refresh(String(currentAccountId))" />
       <GameUpdatePanel :key="`update-${currentAccountId}`" :account-id="String(currentAccountId || '')" />
       <FestivalSignInPanel :key="`festival-${currentAccountId}`" :account-id="String(currentAccountId)" />
-      <p v-if="!friendRecallStore.activity?.available && !mugeStore.activity?.available && !friendRecallStore.loading && !mugeStore.loading && !friendRecallStore.error && !mugeStore.error" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
+      <p v-if="!mugeStore.activity?.available && !mugeStore.loading && !mugeStore.error" class="rounded-lg bg-white p-8 text-center text-sm text-gray-500 dark:bg-gray-800">
         当前暂无可显示的专属活动；节令日历与游戏动态可独立查询。
       </p>
     </template>

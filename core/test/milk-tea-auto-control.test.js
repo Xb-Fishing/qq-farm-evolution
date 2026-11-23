@@ -119,7 +119,7 @@ test('current parent registry removes all four expired milk-tea routes; current 
     for (const entry of ['get /api/activity/milk-tea', 'post /api/activity/milk-tea/query',
       'post /api/activity/milk-tea/operate', 'get /api/activity/milk-tea/seed-catalog'])
       assert.equal(routes.has(entry), false, entry);
-    assert.equal(routes.has('get /api/activity/friend-recall'), true);
+    assert.equal(routes.has('get /api/activity/muge'), true);
     assert.equal(routes.has('get /api/activity/official-announcements'), true);
     assert.ok([...routes.keys()].some(key => /festival|solar-calendar/.test(key)));
     assert.equal(calls, 0);
@@ -171,18 +171,18 @@ test('current store and page have zero expired runtime requests through refresh,
   const api = h.apiMock();
   api.setGet(async url => {
     if (url.includes('milk-tea')) throw new Error('expired endpoint must never be requested');
-    return { data: { ok: true, activity: { available: true, title: '故友重逢', endTime: null, personal: null, sections: [] } } };
+    return { data: { ok: true, activity: { available: true, title: '牧歌初启', endTime: null, personal: null, phase: 'open', sections: [], notes: [] } } };
   });
   let page = h.mountActivityPage(api);
   try {
-    await h.flush(); assert.match(h.textOf(page.root), /故友重逢/);
+    await h.flush(); assert.match(h.textOf(page.root), /牧歌初启/);
     assert.doesNotMatch(h.textOf(page.root), /奶茶|一键领取|重新检查/);
     h.click(h.buttonsOf(page.root).find(button => h.textOf(button).trim() === '刷新')); await h.flush();
     page.accountRef.value = 'synthetic-b'; page.accountRef.value = 'acc-1'; await h.flush();
     const shared = page.pinia; h.render(null, page.root); page = h.mountActivityPage(api, shared); await h.flush();
     assert.equal(api.calls.get.filter(call => call.url.includes('milk-tea')).length, 0);
     assert.equal(api.calls.post.length, 0);
-    assert.ok(api.calls.get.some(call => call.url.includes('friend-recall')));
+    assert.ok(api.calls.get.some(call => call.url === '/api/activity/muge'));
   } finally { h.render(null, page.root); }
 });
 

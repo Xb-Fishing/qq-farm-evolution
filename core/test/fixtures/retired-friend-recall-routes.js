@@ -1,5 +1,5 @@
-const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
-const { FRIEND_RECALL_ROOT_ACTIVITY_ID, findRoot, findChild, timestamp, unavailable, normalizeFriendRecall } = require('../services/friend-recall-activity');
+const { getAuthorizedAccountId, requireConnectedAccount } = require('../../src/controllers/admin-activity-route-helpers');
+const { FRIEND_RECALL_ROOT_ACTIVITY_ID, findRoot, findChild, timestamp, unavailable, normalizeFriendRecall } = require('./retired-friend-recall-activity');
 function registerAdminFriendRecallActivityRoutes(context) {
   const { app, provider, activityReader, sendProviderError } = context;
   // Successful List evidence survives failed reads and cache eviction.

@@ -1,5 +1,5 @@
 'use strict';
-// 当前生产加载器与显式退役奶茶历史夹具；网络完全替身。
+// 当前生产加载器与显式退役活动历史夹具；网络完全替身。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -34,6 +34,9 @@ function assertWriteInsidePrivateDir(target) {
 const CANDIDATE_SOURCES = [
   path.resolve(__dirname, 'fixtures/retired-milk-tea-store.ts'),
   path.resolve(__dirname, 'fixtures/RetiredMilkTeaView.vue'),
+  path.resolve(__dirname, 'fixtures/RetiredFriendRecallView.vue'),
+  path.resolve(__dirname, 'fixtures/RetiredFriendRecallPanel.vue'),
+  path.resolve(__dirname, 'fixtures/retired-friend-recall-store.ts'),
   path.join(repoRoot, 'web', 'src', 'stores', 'activity.ts'),
   path.join(repoRoot, 'web', 'src', 'views', 'Activity.vue'),
   path.join(__dirname, 'fixtures/MilkTeaActivityPanel.vue'),
@@ -289,7 +292,7 @@ function historicalStoreHarness(timing = {}) {
   return { store, api, accountState };
 }
 
-function mountActivityPage(api, sharedPinia, historical = false) {
+function mountActivityPage(api, sharedPinia, view = path.join(WEB, 'src/views/Activity.vue')) {
   const toastLog = [];
   const testPinia = sharedPinia || pinia.createPinia();
   pinia.setActivePinia(testPinia);
@@ -298,9 +301,8 @@ function mountActivityPage(api, sharedPinia, historical = false) {
     currentAccountId: accountRef,
     currentAccount: vue.ref({ name: '账号A' }),
   }));
-  const stubComponent = { render: () => null };
   const resolve = (spec) => {
-    if (historical && spec === '@/stores/activity')
+    if (path.basename(view) === 'RetiredMilkTeaView.vue' && spec === '@/stores/activity')
       return evaluateModule(fs.readFileSync(path.resolve(__dirname, 'fixtures/retired-milk-tea-store.ts'), 'utf8'), resolve, 'retired-activity.ts');
     if (spec === 'vue')
       return vue;
@@ -317,7 +319,7 @@ function mountActivityPage(api, sharedPinia, historical = false) {
     return undefined;
   };
   accountRef = vue.toRef(useAccountStore(testPinia), 'currentAccountId');
-  const Activity = compileSfcModule(historical ? path.resolve(__dirname, 'fixtures/RetiredMilkTeaView.vue') : path.join(WEB, 'src/views/Activity.vue'), resolve);
+  const Activity = compileSfcModule(view, resolve);
   const root = makeNode('root');
   livePageRoots.push(root); // 套件收尾统一卸载（含用例失败路径）
   render(vue.h(Activity), root);
@@ -325,12 +327,18 @@ function mountActivityPage(api, sharedPinia, historical = false) {
 }
 
 
-function mountHistoricalActivityPage(api, sharedPinia) { return mountActivityPage(api, sharedPinia, true); }
+function mountHistoricalActivityPage(api, sharedPinia) {
+  return mountActivityPage(api, sharedPinia, path.join(__dirname, 'fixtures/RetiredMilkTeaView.vue'));
+}
+
+function mountRetiredFriendRecallPage(api) {
+  return mountActivityPage(api, undefined, path.join(__dirname, 'fixtures/RetiredFriendRecallView.vue'));
+}
 
 function snapshot(extra = {}) {
   return { title: '奶茶热销中', timing: { endTime: 0, phase: 'open' }, summary: {}, rules: [], ...extra };
 }
-module.exports = { vue, pinia, WEB, compileSfcModule, evaluateModule, render, makeNode, textOf, findAll, buttonsOf, click, flush, waitFor, storeHarness, historicalStoreHarness, mountActivityPage, mountHistoricalActivityPage, apiMock, deferred, snapshot, privateDir, assertWriteInsidePrivateDir, isInsideOrEqualDir, fingerprintsBefore, fingerprintOf };
+module.exports = { vue, pinia, WEB, compileSfcModule, evaluateModule, render, makeNode, textOf, findAll, buttonsOf, click, flush, waitFor, storeHarness, historicalStoreHarness, mountActivityPage, mountHistoricalActivityPage, mountRetiredFriendRecallPage, apiMock, deferred, snapshot, privateDir, assertWriteInsidePrivateDir, isInsideOrEqualDir, fingerprintsBefore, fingerprintOf };
 if (require.main === module) {
   test('历史奶茶：unavailable 撤下奶茶活动；普通刷新/一键零新增读写；手动重查仅一次', async () => {
     const { store, api } = historicalStoreHarness();

@@ -6,7 +6,7 @@ const MUGE_SECTION_ACTIVITY_IDS = Object.freeze({
   handbook: '2026111704',
   survey: '2026111705',
 });
-const { timestamp, unavailable } = require('./friend-recall-activity');
+const { timestamp, unavailable } = require('./activity-rule-state');
 const MODULES = ['兴牧庆典', '牧友同行', '成长手册', '牧场人格'];
 function text(value) {
   return typeof value === 'string' ? value.slice(0, 16000).replace(/<br\s*(?:\/\s*)?>/gi, '\n').replace(/<[^>]*>/g, '').trim() : '';

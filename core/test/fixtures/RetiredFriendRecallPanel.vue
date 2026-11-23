@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FriendRecallActivity } from '@/stores/friend-recall'
+import type { FriendRecallActivity } from './retired-friend-recall-store'
 import BaseButton from '@/components/ui/BaseButton.vue'
 
 defineProps<{ activity: FriendRecallActivity | null, loading: boolean, error: string }>()

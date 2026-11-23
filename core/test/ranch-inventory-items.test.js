@@ -21,7 +21,7 @@ const { loadProto, types } = require('../src/utils/proto');
 const { itemDto } = require('../src/services/ranch-model');
 const { pngResourceInfo } = require('../src/services/privacy-guard');
 const sources = require('../src/gameConfig/seed_images_named/event-seed-sources.json');
-const files = ['../src/gameConfig/EventItems.json', '../src/services/warehouse.js'].map(f => path.resolve(__dirname, f));
+const files = ['../src/gameConfig/EventItems.json', '../src/gameConfig/ItemInfo.json', '../src/services/warehouse.js'].map(f => path.resolve(__dirname, f));
 const before = files.map(f => [fs.readFileSync(f), fs.statSync(f).mode]);
 test.before(loadProto);
 test.after(() => {
@@ -106,11 +106,51 @@ test('牧场每日礼包道具在实际背包命名，保留普通物品安全�
   const item = bag.items.find(row => row.id === id);
   assert.equal(item.name, '无机罐头（1小时）');
   assert.equal(item.category, 'item');
+  assert.equal(item.itemType, 109);
   assert.equal(item.sellable, false);
   assert.equal(config.isSeedItem(id), false);
   assert.equal(config.getItemImageById(id), '');
   assert.deepEqual(auditBagSeedCoverage([stack], []).issues, []);
 });
+
+test('encoded BagReply and ranch DTO resolve reviewed rewards with exact counts and display-only categories', async t => {
+  const rewards = [
+    [80022, '无机罐头（4小时）', 109], [80023, '无机罐头（8小时）', 109], [80024, '无机罐头（12小时）', 109],
+    [80031, '有机罐头（1小时）', 109], [80032, '有机罐头（4小时）', 109],
+    [80033, '有机罐头（8小时）', 109], [80034, '有机罐头（12小时）', 109],
+    [1065002, '巨大鸭蛋', 107], [2065002, '巨大鸭', 106], [401008, '牧歌初启铭牌', 10],
+  ];
+  const unknown = { id: 987654321, uid: 9000, count: 2 };
+  const stacks = rewards.map(([id], index) => ({ id, uid: 8500 + index, count: index + 5 }));
+  const { warehouse, calls } = fixture(t, [...stacks, unknown]);
+  const bag = await warehouse.getBagDetail();
+  for (const [index, [id, name, type]] of rewards.entries()) {
+    const row = bag.items.find(row => row.id === id);
+    assert.equal(row.name, name);
+    assert.equal(row.category, 'item');
+    assert.equal(row.itemType, type);
+    assert.equal(row.count, stacks[index].count);
+    assert.equal(row.countDec, String(stacks[index].count));
+    assert.equal(row.sellable, false);
+    assert.equal(row.usable, false);
+    assert.equal(config.isSeedItem(id), false);
+    assert.equal(config.getPlantBySeedId(id), undefined);
+    assert.equal(config.getPlantByFruitId(id), undefined);
+    const dto = itemDto(stacks[index]);
+    assert.deepEqual([dto.id, dto.count, dto.name], [String(id), row.countDec, name]);
+  }
+  assert.deepEqual(itemDto(unknown), { id: String(unknown.id), count: '2', name: `物品${unknown.id}` });
+  assert.equal(bag.items.find(row => row.id === unknown.id)?.name, `物品${unknown.id}`);
+  assert.throws(() => itemDto({ ...stacks[0], count: '-1' }), { code: 'INVALID_ARGUMENT' });
+  assert.deepEqual(warehouse.getBagSeedsFromItems(bag.originalItems), []);
+  assert.deepEqual(bag.seedRecognition.issues, [{ itemId: unknown.id, kind: 'unclassified_item' }]);
+  assert.deepEqual(calls.splice(0), ['Bag']);
+  await warehouse.sellAllFruits();
+  assert.deepEqual(calls.splice(0), ['Bag']);
+  assert.equal(await warehouse.openFertilizerGiftPacksSilently(), 0);
+  assert.deepEqual(calls, ['Bag']);
+});
+
 test('reviewed snapshot records exact source and original item sprite bytes', () => {
   const proof = sources.reviewedRanchInventoryItems;
   assert.equal(proof.sourceGrade, 'reviewed_public_client_snapshot'); assert.equal(proof.sourceCommit, '545bbcfd209546ffc1594e65cd6d32d30137cddd');

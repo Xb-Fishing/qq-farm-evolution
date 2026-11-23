@@ -181,7 +181,7 @@ test('the actual activity SFC compiles with ordinary gameplay and no optional co
   const compiled = compiler.compileScript(parsed.descriptor, { id: 'public-base', inlineTemplate: true });
   assert.ok(compiled.content.length > 0);
   assert.doesNotMatch(compiled.content, /stores\/evolution|EvolutionAgentSettings|AdminActivityUpdatePanel/);
-  assert.match(compiled.content, /FriendRecallActivityPanel/);
+  assert.doesNotMatch(compiled.content, /FriendRecallActivityPanel/);
   assert.doesNotMatch(compiled.content, /MilkTeaActivityPanel/);
   assert.match(compiled.content, /FestivalSignInPanel/);
   const version = JSON.parse(fs.readFileSync(path.join(repo, 'core/package.json'))).version;

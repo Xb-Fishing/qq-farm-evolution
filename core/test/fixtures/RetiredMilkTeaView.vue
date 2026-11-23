@@ -3,7 +3,7 @@
 import type { MilkTeaQueryKind } from '@/stores/activity'
 import { storeToRefs } from 'pinia'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import FriendRecallActivityPanel from '@/components/activity/FriendRecallActivityPanel.vue'
+import FriendRecallActivityPanel from './RetiredFriendRecallPanel.vue'
 import GameUpdatePanel from '@/components/activity/GameUpdatePanel.vue'
 import FestivalSignInPanel from '@/components/activity/FestivalSignInPanel.vue'
 // 上一期 BearActivityPanel 已退役；只保留历史迁移定位，默认页面挂载当前奶茶面板与故友重逢规则。
@@ -11,7 +11,7 @@ import MilkTeaActivityPanel from '@/components/activity/MilkTeaActivityPanel.vue
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { useAccountStore } from '@/stores/account'
 import { useActivityStore } from '@/stores/activity'
-import { useFriendRecallStore } from '@/stores/friend-recall'
+import { useFriendRecallStore } from './retired-friend-recall-store'
 import { useToastStore } from '@/stores/toast'
 
 const accountStore = useAccountStore()

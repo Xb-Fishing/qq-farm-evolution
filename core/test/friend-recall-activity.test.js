@@ -11,15 +11,15 @@ assert.ok(!tempRoot.startsWith(path.resolve(__dirname, '../..') + path.sep));
 const privateDir = fs.mkdtempSync(fixturePrefix);
 assert.ok(fs.realpathSync(privateDir).startsWith(fs.realpathSync(os.tmpdir()) + path.sep));
 process.env.FARM_DATA_DIR = privateDir;
-const sources = ['services/friend-recall-activity.js', 'controllers/admin-friend-recall-activity-routes.js', 'controllers/admin-activity-routes.js', 'services/activity.js', '../test/friend-recall-activity.test.js', '../test/friend-recall-panel.test.js'].map(p => path.resolve(__dirname, '../src', p));
+const sources = ['../test/fixtures/retired-friend-recall-activity.js', '../test/fixtures/retired-friend-recall-routes.js', 'controllers/admin-activity-routes.js', 'services/activity.js', '../test/friend-recall-activity.test.js', '../test/friend-recall-panel.test.js'].map(p => path.resolve(__dirname, '../src', p));
 const fingerprint = p => [fs.statSync(p).mode, crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')];
 const before = sources.map(fingerprint);
 test.after(() => {
   try { assert.deepEqual(sources.map(fingerprint), before); }
   finally { fs.rmSync(privateDir, { recursive: true, force: true }); }
 });
-const service = require('../src/services/friend-recall-activity');
-const { registerAdminFriendRecallActivityRoutes } = require('../src/controllers/admin-friend-recall-activity-routes');
+const service = require('./fixtures/retired-friend-recall-activity');
+const { registerAdminFriendRecallActivityRoutes } = require('./fixtures/retired-friend-recall-routes');
 const { createActivityReadCache } = require('../src/controllers/activity-read-cache');
 const express = require('express');
 function fixture(endTime = null) {

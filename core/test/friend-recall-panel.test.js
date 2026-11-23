@@ -4,10 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const h = require('./activity-availability.test');
-const { normalizeFriendRecall } = require('../src/services/friend-recall-activity');
+const { normalizeFriendRecall } = require('./fixtures/retired-friend-recall-activity');
 // Synthetic fixture only; no production reports or identities copied.
 const dto = endTime => ({ available: true, title: '故友重逢', endTime, personal: null, sections: ['召回老友', '回归福利', '农场互动', '召回记录', '回归增益'].map((title, key) => ({ key: String(key), title, lines: ['<img onerror=attack>长文本'.repeat(100)] })) });
-const files = ['stores/friend-recall.ts', 'components/activity/FriendRecallActivityPanel.vue', 'views/Activity.vue'].map(p => path.join(h.WEB, 'src', p));
+const files = ['retired-friend-recall-store.ts', 'RetiredFriendRecallPanel.vue', 'RetiredFriendRecallView.vue'].map(p => path.join(__dirname, 'fixtures', p));
 const fingerprint = file => [fs.statSync(file).mode, crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')];
 const before = files.map(fingerprint);
 const stores = [];
@@ -64,9 +64,9 @@ test('actual panel renders five sections, text-only long input, loading/error an
     h.render(h.vue.h(Panel, { activity: { available: false }, loading: false, error: '' }), root); assert.doesNotMatch(h.textOf(root), /故友重逢/);
   } finally { h.render(null, root); }
 });
-test('current Activity view mounts recall without retired milk tea and cancels on unmount', async () => {
+test('historical Activity view mounts recall without retired milk tea and cancels on unmount', async () => {
   const api = h.apiMock(); api.setGet(async url => ({ data: { ok: true, activity: url.includes('friend-recall') ? dto(null) : h.snapshot() } }));
-  const page = h.mountActivityPage(api);
+  const page = h.mountRetiredFriendRecallPage(api);
   try {
     await h.flush(); await h.vue.nextTick(); assert.match(h.textOf(page.root), /故友重逢/);
     assert.ok(api.calls.get.some(call => call.url === '/api/activity/friend-recall'));
@@ -96,7 +96,7 @@ test('deadline remains account-bound across B and failed A reentry; expiry abort
   store.bind('synthetic-b'); assert.equal(store.activity, null); store.cancel(); assert.equal(timers.size, 0);
 });
 
-test('current page cancels delayed recall on account changes and unmount with zero retired reads', async () => {
+test('historical page cancels delayed recall on account changes and unmount with zero retired reads', async () => {
   const api = h.apiMock(); const pending = []; const signals = [];
   api.setGet((url, config) => {
     if (url.includes('friend-recall')) {
@@ -104,7 +104,7 @@ test('current page cancels delayed recall on account changes and unmount with ze
     }
     return Promise.resolve({ data: { ok: true, activity: h.snapshot() } });
   });
-  const page = h.mountActivityPage(api);
+  const page = h.mountRetiredFriendRecallPage(api);
   try {
     await h.flush(); const store = page.pinia._s.get('friend-recall');
     assert.equal(pending.length, 1);

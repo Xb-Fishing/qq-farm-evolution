@@ -1,13 +1,9 @@
+const { timestamp, unavailable } = require('../../src/services/activity-rule-state');
 // Pure management DTO: never forward payloads, player identities or resource paths.
 const FRIEND_RECALL_ROOT_ACTIVITY_ID = 2026111800;
 const FRIEND_RECALL_ACTIVITY_ID = 2026111801;
 function text(value) {
   return typeof value === 'string' ? value.slice(0, 16000).replace(/<br\s*(?:\/\s*)?>/gi, '\n').replace(/<[^>]*>/g, '').trim() : '';
-}
-function timestamp(value) {
-  if (value == null || value === '' || !['number', 'string'].includes(typeof value)) return null;
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 function findRoot(list) {
   if (!Array.isArray(list)) throw new Error('活动列表格式异常');
@@ -17,9 +13,6 @@ function findChild(nodes) {
   return Array.isArray(nodes) ? nodes.find(node => node?.id === FRIEND_RECALL_ACTIVITY_ID
     && node.parentId === FRIEND_RECALL_ROOT_ACTIVITY_ID && node.type === 11
     && node.payload?.uid === 'FriendRecallUI') || null : null;
-}
-function unavailable(reason, endTime = null) {
-  return { available: false, reason, endTime, personal: null };
 }
 function normalizeFriendRecall(root, now = Date.now() / 1000) {
   if (root?.id !== FRIEND_RECALL_ROOT_ACTIVITY_ID || root.parentId !== 0) return unavailable('活动根信息不匹配');

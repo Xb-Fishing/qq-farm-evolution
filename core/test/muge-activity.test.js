@@ -111,16 +111,15 @@ test('a confirmed cutoff survives later failures and prevents writes after expir
 
 const codec = require('../src/services/muge-codec');
 const { createMugeGameplay } = require('../src/services/muge-gameplay');
-function gameFixture() {
+function gameFixture(rewards = [{ id: '80021', count: '1' }]) {
   const at = 1800000000;
   const head = (id, parent_id) => ({ id, parent_id, title: '牧歌初启', start_time: at - 60, end_time: at + 3600, status: 1 });
-  const reward = { id: '80021', count: '1' };
-  const tier = { id: '1', threshold: '5', status: 2, rewards: [reward] };
+  const tier = { id: '1', threshold: '5', status: 2, rewards };
   const group = { head: { ...head('2026111700', '0'), payload: JSON.stringify(fixture().payload) },
     children: [{ head: head('2026111702', '2026111700'), celebration: { total: '9007199254740993', tiers: [tier] } },
       { head: head('2026111703', '2026111700'), friends: { counted: [{ gid: '60001' }], tiers: [] } },
       { head: head('2026111704', '2026111700'), handbook: { tiers: [], points: '9', tasks: [
-        { id: '5', progress: '1', target: '2', status: 1, description: '抚摸好友的小鸭子', unlock_day: '0', rewards: [reward] },
+        { id: '5', progress: '1', target: '2', status: 1, description: '抚摸好友的小鸭子', unlock_day: '0', rewards },
       ] } },
       { head: head('2026111705', '2026111700'), survey: { answers: {}, personality_id: '0', settle_count: '0' } }],
   };
@@ -145,7 +144,7 @@ function gameFixture() {
         assert.equal(operation.celebration.target, '0');
         tier.status = 3;
         return { body: codec.encode('Receipt', { id: operation.id, cmd: operation.cmd, state: child,
-          celebration: { claimed_ids: ['1'], awards: [reward] } }) };
+          celebration: { claimed_ids: ['1'], awards: rewards } }) };
       }
       if (operation.cmd === '86') {
         const save = operation.save;
@@ -182,6 +181,25 @@ test('real Muge service reads confirmed fields, redacts counted friends, and aut
   assert.equal(result.personal.celebration.tiers[0].status, 3);
   assert.equal(f.logs[0][2][0].name, '无机罐头（1小时）');
   await assert.rejects(f.game.operate('claimCelebration'), { code: 'MUGE_NOT_CLAIMABLE' });
+});
+
+test('normal Muge List and claim receipt display reviewed ranch rewards without losing count precision', async () => {
+  const names = [
+    ['80022', '无机罐头（4小时）'], ['80031', '有机罐头（1小时）'], ['80032', '有机罐头（4小时）'],
+    ['80033', '有机罐头（8小时）'], ['401008', '牧歌初启铭牌'], ['1065002', '巨大鸭蛋'], ['2065002', '巨大鸭'],
+    ['987654321', '物品987654321'],
+  ];
+  const expected = names.map(([id, name], index) => ({ id, name, count: String(9007199254740993n + BigInt(index)) }));
+  const f = gameFixture(expected.map(({ id, count }) => ({ id, count })));
+  const displayRows = rewards => rewards.map(({ id, count, name }) => ({ id, count, name }));
+  const board = await f.game.read();
+  assert.deepEqual(displayRows(board.personal.celebration.tiers[0].rewards), expected);
+  assert.deepEqual(f.calls, ['List']);
+  const result = await f.game.operate('claimCelebration');
+  assert.deepEqual(displayRows(result.rewards), expected);
+  assert.equal(f.logs.length, 1);
+  assert.deepEqual(displayRows(f.logs[0][2]), expected);
+  assert.deepEqual(f.calls, ['List', 'List', 'Operate', 'List']);
 });
 
 test('unknown Muge reward blocks same claim across replacement until fresh status shows it claimed', async () => {
