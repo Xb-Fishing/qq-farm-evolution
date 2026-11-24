@@ -159,6 +159,20 @@ export const useRanchStore = defineStore('ranch', () => {
       controllers.delete(request.controller)
     }
   }
+  async function reportFriendPanel() {
+    const id = accountId.value
+    if (!id)
+      return false
+    const token = generation
+    const request = requestConfig(id, token)
+    try {
+      const { data } = await api.post('/api/ranch/friend-panel/open', {}, request.config)
+      return generation === token && data?.ok === true && data.data?.completed === true
+    }
+    finally {
+      controllers.delete(request.controller)
+    }
+  }
   async function refreshCleanOperation(manual = false) {
     const id = accountId.value
     const operation = result.value
@@ -566,5 +580,5 @@ export const useRanchStore = defineStore('ranch', () => {
       return false
     }
   }
-  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, readingCleanOperation, cleanOperationError, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, refreshCleanOperation, readFriend, prepare, execute, acknowledge, closeQuote }
+  return { accountId, view, shopId, state, loading, preparing, operating, acknowledging, readingCleanOperation, cleanOperationError, error, errorCode, quote, reviewNotice, result, uncertain, blocked, automation, savingAutomation, optionState, optionShops, optionError, loadingOptions, loadOptions, loadAutomation: () => automationRequest(), saveAutomation: automationRequest, bind, cancel, refresh, refreshCleanOperation, readFriend, reportFriendPanel, prepare, execute, acknowledge, closeQuote }
 })

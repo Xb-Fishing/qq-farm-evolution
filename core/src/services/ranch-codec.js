@@ -498,6 +498,10 @@ message TaskInfoRequest {
 message TaskInfoReply {
     TaskInfo task_info = 1;
 }
+message RanchClientReportProgressRequest {
+    int64 task_id = 1;
+    int64 progress = 2;
+}
 message ClaimTaskRewardRequest {
     int64 id = 1;           
     bool do_shared = 2;     
@@ -655,6 +659,13 @@ const ROUTES = Object.freeze({
         "request": "TaskInfoRequest",
         "reply": "TaskInfoReply",
         "writing": false
+    },
+    "reportTaskProgress": {
+        "service": "gamepb.taskpb.TaskService",
+        "method": "ClientReportProgress",
+        "request": "RanchClientReportProgressRequest",
+        "reply": "TaskInfoReply",
+        "writing": true
     },
     "claimTask": {
         "service": "gamepb.taskpb.TaskService",

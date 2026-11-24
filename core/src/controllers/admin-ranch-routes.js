@@ -60,6 +60,21 @@ function registerAdminRanchRoutes(context) {
       return sendProviderError(res, error);
     }
   });
+  app.post('/api/ranch/friend-panel/open', async (req, res) => {
+    const id = await account(req, res); if (!id) return;
+    if (!stillAuthorized(req, id)) return denyAccess(res);
+    const scope = readScope(id);
+    if (!scope) return unavailable(res);
+    try {
+      const result = await provider.reportRanchFriendPanel(id);
+      if (result?.ok && result.data?.completed) {
+        for (const shop of RANCH_SHOPS) activityReader.clear(stateKey(id, scope, 'tasks', shop));
+      }
+      if (!stillAuthorized(req, id)) return denyAccess(res);
+      if (readScope(id) !== scope) return unavailable(res);
+      return respond(res, result);
+    } catch (error) { return sendProviderError(res, error); }
+  });
   app.get('/api/ranch/clean-operation', async (req, res) => {
     const id = await account(req, res); if (!id) return;
     const operationId = req.query?.operationId;

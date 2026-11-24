@@ -119,9 +119,11 @@ test('friend ranch reads the selected account and uses the existing preview and 
   const select = h.findAll(section, node => node.props['aria-label'] === '选择好友牧场')[0];
   select.props.onChange({ target: { value: '73' } }); await h.flush();
   assert.deepEqual(reads, [['/api/friends', 'account-a', undefined], ['/api/ranch/friend', 'account-a', '73']]);
-  assert.equal(f.posts.length, 0);
+  assert.deepEqual(f.posts.map(({ url, config }) => [url, config.headers['x-account-id']]), [
+    ['/api/ranch/friend-panel/open', 'account-a'],
+  ]);
   h.click(button(section, '偷取产物')); await h.flush();
-  assert.deepEqual(f.posts.map(row => row.body), [{ action: 'stealFriend', input: { hostGid: '73' } }]);
+  assert.deepEqual(f.posts.at(-1).body, { action: 'stealFriend', input: { hostGid: '73' } });
   h.click(button(f.root, '确认执行')); await h.flush();
   assert.equal(f.posts.filter(row => row.url.endsWith('/operate')).length, 1);
   h.click(button(section, '帮好友清理')); await h.flush();

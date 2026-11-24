@@ -13,6 +13,7 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retries = 0
 let viewGeneration = 0
 let friendSequence = 0
+let friendPanelReportGeneration: number | null = null
 const friendOptions = ref<Array<{ gid: string, name: string }>>([])
 const friendPanel = ref<HTMLDetailsElement | null>(null)
 const selectedFriend = ref('')
@@ -52,6 +53,37 @@ async function readFriend(gid?: string) {
   finally {
     if (attempt === friendSequence)
       friendBusy.value = false
+  }
+}
+async function onFriendPanelToggle(event: Event) {
+  const panel = event.currentTarget as HTMLDetailsElement
+  const generation = viewGeneration
+  if (!panel.open || !props.accountId || friendPanelReportGeneration === generation)
+    return
+  friendPanelReportGeneration = generation
+  const stillOpen = () => generation === viewGeneration && panel.open
+  try {
+    if (!selectedFriend.value && !friendLoaded.value && !friendBusy.value)
+      await readFriend()
+    for (let attempt = 0; attempt < 4 && stillOpen(); attempt++) {
+      try {
+        const completed = await ranch.reportFriendPanel()
+        if (completed && stillOpen() && ranch.view === 'tasks'
+          && ranch.state?.tasks?.some((task: any) => task.id === '300008' && !task.canClaim && !task.claimed))
+          await refresh('tasks')
+        return
+      }
+      catch (cause: any) {
+        const code = cause?.response?.data?.code
+        if (attempt === 3 || !stillOpen() || !['RANCH_FARM_PRIORITY', 'RANCH_FARM_BUSY', 'RANCH_BUDGET_BUSY', 'RANCH_BUSY', 'RANCH_SCENE_RECOVERING'].includes(code))
+          return
+        await new Promise(resolve => setTimeout(resolve, 5000))
+      }
+    }
+  }
+  finally {
+    if (friendPanelReportGeneration === generation)
+      friendPanelReportGeneration = null
   }
 }
 function selectFriend(gid: string) {
@@ -94,6 +126,8 @@ watch(() => props.accountId, (id) => {
   clearRetry()
   retries = 0
   ranch.bind(id)
+  if (friendPanel.value)
+    friendPanel.value.open = false
   friendSequence++
   friendOptions.value = []
   selectedFriend.value = ''
@@ -305,7 +339,7 @@ defineExpose({ refresh })
         {{ tab.name }}
       </BaseButton>
     </nav>
-    <details ref="friendPanel" class="mb-4 border rounded-lg p-3" @toggle="($event.currentTarget as HTMLDetailsElement).open && !selectedFriend && !friendLoaded && !friendBusy && readFriend()">
+    <details ref="friendPanel" class="mb-4 border rounded-lg p-3" @toggle="onFriendPanelToggle">
       <summary class="cursor-pointer font-medium">
         好友牧场
       </summary>

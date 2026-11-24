@@ -18,6 +18,8 @@ const EXPIRED_MESSAGE = '本次确认已到期，请重新核对数量和费用'
 const READ_CALLS = { animals: 5, tasks: 6, shop: 7, mallGift: 6 };
 const AUTOMATION_TICK_MS = 30000;
 const CLEAN_CHECK_LIMIT = 4;
+const FRIEND_PANEL_TASK_ID = '300008';
+const FRIEND_PANEL_TASK_RECHECK_MS = 30000;
 const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [index] : []);
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
@@ -51,7 +53,7 @@ const AUTO_SCAN_REASONS = { RANCH_FARM_PRIORITY: 'farm_priority', RANCH_BUDGET_B
   RANCH_SCENE_RECOVERING: 'scene_recovery', RANCH_SHOP_UNAVAILABLE: 'shop_unavailable',
   RANCH_BUSY: 'scene_busy', RANCH_FARM_BUSY: 'scene_busy' };
 const READ_STAGES = { scene: '场景切换', scene_data: '场景数据', cells: '地块', facilityDetail: '设施详情', bag: '背包',
-  shopProfiles: '商店目录', shop: '商店', mallGift: '牧场每日礼包', tasks: '任务', state: '状态整理', friendRoster: '好友名单',
+  shopProfiles: '商店目录', shop: '商店', mallGift: '牧场每日礼包', tasks: '任务', reportTaskProgress: '任务进度上报', state: '状态整理', friendRoster: '好友名单',
   enterFriend: '进入好友牧场', friendDetail: '好友牧场详情', leaveFriend: '离开好友牧场' };
 const readStage = failure => Object.hasOwn(READ_STAGES, failure?.ranchStage) ? failure.ranchStage : 'unknown';
 const readKind = failure => ['encode', 'request', 'decode', 'normalize'].includes(failure?.ranchFailureKind) ? failure.ranchFailureKind : 'unknown';
@@ -498,6 +500,46 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   async function withScene(callback, maxCalls = 10) {
     if (typeof network.withRanchScene !== 'function') throw error('RANCH_CONNECTION_UPDATE_REQUIRED', '当前连接尚未支持牧场，请更新程序后重试');
     return stage('scene', 'request', () => network.withRanchScene(callback, { maxCalls }));
+  }
+  async function reportFriendPanel() {
+    const accountOrigin = origin();
+    const owner = model.positiveId(accountOrigin.split(':')[0], '玩家');
+    const observed = read().friendPanelTask;
+    if (observed?.owner === owner && observed.completed === true) return { completed: true };
+
+    return withScene(async ({ assertCurrent }) => {
+      const taskFrom = reply => reply?.task_info && model.taskList(reply)?.find(task =>
+        task.id === FRIEND_PANEL_TASK_ID && task.category === 'growth' && task.total === '1');
+      const isComplete = task => task?.claimed === true || task?.canClaim === true;
+      const stillCurrent = () => {
+        assertCurrent();
+        if (origin() !== accountOrigin) throw error('RANCH_SESSION_CHANGED', '账号连接已变化，请重新打开好友牧场');
+      };
+      const confirm = () => {
+        stillCurrent();
+        const data = read();
+        data.friendPanelTask = { owner, completed: true };
+        save(data);
+        return { completed: true };
+      };
+      const getTask = async () => taskFrom(await rpc('tasks', { global_scene_id: 2 }));
+      const task = await getTask();
+      stillCurrent();
+      if (isComplete(task)) return confirm();
+      if (!task?.unlocked || task.progress !== '0') return { completed: false };
+
+      const previous = read().friendPanelTask;
+      // Recheck progress on the next open and give a possibly delivered request time to settle.
+      if (previous?.owner === owner && quoteNow() - previous.at < FRIEND_PANEL_TASK_RECHECK_MS)
+        return { completed: false };
+      const reply = await rpc('reportTaskProgress', { task_id: FRIEND_PANEL_TASK_ID, progress: '1' }, () => {
+        stillCurrent();
+        const data = read();
+        data.friendPanelTask = { owner, at: quoteNow() };
+        save(data);
+      });
+      return isComplete(taskFrom(reply)) || isComplete(await getTask()) ? confirm() : { completed: false };
+    }, READ_CALLS.tasks);
   }
   async function getState(view = 'animals', shopId = '5', scan, manualOpen = false) {
     if (!Object.hasOwn(READ_CALLS, view)) throw error('RANCH_INVALID_ARGUMENT', '牧场页面无效');
@@ -1333,6 +1375,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
   }
   return { getState: (view, shopId) => safe(() => getState(view, shopId, undefined, true)), getFriend: host => safe(() => getFriend(host)),
     getCleanOperation: id => safe(() => getCleanOperation(id), false),
+    reportFriendPanel: () => safe(reportFriendPanel),
     runFriendTask: (...args) => safe(() => runFriendTask(...args), false),
     runOwnTask: (...args) => safe(() => runOwnTask(...args), false),
     prepare: (action, input, revision, slot) => safe(() => prepare(action, input, revision, slot)),
@@ -1367,9 +1410,10 @@ module.exports = { createRanchService, planIdentity, sumItems,
   setRanchAutomation: value => service().setAutomation(value),
   getRanchState: (...args) => service().getState(...args), getRanchFriend: host => service().getFriend(host), prepareRanchAction: (...args) => service().prepare(...args),
   getRanchCleanOperation: id => service().getCleanOperation(id),
+  reportRanchFriendPanel: () => service().reportFriendPanel(),
   operateRanch: id => service().execute(id), cancelRanchAction: id => service().cancel(id), acknowledgeRanch: id => service().acknowledge(id) };
 if (process.env.FARM_SESSION_BUSINESS === '1') {
   const { wrapBusinessFunction } = require('./business-state');
-  for (const name of ['runRanchAutomation', 'runRanchFriendTask', 'runRanchOwnTask', 'getRanchState', 'getRanchFriend', 'getRanchCleanOperation', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
+  for (const name of ['runRanchAutomation', 'runRanchFriendTask', 'runRanchOwnTask', 'getRanchState', 'getRanchFriend', 'getRanchCleanOperation', 'reportRanchFriendPanel', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch', 'setRanchAutomation'])
     module.exports[name] = wrapBusinessFunction(`ranch:${name}`, module.exports[name]);
 }

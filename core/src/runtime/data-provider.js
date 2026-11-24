@@ -247,6 +247,7 @@ function createDataProvider(deps) {
 
         getRanchFriend: (ref, host) => callWorkerApi(resolveAccountId(ref), 'getRanchFriend', host, { _timeoutMs: 25000 }),
         getRanchCleanOperation: (ref, id) => callWorkerApi(resolveAccountId(ref), 'getRanchCleanOperation', id),
+        reportRanchFriendPanel: ref => callWorkerApi(resolveAccountId(ref), 'reportRanchFriendPanel', { _timeoutMs: 25000 }),
         getRanchState: (ref, view, shopId) => callWorkerApi(resolveAccountId(ref), 'getRanchState', view, shopId, { _timeoutMs: 25000 }),
         getRanchAutomation: ref => callWorkerApi(resolveAccountId(ref), 'getRanchAutomation'),
         setRanchAutomation: (ref, value) => callWorkerApi(resolveAccountId(ref), 'setRanchAutomation', value),
