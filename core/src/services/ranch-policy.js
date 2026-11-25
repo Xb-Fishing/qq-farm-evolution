@@ -6,7 +6,7 @@ const DEFAULT_POLICY = Object.freeze({ enabled: false, harvest: true, produce: t
   placeEnabled: false, cubId: '', ranchId: '', cubDailyLimit: 0, cubReserve: 0,
   buyEnabled: false, shopId: '5', goodsId: '', purchaseCount: 1, currencyId: '1007', currencyDailyLimit: 0, currencyReserve: 0,
   stockCoop: false, stockShed: false, buyMissingCubs: true, stockBudgetMode: 'live', eggSale: false,
-  sellProducts: false, friendSteal: false, friendClean: false, mallGift: false });
+  sellProducts: false, friendSteal: false, friendClean: false, mallGift: false, friendProduce: false });
 const SLOTS = [
   { action: 'harvest', key: 'harvest' }, { action: 'produce', key: 'produce' },
   { action: 'clean', key: 'clean' }, { action: 'claimTasks', key: 'tasks', view: 'tasks' },
@@ -18,6 +18,7 @@ const SLOTS = [
   { action: 'stealFriend', key: 'friendSteal', friend: true },
   { action: 'cleanFriend', key: 'friendClean', friend: true },
   { action: 'claimMallGift', key: 'mallGift', view: 'mallGift' },
+  { action: 'produceFriend', key: 'friendProduce', friend: true },
 ];
 const STOCK_SHOP = '5';
 const STOCK_CURRENCY = '1007';

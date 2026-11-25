@@ -1,7 +1,8 @@
 'use strict';
 
 const model = require('./ranch-model');
-const actions = new Set(['stealFriend', 'cleanFriend']);
+const actions = new Set(['stealFriend', 'cleanFriend', 'produceFriend']);
+const targetFields = { stealFriend: 'stealable', cleanFriend: 'hazards', produceFriend: 'producible' };
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
@@ -16,13 +17,23 @@ function describe(entry, detail, host, self) {
   const facilities = new Set(entry.homestead_cells.facilities.map(row => row.instance_id));
   const seen = new Set();
   const hazardKeys = new Set();
+  const animalKeys = new Set();
   const stealable = [];
   const hazards = [];
+  const producible = [];
   for (const ranch of detail.ranches) {
     const ranchId = model.positiveId(ranch.ranch_inst_id);
     if (!facilities.has(ranchId) || seen.has(ranchId))
       fail('RANCH_RESPONSE_MISMATCH', '好友牧场详情与进入时的栏舍不匹配');
     seen.add(ranchId);
+    for (const animal of ranch.animals) {
+      const id = animal.animal_inst_id;
+      if (!Number.isSafeInteger(id) || id <= 0 || (animal.ranch_inst_id !== '0' && animal.ranch_inst_id !== ranchId)) continue;
+      const key = `${ranchId}:${id}`;
+      if (animalKeys.has(key)) fail('RANCH_RESPONSE_MISMATCH', '好友牧场动物信息重复');
+      animalKeys.add(key);
+      if (animal.can_deliver === true) producible.push(key);
+    }
     for (const shelf of ranch.shelves) {
       if (shelf.can_steal !== true || !Number.isSafeInteger(shelf.slot_index) || shelf.slot_index < 0) continue;
       const lots = shelf.lots.filter(lot => lot.can_steal && BigInt(model.decimal(lot.remain_num)) > 0n
@@ -41,12 +52,22 @@ function describe(entry, detail, host, self) {
   }
   stealable.sort((a, b) => `${a.ranchId}:${a.slot}`.localeCompare(`${b.ranchId}:${b.slot}`));
   hazards.sort((a, b) => `${a.ranchId}:${a.hazardId}`.localeCompare(`${b.ranchId}:${b.hazardId}`));
-  return { host, name: entry.basic.name, stealable, hazards, ranchIds: seen, hazardKeys };
+  return { host, name: entry.basic.name, stealable, hazards, producible: producible.sort(), ranchIds: seen, hazardKeys, animalKeys };
+}
+
+function targetsFor(action, data) {
+  return data[targetFields[action]];
 }
 
 function plan(action, data) {
+  const targets = targetsFor(action, data);
+  if (action === 'produceFriend') {
+    if (!targets.length) fail('RANCH_STATE_CHANGED', '好友牧场当前没有可生产的动物');
+    // 一键生产将目标留空，由游戏服务端选择执行时已就绪的动物。
+    return { action, label: '一键帮忙生产', route: 'produce', payload: { host_gid: data.host, targets: [] }, count: targets.length,
+      resultKeys: targets, animalKeys: [...data.animalKeys], costItems: [], expectedRewards: [] };
+  }
   const steal = action === 'stealFriend';
-  const targets = steal ? data.stealable : data.hazards;
   const label = steal ? '偷取好友牧场产物' : '帮好友清理牧场';
   if (!targets.length) fail('RANCH_STATE_CHANGED', steal ? '当前没有可偷产物' : '当前没有可清扫的污物');
   if (targets.length > 50) fail('RANCH_INVALID_ARGUMENT', '本次好友牧场操作目标过多');
@@ -60,11 +81,21 @@ function plan(action, data) {
 }
 
 function verify(plan, reply) {
-  const steal = plan.action === 'stealFriend';
   const rows = reply.op_results || [];
   const seen = new Set();
   if (!rows.length) fail('RANCH_RESULT_UNKNOWN', '服务端未返回完成目标');
-  if (!steal) {
+  if (plan.action === 'produceFriend') {
+    const animalKeys = new Set(plan.animalKeys);
+    for (const row of rows) {
+      const key = `${row.facility_inst_id}:${row.target_id}`;
+      if (row.kind !== 1 || !animalKeys.has(key) || seen.has(key) || row.costs.length
+        || row.rewards.some(item => model.decimal(item.count) === '0'))
+        fail('RANCH_RESULT_UNKNOWN', '帮忙生产回执与好友牧场动物不匹配，请刷新核对');
+      seen.add(key);
+    }
+    return { completed: rows.length, rewards: rows.flatMap(row => row.rewards) };
+  }
+  if (plan.action === 'cleanFriend') {
     // CleanAllRanch sends facility IDs. The server can report hazards that appeared after the preview.
     const facilities = new Set(plan.payload.ranch_inst_ids);
     const rewards = [];
@@ -100,4 +131,4 @@ function cleaningGoalMet(plan, friend) {
     && plan.resultKeys.every(key => !friend.hazardKeys.has(key));
 }
 
-module.exports = { actions, verifyEntry, describe, plan, verify, cleaningGoalMet };
+module.exports = { actions, verifyEntry, describe, targetsFor, plan, verify, cleaningGoalMet };

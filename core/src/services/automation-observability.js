@@ -31,7 +31,7 @@ const ACTIVITY_ACTIONS = {
   qingmei_seed: '青梅活动：领取种子', qingmei_wine: '青梅活动：售出青梅酿',
   season_passport: '荷风游记：领取奖励', solar_terms: '节令小札：领取奖励', star_record: '观星礼录：领取奖励',
 };
-const RANCH_FRIEND_ACTIONS = { stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
+const RANCH_FRIEND_ACTIONS = { stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场', produceFriend: '自动帮忙生产' };
 // Call only after a positive action is confirmed, never for a query or replay.
 function logActivityAction(action, count) {
   if (!Object.hasOwn(ACTIVITY_ACTIONS, action) || !(Number(count) > 0)) return false;

@@ -156,6 +156,13 @@ function fixture(upgrade = false) {
           assert.ok(f.friendHosts.includes(request.host_gid));
           assert.deepEqual(request.targets, [{ ranch_inst_id: '51', slot_index: 0 }]);
           reply = { op_results: [{ facility_inst_id: '51', kind: 2, target_id: '0', rewards: [{ id: '1060001', count: '1' }] }] };
+        } else if (method === 'TriggerProduce' && f.friendHosts.includes(request.host_gid)) {
+          assert.deepEqual(request.targets, []);
+          const op_results = f.friendRanches.flatMap(room => room.animals.filter(animal => animal.can_deliver).map(animal => {
+            animal.can_deliver = false;
+            return { facility_inst_id: room.ranch_inst_id, kind: 1, target_id: String(animal.animal_inst_id) };
+          }));
+          reply = { op_results };
         } else if (method === 'CleanAllRanch' && f.friendHosts.includes(request.host_gid)) {
           assert.deepEqual(request.ranch_inst_ids, f.cleanFacilityIds);
           reply = { op_results: [{ facility_inst_id: '51', kind: 3, target_id: '2' }] };
@@ -416,16 +423,17 @@ test('the egg task owns its current gap before the surplus sale while both rules
   assert.equal(f.writes, 2);
 });
 
-test('automatic friend ranch runs on its own interval and executes both actions during one visit', async () => {
+test('automatic friend ranch runs on its own interval and executes three actions during one visit', async () => {
   const f = fixture();
   f.realScene = true;
   f.friendHosts.push('74');
   f.friendRoster.push({ gid: '73' }, { gid: '74' }, { gid: '42' }, { gid: '75' }, { gid: null });
   f.blockedFriends.push('75');
-  f.friendRanches.push({ ranch_inst_id: '51', shelves: [
+  const animal = { animal_inst_id: 9, ranch_inst_id: '51', can_deliver: true };
+  f.friendRanches.push({ ranch_inst_id: '51', animals: [animal], shelves: [
     { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
   ], hazards: [{ hazard_id: '2', owner: '50', hazard_type: 1 }] });
-  await setOnlyAutomation(f, { friendSteal: true, friendClean: true, harvest: true, produce: true, clean: true, tasks: true, intervalMinutes: 2 });
+  await setOnlyAutomation(f, { friendSteal: true, friendClean: true, friendProduce: true, harvest: true, produce: true, clean: true, tasks: true, intervalMinutes: 2 });
   f.friendQuiet = true;
   assert.equal((await f.service.automate()).data.action, 'harvest');
   assert.deepEqual(f.friendVisits, []);
@@ -437,18 +445,19 @@ test('automatic friend ranch runs on its own interval and executes both actions 
     const result = await f.service.automate();
     assert.equal(result.ok, true, result.error);
     assert.deepEqual(result.data.results.map(row => [row.action, row.friendGid, row.outcome]),
-      [['stealFriend', gid, 'confirmed'], ['cleanFriend', gid, 'confirmed']]);
+      [['stealFriend', gid, 'confirmed'], ['cleanFriend', gid, 'confirmed'], ['produceFriend', gid, 'confirmed']]);
     assert.deepEqual(f.calls.slice(before), ['PlayerSceneLogin', 'EnterHomestead', 'GetRanchDetail',
-      'StealProduce', 'CleanAllRanch', 'LeaveHomestead', 'PlayerSceneLogin']);
+      'StealProduce', 'CleanAllRanch', 'TriggerProduce', 'LeaveHomestead', 'PlayerSceneLogin']);
     assert.equal(f.scene.snapshot().scene, 1);
     if (gid === '73') {
       f.advance(90001);
       assert.equal((await f.service.automate()).data.action, 'produce');
       f.advance(30000);
+      animal.can_deliver = true;
     }
   }
   assert.deepEqual(f.friendVisits, ['73', '74']);
-  assert.equal(f.writes, 6);
+  assert.equal(f.writes, 8);
 });
 
 test('the own ranch rotation shares a two-minute setting across enabled slots with one turn per worker tick', async () => {
@@ -614,6 +623,56 @@ test('friend ranch verifies visit identity, previews available targets and confi
   assert.equal(f.calls.at(-1), 'LeaveHomestead');
   assert.equal((await f.service.prepare('stealFriend', { hostGid: '42' })).code, 'RANCH_INVALID_ARGUMENT');
   assert.equal(f.writes, 2);
+});
+
+test('一键帮忙生产重新核对好友的可生产动物，并按回执记录实际批量结果', async () => {
+  const f = fixture();
+  f.realScene = true;
+  const animals = [{ animal_inst_id: 9, can_deliver: true }, { animal_inst_id: 10, can_deliver: false }];
+  f.friendRanches.push({ ranch_inst_id: '51', animals });
+  assert.equal((await f.service.getFriend('73')).data.produceCount, 1);
+  const prepare = () => f.service.prepare('produceFriend', { hostGid: '73' });
+  const { data: first } = await prepare();
+  assert.equal(first.count, 1);
+  animals[0].can_deliver = false;
+  animals[1].can_deliver = true;
+  assert.equal((await f.service.execute(first.id)).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 0);
+
+  const { data: latest } = await prepare();
+  f.beforeWrite(() => { animals[0].can_deliver = true; });
+  const { data: result } = await f.service.execute(latest.id);
+  assert.equal(result.outcome, 'confirmed', result.message);
+  assert.deepEqual([result.friendGid, result.requested, result.completed], ['73', 1, 2]);
+  assert.equal((await f.service.execute(latest.id)).data.replayed, true);
+  assert.equal((await f.service.getFriend('73')).data.produceCount, 0);
+  assert.equal((await prepare()).code, 'RANCH_STATE_CHANGED');
+  assert.equal(f.writes, 1);
+});
+
+test('自动帮忙生产跳过无目标好友，收到不匹配回执后暂停且不重发', async () => {
+  const f = fixture();
+  f.realScene = true;
+  f.friendRoster.push({ gid: '73' });
+  const animal = { animal_inst_id: 9, can_deliver: false };
+  f.friendRanches.push({ ranch_inst_id: '51', animals: [animal] });
+  await setOnlyAutomation(f, { friendProduce: true });
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 0);
+
+  animal.can_deliver = true;
+  f.mutateReply = () => ({ op_results: [{ facility_inst_id: '51', kind: 1, target_id: '99' }] });
+  f.advance(300000);
+  const { data: result } = await f.service.automate();
+  assert.equal(result.outcome, 'unknown');
+  assert.equal(result.action, 'produceFriend');
+  f.advance(300000);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.writes, 1);
+  assert.equal(f.scene.snapshot().scene, 1);
+  assert.equal((await f.service.acknowledge(result.id)).code, 'RANCH_REFRESH_REQUIRED');
+  await f.service.getFriend('73');
+  assert.equal((await f.service.acknowledge(result.id)).data.outcome, 'acknowledged');
 });
 
 test('friend cleanup confirms every valid receipt row in the requested facility, even when hazards changed', async () => {

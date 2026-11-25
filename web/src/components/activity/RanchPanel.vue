@@ -20,7 +20,7 @@ const selectedFriend = ref('')
 const friendLoaded = ref(false)
 const friendBusy = ref(false)
 const friendError = ref('')
-const friendState = ref<{ name: string, host: string, stealCount: number, cleanCount: number, cleanHeld?: boolean } | null>(null)
+const friendState = ref<{ name: string, host: string, stealCount: number, cleanCount: number, produceCount: number, cleanHeld?: boolean } | null>(null)
 async function readFriend(gid?: string) {
   const attempt = ++friendSequence
   friendBusy.value = true
@@ -371,6 +371,9 @@ defineExpose({ refresh })
         </BaseButton>
         <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.cleanCount || friendState.cleanHeld" @click="ranch.prepare('cleanFriend', { hostGid: friendState.host })">
           帮好友清理（{{ friendState.cleanCount }} 处）
+        </BaseButton>
+        <BaseButton :disabled="ranch.blocked || friendBusy || !friendState.produceCount" @click="ranch.prepare('produceFriend', { hostGid: friendState.host })">
+          一键帮忙生产（{{ friendState.produceCount ?? 0 }} 只）
         </BaseButton>
       </div>
       <p v-if="friendState?.cleanHeld" class="mt-2 text-sm text-amber-700 dark:text-amber-300">

@@ -107,10 +107,11 @@ test('每日礼包入口按账号读取可领状态，确认后清除红点并�
 test('friend ranch reads the selected account and uses the existing preview and confirmation flow', async () => {
   const f = fixture(); await h.flush();
   const reads = [];
+  let produceCount = 1;
   f.read(async (url, config) => {
     reads.push([url, config.headers['x-account-id'], config.params?.gid]);
     const data = url === '/api/friends' ? [{ gid: 73, name: '测试好友' }]
-      : { host: '73', name: '测试好友', stealCount: 1, cleanCount: 1 };
+      : { host: '73', name: '测试好友', stealCount: 1, cleanCount: 1, produceCount };
     return { data: { ok: true, data } };
   });
   const section = h.findAll(f.root, node => node.tag === 'details'
@@ -128,6 +129,17 @@ test('friend ranch reads the selected account and uses the existing preview and 
   assert.equal(f.posts.filter(row => row.url.endsWith('/operate')).length, 1);
   h.click(button(section, '帮好友清理')); await h.flush();
   assert.deepEqual(f.posts.at(-1).body, { action: 'cleanFriend', input: { hostGid: '73' } });
+  h.click(button(f.root, '确认执行')); await h.flush();
+  h.click(button(section, '一键帮忙生产（1 只）')); await h.flush();
+  assert.deepEqual(f.posts.at(-1).body, { action: 'produceFriend', input: { hostGid: '73' } });
+  assert.equal(f.posts.filter(row => row.url.endsWith('/operate')).length, 2);
+  f.operate(() => {
+    produceCount = 0;
+    return { data: { ok: true, data: { outcome: 'confirmed', action: 'produceFriend', completed: 1 } } };
+  });
+  h.click(button(f.root, '确认执行')); await h.flush();
+  assert.equal(f.posts.filter(row => row.url.endsWith('/operate')).length, 3);
+  assert.equal(button(section, '一键帮忙生产（0 只）').props.disabled, true);
 });
 
 const cleanReceipt = (cleanReview = 'checking') => ({
@@ -254,14 +266,15 @@ test('ranch sale and friend switches are initially disabled and save as independ
   const f = fixture();
   await h.flush();
   const form = h.findAll(f.root, node => node.tag === 'form')[0];
-  const options = ['自动出售剩余可售产物', '自动偷取好友牧场产物', '自动帮好友清理牧场'];
+  const options = ['自动出售剩余可售产物', '自动偷取好友牧场产物', '自动帮好友清理牧场', '自动帮忙生产'];
   const inputs = options.map(text => h.findAll(form, node => node.tag === 'label' && h.textOf(node).trim() === text)
     .flatMap(label => h.findAll(label, node => node.tag === 'input'))[0]);
   assert.equal(f.store.automation.policy.sellProducts, false);
   assert.equal(f.store.automation.policy.friendSteal, false);
   assert.equal(f.store.automation.policy.friendClean, false);
+  assert.equal(f.store.automation.policy.friendProduce, false);
   inputs[0].props['onUpdate:modelValue'](true);
-  inputs[2].props['onUpdate:modelValue'](true);
+  inputs[3].props['onUpdate:modelValue'](true);
   await h.flush();
   form.props.onSubmit({ preventDefault() {} });
   await h.flush();
@@ -269,7 +282,8 @@ test('ranch sale and friend switches are initially disabled and save as independ
   assert.equal(saved.config.headers['x-account-id'], 'account-a');
   assert.equal(saved.body.sellProducts, true);
   assert.equal(saved.body.friendSteal, false);
-  assert.equal(saved.body.friendClean, true);
+  assert.equal(saved.body.friendClean, false);
+  assert.equal(saved.body.friendProduce, true);
 });
 
 test('real ranch panel prepares then confirms once; free and paid automation preferences save for selected account', async () => {

@@ -25,7 +25,7 @@ const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [i
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
   claimMallGift: '自动领取牧场每日礼包',
-  stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
+  stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场', produceFriend: '自动帮忙生产' };
 const automaticLabel = slot => slot?.key === 'eggSale' ? '自动出售鸡蛋（任务）' : AUTOMATION_LABELS[slot?.action];
 const AUTO_STATUS = {
   full: '栏舍已满', no_facility: '没有可用设施', facility_unconfirmed: '设施或空位未确认',
@@ -447,6 +447,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     const snapshot = await visitFriend(hostGid, ({ friend }) => {
       goalMet = ownsCleanQuote(quote, currentOrigin) && friends.cleaningGoalMet(quote.plan, friend);
       return { name: friend.name, host: friend.host, stealCount: friend.stealable.length, cleanCount: friend.hazards.length,
+        produceCount: friend.producible.length,
         ...(friendCleanHeld(friend) && { cleanHeld: true }) };
     });
     if (op?.friendGid === snapshot.host && !snapshot.sceneRecoveryRequired && currentOrigin === origin()) {
@@ -708,7 +709,8 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       for (const cost of plan.costItems) if (BigInt(model.balance(before.bag, cost.id).total) - BigInt(model.balance(after.bag, cost.id).total) !== BigInt(cost.count))
         unknown('库存变化与本次费用未匹配，请核对结果');
     }
-    const success = { upgrade: '已开始升级，到时可在设施卡完成升级', completeUpgrade: '设施升级已完成' };
+    const success = { upgrade: '已开始升级，到时可在设施卡完成升级', completeUpgrade: '设施升级已完成',
+      produceFriend: `好友的 ${completed} 只动物已开始生产` };
     const partial = completed < plan.count && plan.action !== 'cleanFriend';
     return { outcome: partial ? 'partial' : 'confirmed', completed, requested: plan.count,
       rewards: sumItems(rewards), costs, message: partial ? `已确认 ${completed} 项，其余状态发生变化，请刷新核对` : success[plan.action] || '操作已确认' };
@@ -1137,7 +1139,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           const times = await rpc('ranchOpTimes');
           scene.friend.taskPlan = social.plan(action, { ...scene.friend, times });
         } else {
-          const offers = action === 'stealFriend' ? scene.friend.stealable : scene.friend.hazards;
+          const offers = friends.targetsFor(action, scene.friend);
           if (offers.length && (action !== 'cleanFriend' || !friendCleanHeld(scene.friend)))
             scene.friend.taskPlan = friends.plan(action, scene.friend);
         }
@@ -1233,12 +1235,14 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         return { skipped: true };
       }
       ({ target, nextCursor } = selectRanchFriend(candidates, state.friendCursor, slots.map(slot => SLOTS[slot].action)));
+      // 每项操作预留一次写请求，另留进出场景、读取详情和恢复原场景的额度。
+      const maxCalls = 6 + slots.length;
       const scan = await visitFriend(target.gid, async scene => {
         const results = [];
         const friendName = target.name || String(scene.friend.name || '').slice(0, 42);
         for (const slot of slots) {
           const { action } = SLOTS[slot];
-          const targets = action === 'stealFriend' ? scene.friend.stealable : scene.friend.hazards;
+          const targets = friends.targetsFor(action, scene.friend);
           if (action === 'cleanFriend' && friendCleanHeld(scene.friend)) {
             noteAutoStatus(SLOTS[slot], 'result_unconfirmed', state.revision, { friendName });
             handled.add(slot);
@@ -1257,7 +1261,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
           if (operation.outcome !== 'confirmed' || operation.storageWarning) break;
         }
         return { results };
-      }, slots.length > 1 ? 8 : 7);
+      }, maxCalls);
       const steal = scan.results.find(operation => operation.action === 'stealFriend');
       if (steal) scheduleProductSale(state.revision, { ...steal, sceneRecoveryRequired: scan.sceneRecoveryRequired });
       if (!scan.results.length) return { skipped: true, sceneRecoveryRequired: scan.sceneRecoveryRequired };

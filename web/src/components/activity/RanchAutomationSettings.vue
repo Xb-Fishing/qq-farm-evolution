@@ -101,6 +101,7 @@ const routineActions = [
   { key: 'sellProducts', name: '自动出售剩余可售产物' },
   { key: 'friendSteal', name: '自动偷取好友牧场产物' },
   { key: 'friendClean', name: '自动帮好友清理牧场' },
+  { key: 'friendProduce', name: '自动帮忙生产' },
 ]
 </script>
 
@@ -225,7 +226,7 @@ const routineActions = [
         <p v-if="draft.sellProducts" class="automation-note">
           收获后优先出售未锁定、售价已确认的产物，并为进行中的鸡蛋任务留出需要的数量。
         </p>
-        <p v-if="draft.friendSteal || draft.friendClean" class="automation-note">
+        <p v-if="draft.friendSteal || draft.friendClean || draft.friendProduce" class="automation-note">
           好友牧场单独计时，每轮巡查一位好友并执行已开启的操作。沿用好友黑名单和静默时段。
         </p>
       </fieldset>

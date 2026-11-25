@@ -181,7 +181,7 @@ test('activity projection rejects empty, replayed and unknown results', () => {
 
 test('only fully confirmed automatic ranch results enter daily events, while all outcomes remain in runtime logs', () => {
   const rows = [];
-  const actions = { buy: '自动购买牧草', stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场' };
+  const actions = { buy: '自动购买牧草', stealFriend: '自动偷取好友牧场产物', cleanFriend: '自动帮好友清理牧场', produceFriend: '自动帮忙生产' };
   for (const [action, message] of Object.entries(actions)) {
     for (const result of ['confirmed', 'unknown', 'partial', 'not_sent', 'error']) {
       const meta = { module: 'ranch', event: 'ranch_automation_action', action, completed: 2, result, logKind: 'action' };
@@ -193,11 +193,13 @@ test('only fully confirmed automatic ranch results enter daily events, while all
   }
   assert.deepEqual(rows.map(row => [row[1], row[2]]), [
     ['ranch', actions.buy], ['ranch', `${actions.stealFriend}已确认 · 2 项`], ['ranch', `${actions.cleanFriend}已确认 · 2 项`],
+    ['ranch', `${actions.produceFriend}已确认 · 2 项`],
   ]);
-  const exported = events.buildShareableDailyEventLog(['stealFriend', 'cleanFriend'].map(action => ({
+  const exported = events.buildShareableDailyEventLog(['stealFriend', 'cleanFriend', 'produceFriend'].map(action => ({
     type: 'auto_ranch', message: `${actions[action]}（测试好友昵称）已确认 · 2/2 项`,
   })), { runtimeTerms: [] });
   assert.doesNotMatch(exported, /测试好友昵称/);
   assert.match(exported, /自动偷取好友牧场产物已确认 · 2 项/);
   assert.match(exported, /自动帮好友清理牧场已确认 · 2 项/);
+  assert.match(exported, /自动帮忙生产已确认 · 2 项/);
 });

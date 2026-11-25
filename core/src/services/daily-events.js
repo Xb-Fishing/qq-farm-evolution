@@ -199,7 +199,7 @@ function sanitizeShareableMessage(event, runtimeTerms) {
     }
   }
   if (type === 'auto_ranch') {
-    const label = ['自动偷取好友牧场产物', '自动帮好友清理牧场'].find(value => message.startsWith(`${value}（`));
+    const label = ['自动偷取好友牧场产物', '自动帮好友清理牧场', '自动帮忙生产'].find(value => message.startsWith(`${value}（`));
     if (label) {
       const receipt = message.match(/）已确认 · (\d+)\/\d+ 项/u);
       message = `${label}已确认${receipt ? ` · ${receipt[1]} 项` : ''}`;
