@@ -40,6 +40,20 @@
     "name": "有机罐头（12小时）"
   },
   {
+    "id": 7003,
+    "type": 2,
+    "name": "无机罐头容器",
+    "icon_res": "gui/texture/fertilize/normalFertilizeIcon/spriteFrame",
+    "image": "/game-config/seed_images_named/1011_普通化肥容器_normalFertilizeIcon.png"
+  },
+  {
+    "id": 7004,
+    "type": 2,
+    "name": "有机罐头容器",
+    "icon_res": "gui/texture/fertilize/fertilizePro/spriteFrame",
+    "image": "/game-config/seed_images_named/1012_有机化肥容器_fertilizePro.png"
+  },
+  {
     "id": 1065002,
     "type": 107,
     "name": "巨大鸭蛋"
@@ -48,6 +62,21 @@
     "id": 2065002,
     "type": 106,
     "name": "巨大鸭"
+  },
+  {
+    "id": 1065003,
+    "type": 107,
+    "name": "巨大鹅蛋"
+  },
+  {
+    "id": 2065003,
+    "type": 106,
+    "name": "巨大鹅"
+  },
+  {
+    "id": 1065010,
+    "type": 107,
+    "name": "巨大鼹鼠崽"
   },
   {
     "id": 401008,

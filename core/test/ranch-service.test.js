@@ -1711,6 +1711,45 @@ test('automation logs confirmed purchases with true receipt data and skips manua
   assert.equal(records.length, 1);
 });
 
+test('automatic harvest names reviewed rewards with exact receipt counts and logs confirmation once', async t => {
+  const records = ranchLogs(t);
+  const f = fixture();
+  const rewards = [
+    { id: '1065003', count: '5', name: '巨大鹅蛋' },
+    { id: '1065010', count: '9007199254740993', name: '巨大鼹鼠崽' },
+    { id: '2065003', count: '2', name: '巨大鹅' },
+  ];
+  f.mutateReply = reply => ({
+    ...reply,
+    op_results: reply.op_results.map(row => ({
+      ...row, rewards: rewards.map(({ id, count }) => ({ id, count })),
+    })),
+  });
+  await setOnlyAutomation(f, { harvest: true });
+  const result = await f.service.automate();
+  assert.equal(result.data.outcome, 'confirmed');
+  assert.deepEqual(result.data.rewards, rewards);
+  const actions = () => records.filter(row => row.meta?.event === 'ranch_automation_action');
+  assert.equal(actions().length, 1);
+  const [entry] = actions();
+  assert.equal(entry.tag, '牧场');
+  assert.equal(entry.isWarn, false);
+  assert.equal(entry.meta.action, 'harvest');
+  assert.equal(entry.meta.result, 'confirmed');
+  assert.equal(entry.meta.completed, 1);
+  assert.equal(entry.meta.requested, 1);
+  assert.deepEqual(entry.meta.rewards, rewards.map(({ name, count }) => ({ name, count })));
+  assert.match(entry.message, /自动收获.*巨大鹅蛋×5.*巨大鼹鼠崽×9007199254740993.*巨大鹅×2/);
+  assert.equal((await f.service.execute(result.data.id)).data.replayed, true);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  f.facilities[0].ranch.animals[0].can_harvest = false;
+  f.advance(120000);
+  assert.equal((await f.service.automate()).data.skipped, true);
+  assert.equal(f.calls.filter(method => method === 'HarvestRanch').length, 1);
+  assert.equal(f.writes, 1);
+  assert.equal(actions().length, 1);
+});
+
 test('automation logs true confirmed partial amounts and clearly pauses, without another action entry on repeated ticks', async t => {
   const records = ranchLogs(t);
   const f = fixture();

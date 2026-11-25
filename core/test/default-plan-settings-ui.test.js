@@ -69,17 +69,20 @@ function completeConfig(quietEnabled = false) {
   };
 }
 
-async function mountPage(t, config = completeConfig(), historical = false) {
+async function mountPage(t, config = completeConfig(), { historical = false, planUser } = {}) {
   const calls = [];
   const notifications = [];
-  let stored = { exists: true, enabled: true, updatedAt: 1, config: clone(config) };
+  const store = planUser ? require('../src/models/store') : null;
+  let stored = store
+    ? store.setUserDefaultAccountPlan(planUser, config)
+    : { exists: true, enabled: true, updatedAt: 1, config: clone(config) };
   const api = {
     failure: null,
     async get(url) {
       if (url === '/api/activity/milk-tea/seed-catalog') return { data: { ok: true, seeds: [{id:20525,name:'森野甜莓种子'},{id:21435,name:'森野柿子种子'}] } };
       assert.equal(url, endpoint, 'no production or unrelated API calls');
       calls.push({ method: 'get', url });
-      return { data: { ok: true, data: clone(stored) } };
+      return { data: { ok: true, data: store ? store.getUserDefaultAccountPlan(planUser) : clone(stored) } };
     },
     async put(url, body) {
       assert.equal(url, endpoint, 'no production or unrelated API calls');
@@ -87,7 +90,9 @@ async function mountPage(t, config = completeConfig(), historical = false) {
       if (api.failure === 'throw') throw new Error('synthetic transport failure');
       if (api.failure === 'response')
         return { data: { ok: false, error: 'synthetic rejected save', data: clone(stored) } };
-      stored = { exists: true, enabled: body.enabled, updatedAt: stored.updatedAt + 1, config: clone(body.config) };
+      stored = store
+        ? store.setUserDefaultAccountPlan(planUser, body.config, { enabled: body.enabled })
+        : { exists: true, enabled: body.enabled, updatedAt: stored.updatedAt + 1, config: clone(body.config) };
       return { data: { ok: true, data: clone(stored) } };
     },
   };
@@ -152,7 +157,7 @@ async function setSwitch(page, label, value) {
 test('dedicated milk rewards switch saves and remounts without enabling ordinary tasks', async t => {
   const config = completeConfig();
   config.automation.milk_tea_auto_rewards = false;
-  const page = await mountPage(t, config, true);
+  const page = await mountPage(t, config, { historical: true });
   click(button(page.root, '自动控制')); await vue.nextTick();
   await setSwitch(page, '奶茶自动领奖（满额收银、快乐值）', true);
   const saved = await save(page);
@@ -292,7 +297,7 @@ for (const failure of ['response', 'throw']) {
 }
 
 test('milk seed/work/upgrade preferences and exact budgets survive real default-plan save and remount', async t => {
-  const page = await mountPage(t, completeConfig(), true); await section(page, '自动控制');
+  const page = await mountPage(t, completeConfig(), { historical: true }); await section(page, '自动控制');
   for (const label of ['自动购买活动种子', '自动班次工作（互动与工资）', '自动升级店铺', '森野甜莓种子']) await setSwitch(page, label, true);
   click(button(page.root, '展开高级预算')); await vue.nextTick();
   await setInput(page, '奶茶券每日上限', '0');
@@ -304,11 +309,11 @@ test('milk seed/work/upgrade preferences and exact budgets survive real default-
   page.api.failure = 'response'; await save(page); assert.ok(page.notifications.some(row => row[1] === 'danger'));
 });
 
-test('full milk preset and separate hire budget survive default-plan reload and invalid hire policy makes zero PUT', async t => {
+test('historical full milk preset and separate hire budget survive default-plan reload', async t => {
   const config = completeConfig();
   config.automation.milk_tea_seed_policy = { targetSeedIds: [21435], targetStock: 24, coinReserve: '1000000', coinDailyLimit: '180000', ticketReserve: '8000', ticketDailyLimit: '0' };
   config.automation.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '80', ticketReserve: '9000' };
-  const page = await mountPage(t, config, true); await section(page, '自动控制');
+  const page = await mountPage(t, config, { historical: true }); await section(page, '自动控制');
   click(button(page.root, '推荐全自动（保留目标与额度）')); await vue.nextTick();
   const saved = await save(page);
   assert.equal(saved.automation.milk_tea_auto_craft, true); assert.equal(saved.automation.milk_tea_auto_hire, true);
@@ -316,10 +321,42 @@ test('full milk preset and separate hire budget survive default-plan reload and 
   assert.equal(saved.automation.milk_tea_hire_policy.ticketDailyLimit, '80'); assert.equal(saved.automation.milk_tea_seed_policy.ticketDailyLimit, '0');
   assert.deepEqual(saved.automation.milk_tea_seed_policy.targetSeedIds, [21435]);
   await page.reload(); await section(page, '自动控制'); assert.equal(input(page.root, '自动雇佣员工').checked, true);
-  click(button(page.root, '展开高级预算')); await vue.nextTick(); await setInput(page, '雇佣每日上限（奶茶券）', '-1');
-  const before = page.calls.filter(row => row.method === 'put').length;
+});
+
+test('current default plan saves and reloads ordinary edits with normalized disabled legacy policies', async t => {
+  const store = require('../src/models/store');
+  const planUser = 'synthetic-legacy-plan';
+  const otherUser = 'synthetic-other-plan';
+  const otherPlan = store.setUserDefaultAccountPlan(otherUser, completeConfig(true));
+  const config = completeConfig();
+  config.automation.milk_tea_auto_hire = true;
+  config.automation.milk_tea_hire_policy = { durationId: 1, ticketDailyLimit: '-1', ticketReserve: '9000' };
+  config.automation.milk_tea_auto_seeds = true;
+  config.automation.milk_tea_seed_policy = { targetSeedIds: [20525], targetStock: 24, coinDailyLimit: '-1' };
+  const page = await mountPage(t, config, { planUser });
+  const initial = store.getUserDefaultAccountPlan(planUser).config.automation;
+  const legacy = Object.fromEntries(Object.entries(initial).filter(([key]) => key.startsWith('milk_tea_')));
+  assert.equal(legacy.milk_tea_auto_hire, true);
+  assert.deepEqual(legacy.milk_tea_hire_policy, { durationId: 0, ticketDailyLimit: '0', ticketReserve: '8000' });
+  assert.equal(legacy.milk_tea_auto_seeds, true);
+  await section(page, '自动控制');
+  assert.doesNotMatch(textOf(page.root), /自动雇佣员工|自动购买活动种子/);
+  await setSwitch(page, '自动做任务', true);
   click(button(page.root, '保存默认方案')); await flush();
-  assert.equal(page.calls.filter(row => row.method === 'put').length, before); assert.match(page.notifications.at(-1)[0], /雇佣/);
+  assert.deepEqual(page.calls.map(({ method }) => method), ['get', 'put']);
+  const sent = page.calls[1].body.config.automation;
+  const persisted = store.getUserDefaultAccountPlan(planUser).config.automation;
+  assert.equal(sent.task, true);
+  for (const [key, value] of Object.entries(legacy)) {
+    assert.deepEqual(sent[key], value, key);
+    assert.deepEqual(persisted[key], value, key);
+  }
+  assert.deepEqual(page.notifications, [['默认方案已保存']]);
+  await page.reload();
+  await section(page, '自动控制');
+  assert.equal(input(page.root, '自动做任务').checked, true);
+  assert.deepEqual(page.calls.map(({ method }) => method), ['get', 'put', 'get']);
+  assert.deepEqual(store.getUserDefaultAccountPlan(otherUser), otherPlan);
 });
 
 test('shared timing panel drops dead steal interval inputs and renders maturity scheduling note', async (t) => {
