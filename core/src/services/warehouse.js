@@ -826,10 +826,14 @@ const lastUnclassifiedReportedIds = new Set();
 let lastFallbackSeedSignature = '';
 const lastFallbackSeedReportedIds = new Set();
 
+function sampleUnclassifiedIds(ids) {
+  return [...ids].sort((a, b) => a - b).slice(0, 20);
+}
+
 function getBagSeedsFromItems(items) {
   const seedMap = new Map();
   const fallbackSeedIds = [];
-  const unclassifiedIds = [];
+  const unknownIds = new Set();
 
   for (const item of items || []) {
     const id = toNum(item && item.id);
@@ -844,7 +848,7 @@ function getBagSeedsFromItems(items) {
     if (!seedLike) {
       // 只记录本地索引完全没有条目的未知物品（可能是新活动种子/道具）；
       // 已知果实、化肥、货币等非种子物品不算识别缺口，不记录避免刷屏。
-      if (!info && unclassifiedIds.length < 20) unclassifiedIds.push(id);
+      if (!info && Number.isFinite(id)) unknownIds.add(id);
       continue;
     }
 
@@ -875,14 +879,14 @@ function getBagSeedsFromItems(items) {
     seedMap.set(id, existing);
   }
 
-  // 面板刷屏修复：未识别清单没有变化时不重复打日志（Bag 每个农场 tick 都读一次，
-  // 原实现同一批未知物品会每轮刷一条）。签名变化（新增/消失）时才报。
+  // 先去重、排序再采样，使签名与背包行顺序和重复行无关。
+  const unclassifiedIds = sampleUnclassifiedIds(unknownIds);
   const unclassifiedSignature = unclassifiedIds.join(',');
   if (unclassifiedIds.length > 0 && unclassifiedSignature !== lastUnclassifiedSignature) {
     lastUnclassifiedSignature = unclassifiedSignature;
     const added = unclassifiedIds.filter(id => !lastUnclassifiedReportedIds.has(id));
     for (const id of unclassifiedIds) lastUnclassifiedReportedIds.add(id);
-    log('warehouse', `bag contains items missing from local item index: ${unclassifiedIds.join(',')}`, {
+    log('warehouse', `bag contains items missing from local item index: ${unclassifiedSignature}`, {
       module: 'warehouse',
       event: 'bag_unclassified_item',
       result: 'unknown_item_ids',
@@ -985,7 +989,9 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
       panelBagCache = value.panelBagCache;
       panelBagCacheAt = value.panelBagCacheAt;
       panelBagRetryAfter = value.panelBagRetryAfter;
-      lastUnclassifiedSignature = value.lastUnclassifiedSignature;
+      const previousIds = new Set(value.lastUnclassifiedSignature.split(',').map(Number)
+        .filter(id => Number.isFinite(id) && id > 0));
+      lastUnclassifiedSignature = sampleUnclassifiedIds(previousIds).join(',');
       restoreContainer(lastUnclassifiedReportedIds, value.lastUnclassifiedReportedIds);
       lastFallbackSeedSignature = value.lastFallbackSeedSignature;
       restoreContainer(lastFallbackSeedReportedIds, value.lastFallbackSeedReportedIds);

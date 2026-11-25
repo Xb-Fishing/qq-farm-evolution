@@ -223,43 +223,94 @@ test('枸杞 2026-09-23 Bag 出现,按快照+Plant+Bag 三方证据登记', () =
   assert.equal(getPlantBySeedId(0), undefined);
 });
 
-test('bag_unclassified_item 日志按清单签名去重,不再每个农场 tick 刷屏', () => {
-  // warehouse 在 require 时解构 utils.log,重载 utils 模块后再重载 warehouse 捕获日志
+function observeUnclassifiedBag(t, { sessionBusiness = false } = {}) {
   const utilsPath = require.resolve('../src/utils/utils');
   const warehousePath = require.resolve('../src/services/warehouse');
-  const previousUtils = require.cache[utilsPath];
-  const previousWarehouse = require.cache[warehousePath];
+  const inboxPath = require.resolve('../src/services/evolution-issue-inbox');
+  const statePath = require.resolve('../src/services/business-state');
+  const paths = [utilsPath, warehousePath, inboxPath];
+  if (sessionBusiness) paths.push(statePath);
+  const previous = paths.map(filename => [filename, require.cache[filename]]);
+  const previousSessionBusiness = process.env.FARM_SESSION_BUSINESS;
+  t.after(() => {
+    for (const [filename, cached] of previous) {
+      if (cached === undefined) delete require.cache[filename];
+      else require.cache[filename] = cached;
+    }
+    if (sessionBusiness) {
+      if (previousSessionBusiness === undefined) delete process.env.FARM_SESSION_BUSINESS;
+      else process.env.FARM_SESSION_BUSINESS = previousSessionBusiness;
+    }
+  });
+
   const logs = [];
-  const utilsMod = require('../src/utils/utils');
+  const issues = [];
   require.cache[utilsPath] = mockModule(utilsPath, {
-    ...utilsMod,
-    log: (tag, message, meta) => logs.push({ message, meta }),
+    ...require('../src/utils/utils'),
+    log: (tag, message, meta) => {
+      if (meta?.event === 'bag_unclassified_item') logs.push({ message, meta });
+    },
     logWarn: () => {},
   });
-  delete require.cache[warehousePath];
-  try {
-    const { getBagSeedsFromItems: getSeeds } = require('../src/services/warehouse');
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 1);
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 1,
-      'same signature must not log again');
-    // 新增 ID 时重新报告
-    getSeeds([{ id: 4299981, count: 1 }, { id: 4299982, count: 1 }]);
-    const logged = logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item');
-    assert.equal(logged.length, 2);
-    assert.deepEqual(logged[1].meta.addedItemIds, [4299982]);
-    // 清单清空后复位,再出现可重新报告
-    getSeeds([{ id: 29004, count: 3 }]);
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(logs.filter(l => l.meta && l.meta.event === 'bag_unclassified_item').length, 3,
-      'after reset, new unknown should log again');
-  } finally {
-    delete require.cache[warehousePath];
-    if (previousUtils === undefined) delete require.cache[utilsPath];
-    else require.cache[utilsPath] = previousUtils;
-    if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
+  require.cache[inboxPath] = mockModule(inboxPath, {
+    recordRuntimeIssue: (type, level) => {
+      issues.push({ type, level });
+      return true;
+    },
+  });
+  let state;
+  if (sessionBusiness) {
+    delete require.cache[statePath];
+    process.env.FARM_SESSION_BUSINESS = '1';
+    state = require(statePath);
   }
+  delete require.cache[warehousePath];
+  return { getSeeds: require(warehousePath).getBagSeedsFromItems, logs, issues, state };
+}
+
+test('背包未知物品按集合去重，子集变化、新增和清空保留原有提醒规则', t => {
+  const { getSeeds, logs, issues } = observeUnclassifiedBag(t);
+  const lower = { id: 4299981, count: 1 };
+  const higher = { id: 4299982, count: 1 };
+  const newest = { id: 4299983, count: 1 };
+  const seed = { id: 29004, count: 3 };
+  const [seedDto] = getSeeds([seed]);
+  assert.equal(seedDto.seedId, 29004);
+  assert.equal(seedDto.count, 3);
+  assert.equal(seedDto.mappingStatus, 'mapped');
+
+  const mixed = [lower, seed, higher, { ...seed, count: 2 }];
+  assert.deepEqual(getSeeds(mixed), [{ ...seedDto, count: 5 }]);
+  assert.deepEqual(getSeeds([...mixed].reverse()), [{ ...seedDto, count: 5 }]);
+  assert.deepEqual(getSeeds([...mixed, lower, higher]), [{ ...seedDto, count: 5 }]);
+  assert.equal(logs.length, 1, '同一未知集合的反序和重复库存行只记录一次');
+  assert.equal(logs[0].message, 'bag contains items missing from local item index: 4299981,4299982');
+  assert.equal(logs[0].meta.count, 2);
+  assert.deepEqual(logs[0].meta.unclassifiedItemIds, [lower.id, higher.id]);
+  assert.deepEqual(logs[0].meta.addedItemIds, [lower.id, higher.id]);
+  assert.deepEqual(issues, [{ type: 'bag_unclassified', level: 'warn' }]);
+
+  getSeeds([newest, higher, lower]);
+  assert.equal(logs.length, 2);
+  assert.deepEqual(logs[1].meta.unclassifiedItemIds, [lower.id, higher.id, newest.id]);
+  assert.deepEqual(logs[1].meta.addedItemIds, [newest.id]);
+  assert.equal(issues.length, 2);
+
+  getSeeds([higher]);
+  getSeeds([higher, lower]);
+  assert.equal(logs.length, 4);
+  assert.deepEqual(logs[2].meta.unclassifiedItemIds, [higher.id]);
+  assert.deepEqual(logs[3].meta.unclassifiedItemIds, [lower.id, higher.id]);
+  assert.deepEqual(logs.slice(2).map(entry => entry.meta.addedItemIds), [[], []]);
+  assert.equal(issues.length, 2);
+
+  getSeeds([seed]);
+  assert.equal(logs.length, 4);
+  assert.equal(issues.length, 2);
+  getSeeds([lower]);
+  assert.equal(logs.length, 5);
+  assert.deepEqual(logs[4].meta.addedItemIds, [lower.id]);
+  assert.equal(issues.length, 3);
 });
 
 test('月下美人 2026-09-25/26 Bag 出现,按镜像配置快照+Plant+Bag 三方证据登记', () => {
@@ -405,49 +456,69 @@ test('寒兰登记后审计零缺口且不新增通用回退', () => {
   assert.deepEqual(getGenericFallbackItemIds(), []);
 });
 
-test('bag_unclassified 签名变化同步进运行时待办,同签名不风暴', () => {
-  const utilsPath = require.resolve('../src/utils/utils');
-  const warehousePath = require.resolve('../src/services/warehouse');
-  const inboxPath = require.resolve('../src/services/evolution-issue-inbox');
-  const previousUtils = require.cache[utilsPath];
-  const previousWarehouse = require.cache[warehousePath];
-  const previousInbox = require.cache[inboxPath];
-  const recorded = [];
-  const utilsMod = require('../src/utils/utils');
-  require.cache[utilsPath] = mockModule(utilsPath, {
-    ...utilsMod,
-    log: () => {},
-    logWarn: () => {},
+test('背包未知集合超限时按唯一数字 ID 取最小的 20 项', t => {
+  const { getSeeds, logs, issues } = observeUnclassifiedBag(t);
+  const unknown = [
+    { id: 929999, count: 1 },
+    ...Array.from({ length: 23 }, (_, i) => ({ id: 4300010 + i, count: 1 })),
+    { id: 39999999, count: 1 },
+  ];
+  const seed = { id: 29004, count: 3 };
+  const shownSeed = { id: 4300003, count: 2, showName: '神秘花种子' };
+  const mixed = [
+    ...[...unknown].reverse(), unknown.at(-1), unknown[0],
+    { id: 4300001, count: 0 }, { id: 4300002, count: -1 }, { id: 5006, count: 7 },
+    seed, shownSeed,
+  ];
+  const expected = unknown.slice(0, 20).map(item => item.id);
+
+  assert.deepEqual(getSeeds(mixed).map(item => [item.seedId, item.count]), [[seed.id, 3], [shownSeed.id, 2]]);
+  assert.equal(logs[0].meta.count, 20);
+  assert.deepEqual(logs[0].meta.unclassifiedItemIds, expected);
+  assert.deepEqual(logs[0].meta.addedItemIds, expected);
+  getSeeds([...mixed].reverse());
+  assert.equal(logs.length, 1);
+  assert.deepEqual(issues.filter(issue => issue.type === 'bag_unclassified'), [
+    { type: 'bag_unclassified', level: 'warn' },
+  ]);
+});
+
+test('真实仓库胶囊恢复旧乱序重复签名并保留已报告集合', t => {
+  const { getSeeds, logs, issues, state } = observeUnclassifiedBag(t, { sessionBusiness: true });
+  const { encode, decode } = require('../src/runtime/session-codec');
+  const domain = 'services/warehouse.js';
+  const lower = { id: 4299981, count: 1 };
+  const higher = { id: 4299982, count: 1 };
+  const historical = { id: 4299983, count: 1 };
+  const newest = { id: 4299984, count: 1 };
+  const legacy = decode(encode(state.snapshotBusinessState()));
+  assert.equal(legacy.version, 1);
+  assert.equal(legacy.domains[domain].version, 1);
+  const value = legacy.domains[domain].value;
+  value.lastUnclassifiedSignature = [higher.id, lower.id, higher.id].join(',');
+  value.lastUnclassifiedReportedIds = new Set([historical.id, higher.id, lower.id]);
+
+  state.restoreBusinessState(legacy);
+  const restored = state.snapshotBusinessState().domains[domain];
+  assert.deepEqual(restored, {
+    version: 1,
+    value: { ...value, lastUnclassifiedSignature: [lower.id, higher.id].join(',') },
   });
-  require.cache[inboxPath] = mockModule(inboxPath, {
-    recordRuntimeIssue: (type, level) => {
-      recorded.push({ type, level });
-      return true;
-    },
-  });
-  delete require.cache[warehousePath];
-  try {
-    const { getBagSeedsFromItems: getSeeds } = require('../src/services/warehouse');
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(recorded.length, 1, 'first unknown id must enter the issue inbox');
-    assert.deepEqual(recorded[0], { type: 'bag_unclassified', level: 'warn' });
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(recorded.length, 1, 'same signature must not storm the inbox');
-    // 签名变化但只是旧 ID 消失（无新增）：不刷待办次数
-    getSeeds([{ id: 4299982, count: 1 }]);
-    assert.equal(recorded.length, 2);
-    // 全部补齐后复位，再出现可重新上报
-    getSeeds([{ id: 29004, count: 3 }]);
-    getSeeds([{ id: 4299981, count: 1 }]);
-    assert.equal(recorded.length, 3, 'after reset, new unknown must re-enter the inbox');
-  } finally {
-    delete require.cache[warehousePath];
-    if (previousUtils === undefined) delete require.cache[utilsPath];
-    else require.cache[utilsPath] = previousUtils;
-    if (previousInbox === undefined) delete require.cache[inboxPath];
-    else require.cache[inboxPath] = previousInbox;
-    if (previousWarehouse !== undefined) require.cache[warehousePath] = previousWarehouse;
-  }
+  assert.deepEqual([...restored.value.lastUnclassifiedReportedIds], [historical.id, higher.id, lower.id]);
+  getSeeds([higher, lower, higher]);
+  getSeeds([lower, higher]);
+  assert.equal(logs.length, 0);
+  assert.equal(issues.length, 0);
+
+  getSeeds([historical, lower, higher]);
+  assert.equal(logs.length, 1);
+  assert.deepEqual(logs[0].meta.addedItemIds, []);
+  assert.equal(issues.length, 0);
+  getSeeds([newest, lower, higher, historical]);
+  assert.equal(logs.length, 2);
+  assert.deepEqual(logs[1].meta.unclassifiedItemIds, [lower.id, higher.id, historical.id, newest.id]);
+  assert.deepEqual(logs[1].meta.addedItemIds, [newest.id]);
+  assert.deepEqual(issues, [{ type: 'bag_unclassified', level: 'warn' }]);
 });
 
 test('乌云使坏瓶 5006 按快照登记,非种子只读展示且不新增使用/出售能力', async () => {
