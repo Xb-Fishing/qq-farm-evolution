@@ -26,6 +26,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   watchlistPollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:watchlistPollTick', watchlistPollTick);
 }
+const { parentPort } = require('node:worker_threads');
 const { CONFIG } = require('../config/config');
 const {
   isAutomationOn,
@@ -744,10 +745,18 @@ async function bootstrapFriendDogInfoCacheIfNeeded() {
 }
 
 function syncAutomationPatchToMaster(patch) {
-  postToMaster({
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  // Worker 只更新自己的内存，由主进程基于最新配置落盘。
+  // Worker 的整份 store 快照可能已经过期，写回会覆盖其它账号的黑名单。
+  applyConfigSnapshot(patch, { accountId, persist: false });
+  const synced = postToMaster({
     type: 'automation_patch',
     patch,
   });
+  // 仅独立运行时直接保存；托管 Worker 的 IPC 失败也不能写旧快照。
+  if (!synced && !process.send && !parentPort) {
+    applyConfigSnapshot(patch, { accountId });
+  }
 }
 
 function resetBadFailureCount() {
@@ -764,12 +773,7 @@ function getLocalDateKey(offsetDays = 0) {
 }
 
 function pauseFriendBadUntilTomorrow(reason) {
-  const accountId = process.env.FARM_ACCOUNT_ID || '';
   const retryDate = getLocalDateKey(1);
-  applyConfigSnapshot(
-    { friendBadRetryDate: retryDate },
-    { accountId }
-  );
   syncAutomationPatchToMaster({ friendBadRetryDate: retryDate });
   resetBadFailureCount();
   log('好友', `捣乱连续失败 ${BAD_FAILURE_LIMIT} 次，已暂停至 ${retryDate} 再尝试。最后错误: ${reason || '未知'}`, {
@@ -788,7 +792,6 @@ function isFriendBadPaused() {
   if (!retryDate) return false;
   if (getLocalDateKey() < retryDate) return true;
 
-  applyConfigSnapshot({ friendBadRetryDate: '' }, { accountId });
   syncAutomationPatchToMaster({ friendBadRetryDate: '' });
   resetBadFailureCount();
   return false;

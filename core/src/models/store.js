@@ -1993,8 +1993,10 @@ function setUserDefaultAccountPlan(username, rawConfig, options = {}) {
 function applyUserDefaultAccountPlan(username, accountId) {
     const plan = getUserDefaultAccountPlan(username);
     if (!plan.exists) throw new Error('尚未保存默认方案');
-    const kickoutRelogin = plan.config.kickoutRelogin ?? getAccountConfigSnapshot(accountId).kickoutRelogin;
-    setAccountConfigSnapshot(accountId, { ...plan.config, kickoutRelogin });
+    const currentConfig = getAccountConfigSnapshot(accountId);
+    const kickoutRelogin = plan.config.kickoutRelogin ?? currentConfig.kickoutRelogin;
+    // 默认方案只替换策略设置，保留账号独有的好友名单等数据。
+    setAccountConfigSnapshot(accountId, { ...currentConfig, ...plan.config, kickoutRelogin });
     return getConfigSnapshot(accountId);
 }
 
