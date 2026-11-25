@@ -192,9 +192,48 @@ test('automatic friend applications defer via the existing task and recheck afte
   assert.equal(reads, 2); assert.equal(accepts, 1, 'a completed read must not start automatic acceptance after quiet begins');
 });
 
+const availableStartupQuota = {
+  BAD_SHARED_OPERATION_ID: 10003,
+  checkDailyReset() {},
+  canOperateBad: () => true,
+  getOperationLimits: () => ({ 10003: {} }),
+};
+
+test('actual startup mischief producer skips the roster when shared quota is exhausted', async () => {
+  const limits = require('../src/services/friend-operation-limits');
+  const { BAD_SHARED_OPERATION_ID: id } = limits;
+  const exhausted = { id, day_times: 20, day_times_lt: 20 };
+  let serverLimit = exhausted;
+  let farmReads = 0;
+  let friendReads = 0;
+  const c = scope({ ...limits, badExecutedOnStartup: false, isAutomationOn: () => true, isFriendBadPaused: () => false,
+    getUserState: () => ({ gid: 42 }), log() {},
+    require(name) {
+      assert.equal(name, './farm-api');
+      return { getAllLands: async () => { farmReads++; return { operation_limits: [serverLimit] }; } };
+    },
+    getAllFriends: async () => { friendReads++; return { friends: [] }; },
+    extractReplyFriends: reply => reply.friends,
+  }, [['services/friend-orchestrator.js', 'runBadOnceOnStartup']]);
+
+  clock('2026-10-24T08:00:00+08:00');
+  limits.updateOperationLimits([exhausted]);
+  await c.runBadOnceOnStartup(true);
+  assert.deepEqual([farmReads, friendReads], [0, 0], 'known exhausted quota skips all reads');
+
+  clock('2026-10-25T08:00:00+08:00');
+  await c.runBadOnceOnStartup();
+  assert.deepEqual([farmReads, friendReads], [1, 0], 'cold start reads quota before any roster request');
+
+  clock('2026-10-26T08:00:00+08:00');
+  serverLimit = { ...exhausted, day_times: 19 };
+  await c.runBadOnceOnStartup();
+  assert.deepEqual([farmReads, friendReads], [2, 1], 'available quota allows the run');
+});
+
 test('actual startup mischief producer does not read friends during daily quiet', async () => {
   let calls = 0;
-  const c = scope({ badExecutedOnStartup: false, isAutomationOn: () => true, isFriendBadPaused: () => false,
+  const c = scope({ ...availableStartupQuota, badExecutedOnStartup: false, isAutomationOn: () => true, isFriendBadPaused: () => false,
     getUserState: () => ({ gid: 42 }), log() {},
     getAllFriends: async () => { calls++; return {}; }, extractReplyFriends: () => [],
   }, [['services/friend-orchestrator.js', 'runBadOnceOnStartup']]);
@@ -264,10 +303,10 @@ test('automatic fertilizer batches retain the completed purchase and stop the ne
 
 test('startup mischief remains pending when the friend read crosses quiet and runs normally after resume', async () => {
   let visits = 0; let cross = true;
-  const c = scope({ badExecutedOnStartup: false, isAutomationOn: () => true, isFriendBadPaused: () => false,
+  const c = scope({ ...availableStartupQuota, badExecutedOnStartup: false, isAutomationOn: () => true, isFriendBadPaused: () => false,
     getUserState: () => ({ gid: 42 }), log() {}, logWarn() {}, toNum: Number, getFriendBlacklist: () => [],
     getAllFriends: async () => { if (cross) clock('2026-10-22T02:04:00+08:00'); return { friends: [{ gid: 84, level: 10, name: 'Synthetic' }] }; },
-    extractReplyFriends: reply => reply.friends, canOperateBad: () => true, friendReadLifecycleSeq: 1,
+    extractReplyFriends: reply => reply.friends, friendReadLifecycleSeq: 1,
     visitFriend: async () => { visits++; return {}; }, applyStealVisitResult() {}, trackBadVisitResult: () => false,
     recordBadFailure: () => false, isTransientNetworkError: () => false, randomDelay: async () => {},
   }, [['services/friend-orchestrator.js', 'runBadOnceOnStartup']]);

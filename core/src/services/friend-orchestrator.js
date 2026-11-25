@@ -94,8 +94,10 @@ const {
   clearAllInvalidKnownFriendGidCooldown,
 } = require('./friend-api');
 const {
+  BAD_SHARED_OPERATION_ID,
   checkDailyReset,
   canOperateBad,
+  getOperationLimits,
   getCanGetHelpExp,
   getHelpAutoDisabledByLimit,
   updateOperationLimits,
@@ -1557,12 +1559,27 @@ async function runBadOnceOnStartup(force = false) {
   const accountId = process.env.FARM_ACCOUNT_ID || '';
   const label = force ? '开启自动捣乱后立即执行' : '启动时放虫放草';
 
-  log('好友', `========== ${label}开始 ==========`, {
-    module: 'friend',
-    event: `${label}开始`,
-  });
-
   try {
+    checkDailyReset();
+    if (canOperateBad() && !getOperationLimits()[BAD_SHARED_OPERATION_ID]) {
+      const { operation_limits: limits } = await require('./farm-api').getAllLands();
+      if (getPauseRemainMs(accountId) > 0) return;
+      // The farm read normally updates the cache through its registered callback.
+      if (!getOperationLimits()[BAD_SHARED_OPERATION_ID]) updateOperationLimits(limits);
+    }
+    if (!canOperateBad()) {
+      log('好友', `${label}跳过：今日放虫放草次数已用完`, {
+        module: 'friend',
+        event: '放虫放草次数用完',
+        processedCount: 0,
+      });
+      return;
+    }
+
+    log('好友', `========== ${label}开始 ==========`, {
+      module: 'friend',
+      event: `${label}开始`,
+    });
     const allFriendsReply = await getAllFriends();
     if (getPauseRemainMs(accountId) > 0) return;
     const rawFriends = extractReplyFriends(allFriendsReply);
