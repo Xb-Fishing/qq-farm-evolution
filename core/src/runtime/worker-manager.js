@@ -997,7 +997,20 @@ function createWorkerManager(deps) {
         // Revoke the canonical fence synchronously, even without a proxy record.
         if (account) deps.store.addOrUpdateAccount({ id: accountId }, { revokeSession: true });
         try {
-            if (wrk?.process?.persistentSession) await wrk.process.kill();
+            if (wrk?.process?.persistentSession) {
+                try {
+                    await wrk.process.kill();
+                } catch (error) {
+                    if (!account) throw error;
+                    // A terminal host may have exited before its proxy observed the exit.
+                    // Allow a restart only after the registry and lock confirm it is gone.
+                    const registry = require('./session-registry');
+                    const found = registry.descriptorFor(dataDir, account);
+                    const hostGone = found.state === 'absent' || (found.state === 'stale'
+                        && !registry.processIsLive(found.descriptor?.pid, found.descriptor?.starttime));
+                    if (!hostGone || registry.lockIsHeld(found.paths.lock)) throw error;
+                }
+            }
             else if (account) {
                 const found = await require('./session-registry').connectSession(dataDir, account);
                 if (found.state === 'present') {

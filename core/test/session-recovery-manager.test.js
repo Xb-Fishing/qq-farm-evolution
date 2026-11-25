@@ -95,7 +95,8 @@ function fixture(options = {}) {
   const createProxy = settings => {
     created++;
     if (created === 1) return proc;
-    assert.equal(settings.adoptOnly, true, 'recovery cannot create a host');
+    assert.equal(settings.adoptOnly, !options.closedHost, 'only an explicit restart may create a new host');
+    if (options.closedHost) assert.equal(settings.account.code, 'fresh-scan-code');
     const next = new EventEmitter(); Object.assign(next, { persistentSession: true, businessInitialized: false, exitCode: null,
       sessionFacts: proc.sessionFacts, send() {}, detach: async () => {}, kill: async () => { stops++; } });
     next.ready = Promise.resolve().then(() => {
@@ -107,7 +108,9 @@ function fixture(options = {}) {
     next.refreshSession = async () => { await next.ready; return { facts: next.sessionFacts }; };
     return next;
   };
-  const registry = { ...native('./session-registry'), ...(options.lookupState ? { lockIsHeld: () => options.lockHeld === true, processIsLive: () => false } : {}), connectSession: async (_dataDir, _account, connectOption) => {
+  const registry = { ...native('./session-registry'), ...(options.lookupState || options.closedHost ? { lockIsHeld: () => options.lockHeld === true, processIsLive: () => false } : {}),
+    ...(options.closedHost ? { descriptorFor: () => ({ state: options.closedHost, paths: { lock: '/synthetic/account.lock' } }) } : {}),
+    connectSession: async (_dataDir, _account, connectOption) => {
     lookups++;
     connectOptions.push(connectOption);
     if (options.lookupState) return { state: options.lookupState };
@@ -156,7 +159,7 @@ function fixture(options = {}) {
   }
   const workers = {}; const manager = module.exports.createWorkerManager({ runtimeMode: 'persistent', processRef: { pkg: false, env: {} },
     mainEntryPath: '/synthetic/core/client.js', workerScriptPath: '', workers, globalLogs: [], fork: () => { forks++; },
-    store: { ensureAccountSessionMetadata: () => account }, getAccounts: () => ({ accounts: [account] }),
+    store: { ensureAccountSessionMetadata: () => account, addOrUpdateAccount: () => {} }, getAccounts: () => ({ accounts: [account] }),
     log: (tag, msg, meta) => {
       logs.push({ tag, msg, meta });
       if (options.diagnosticSinkFailure && meta?.event === 'session_control_recovery_failed') throw new Error('SYNTHETIC_SECRET diagnostic sink failure');
@@ -177,6 +180,27 @@ function fixture(options = {}) {
     connectOptions, statusCalls, clientCloses: () => clientCloses, gates, rpc: rpcTransport,
     counts: () => ({ reloads, stops, forks }), created: () => created, release: () => release?.() };
 }
+
+test('explicit restart submits the fresh scan code after its stale proxy loses the old host', async () => {
+  const f = fixture({ closedHost: 'absent' });
+  await f.manager.startWorker(f.account);
+  f.proc.kill = async () => { throw new Error('Cannot verify session closure'); };
+  f.account.code = 'fresh-scan-code';
+  assert.equal(await f.manager.restartWorker(f.account), true);
+  assert.equal(f.created(), 2);
+  await f.manager.detachAll();
+});
+
+test('explicit restart does not start a new host if closure is unknown or the old lock is held', async () => {
+  for (const options of [{ closedHost: 'unknown' }, { closedHost: 'absent', lockHeld: true }]) {
+    const f = fixture(options);
+    await f.manager.startWorker(f.account);
+    f.proc.kill = async () => { throw new Error('Cannot verify session closure'); };
+    await assert.rejects(f.manager.restartWorker(f.account), /Cannot verify session closure/);
+    assert.equal(f.created(), 1);
+    await f.manager.detachAll();
+  }
+});
 
 test('actual manager repairs the retired business once while preserving its host and credentials', async () => {
   const f = fixture(); await f.manager.startWorker(f.account); f.fail(); f.fail();

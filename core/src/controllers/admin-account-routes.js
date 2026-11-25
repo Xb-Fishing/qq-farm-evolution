@@ -401,12 +401,14 @@ function registerAdminAccountRoutes({
           && current.credentialGeneration === scanGeneration
           && canAccessAccount(req, nextAccount.id);
       };
+      let reminder;
+      let acceptedScanGeneration;
       if (wxScan) {
         const reminderAccountId = isUpdate ? String(nextAccount.id) : String((data.accounts.at(-1) || {}).id || "");
         if (reminderAccountId && (!existingWxScan || isCurrentScan())) {
           try {
-            const reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
-            await reminder.noteAcceptedScan(reminderAccountId, existingWxScan
+            reminder = require("../services/wx-login-reminder").getSharedWxLoginReminder();
+            acceptedScanGeneration = await reminder.noteAcceptedScan(reminderAccountId, existingWxScan
               ? { owner: originalOwner, wxid: body.wxid, guard: isCurrentScan } : {});
           } catch { /* 提醒状态更新失败不阻断已保存的扫码 */ }
         }
@@ -426,6 +428,8 @@ function registerAdminAccountRoutes({
 
       let autoRefreshEnabled = false;
       let startQueued = false;
+      let recoveryQueued = false;
+      let retryAvailable = false;
       let startupState;
       if (!isUpdate) {
         const created = data.accounts.at(-1);
@@ -456,12 +460,13 @@ function registerAdminAccountRoutes({
         }
       } else if (existingWxScan) {
         const held = () => lookup(nextAccount.id)?.autoLogin === false;
+        const canStart = () => isCurrentScan() && !held();
         if (!isCurrentScan()) startupState = "superseded";
         else if (held()) startupState = "held_offline";
         else {
           try {
             if (provider.isAccountRunning?.(nextAccount.id)) {
-              const restarted = await provider.restartAccount(nextAccount.id, { isCurrent: () => isCurrentScan() && !held() });
+              const restarted = await provider.restartAccount(nextAccount.id, { isCurrent: canStart });
               startQueued = restarted !== false;
             } else {
               if (typeof provider.saveAutoCodeRefresh === "function") {
@@ -476,6 +481,22 @@ function registerAdminAccountRoutes({
               }
             }
           } catch { /* 已保存的授权必须如实返回，不能当作保存失败重复消费 */ }
+          if (!startQueued && canStart() && acceptedScanGeneration) {
+            try {
+              const checkpoint = await reminder.noteScanCodePending(nextAccount.id, {
+                generation: acceptedScanGeneration,
+                owner: originalOwner,
+                wxid: body.wxid,
+                stage: "start_pending",
+                error: "微信授权已保存，农场登录提交失败",
+                guard: canStart,
+              });
+              retryAvailable = Boolean(checkpoint);
+              if (retryAvailable && canStart()) {
+                recoveryQueued = provider.scheduleRescanRecovery?.(nextAccount.id, "start_refused") === true;
+              }
+            } catch { /* 恢复状态写入失败不改变授权已保存的事实 */ }
+          }
           startupState = !isCurrentScan() ? "superseded" : held() ? "held_offline" : startQueued ? "submitted" : "not_started";
           startQueued = startupState === "submitted";
           if (startupState === "not_started") {
@@ -491,7 +512,8 @@ function registerAdminAccountRoutes({
       res.json({
         ok: true,
         data: bridgeAccount ? visibleAccounts() : provider.getAccounts(),
-        startup: { queued: startQueued, autoRefreshEnabled, ...(startupState && { state: startupState }) },
+        startup: { queued: startQueued, autoRefreshEnabled, ...(startupState && { state: startupState }),
+          ...(retryAvailable && startupState === "not_started" && { retryAvailable: true, recoveryQueued }) },
         ...(bridgeAccount ? { bridge: bridgeResponse(isUpdate ? (wasRunning ? 'saved_online' : 'saved_offline') : 'created') } : {}),
         clientVersion: gateway ? gateway.clientVersion : "",
         clientVersionUpdated,

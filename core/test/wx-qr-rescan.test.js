@@ -70,7 +70,8 @@ async function setup() {
   const account = { id: 'fixture-account', username: 'fixture-owner', platform: 'wx',
     loginType: 'wx_qr', wxid: 'fixture-openid', loginBuffer: 'old-buffer', refreshtoken: 'old-refresh' };
   account.credentialGeneration = 'original-test-generation';
-  const calls = { starts: 0, genericStarts: 0, refreshSettings: 0, invalidations: [], writes: [], issue: 0, poll: 0 };
+  const calls = { starts: 0, genericStarts: 0, refreshSettings: 0, invalidations: [], writes: [], issue: 0, poll: 0,
+    checkpoints: [], recoveries: [] };
   const behavior = { startResult: true, issue: async () => 'fixture-code', refresh: async () => ({
     loginBuffer: 'scan-rotated-buffer', refreshtoken: 'scan-rotated-refresh', accesstoken: 'anew',
   }) };
@@ -112,7 +113,18 @@ async function setup() {
   });
   const routes = new Map();
   const app = { get() {}, post: (route, handler) => routes.set(route, handler), put() {}, delete() {}, patch() {} };
-  load('controllers/admin-account-routes.js', { '../services/wx-login-adapter': adapter }).registerAdminAccountRoutes({
+  const reminder = {
+    noteAcceptedScan: async () => 7,
+    noteScanCodePending: async (id, options) => {
+      if (!options.guard()) return false;
+      calls.checkpoints.push({ id, generation: options.generation, stage: options.stage });
+      return options.generation;
+    },
+  };
+  load('controllers/admin-account-routes.js', {
+    '../services/wx-login-adapter': adapter,
+    '../services/wx-login-reminder': { getSharedWxLoginReminder: () => reminder },
+  }).registerAdminAccountRoutes({
     app,
     provider: {
       getAccounts: () => ({ accounts: [{ id: account.id, platform: account.platform }] }),
@@ -121,6 +133,7 @@ async function setup() {
       saveAutoCodeRefresh: async () => { calls.refreshSettings += 1; },
       startAccount: async () => { calls.genericStarts += 1; },
       startAccountFromSavedWxCode: runtime.startAccountFromSavedWxCode,
+      scheduleRescanRecovery: (id, reason) => { calls.recoveries.push({ id, reason }); return true; },
     },
     getAccountsForUser: () => [account], resolveAccountReference: value => value,
     canAccessAccount: req => req.currentUser.username === account.username,
@@ -191,6 +204,8 @@ test('旧续期先完成，新扫码保存锁内重读最新凭据并仅启动�
   assert.deepEqual(f.calls.invalidations, ['scan-rotated-buffer']);
   assert.equal(f.calls.refreshSettings, 1);
   assert.equal(response.body.startup.queued, true);
+  assert.deepEqual(f.calls.checkpoints, []);
+  assert.deepEqual(f.calls.recoveries, []);
   assert.equal(f.adapter.peekPendingWxInfo(f.sessionId, f.account.wxid, 'fixture-owner'), null);
 });
 
@@ -251,6 +266,10 @@ test('same confirmed scan cannot save or request startup twice, and refused star
   assert.ok(saved);
   assert.equal(saved.body.startup.state, 'not_started');
   assert.equal(saved.body.startup.queued, false);
+  assert.equal(saved.body.startup.retryAvailable, true);
+  assert.equal(saved.body.startup.recoveryQueued, true);
+  assert.deepEqual(f.calls.checkpoints, [{ id: f.account.id, generation: 7, stage: 'start_pending' }]);
+  assert.deepEqual(f.calls.recoveries, [{ id: f.account.id, reason: 'start_refused' }]);
   assert.equal(f.calls.writes.length, 1);
   assert.equal(f.calls.starts, 1);
   assert.equal(f.calls.genericStarts, 0);
@@ -267,4 +286,6 @@ test('interactive scan updates authorization but keeps an explicitly held accoun
   assert.equal(f.account.username, 'fixture-owner');
   assert.equal(f.calls.starts, 0);
   assert.equal(f.calls.refreshSettings, 0);
+  assert.deepEqual(f.calls.checkpoints, []);
+  assert.deepEqual(f.calls.recoveries, []);
 });

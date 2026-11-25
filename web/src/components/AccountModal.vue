@@ -470,7 +470,11 @@ async function addAccount(
           resetWxSession()
           errorMessage.value = startup?.state === 'superseded'
             ? '本次扫码已被新的账号操作取代，请查看当前账号状态。'
-            : '微信授权已保存，但登录尚未提交。请返回概览查看账号状态。'
+            : startup?.recoveryQueued
+              ? '微信授权已保存，登录尚未提交，系统已安排重试。'
+              : startup?.retryAvailable
+                ? '微信授权已保存，登录尚未提交。请打开「微信重新扫码」，选择该账号并重试登录农场。'
+                : '微信授权已保存，但登录尚未提交。请返回概览查看账号状态。'
           return
         }
       }
