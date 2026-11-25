@@ -90,25 +90,19 @@ function registerAdminAccountRoutes({
   store,
   updateRuntimeConfig,
 }) {
+  function accountView(req) {
+    const currentUser = req.currentUser;
+    if (!currentUser) return { accounts: [], nextId: 1 };
+    const data = provider.getAccounts();
+    const visible = isAdminUser(currentUser)
+      ? data.accounts
+      : data.accounts.filter(account => account.username === currentUser.username);
+    return { ...data, accounts: visible.map(stripProtectedWxCredentials) };
+  }
+
   app.get("/api/accounts", (req, res) => {
     try {
-      const currentUser = req.currentUser;
-      let data;
-      if (currentUser) {
-        const accounts = provider.getAccounts();
-        data =
-          currentUser.role === "admin" || currentUser.role === "super_admin"
-            ? accounts
-            : {
-                ...accounts,
-                accounts: accounts.accounts.filter(
-                  (account) => account.username === currentUser.username,
-                ),
-              };
-      } else {
-        data = { accounts: [], nextId: 1 };
-      }
-      res.json({ ok: true, data });
+      res.json({ ok: true, data: accountView(req) });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });
     }
@@ -184,7 +178,8 @@ function registerAdminAccountRoutes({
       const accountRef =
         body.id || body.accountId || body.uin || req.headers["x-account-id"];
       const account = findAccountByRef(getAccountsForUser(), accountRef);
-      if (!account || !account.id) {
+      const accountId = String(account?.id || "");
+      if (!accountId || !canAccessAccount(req, accountId)) {
         return res.status(404).json({ ok: false, error: "Account not found" });
       }
 
@@ -195,15 +190,14 @@ function registerAdminAccountRoutes({
         return res.status(400).json({ ok: false, error: "Missing remark" });
       }
 
-      const accountId = String(account.id);
-      const data = addOrUpdateAccount({ id: accountId, name: remark });
+      addOrUpdateAccount({ id: accountId, name: remark });
       if (provider && typeof provider.setRuntimeAccountName === "function") {
         provider.setRuntimeAccountName(accountId, remark);
       }
       if (provider && provider.addAccountLog) {
         provider.addAccountLog("update", `更新账号备注: ${  remark}`, accountId, remark);
       }
-      res.json({ ok: true, data });
+      res.json({ ok: true, data: accountView(req) });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });
     }
@@ -232,14 +226,13 @@ function registerAdminAccountRoutes({
       delete body.gatewayUrl;
       const currentUser = req.currentUser;
       const isUpdate = !!body.id;
-      const isAdmin =
-        currentUser &&
-        (currentUser.role === "admin" || currentUser.role === "super_admin");
+      const isAdmin = isAdminUser(currentUser);
 
       if (isUpdate && currentUser && !isAdmin) {
         if (!canAccessAccount(req, resolveAccountReference(body.id))) {
           return res.status(403).json({ ok: false, error: "无权访问此账号" });
         }
+        delete body.username;
       }
 
       if (!isUpdate && currentUser && !isAdmin) {
@@ -255,15 +248,9 @@ function registerAdminAccountRoutes({
       }
 
       const bridgeResponse = state => ({ source: 'mengka_nt', state, startPolicy: 'new_accounts_only' });
-      const visibleAccounts = () => {
-        const result = provider.getAccounts();
-        return currentUser && !isAdmin
-          ? { ...result, accounts: result.accounts.filter(account => account.username === currentUser.username) }
-          : result;
-      };
       if (bridgeAccount?.existing && bridgeAccount.existing.code === body.code
           && bridgeAccount.existing.name === body.name) {
-        return res.json({ ok: true, data: visibleAccounts(), startup: { queued: false, autoRefreshEnabled: false },
+        return res.json({ ok: true, data: accountView(req), startup: { queued: false, autoRefreshEnabled: false },
           bridge: bridgeResponse('unchanged') });
       }
 
@@ -377,6 +364,12 @@ function registerAdminAccountRoutes({
             wxCredentialExpiresAt: latest.wxCredentialExpiresAt, wxCredentialExpiresIn: latest.wxCredentialExpiresIn,
             wxRefreshTokenObservedAt: latest.wxRefreshTokenObservedAt, wxCredentialLastSuccessAt: latest.wxCredentialLastSuccessAt,
           });
+        }
+        if (isUpdate && currentUser && !isAdmin && !bridgeAccount?.existing && !existingWxScan
+            && !canAccessAccount(req, nextAccount.id)) {
+          const error = new Error("无权访问此账号");
+          error.statusCode = 403;
+          throw error;
         }
         const saved = addOrUpdateAccount(nextAccount, { newAuthorization: wxScan });
         if (wxScan) wxLoginAdapter.consumePendingWxInfo(body.wxSessionId, body.wxid, currentUser.username);
@@ -508,10 +501,9 @@ function registerAdminAccountRoutes({
         await provider.restartAccount(nextAccount.id);
       }
 
-      // 使用 provider 的脱敏结果，避免把微信滚动凭证返回浏览器。
       res.json({
         ok: true,
-        data: bridgeAccount ? visibleAccounts() : provider.getAccounts(),
+        data: accountView(req),
         startup: { queued: startQueued, autoRefreshEnabled, ...(startupState && { state: startupState }),
           ...(retryAvailable && startupState === "not_started" && { retryAvailable: true, recoveryQueued }) },
         ...(bridgeAccount ? { bridge: bridgeResponse(isUpdate ? (wasRunning ? 'saved_online' : 'saved_offline') : 'created') } : {}),
@@ -534,7 +526,7 @@ function registerAdminAccountRoutes({
       const accounts = provider.getAccounts();
       const account = findAccountByRef(accounts.accounts || [], req.params.id);
       await provider.stopAccount(accountId);
-      const data = deleteAccount(accountId);
+      deleteAccount(accountId);
       if (provider.addAccountLog) {
         provider.addAccountLog(
           "delete",
@@ -543,7 +535,7 @@ function registerAdminAccountRoutes({
           account ? account.name : "",
         );
       }
-      res.json({ ok: true, data });
+      res.json({ ok: true, data: accountView(req) });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });
     }
