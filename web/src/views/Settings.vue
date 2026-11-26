@@ -112,9 +112,6 @@ const {
   clearStoppedLoading,
   refreshWxCodesLoading,
   stoppedAccountsCount,
-  isAddAccountDisabled,
-  addAccountDisabledReason,
-  isAccountOpsDisabled,
   fetchAccounts,
   selectFirstAccountIfNeeded,
   openSettings,
@@ -289,9 +286,6 @@ onMounted(async () => {
           :current-account-id="currentAccountId"
           :user-is-admin="userIsAdmin"
           :stopped-accounts-count="stoppedAccountsCount"
-          :is-add-account-disabled="isAddAccountDisabled"
-          :add-account-disabled-reason="addAccountDisabledReason"
-          :is-account-ops-disabled="isAccountOpsDisabled"
           :show-modal="showModal"
           :editing-account="editingAccount"
           :show-delete-confirm="showDeleteConfirm"

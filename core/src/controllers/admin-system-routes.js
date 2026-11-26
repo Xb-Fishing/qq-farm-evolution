@@ -250,11 +250,9 @@ function registerAdminSystemRoutes({
           logoUrl,
           title,
           loginSubtitle,
-          registerSubtitle,
-          purchaseUrl,
           qqGroupUrl,
         } = req.body || {};
-        if (!isAllowedPublicLink(purchaseUrl) || !isAllowedPublicLink(qqGroupUrl)) {
+        if (!isAllowedPublicLink(qqGroupUrl)) {
           return res.status(400).json({
             ok: false,
             error: "链接仅支持站内路径、http(s) 或 mqqapi 协议",
@@ -268,8 +266,7 @@ function registerAdminSystemRoutes({
         }
         if (
           String(title || "").trim().length > 40 ||
-          String(loginSubtitle || "").trim().length > 80 ||
-          String(registerSubtitle || "").trim().length > 80
+          String(loginSubtitle || "").trim().length > 80
         ) {
           return res.status(400).json({
             ok: false,
@@ -283,7 +280,6 @@ function registerAdminSystemRoutes({
           admin: req.currentUser?.username || "",
           hasCustomLogo: !!data.logoUrl,
           title: data.title,
-          purchaseUrl: data.purchaseUrl,
           qqGroupUrl: data.qqGroupUrl,
           confirmation: "UPDATE_LOGIN_LINKS",
         });

@@ -30,6 +30,7 @@ function prepareMengkaNtAccount(raw, accounts, user, resolveId) {
     : accounts.find(account => account.platform === 'qq' && account.username === user.username
       && String(account.qq || account.uin || '') === qq);
   if (raw.id && !existing) return { error: '账号不存在', status: 404 };
+  if (existing && existing.username !== user.username) return { error: '无权访问此账号', status: 403 };
   if (existing && (existing.platform !== 'qq' || String(existing.qq || existing.uin || '') !== qq)) {
     return { error: '推送 QQ 与目标账号不一致，请核对萌卡中的账号', status: 409 };
   }

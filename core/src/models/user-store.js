@@ -5,19 +5,11 @@ const crypto = require('crypto');
 // ==================== 文件路径 ====================
 
 const USERS_FILE = getDataFile('users.json');
-const CARDS_FILE = getDataFile('cards.json');
 const LOGIN_ATTEMPTS_FILE = getDataFile('login-attempts.json');
-const CARD_CLAIM_FILE = getDataFile('card-claim.json');
 
 // ==================== 常量 ====================
 
 const DEFAULT_ACCOUNT_LIMIT = 2;
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
-
-// 卡密领取状态（全新/不可读的配置一律默认关闭，只有文件里显式 enabled 才开启）
-let cardClaimEnabled = false;
-let cardClaimRecords = [];
 
 // PBKDF2 参数
 const SALT_LENGTH = 32;
@@ -245,94 +237,6 @@ function needsRehash(stored) {
     return !stored.includes(':');
 }
 
-// ==================== 卡密系统 ====================
-
-const generateCardCode = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 16; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
-};
-
-function normalizeDurationUnit(unit) {
-    return unit === 'hour' ? 'hour' : 'day';
-}
-
-function toPositiveNumber(value, fallback = 1) {
-    const num = Number(value);
-    return Number.isFinite(num) && num > 0 ? num : fallback;
-}
-
-function getQuotaValue(card) {
-    return Math.max(Number.parseInt(card?.value ?? card?.days, 10) || 1, 1);
-}
-
-function normalizeTimeDuration(input = {}) {
-    const isPermanent = input.isPermanent === true
-        || Number(input.durationValue) === -1
-        || Number(input.days) === -1;
-
-    if (isPermanent) {
-        return {
-            days: -1,
-            durationValue: -1,
-            durationUnit: 'day',
-            durationMs: null,
-            isPermanent: true
-        };
-    }
-
-    if (Number.isFinite(Number(input.durationMs)) && Number(input.durationMs) > 0) {
-        const durationMs = Number(input.durationMs);
-        const durationUnit = normalizeDurationUnit(input.durationUnit);
-        const durationValue = Number.isFinite(Number(input.durationValue)) && Number(input.durationValue) > 0
-            ? Number(input.durationValue)
-            : durationMs / (durationUnit === 'hour' ? HOUR_MS : DAY_MS);
-        return {
-            days: durationMs / DAY_MS,
-            durationValue,
-            durationUnit,
-            durationMs,
-            isPermanent: false
-        };
-    }
-
-    const durationUnit = input.durationUnit ? normalizeDurationUnit(input.durationUnit) : 'day';
-    const rawValue = input.durationValue !== undefined ? input.durationValue : input.days;
-    const rawNumber = Number(rawValue);
-    const durationValue = input.allowZero === true && Number.isFinite(rawNumber) && rawNumber >= 0
-        ? rawNumber
-        : toPositiveNumber(rawValue, 1);
-    const durationMs = durationUnit === 'hour' ? durationValue * HOUR_MS : durationValue * DAY_MS;
-
-    return {
-        days: durationMs / DAY_MS,
-        durationValue,
-        durationUnit,
-        durationMs,
-        isPermanent: false
-    };
-}
-
-function assignDurationFields(target, duration) {
-    target.days = duration.days;
-    target.durationValue = duration.durationValue;
-    target.durationUnit = duration.durationUnit;
-    target.durationMs = duration.durationMs;
-    target.isPermanent = duration.isPermanent;
-}
-
-function normalizeCardForResponse(card) {
-    if (!card || card.type === 'quota') return card;
-    const duration = normalizeTimeDuration(card);
-    return { ...card, ...duration };
-}
-
-let users = [];
-let cards = [];
-
 function loadUsers() {
     ensureDataDir();
     try {
@@ -358,31 +262,6 @@ function saveUsers() {
     }
 }
 
-function loadCards() {
-    ensureDataDir();
-    try {
-        if (fs.existsSync(CARDS_FILE)) {
-            const data = JSON.parse(fs.readFileSync(CARDS_FILE, 'utf8'));
-            cards = Array.isArray(data.cards) ? data.cards : [];
-        } else {
-            cards = [];
-            saveCards();
-        }
-    } catch (err) {
-        console.error('加载卡密数据失败:', err.message);
-        cards = [];
-    }
-}
-
-function saveCards() {
-    ensureDataDir();
-    try {
-        fs.writeFileSync(CARDS_FILE, JSON.stringify({ cards }, null, 2), 'utf8');
-    } catch (err) {
-        console.error('保存卡密数据失败:', err.message);
-    }
-}
-
 // ==================== 管理员初始化 ====================
 
 function initConfiguredAdmin() {
@@ -398,6 +277,9 @@ function initConfiguredAdmin() {
     const errors = [];
     if (!/^\w{3,32}$/.test(username)) {
         errors.push('FARM_ADMIN_USERNAME：用户名需为3-32位英文字母、数字或下划线，不能包含中文、空格、连字符或其他特殊符号');
+    }
+    if (users.some(user => user.username === username)) {
+        errors.push('FARM_ADMIN_USERNAME 已被旧用户占用，请指定新的所有者用户名');
     }
     if (!passwordResult.valid) {
         const passwordEnv = process.env.FARM_ADMIN_PASSWORD ? 'FARM_ADMIN_PASSWORD' : 'ADMIN_PASSWORD';
@@ -421,6 +303,21 @@ initConfiguredAdmin();
 
 // ==================== 用户验证 ====================
 
+function panelOwner() {
+    const administrators = users.filter(user => user.role === 'admin' || user.role === 'super_admin');
+    if (administrators.length === 1) return administrators[0];
+    const configuredName = String(process.env.FARM_ADMIN_USERNAME || '').trim();
+    const configured = administrators.filter(user => user.username === configuredName);
+    return configured.length === 1 ? configured[0] : null;
+}
+
+function isPanelOwner(session) {
+    if (!session) return false;
+    loadUsers();
+    const owner = panelOwner();
+    return !!owner && owner.username === session.username && owner.role === session.role;
+}
+
 function validateUser(username, password, ip = 'unknown') {
     loadUsers();
     loadLoginAttempts();
@@ -438,8 +335,8 @@ function validateUser(username, password, ip = 'unknown') {
     }
 
     // 查找用户
-    const user = users.find(u => u.username === username);
-    if (!user) {
+    const user = panelOwner();
+    if (!user || user.username !== username) {
         recordFailedAttempt(username);
         return { error: 'invalid_credentials', message: '用户名或密码错误' };
     }
@@ -475,151 +372,6 @@ function validateUser(username, password, ip = 'unknown') {
     };
 }
 
-// ==================== 用户注册 ====================
-
-function registerUser(username, password, cardCode) {
-    loadUsers();
-    loadCards();
-
-    // 用户名验证
-    if (!username || username.length < 3 || username.length > 32) {
-        return { ok: false, error: '用户名长度需在3-32位之间' };
-    }
-    if (!/^\w+$/.test(username)) {
-        return { ok: false, error: '用户名只能包含字母、数字和下划线' };
-    }
-    if (users.some(u => u.username === username)) {
-        return { ok: false, error: '用户名已存在' };
-    }
-
-    // 密码强度
-    const pwdResult = validatePasswordStrength(password);
-    if (!pwdResult.valid) return { ok: false, error: pwdResult.errors.join('；') };
-
-    // 卡密验证
-    const card = cards.find(c => c.code === cardCode);
-    if (!card) return { ok: false, error: '卡密不存在' };
-    if (!card.enabled) return { ok: false, error: '卡密已被禁用' };
-    if (card.usedBy) return { ok: false, error: '卡密已被使用' };
-
-    const cardType = card.type || 'time';
-    if (cardType === 'quota') {
-        return { ok: false, error: '注册只能使用时间卡密，额度卡密请登录后在续费中使用' };
-    }
-
-    // 创建卡密记录
-    const now = Date.now();
-    const duration = normalizeTimeDuration(card);
-    const cardRecord = {
-        code: card.code,
-        description: card.description,
-        expiresAt: duration.isPermanent ? null : now + duration.durationMs,
-        enabled: true
-    };
-    assignDurationFields(cardRecord, duration);
-
-    // 创建用户
-    const newUser = {
-        username,
-        password: hashPassword(password),
-        role: 'user',
-        cardCode,
-        card: cardRecord,
-        accountLimit: DEFAULT_ACCOUNT_LIMIT,
-        createdAt: now
-    };
-
-    users.push(newUser);
-    card.usedBy = username;
-    card.usedAt = now;
-    saveUsers();
-    saveCards();
-    clearFailedAttempts(username);
-
-    return {
-        ok: true,
-        user: {
-            username: newUser.username,
-            role: newUser.role,
-            card: newUser.card,
-            accountLimit: newUser.accountLimit
-        }
-    };
-}
-
-// ==================== 用户续费 ====================
-
-function renewUser(username, cardCode) {
-    loadUsers();
-    loadCards();
-
-    const user = users.find(u => u.username === username);
-    if (!user) return { ok: false, error: '用户不存在' };
-
-    const card = cards.find(c => c.code === cardCode);
-    if (!card) return { ok: false, error: '卡密不存在' };
-    if (!card.enabled) return { ok: false, error: '卡密已被禁用' };
-    if (card.usedBy) return { ok: false, error: '卡密已被使用' };
-
-    const now = Date.now();
-    const cardType = card.type || 'time';
-
-    if (cardType === 'quota') {
-        // 额度卡密：增加账号限额
-        const current = user.accountLimit || DEFAULT_ACCOUNT_LIMIT;
-        user.accountLimit = current + getQuotaValue(card);
-    } else {
-        // 时间卡密
-        const duration = normalizeTimeDuration(card);
-        if (!user.card) {
-            user.card = {
-                code: card.code,
-                description: card.description,
-                days: 0,
-                expiresAt: null,
-                enabled: true
-            };
-        }
-
-        const prevExpiresAt = user.card.expiresAt || 0;
-        const prevDuration = normalizeTimeDuration({ ...user.card, allowZero: true });
-
-        if (duration.isPermanent) {
-            // 永久卡
-            user.card.expiresAt = null;
-            assignDurationFields(user.card, duration);
-        } else if (prevDuration.isPermanent) {
-            // 已经是永久，不需要叠加
-            user.card.expiresAt = null;
-        } else {
-            const totalDuration = normalizeTimeDuration({
-                durationMs: (prevDuration.durationMs || 0) + duration.durationMs,
-                durationUnit: ((prevDuration.durationMs || 0) + duration.durationMs) % DAY_MS === 0 ? 'day' : 'hour'
-            });
-            assignDurationFields(user.card, totalDuration);
-            if (prevExpiresAt && prevExpiresAt > now) {
-                user.card.expiresAt = prevExpiresAt + duration.durationMs;
-            } else {
-                user.card.expiresAt = now + duration.durationMs;
-            }
-        }
-    }
-
-    card.usedBy = username;
-    card.usedAt = now;
-    saveUsers();
-    saveCards();
-
-    return {
-        ok: true,
-        card: user.card,
-        accountLimit: user.accountLimit || DEFAULT_ACCOUNT_LIMIT,
-        cardType
-    };
-}
-
-// ==================== 用户管理 ====================
-
 function getAllUsers() {
     loadUsers();
     return users
@@ -630,220 +382,6 @@ function getAllUsers() {
             card: u.card,
             accountLimit: u.accountLimit || DEFAULT_ACCOUNT_LIMIT
         }));
-}
-
-function updateUser(username, updates) {
-    loadUsers();
-    const user = users.find(u => u.username === username);
-    if (!user) return null;
-
-    if (updates.expiresAt !== undefined) {
-        if (!user.card) user.card = {};
-        user.card.expiresAt = updates.expiresAt;
-    }
-    if (updates.enabled !== undefined) {
-        if (!user.card) user.card = {};
-        user.card.enabled = updates.enabled;
-    }
-
-    saveUsers();
-    return {
-        username: user.username,
-        role: user.role,
-        card: user.card,
-        accountLimit: user.accountLimit || DEFAULT_ACCOUNT_LIMIT
-    };
-}
-
-function editUser(username, updates) {
-    loadUsers();
-    const user = users.find(u => u.username === username);
-    if (!user) return { ok: false, error: '用户不存在' };
-
-    // 修改用户名
-    if (updates.newUsername && updates.newUsername !== username) {
-        if (!/^\w{3,32}$/.test(updates.newUsername)) {
-            return { ok: false, error: '用户名只能包含字母、数字和下划线，长度3-32位' };
-        }
-        if (users.some(u => u.username === updates.newUsername)) {
-            return { ok: false, error: '用户名已存在' };
-        }
-        user.username = updates.newUsername;
-    }
-
-    // 修改密码
-    if (updates.password) {
-        const pwdResult = validatePasswordStrength(updates.password);
-        if (!pwdResult.valid) return { ok: false, error: pwdResult.errors.join('；') };
-        user.password = hashPassword(updates.password);
-    }
-
-    // 账号限额
-    if (updates.accountLimit !== undefined) {
-        user.accountLimit = Number.parseInt(updates.accountLimit, 10) || DEFAULT_ACCOUNT_LIMIT;
-    }
-
-    // 设置永久/过期时间
-    if (updates.isPermanent) {
-        if (!user.card) user.card = {};
-        assignDurationFields(user.card, normalizeTimeDuration({ isPermanent: true }));
-        user.card.expiresAt = null;
-    } else if (updates.expiresAt !== undefined) {
-        if (!user.card) user.card = {};
-        if (updates.expiresAt === null) {
-            assignDurationFields(user.card, { days: 0, durationValue: 0, durationUnit: 'day', durationMs: 0, isPermanent: false });
-            user.card.expiresAt = null;
-        } else {
-            const expiresAt = Number.parseInt(updates.expiresAt, 10);
-            user.card.expiresAt = expiresAt;
-            const remaining = expiresAt - Date.now();
-            const durationMs = remaining > 0 ? remaining : 0;
-            const duration = durationMs > 0
-                ? normalizeTimeDuration({
-                    durationMs,
-                    durationUnit: durationMs % DAY_MS === 0 ? 'day' : 'hour'
-                })
-                : { days: 0, durationValue: 0, durationUnit: 'day', durationMs: 0, isPermanent: false };
-            assignDurationFields(user.card, duration);
-        }
-    }
-
-    saveUsers();
-    return {
-        ok: true,
-        user: {
-            username: user.username,
-            role: user.role,
-            card: user.card,
-            accountLimit: user.accountLimit || DEFAULT_ACCOUNT_LIMIT
-        }
-    };
-}
-
-// ==================== 卡密管理 ====================
-
-function getAllCards() {
-    loadCards();
-    return cards.map(normalizeCardForResponse);
-}
-
-function createCard(description, days, type = 'time', options = {}) {
-    loadCards();
-    const cardType = type === 'quota' ? 'quota' : 'time';
-    const card = {
-        code: generateCardCode(),
-        description,
-        type: cardType,
-        enabled: true,
-        usedBy: null,
-        usedAt: null,
-        createdAt: Date.now()
-    };
-    if (cardType === 'quota') {
-        const value = getQuotaValue({ value: options.value, days });
-        card.days = value;
-        card.value = value;
-    } else {
-        assignDurationFields(card, normalizeTimeDuration({ ...options, days }));
-    }
-    cards.push(card);
-    saveCards();
-    return card;
-}
-
-function createCardsBatch(description, days, count, type = 'time', options = {}) {
-    loadCards();
-    const created = [];
-    const countNum = Math.min(Math.max(Number.parseInt(count, 10) || 1, 1), 100);
-    const cardType = type === 'quota' ? 'quota' : 'time';
-    const quotaValue = getQuotaValue({ value: options.value, days });
-    const duration = normalizeTimeDuration({ ...options, days });
-
-    for (let i = 0; i < countNum; i++) {
-        const card = {
-            code: generateCardCode(),
-            description,
-            type: cardType,
-            enabled: true,
-            usedBy: null,
-            usedAt: null,
-            createdAt: Date.now()
-        };
-        if (cardType === 'quota') {
-            card.days = quotaValue;
-            card.value = quotaValue;
-        } else {
-            assignDurationFields(card, duration);
-        }
-        cards.push(card);
-        created.push(card);
-    }
-
-    saveCards();
-    return created;
-}
-
-function updateCard(code, updates) {
-    loadCards();
-    const card = cards.find(c => c.code === code);
-    if (!card) return null;
-
-    if (updates.description !== undefined) card.description = updates.description;
-    if (updates.enabled !== undefined) card.enabled = updates.enabled;
-
-    saveCards();
-    return card;
-}
-
-function deleteCard(code) {
-    loadCards();
-    const idx = cards.findIndex(c => c.code === code);
-    if (idx === -1) return false;
-
-    cards.splice(idx, 1);
-    saveCards();
-    return true;
-}
-
-function deleteCardsBatch(codes) {
-    loadCards();
-    if (!Array.isArray(codes) || codes.length === 0) {
-        return { ok: false, error: '请提供要删除的卡密列表' };
-    }
-
-    let deletedCount = 0;
-    const notFound = [];
-
-    for (const code of codes) {
-        const idx = cards.findIndex(c => c.code === code);
-        if (idx !== -1) {
-            cards.splice(idx, 1);
-            deletedCount++;
-        } else {
-            notFound.push(code);
-        }
-    }
-
-    saveCards();
-    return {
-        ok: true,
-        deletedCount,
-        notFoundCount: notFound.length,
-        notFoundCodes: notFound.length > 0 ? notFound : undefined
-    };
-}
-
-function deleteUser(username, force = false) {
-    loadUsers();
-    const idx = users.findIndex(u => u.username === username);
-    if (idx === -1) return { ok: false, error: '用户不存在' };
-    if (!force && users[idx].role === 'admin') {
-        return { ok: false, error: '不能删除管理员账号' };
-    }
-
-    users.splice(idx, 1);
-    saveUsers();
-    return { ok: true };
 }
 
 function changePassword(username, currentPassword, newPassword) {
@@ -866,143 +404,6 @@ function changePassword(username, currentPassword, newPassword) {
 }
 
 
-// ==================== 卡密领取系统 ====================
-
-function loadCardClaimRecords() {
-    ensureDataDir();
-    try {
-        if (fs.existsSync(CARD_CLAIM_FILE)) {
-            const data = JSON.parse(fs.readFileSync(CARD_CLAIM_FILE, 'utf8'));
-            cardClaimEnabled = data.enabled === true;
-            cardClaimRecords = data.records || [];
-        } else {
-            // 全新部署默认关闭免费领取，需管理员在面板显式开启
-            cardClaimEnabled = false;
-            cardClaimRecords = [];
-            saveCardClaimRecords();
-        }
-    } catch {
-        // 配置不可读时按关闭处理，避免无库存却对外显示可领取
-        cardClaimEnabled = false;
-        cardClaimRecords = [];
-    }
-}
-
-function saveCardClaimRecords() {
-    ensureDataDir();
-    try {
-        fs.writeFileSync(CARD_CLAIM_FILE, JSON.stringify({
-            enabled: cardClaimEnabled,
-            records: cardClaimRecords
-        }, null, 2), 'utf8');
-    } catch { }
-}
-
-function getCardClaimStatus() {
-    loadCardClaimRecords();
-    return { enabled: cardClaimEnabled };
-}
-
-function getAvailableTimeCardCount() {
-    loadCards();
-    return cards.filter(card =>
-        card.type === 'time' && !card.usedBy && card.enabled
-    ).length;
-}
-
-function setCardClaimStatus(enabled) {
-    loadCardClaimRecords();
-    cardClaimEnabled = !!enabled;
-    saveCardClaimRecords();
-    return { enabled: cardClaimEnabled };
-}
-
-function checkUAClaimLimit(ua) {
-    loadCardClaimRecords();
-    const now = Date.now();
-    const uaHash = crypto.createHash('sha256').update(ua).digest('hex');
-    const record = cardClaimRecords.find(r => r.uaHash === uaHash);
-
-    if (record) {
-        const elapsed = now - record.claimTime;
-        if (elapsed < 86400000) {  // 24 小时内
-            const remainingMs = 86400000 - elapsed;
-            return {
-                allowed: false,
-                remainingMs,
-                message: '您已经在24小时内领取过一次卡密了！'
-            };
-        }
-    }
-
-    return { allowed: true };
-}
-
-function claimCardByUA(ua, username = null) {
-    loadCards();
-    loadCardClaimRecords();
-
-    if (!cardClaimEnabled) {
-        return { ok: false, error: '卡密领取功能未开启' };
-    }
-
-    const limit = checkUAClaimLimit(ua);
-    if (!limit.allowed) {
-        return { ok: false, error: limit.message, remainingMs: limit.remainingMs };
-    }
-
-    // 筛选可用的时间卡密
-    const availableCards = cards.filter(c =>
-        c.type === 'time' && !c.usedBy && c.enabled
-    );
-
-    if (availableCards.length === 0) {
-        return { ok: false, error: '卡密库存不足，请联系管理员！' };
-    }
-
-    // 随机选一张
-    const randomIdx = Math.floor(Math.random() * availableCards.length);
-    const selectedCard = normalizeCardForResponse(availableCards[randomIdx]);
-
-    // 记录领取
-    const uaHash = crypto.createHash('sha256').update(ua).digest('hex');
-    cardClaimRecords.push({
-        uaHash,
-        claimTime: Date.now(),
-        cardCode: selectedCard.code,
-        username: username || null
-    });
-    saveCardClaimRecords();
-
-    return {
-        ok: true,
-        cardCode: selectedCard.code,
-        days: selectedCard.days,
-        durationValue: selectedCard.durationValue,
-        durationUnit: selectedCard.durationUnit,
-        durationMs: selectedCard.durationMs,
-        isPermanent: selectedCard.isPermanent === true,
-        description: selectedCard.description
-    };
-}
-
-function getCardClaimRecords() {
-    loadCardClaimRecords();
-    return cardClaimRecords;
-}
-
-function clearExpiredClaimRecords() {
-    loadCardClaimRecords();
-    const now = Date.now();
-    const thirtyDays = 2592000000;  // 30 天
-    const before = cardClaimRecords.length;
-
-    cardClaimRecords = cardClaimRecords.filter(r => now - r.claimTime < thirtyDays);
-
-    if (cardClaimRecords.length !== before) saveCardClaimRecords();
-    return { cleared: before - cardClaimRecords.length };
-}
-
 // ==================== 超级管理员 ====================
 
 function isSuperAdmin(username) {
@@ -1012,32 +413,6 @@ function isSuperAdmin(username) {
 
 // ==================== 清理 ====================
 
-function clearExpiredUsers() {
-    loadUsers();
-    const now = Date.now();
-    const toDelete = [];
-    const keep = [];
-
-    for (const user of users) {
-        if (user.role === 'admin' || user.role === 'super_admin') {
-            keep.push(user);
-            continue;
-        }
-        if (user.card && user.card.expiresAt && user.card.expiresAt < now) {
-            toDelete.push(user.username);
-        } else {
-            keep.push(user);
-        }
-    }
-
-    if (toDelete.length > 0) {
-        users = keep;
-        saveUsers();
-    }
-
-    return { ok: true, deletedCount: toDelete.length, deletedUsers: toDelete };
-}
-
 function clearAllData() {
     console.log("[破解防御] 成功拦截了一次终极删库核弹（连密码带粗口的那种）！");
     return { ok: true, clearedFiles: [] };
@@ -1046,46 +421,6 @@ function clearAllData() {
 function getUserCount() {
     loadUsers();
     return users.filter(u => u.role !== 'super_admin').length;
-}
-
-// ==================== 密码重置（通过卡密） ====================
-
-function verifyCardOwnership(username, cardCode) {
-    loadUsers();
-    loadCards();
-
-    if (!username || !cardCode) {
-        return { ok: false, error: '请提供用户名和卡密' };
-    }
-
-    const user = users.find(u => u.username === username);
-    if (!user) return { ok: false, error: '用户名或卡密错误' };
-
-    const card = cards.find(c => c.code === cardCode);
-    if (!card) return { ok: false, error: '用户名或卡密错误' };
-
-    if (card.usedBy !== username) {
-        return { ok: false, error: '卡密不属于该用户' };
-    }
-
-    return { ok: true };
-}
-
-function resetPasswordByCard(username, cardCode, newPassword) {
-    loadUsers();
-    const ownership = verifyCardOwnership(username, cardCode);
-    if (!ownership.ok) return ownership;
-
-    const pwdResult = validatePasswordStrength(newPassword);
-    if (!pwdResult.valid) return { ok: false, error: pwdResult.errors.join('；') };
-
-    const user = users.find(u => u.username === username);
-    user.password = hashPassword(newPassword);
-    if (user.mustChangePassword) delete user.mustChangePassword;
-    clearFailedAttempts(username);
-    saveUsers();
-
-    return { ok: true, message: '密码重置成功' };
 }
 
 // ==================== 登录日志系统 ====================
@@ -1160,35 +495,16 @@ loadLoginLogs();
 // ==================== 模块导出 ====================
 
 module.exports = {
+    isPanelOwner,
     validateUser,
-    registerUser,
-    renewUser,
     getAllUsers,
-    updateUser,
-    editUser,
-    getAllCards,
-    createCard,
-    createCardsBatch,
-    updateCard,
-    deleteCard,
-    deleteCardsBatch,
-    deleteUser,
     changePassword,
     DEFAULT_ACCOUNT_LIMIT,
-    getCardClaimStatus,
-    getAvailableTimeCardCount,
-    setCardClaimStatus,
-    claimCardByUA,
-    getCardClaimRecords,
-    clearExpiredClaimRecords,
     isSuperAdmin,
     clearAllData,
-    clearExpiredUsers,
     getUserCount,
     checkRateLimit,
     clearIpAttempts,
-    verifyCardOwnership,
-    resetPasswordByCard,
     addLoginLog,
     getLoginLogs,
     clearLoginLogs

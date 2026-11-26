@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: core/Dockerfile
-    image: qq-farm-bot:latest
     container_name: qq-farm-bot
     restart: unless-stopped
 

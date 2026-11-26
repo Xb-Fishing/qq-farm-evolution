@@ -26,7 +26,7 @@ async function fixture(t, options = {}) {
   const starts = [];
   const restarts = [];
   const writes = [];
-  const user = { username: 'fixture-owner', role: 'user', accountLimit: options.limit || 2 };
+  const user = { username: 'fixture-owner', role: 'admin', accountLimit: options.limit || 2 };
   const sessions = new Map();
   const app = express();
   app.use(express.json());
@@ -136,7 +136,7 @@ test('已有离线或手动停用的QQ只保存，不拉起；请求不能改自
   assert.deepEqual(f.starts, []);
 });
 
-test('拒绝跨用户/跨平台/错QQ和超额创建；响应仅含本用户账号，非法桥接路径不放行', async (t) => {
+test('限制桥接账号归属、平台及绑定，旧购买额度不限制所有者', async (t) => {
   const f = await fixture(t, { accounts: [existing(), existing({ id: '2', qq: '10002', uin: '10002', username: 'other-owner' }),
     existing({ id: '3', platform: 'wx' })], limit: 2 });
   await f.login();
@@ -148,11 +148,13 @@ test('拒绝跨用户/跨平台/错QQ和超额创建；响应仅含本用户账�
   assert.equal((await f.request('/mengka-nt/api/accounts', push({ id: '1', qq: '10009', uin: '10009' }))).status, 409);
   assert.equal((await f.request('/mengka-nt/api/accounts', push({ platform: 'wx' }))).status, 400);
   assert.equal((await f.request('/mengka-nt/api/accounts', push({ code: '' }))).status, 400);
-  assert.equal((await f.request('/mengka-nt/api/accounts', push({ qq: '10003', uin: '10003' }))).status, 403);
   const result = await f.request('/mengka-nt/api/accounts', push({ id: '1' }));
   assert.deepEqual(result.data.data.accounts.map(account => account.id), ['1', '3']);
   assert.equal((await f.request('/mengka-nt/api/accounts/2/restart', {})).status, 404);
   assert.equal(f.writes.length, 1);
+  const added = await f.request('/mengka-nt/api/accounts', push({ qq: '10003', uin: '10003' }));
+  assert.equal(added.status, 200);
+  assert.equal(added.data.bridge.state, 'created');
 });
 
 test('等待保存锁时账号转移、换绑或删除，拒绝迟到推送且零写零启动', async (t) => {

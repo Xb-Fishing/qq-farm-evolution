@@ -1,19 +1,15 @@
 {
   "name": "qq-farm-bot",
-  "version": "2.3.41",
+  "private": true,
+  "version": "2.3.42",
   "description": "",
   "license": "ISC",
   "author": "",
   "type": "commonjs",
   "main": "client.js",
-  "bin": "client.js",
   "scripts": {
     "start": "node client.js",
     "dev": "node client.js",
-    "build:release": "pkg . --no-bytecode --targets node18-win-x64,node18-linux-x64,node18-macos-x64,node18-macos-arm64 --out-path dist",
-    "build:win": "pkg . --no-bytecode --targets node18-win-x64 --out-path dist",
-    "build:linux": "pkg . --no-bytecode --targets node18-linux-x64 --out-path dist",
-    "build:mac": "pkg . --no-bytecode --targets node18-macos-x64,node18-macos-arm64 --out-path dist",
     "inspect:activity-har": "node scripts/inspect-activity-har.js",
     "inspect:protocol": "node scripts/inspect-protocol-capture.js",
     "extract:plant-phases": "node scripts/extract-plant-phase-images.js",
@@ -44,17 +40,6 @@
   "devDependencies": {
     "@antfu/eslint-config": "^7.4.3",
     "@types/node": "^24.10.1",
-    "eslint": "^9.39.1",
-    "pkg": "^5.8.1"
-  },
-  "pkg": {
-    "assets": [
-      "../web/dist/**/*",
-      "src/gameConfig/**/*",
-      "src/proto/**/*",
-      "src/utils/*.wasm",
-      "src/__bolt_manifest.json",
-      "share.txt"
-    ]
+    "eslint": "^9.39.1"
   }
 }

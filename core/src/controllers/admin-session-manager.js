@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const { getDataFile } = require('../config/runtime-paths');
+const { isPanelOwner } = require('../models/user-store');
 
 const SESSIONS_FILE = getDataFile('admin-sessions.json');
 // 会话上限，超出按先进先出淘汰最旧的
@@ -25,7 +26,7 @@ function createAdminSessionManager({ logger, getIo }) {
   try {
     const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
     for (const item of (Array.isArray(raw) ? raw : []).slice(-MAX_SESSIONS)) {
-      if (item && item.token && item.user) {
+      if (item?.token && isPanelOwner(item.user)) {
         adminTokens.add(item.token);
         adminSessions.set(item.token, item.user);
       }
@@ -46,13 +47,6 @@ function createAdminSessionManager({ logger, getIo }) {
     });
   }
 
-  function logAdminSessionRejected(reason, username) {
-    logger.warn('admin session rejected', {
-      reason,
-      username,
-    });
-  }
-
   function logAdminSessionEvent(event, reason, username) {
     logger.info(event, {
       reason,
@@ -61,6 +55,7 @@ function createAdminSessionManager({ logger, getIo }) {
   }
 
   function createAdminSession(user) {
+    if (!isPanelOwner(user)) return null;
     const token = generateAdminToken();
     // FIFO：超过上限先淘汰最旧的会话
     while (adminSessions.size >= MAX_SESSIONS) {
@@ -112,99 +107,29 @@ function createAdminSessionManager({ logger, getIo }) {
     if (changed) persistSessions();
   }
 
-  function getAdminSessionRejection(currentUser) {
-    if (
-      !currentUser
-      || currentUser.role === 'admin'
-      || currentUser.role === 'super_admin'
-      || !currentUser.card
-    ) {
-      return null;
-    }
-    if (currentUser.card.enabled === false) {
-      return {
-        reason: 'banned',
-        error: '账号已被封禁，请联系管理员',
-      };
-    }
-    if (
-      currentUser.card.expiresAt
-      && currentUser.card.expiresAt < Date.now()
-    ) {
-      return {
-        reason: 'expired',
-        error: '账号已过期，请续费后重新登录',
-      };
-    }
-    return null;
-  }
-
   function requireAdminToken(req, res, next) {
     const token = req.headers['x-admin-token'];
-    if (!token || !adminTokens.has(token))
+    if (!token || !hasToken(token))
       return sendUnauthorized(res);
     req.adminToken = token;
     req.currentUser = adminSessions.get(token);
-    const rejection = getAdminSessionRejection(req.currentUser);
-    if (rejection) {
-      logAdminSessionRejected(rejection.reason, req.currentUser.username);
-      invalidateAdminSession(token);
-      return res.status(403).json({
-        ok: false,
-        error: rejection.error,
-      });
-    }
     next();
   }
 
   function cleanupInvalidAdminSessions() {
-    const now = Date.now();
-    const expiredSessions = [];
-    for (const [token, session] of adminSessions.entries()) {
-      if (session.role === 'admin' || session.role === 'super_admin')
-        continue;
-      if (session.card && session.card.enabled === false) {
-        logAdminSessionEvent(
-          'admin session cleanup queued',
-          'banned',
-          session.username,
-        );
-        expiredSessions.push({
-          token,
-          username: session.username,
-          reason: 'banned',
-        });
-        continue;
-      }
-      if (
-        session.card
-        && session.card.expiresAt
-        && session.card.expiresAt < now
-      ) {
-        logAdminSessionEvent(
-          'admin session cleanup queued',
-          'expired',
-          session.username,
-        );
-        expiredSessions.push({
-          token,
-          username: session.username,
-          reason: 'expired',
-        });
-      }
-    }
-    for (const { token, username, reason } of expiredSessions) {
+    for (const [token, user] of adminSessions.entries()) {
+      if (isPanelOwner(user)) continue;
       invalidateAdminSessionAndDisconnect(token);
-      logAdminSessionEvent('admin session force logout', reason, username);
+      logAdminSessionEvent('admin session force logout', 'owner_changed', user.username);
     }
   }
 
   function hasToken(token) {
-    return adminTokens.has(token);
+    return adminTokens.has(token) && isPanelOwner(adminSessions.get(token));
   }
 
   function getSession(token) {
-    return adminSessions.get(token) || null;
+    return hasToken(token) ? adminSessions.get(token) : null;
   }
 
   return {

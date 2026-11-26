@@ -85,7 +85,6 @@ function registerAdminAccountRoutes({
   resolveAccountReference,
   canAccessAccount,
   getAccessibleAccountIdsFromRequest,
-  userStore,
   sendProviderError,
   store,
   updateRuntimeConfig,
@@ -94,7 +93,7 @@ function registerAdminAccountRoutes({
     const currentUser = req.currentUser;
     if (!currentUser) return { accounts: [], nextId: 1 };
     const data = provider.getAccounts();
-    const visible = isAdminUser(currentUser)
+    const visible = isAdminUser(currentUser) && req.mengkaNtBridge !== true
       ? data.accounts
       : data.accounts.filter(account => account.username === currentUser.username);
     return { ...data, accounts: visible.map(stripProtectedWxCredentials) };
@@ -210,8 +209,7 @@ function registerAdminAccountRoutes({
       if (req.mengkaNtBridge === true) {
         if (!req.currentUser) return res.status(401).json({ ok: false, error: '未登录' });
         // Authorize before looking up or comparing another account's QQ binding.
-        if (rawBody.id && !isAdminUser(req.currentUser)
-            && !canAccessAccount(req, resolveAccountReference(rawBody.id))) {
+        if (rawBody.id && !canAccessAccount(req, resolveAccountReference(rawBody.id))) {
           return res.status(403).json({ ok: false, error: '无权访问此账号' });
         }
         bridgeAccount = prepareMengkaNtAccount(rawBody, getAccountsForUser(), req.currentUser, resolveAccountReference);
@@ -233,18 +231,6 @@ function registerAdminAccountRoutes({
           return res.status(403).json({ ok: false, error: "无权访问此账号" });
         }
         delete body.username;
-      }
-
-      if (!isUpdate && currentUser && !isAdmin) {
-        const accountCount = getAccountsForUser(currentUser.username).length;
-        const accountLimit =
-          currentUser.accountLimit || userStore.DEFAULT_ACCOUNT_LIMIT || 2;
-        if (accountCount >= accountLimit) {
-          return res.status(403).json({
-            ok: false,
-            error: `账号数量已达上限（${  accountLimit  }个），请购买额度卡密增加额度`,
-          });
-        }
       }
 
       const bridgeResponse = state => ({ source: 'mengka_nt', state, startPolicy: 'new_accounts_only' });
@@ -344,7 +330,7 @@ function registerAdminAccountRoutes({
         if (bridgeAccount?.existing) {
           const latest = getAccountsForUser().find(account => String(account.id) === String(nextAccount.id));
           if (!latest || latest.platform !== 'qq' || String(latest.qq || latest.uin || '') !== body.qq
-              || (!isAdmin && !canAccessAccount(req, nextAccount.id))) {
+              || latest.username !== currentUser.username || !canAccessAccount(req, nextAccount.id)) {
             const error = new Error('账号绑定已变化，请重新读取账号列表后推送');
             error.statusCode = 409;
             throw error;

@@ -482,7 +482,6 @@ function registerAdminCaptureRoutes({
   app,
   store,
   provider,
-  userStore,
   logger,
   requireAdminRole,
   requireDangerConfirmation,
@@ -730,17 +729,6 @@ function registerAdminCaptureRoutes({
         scheduleRemoteStop(store, flow, 0, logger);
         return;
       }
-      if (!isUpdate && !isAdminUser(currentUser)) {
-        const accountCount = store.getAccountsByUser(currentUser.username).accounts.length;
-        const accountLimit = currentUser.accountLimit || userStore.DEFAULT_ACCOUNT_LIMIT || 2;
-        if (accountCount >= accountLimit) {
-          return res.status(403).json({
-            ok: false,
-            error: `账号数量已达上限（${accountLimit}个），请购买额度卡密增加额度`,
-          });
-        }
-      }
-
       const name = String(req.body?.name || "").trim();
       const existing = isUpdate
         ? allAccounts.find(

@@ -31,7 +31,7 @@ function actionButton(root, label) {
   return { button, token };
 }
 
-test('account toggle renders Carbon icons, emits once, and follows account and disabled props', async () => {
+test('owner account toggle renders Carbon icons and ignores a legacy expiration flag', async () => {
   const modalStub = { __esModule: true, default: { render: () => null } };
   const AccountSettingsTab = compileSfcModule(accountTabPath, (spec) => {
     if (spec === 'vue') return vue;
@@ -73,9 +73,8 @@ test('account toggle renders Carbon icons, emits once, and follows account and d
     update(stopped, true);
     const disabledLogin = actionButton(root, '立即登录');
     assert.equal(disabledLogin.token, loginToken);
-    assert.equal(disabledLogin.button.props.disabled, true);
-    assert.equal(disabledLogin.button.props.title, '账号已到期，无法启动账号');
-    disabledLogin.button.props.onClick({ stopPropagation: () => assert.fail('Disabled click was emitted') });
+    assert.equal(disabledLogin.button.props.disabled, false);
+    assert.equal(disabledLogin.button.props.title, undefined);
     assert.equal(toggles.length, 1);
 
     update(running, true);

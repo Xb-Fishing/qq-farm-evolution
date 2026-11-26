@@ -55,29 +55,11 @@ const router = createRouter({
       name: 'login',
       component: () => import('@/views/Login.vue'),
     },
-    {
-      path: '/renewal',
-      name: 'renewal',
-      component: () => import('@/views/Renewal.vue'),
-    },
   ],
 })
 
 router.beforeEach(async (to) => {
   NProgress.start()
-
-  if (to.name === 'renewal') {
-    if (!adminToken.value) {
-      validatedToken = ''
-      return true
-    }
-    const valid = await ensureTokenValid()
-    if (!valid) {
-      adminToken.value = ''
-      validatedToken = ''
-    }
-    return true
-  }
 
   if (to.name === 'login') {
     if (!adminToken.value) {

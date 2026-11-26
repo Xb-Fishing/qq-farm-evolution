@@ -692,8 +692,6 @@ const DEFAULT_LOGIN_LINKS = {
     logoUrl: '',
     title: 'QQ农场智能助手',
     loginSubtitle: '欢迎回来，开启智慧农耕之旅',
-    registerSubtitle: '创建账号，开启智慧农耕之旅',
-    purchaseUrl: '',
     qqGroupUrl: ''
 };
 
@@ -1086,8 +1084,6 @@ function loadGlobalConfig() {
                 logoUrl: String(data.loginLinks.logoUrl ?? '').trim(),
                 title: String(data.loginLinks.title || DEFAULT_LOGIN_LINKS.title).trim(),
                 loginSubtitle: String(data.loginLinks.loginSubtitle || DEFAULT_LOGIN_LINKS.loginSubtitle).trim(),
-                registerSubtitle: String(data.loginLinks.registerSubtitle || DEFAULT_LOGIN_LINKS.registerSubtitle).trim(),
-                purchaseUrl: String(data.loginLinks.purchaseUrl ?? '').trim(),
                 qqGroupUrl: String(data.loginLinks.qqGroupUrl ?? '').trim()
             };
         }
@@ -2097,8 +2093,6 @@ function setLoginLinks(config) {
         logoUrl: String(config?.logoUrl ?? current.logoUrl).trim(),
         title: String(config?.title || DEFAULT_LOGIN_LINKS.title).trim(),
         loginSubtitle: String(config?.loginSubtitle || DEFAULT_LOGIN_LINKS.loginSubtitle).trim(),
-        registerSubtitle: String(config?.registerSubtitle || DEFAULT_LOGIN_LINKS.registerSubtitle).trim(),
-        purchaseUrl: String(config?.purchaseUrl ?? current.purchaseUrl).trim(),
         qqGroupUrl: String(config?.qqGroupUrl ?? current.qqGroupUrl).trim()
     };
     saveGlobalConfig();

@@ -10,9 +10,6 @@ defineProps<{
   currentAccountId: string | number | null | undefined
   userIsAdmin: boolean
   stoppedAccountsCount: number
-  isAddAccountDisabled: boolean
-  addAccountDisabledReason: string
-  isAccountOpsDisabled: boolean
   showModal: boolean
   editingAccount: any
   showDeleteConfirm: boolean
@@ -87,8 +84,6 @@ function accountAvatar(acc: any) {
         <BaseButton
           variant="primary"
           size="sm"
-          :disabled="isAddAccountDisabled"
-          :title="addAccountDisabledReason"
           @click="emit('add')"
         >
           <div class="i-carbon-add mr-2" />
@@ -110,8 +105,6 @@ function accountAvatar(acc: any) {
       <BaseButton
         variant="text"
         size="sm"
-        :disabled="isAddAccountDisabled"
-        :title="addAccountDisabledReason"
         @click="emit('add')"
       >
         立即添加
@@ -171,8 +164,6 @@ function accountAvatar(acc: any) {
               size="sm"
               class="border rounded-full whitespace-nowrap shadow-sm transition-all duration-500 ease-in-out active:scale-95"
               :class="[acc.running ? 'sm:w-20 border-red-200 bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-500 active:border-red-300 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30 dark:focus:ring-red-500 dark:active:border-red-700' : 'sm:w-28 border-green-200 bg-green-50 text-green-600 hover:bg-green-100 focus:ring-green-500 active:border-green-300 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30 dark:focus:ring-green-500 dark:active:border-green-700']"
-              :disabled="!acc.running && isAccountOpsDisabled"
-              :title="!acc.running && isAccountOpsDisabled ? '账号已到期，无法启动账号' : ''"
               @click.stop="emit('toggle', acc)"
             >
               <div :class="acc.running ? 'i-carbon-stop-filled' : 'i-carbon-login'" class="mr-1" />

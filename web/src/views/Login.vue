@@ -2,14 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/api'
-import LoginModals from '@/components/login/LoginModals.vue'
-import PasswordStrengthMeter from '@/components/login/PasswordStrengthMeter.vue'
 import UpdateLogModal from '@/components/login/UpdateLogModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
-import { getPasswordStrength } from '@/composables/usePasswordStrength'
 import { useAppStore } from '@/stores/app'
-import { formatTimeDuration, useUserStore } from '@/stores/user'
+import { useUserStore } from '@/stores/user'
 import { resolveSafeRedirect } from '@/utils/safe-redirect'
 
 const USERNAME_RE = /^\w+$/
@@ -22,57 +19,14 @@ const loginLinks = computed(() => appStore.loginPageConfig)
 const showUpdateLog = ref(false)
 const logoLoadFailed = ref(false)
 
-const isLogin = ref(true)
 const username = ref('')
 const password = ref('')
-const cardCode = ref('')
 const error = ref('')
 const success = ref('')
 const loading = ref(false)
-const showPasswordStrength = ref(false)
 const lockoutRemaining = ref(0)
 const rateLimitRemaining = ref(0)
 const routeUsername = computed(() => String(route.query.username || '').trim())
-
-const cardClaimEnabled = ref(false)
-const availableTimeCards = ref(0)
-const cardClaimLoading = ref(false)
-const showClaimModal = ref(false)
-const claimModalContent = ref({
-  success: true,
-  title: '',
-  message: '',
-  cardCode: '',
-  days: 0,
-})
-
-// 已开启免费领取但库存为 0：按钮禁用并提示
-const claimStockEmpty = computed(() => cardClaimEnabled.value && availableTimeCards.value <= 0)
-
-const showResetVerifyModal = ref(false)
-const showResetPasswordModal = ref(false)
-const resetUsername = ref('')
-const resetCardCode = ref('')
-const resetNewPassword = ref('')
-const resetConfirmPassword = ref('')
-const resetError = ref('')
-const resetLoading = ref(false)
-const resetPasswordTouched = ref(false)
-
-const showRenewalModal = ref(false)
-const renewalUsername = ref('')
-const renewalCardCode = ref('')
-const renewalError = ref('')
-const renewalSuccess = ref('')
-const renewalLoading = ref(false)
-
-const passwordStrength = computed(() => {
-  return getPasswordStrength(password.value)
-})
-
-const resetPasswordStrength = computed(() => {
-  return getPasswordStrength(resetNewPassword.value)
-})
 
 const usernameValid = computed(() => {
   const name = username.value
@@ -85,12 +39,6 @@ const usernameValid = computed(() => {
   if (!USERNAME_RE.test(name))
     return { valid: false, message: '只能包含字母、数字、下划线' }
   return { valid: true, message: '' }
-})
-
-watch(password, () => {
-  if (!isLogin.value && password.value) {
-    showPasswordStrength.value = true
-  }
 })
 
 watch(routeUsername, (value) => {
@@ -119,23 +67,6 @@ function validateForm(): boolean {
     return false
   }
 
-  if (!isLogin.value) {
-    if (password.value.length < 6) {
-      error.value = '密码长度至少6位'
-      return false
-    }
-
-    if (!passwordStrength.value.valid) {
-      error.value = '密码强度不足：需包含大写字母、小写字母、数字、特殊符号中的至少两种'
-      return false
-    }
-
-    if (!cardCode.value) {
-      error.value = '请输入卡密'
-      return false
-    }
-  }
-
   return true
 }
 
@@ -148,45 +79,31 @@ async function handleSubmit() {
   success.value = ''
 
   try {
-    if (isLogin.value) {
-      const result = await userStore.login(username.value, password.value)
-      if (result.ok) {
-        if (result.data?.mustChangePassword) {
-          success.value = '登录成功！请修改默认密码以确保账户安全'
-        }
-        setTimeout(() => {
-          // 提醒通知里的自助链接会在登录后回到原页面；只接受站内相对路径。
-          window.location.href = resolveSafeRedirect(route.query.redirect) || '/'
-        }, 500)
+    const result = await userStore.login(username.value, password.value)
+    if (result.ok) {
+      if (result.data?.mustChangePassword) {
+        success.value = '登录成功！请修改默认密码以确保账户安全'
       }
-      else {
-        if (result.errorType === 'rate_limit') {
-          error.value = result.error || '请求过于频繁，请稍后重试'
-          if (result.remainingMs) {
-            rateLimitRemaining.value = Math.ceil(result.remainingMs / 1000)
-          }
-        }
-        else if (result.errorType === 'locked') {
-          error.value = result.error || '账户已被锁定'
-          if (result.remainingMs) {
-            lockoutRemaining.value = Math.ceil(result.remainingMs / 1000 / 60)
-          }
-        }
-        else {
-          error.value = result.error || '登录失败'
-        }
-      }
+      setTimeout(() => {
+        // 提醒通知里的自助链接会在登录后回到原页面；只接受站内相对路径。
+        window.location.href = resolveSafeRedirect(route.query.redirect) || '/'
+      }, 500)
     }
     else {
-      const result = await userStore.register(username.value, password.value, cardCode.value)
-      if (result.ok) {
-        success.value = '注册成功，请登录'
-        isLogin.value = true
-        cardCode.value = ''
-        password.value = ''
+      if (result.errorType === 'rate_limit') {
+        error.value = result.error || '请求过于频繁，请稍后重试'
+        if (result.remainingMs) {
+          rateLimitRemaining.value = Math.ceil(result.remainingMs / 1000)
+        }
+      }
+      else if (result.errorType === 'locked') {
+        error.value = result.error || '账户已被锁定'
+        if (result.remainingMs) {
+          lockoutRemaining.value = Math.ceil(result.remainingMs / 1000 / 60)
+        }
       }
       else {
-        error.value = result.error || '注册失败'
+        error.value = result.error || '登录失败'
       }
     }
   }
@@ -213,243 +130,7 @@ async function handleSubmit() {
   }
 }
 
-function toggleMode() {
-  isLogin.value = !isLogin.value
-  error.value = ''
-  success.value = ''
-  showPasswordStrength.value = false
-  lockoutRemaining.value = 0
-  rateLimitRemaining.value = 0
-}
-
-function openRenewal() {
-  renewalUsername.value = username.value.trim()
-  renewalCardCode.value = ''
-  renewalError.value = ''
-  renewalSuccess.value = ''
-  showRenewalModal.value = true
-}
-
-function closeRenewalModal() {
-  if (renewalLoading.value)
-    return
-  showRenewalModal.value = false
-  renewalError.value = ''
-  renewalSuccess.value = ''
-}
-
-async function submitRenewal() {
-  if (!renewalUsername.value.trim()) {
-    renewalError.value = '请输入用户名'
-    return
-  }
-  if (!renewalCardCode.value.trim()) {
-    renewalError.value = '请输入卡密'
-    return
-  }
-
-  renewalLoading.value = true
-  renewalError.value = ''
-  renewalSuccess.value = ''
-  try {
-    const { data } = await api.post('/api/public/renew', {
-      username: renewalUsername.value.trim(),
-      cardCode: renewalCardCode.value.trim(),
-    })
-    if (!data.ok) {
-      renewalError.value = data.error || '续费失败'
-      return
-    }
-
-    const cardType = data.data?.cardType
-    const card = data.data?.card
-    renewalSuccess.value = cardType === 'quota'
-      ? '续费成功，账号额度已更新'
-      : `续费成功，有效期已更新${card?.expiresAt ? `至 ${new Date(card.expiresAt).toLocaleString('zh-CN')}` : ''}`
-    username.value = renewalUsername.value.trim()
-  }
-  catch (e: any) {
-    renewalError.value = e?.response?.data?.error || e?.message || '续费失败'
-  }
-  finally {
-    renewalLoading.value = false
-  }
-}
-
-function openResetVerifyModal() {
-  resetUsername.value = username.value.trim()
-  resetCardCode.value = ''
-  resetNewPassword.value = ''
-  resetConfirmPassword.value = ''
-  resetError.value = ''
-  resetPasswordTouched.value = false
-  showResetVerifyModal.value = true
-}
-
-function closeResetVerifyModal() {
-  if (resetLoading.value)
-    return
-  showResetVerifyModal.value = false
-  resetError.value = ''
-}
-
-function closeResetPasswordModal() {
-  if (resetLoading.value)
-    return
-  showResetPasswordModal.value = false
-  resetNewPassword.value = ''
-  resetConfirmPassword.value = ''
-  resetError.value = ''
-  resetPasswordTouched.value = false
-}
-
-async function verifyResetPassword() {
-  if (!resetUsername.value.trim()) {
-    resetError.value = '请输入用户名'
-    return
-  }
-  if (!resetCardCode.value.trim()) {
-    resetError.value = '请输入注册时使用的卡密'
-    return
-  }
-
-  resetLoading.value = true
-  resetError.value = ''
-  try {
-    const result = await userStore.verifyResetPassword(resetUsername.value.trim(), resetCardCode.value.trim())
-    if (!result.ok) {
-      resetError.value = result.error || '验证失败'
-      return
-    }
-    showResetVerifyModal.value = false
-    showResetPasswordModal.value = true
-  }
-  catch (e: any) {
-    resetError.value = e?.response?.data?.error || e?.message || '验证失败'
-  }
-  finally {
-    resetLoading.value = false
-  }
-}
-
-async function submitResetPassword() {
-  resetPasswordTouched.value = true
-  if (!resetNewPassword.value) {
-    resetError.value = '请输入新密码'
-    return
-  }
-  if (resetNewPassword.value.length < 6) {
-    resetError.value = '密码长度至少6位'
-    return
-  }
-  if (!resetPasswordStrength.value.valid) {
-    resetError.value = '密码强度不足：需包含大写字母、小写字母、数字、特殊符号中的至少两种'
-    return
-  }
-  if (resetNewPassword.value !== resetConfirmPassword.value) {
-    resetError.value = '两次输入的密码不一致'
-    return
-  }
-
-  resetLoading.value = true
-  resetError.value = ''
-  try {
-    const result = await userStore.resetPassword(
-      resetUsername.value.trim(),
-      resetCardCode.value.trim(),
-      resetNewPassword.value,
-    )
-    if (!result.ok) {
-      resetError.value = result.error || '重置失败'
-      return
-    }
-    showResetPasswordModal.value = false
-    username.value = resetUsername.value.trim()
-    password.value = ''
-    isLogin.value = true
-    success.value = '密码重置成功，请使用新密码登录'
-    resetNewPassword.value = ''
-    resetConfirmPassword.value = ''
-  }
-  catch (e: any) {
-    resetError.value = e?.response?.data?.error || e?.message || '重置失败'
-  }
-  finally {
-    resetLoading.value = false
-  }
-}
-
-async function checkCardClaimStatus() {
-  try {
-    const res = await api.get('/api/card-claim/status')
-    if (res.data.ok) {
-      cardClaimEnabled.value = res.data.enabled === true
-      const stock = Number(res.data.availableTimeCards)
-      availableTimeCards.value = Number.isFinite(stock) && stock > 0 ? Math.floor(stock) : 0
-    }
-  }
-  catch (e) {
-    console.error('检查卡密领取状态失败:', e)
-  }
-}
-
-async function claimFreeCard() {
-  // 程序化点击兜底：未开启或无库存时不发请求
-  if (cardClaimLoading.value || !cardClaimEnabled.value || availableTimeCards.value <= 0)
-    return
-
-  cardClaimLoading.value = true
-  error.value = ''
-
-  try {
-    const res = await api.post('/api/card-claim/claim')
-
-    if (res.data.ok) {
-      cardCode.value = res.data.cardCode
-      claimModalContent.value = {
-        success: true,
-        title: '领取成功',
-        message: `成功领取 ${formatTimeDuration(res.data)}卡密！`,
-        cardCode: res.data.cardCode,
-        days: res.data.days,
-      }
-      showClaimModal.value = true
-    }
-    else {
-      claimModalContent.value = {
-        success: false,
-        title: '领取失败',
-        message: res.data.error || '领取失败，请稍后重试',
-        cardCode: '',
-        days: 0,
-      }
-      showClaimModal.value = true
-    }
-  }
-  catch (e: any) {
-    const data = e.response?.data
-    claimModalContent.value = {
-      success: false,
-      title: '领取失败',
-      message: data?.error || e.message || '领取失败',
-      cardCode: '',
-      days: 0,
-    }
-    showClaimModal.value = true
-  }
-  finally {
-    cardClaimLoading.value = false
-    // 领取尝试后刷新库存与开关状态（不改变每人一张的发放语义）
-    checkCardClaimStatus()
-  }
-}
-
-function closeClaimModal() {
-  showClaimModal.value = false
-}
-
 onMounted(() => {
-  checkCardClaimStatus()
   fetchGameVersion()
   appStore.fetchLoginPageConfig()
 })
@@ -493,9 +174,7 @@ async function fetchGameVersion() {
           {{ loginLinks.title || 'QQ农场智能助手' }}
         </h1>
         <p class="logo-subtitle">
-          {{ isLogin
-            ? (loginLinks.loginSubtitle || '欢迎回来，开启智慧农耕之旅')
-            : (loginLinks.registerSubtitle || '创建账号，开启智慧农耕之旅') }}
+          {{ loginLinks.loginSubtitle || '欢迎回来，开启智慧农耕之旅' }}
         </p>
       </div>
 
@@ -529,11 +208,6 @@ async function fetchGameVersion() {
             placeholder="请输入密码"
             required
           />
-          <PasswordStrengthMeter
-            v-if="showPasswordStrength && password"
-            :strength="passwordStrength"
-            compact
-          />
           <div v-if="error" class="message error-message">
             <span class="message-icon i-carbon-warning" />
             <div class="message-content">
@@ -552,36 +226,6 @@ async function fetchGameVersion() {
           </div>
         </div>
 
-        <div v-if="!isLogin" class="form-group">
-          <label class="form-label">
-            <span class="label-icon i-carbon-ticket" />
-            卡密
-          </label>
-
-          <div v-if="cardClaimEnabled" class="mb-2">
-            <button
-              type="button"
-              class="claim-card-btn"
-              :disabled="cardClaimLoading || claimStockEmpty"
-              @click="claimFreeCard"
-            >
-              <span v-if="cardClaimLoading" class="i-svg-spinners-90-ring-with-bg" />
-              <span v-else>{{ claimStockEmpty ? '暂无可领取卡密' : '免费领取卡密' }}</span>
-            </button>
-          </div>
-
-          <BaseInput
-            id="cardCode"
-            v-model="cardCode"
-            type="text"
-            placeholder="请输入卡密"
-            :required="!isLogin"
-          />
-          <p class="form-hint">
-            注册卡密由本站管理员发放。自行部署请使用配置好的管理员账号登录，管理员无需卡密。
-          </p>
-        </div>
-
         <BaseButton
           type="submit"
           variant="primary"
@@ -589,37 +233,12 @@ async function fetchGameVersion() {
           :loading="loading"
           class="submit-btn"
         >
-          <span v-if="!loading">{{ isLogin ? '登录' : '注册' }}</span>
+          <span v-if="!loading">登录</span>
         </BaseButton>
       </form>
 
-      <div class="switch-area" :class="{ 'single-action': !isLogin }">
-        <button
-          type="button"
-          class="switch-btn"
-          @click="toggleMode"
-        >
-          {{ isLogin ? '立即注册' : '立即登录' }}
-        </button>
-        <div v-if="isLogin" class="login-quick-actions">
-          <button type="button" class="quick-action-btn" @click="openResetVerifyModal">
-            忘记密码
-          </button>
-          <button type="button" class="quick-action-btn" @click="openRenewal">
-            账号续费
-          </button>
-        </div>
-      </div>
-
       <div class="card-footer">
         <div class="footer-info">
-          <a
-            v-if="loginLinks.purchaseUrl"
-            :href="loginLinks.purchaseUrl"
-            class="footer-link purchase-link"
-          >
-            购买卡密
-          </a>
           <a
             v-if="loginLinks.qqGroupUrl"
             :href="loginLinks.qqGroupUrl"
@@ -642,34 +261,6 @@ async function fetchGameVersion() {
         </div>
       </div>
     </main>
-
-    <LoginModals
-      v-model:show-claim-modal="showClaimModal"
-      v-model:show-reset-verify-modal="showResetVerifyModal"
-      v-model:show-reset-password-modal="showResetPasswordModal"
-      v-model:show-renewal-modal="showRenewalModal"
-      v-model:reset-username="resetUsername"
-      v-model:reset-card-code="resetCardCode"
-      v-model:reset-new-password="resetNewPassword"
-      v-model:reset-confirm-password="resetConfirmPassword"
-      v-model:reset-password-touched="resetPasswordTouched"
-      v-model:renewal-username="renewalUsername"
-      v-model:renewal-card-code="renewalCardCode"
-      :claim-modal-content="claimModalContent"
-      :reset-error="resetError"
-      :reset-loading="resetLoading"
-      :reset-password-strength="resetPasswordStrength"
-      :renewal-error="renewalError"
-      :renewal-success="renewalSuccess"
-      :renewal-loading="renewalLoading"
-      @close-claim="closeClaimModal"
-      @close-reset-verify="closeResetVerifyModal"
-      @close-reset-password="closeResetPasswordModal"
-      @close-renewal="closeRenewalModal"
-      @verify-reset-password="verifyResetPassword"
-      @submit-reset-password="submitResetPassword"
-      @submit-renewal="submitRenewal"
-    />
 
     <UpdateLogModal :show="showUpdateLog" @close="showUpdateLog = false" />
   </div>

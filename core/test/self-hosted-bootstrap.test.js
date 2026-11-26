@@ -1,11 +1,5 @@
 'use strict';
-// 自部署注册/引导回归（2026-10-01 工单：免费领卡提示库存不足）：
-// 1) docker compose 转发 FARM_ADMIN_USERNAME/FARM_ADMIN_PASSWORD（默认空，未设置照常启动）；
-// 2) 全新数据目录可从宿主环境安全初始化管理员并免卡密登录；无/非法环境不产生不安全管理员；
-//    已有管理员不被后续不同环境覆盖；
-// 3) 卡密领取配置：全新/不可读默认关闭，显式 enabled/disabled 保持不变；
-// 4) 库存只统计未用/启用的时间卡密；管理员建卡并开启后领取成功，注册消耗库存，
-//    同一 UA 24 小时内只发一张（发放语义不变）。
+// Single-owner initialization and compatibility with existing data.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,6 +10,7 @@ const { execFileSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '../..');
 const USER_STORE_PATH = require.resolve('../src/models/user-store');
 const RUNTIME_PATHS_PATH = require.resolve('../src/config/runtime-paths');
+const SESSION_MANAGER_PATH = require.resolve('../src/controllers/admin-session-manager');
 const ADMIN_ENV_KEYS = ['FARM_ADMIN_USERNAME', 'FARM_ADMIN_PASSWORD', 'ADMIN_PASSWORD'];
 const TEST_ENV_KEYS = ['FARM_DATA_DIR', ...ADMIN_ENV_KEYS];
 const tempDirs = new Set();
@@ -26,7 +21,7 @@ test.beforeEach(() => {
 });
 
 test.afterEach(() => {
-    for (const mod of [USER_STORE_PATH, RUNTIME_PATHS_PATH]) delete require.cache[mod];
+    for (const mod of [USER_STORE_PATH, RUNTIME_PATHS_PATH, SESSION_MANAGER_PATH]) delete require.cache[mod];
     for (const key of TEST_ENV_KEYS) {
         if (originalEnv[key] === undefined) delete process.env[key];
         else process.env[key] = originalEnv[key];
@@ -160,85 +155,59 @@ test('已有管理员不被不同环境覆盖：重载后原管理员仍可登�
     assert.equal(reloaded.validateUser('secondadmin', 'OtherPass!04', '127.0.0.15').error, 'invalid_credentials');
 });
 
-// ─── 卡密领取配置默认值 ───
-
-test('全新数据目录：免费领取默认关闭并落盘 enabled=false', () => {
-    const dir = freshDir('claim-fresh');
-    const store = loadStore(dir);
-
-    assert.equal(store.getCardClaimStatus().enabled, false);
-    assert.equal(readJson(dir, 'card-claim.json').enabled, false);
+test('legacy users and commercial operations cannot be used in a single-owner installation', () => {
+    const dir = freshDir('legacy-users');
+    const ownerUsername = 'firstadmin';
+    const ownerPassword = 'Str0ngPass!03';
+    loadStore(dir, { FARM_ADMIN_USERNAME: ownerUsername, FARM_ADMIN_PASSWORD: ownerPassword });
+    const userFile = path.resolve(dir, 'users.json');
+    const cardFile = path.resolve(dir, 'cards.json');
+    assert.equal(path.dirname(userFile), dir);
+    assert.equal(path.dirname(cardFile), dir);
+    const { users } = readJson(dir, 'users.json');
+    const legacy = { ...users[0], username: 'legacyguest', role: 'user' };
+    const anotherAdmin = { ...users[0], username: 'anotheradmin' };
+    const cardBytes = '{"cards":[{"code":"legacy-example","enabled":true}]}';
+    fs.writeFileSync(userFile, JSON.stringify({ users: [...users, legacy, anotherAdmin] }));
+    fs.writeFileSync(cardFile, cardBytes);
+    const store = loadStore(dir, { FARM_ADMIN_USERNAME: ownerUsername });
+    assert.equal(store.validateUser(legacy.username, ownerPassword, '127.0.0.17').error, 'invalid_credentials');
+    assert.equal(store.validateUser(anotherAdmin.username, ownerPassword, '127.0.0.18').error, 'invalid_credentials');
+    assert.equal(store.isPanelOwner(legacy), false);
+    assert.equal(store.isPanelOwner(anotherAdmin), false);
+    assert.equal(store.isPanelOwner(users[0]), true);
+    assert.equal(store.validateUser(ownerUsername, ownerPassword, '127.0.0.19').role, 'admin');
+    for (const name of ['registerUser', 'renewUser', 'createCard', 'createCardsBatch', 'claimCardByUA', 'resetPasswordByCard']) {
+        assert.equal(store[name], undefined);
+    }
+    assert.equal(fs.readFileSync(cardFile, 'utf8'), cardBytes);
 });
 
-test('显式配置保持不变：enabled=true / enabled=false 重载后均不翻转', () => {
-    const dir = freshDir('claim-explicit');
-    loadStore(dir).setCardClaimStatus(true);
-    assert.equal(loadStore(dir).getCardClaimStatus().enabled, true);
-
-    const dir2 = freshDir('claim-explicit-off');
-    loadStore(dir2).setCardClaimStatus(false);
-    assert.equal(loadStore(dir2).getCardClaimStatus().enabled, false);
-});
-
-test('历史 enabled=true 文件重载后保持开启且领取记录不丢', () => {
-    const dir = freshDir('claim-legacy');
-    fs.writeFileSync(path.join(dir, 'card-claim.json'), JSON.stringify({
-        enabled: true,
-        records: [{ uaHash: 'legacy-hash', claimTime: Date.now(), cardCode: 'LEGACYCODE00000A' }],
-    }));
-    const store = loadStore(dir);
-    assert.equal(store.getCardClaimStatus().enabled, true);
-    assert.equal(store.getCardClaimRecords().length, 1);
-});
-
-test('card-claim.json 不可读（损坏 JSON）时按关闭处理', () => {
-    const dir = freshDir('claim-corrupt');
-    fs.writeFileSync(path.join(dir, 'card-claim.json'), '{ not valid json');
-    assert.equal(loadStore(dir).getCardClaimStatus().enabled, false);
-});
-
-// ─── 库存口径与领取流程 ───
-
-test('库存只统计未使用且启用的时间卡密（排除额度卡/禁用卡/已用卡）', () => {
-    const dir = freshDir('stock-scope');
-    const store = loadStore(dir);
-
-    const available = store.createCard('可用时间卡', 3, 'time');
-    const used = store.createCard('将被使用', 3, 'time');
-    const disabled = store.createCard('已禁用', 3, 'time');
-    store.createCard('额度卡', 5, 'quota');
-    store.updateCard(disabled.code, { enabled: false });
-    assert.equal(store.getAvailableTimeCardCount(), 2, '额度卡与禁用卡不计入库存');
-
-    assert.equal(store.registerUser('fixtureuser1', 'Str0ngPass!05', used.code).ok, true);
-    assert.equal(store.getAvailableTimeCardCount(), 1, '已用卡不重复计数');
-    assert.equal(store.registerUser('fixtureuser1x', 'Str0ngPass!05', available.code).ok, true);
-    assert.equal(store.getAvailableTimeCardCount(), 0, '注册消耗时间卡库存');
-});
-
-test('管理员建时间卡并开启领取后：领取成功、注册可用、库存清零后报不足', () => {
-    const dir = freshDir('claim-flow');
-    const store = loadStore(dir);
-    const card = store.createCard('免费注册卡', 7, 'time');
-    assert.equal(store.getCardClaimStatus().enabled, false, '未开启时不得领取');
-    assert.equal(store.claimCardByUA('fixture-ua-1').ok, false);
-
-    store.setCardClaimStatus(true);
-    const claim = store.claimCardByUA('fixture-ua-1');
-    assert.equal(claim.ok, true);
-    assert.equal(claim.cardCode, card.code);
-
-    const again = store.claimCardByUA('fixture-ua-1');
-    assert.equal(again.ok, false, '同一 UA 24 小时内只发一张');
-    assert.match(again.error, /24小时/);
-
-    const reg = store.registerUser('fixtureuser2', 'Str0ngPass!06', claim.cardCode);
-    assert.equal(reg.ok, true, '领取的卡密必须能完成注册');
-    assert.equal(store.getAvailableTimeCardCount(), 0);
-
-    const empty = store.claimCardByUA('fixture-ua-2');
-    assert.equal(empty.ok, false);
-    assert.match(empty.error, /库存不足/);
+test('owner sessions still authenticate while old user sessions and commercial routes are unavailable', () => {
+    const dir = freshDir('owner-session');
+    const owner = { username: 'ownerfixture', role: 'admin' };
+    const other = { username: 'legacyguest', role: 'user' };
+    const store = loadStore(dir, { FARM_ADMIN_USERNAME: owner.username, FARM_ADMIN_PASSWORD: 'FixturePass!01' });
+    const sessionFile = path.resolve(dir, 'admin-sessions.json');
+    assert.equal(path.dirname(sessionFile), dir);
+    fs.writeFileSync(sessionFile, JSON.stringify([
+        { token: 'old-owner', user: owner },
+        { token: 'old-user', user: other },
+    ]));
+    const logger = { warn() {}, info() {} };
+    const manager = require(SESSION_MANAGER_PATH).createAdminSessionManager({ logger });
+    assert.equal(manager.hasToken('old-owner'), true);
+    assert.equal(manager.getSession('old-user'), null);
+    assert.equal(manager.createAdminSession(other), null);
+    const handlers = new Map();
+    require('../src/controllers/admin-auth-routes').registerAdminAuthRoutes({
+        app: { post: (route, ...handlersForRoute) => handlers.set(route, handlersForRoute) },
+        logger, userStore: store, requireAdminToken: manager.requireAdminToken,
+        createAdminSession: manager.createAdminSession,
+    });
+    assert.deepEqual([...handlers.keys()], ['/api/login', '/api/user/change-password']);
+    const request = { headers: { 'x-admin-token': 'old-owner' } };
+    manager.requireAdminToken(request, {}, () => assert.deepEqual(request.currentUser, owner));
 });
 
 // ─── docker compose 转发（有 docker compose CLI 才跑，无需 daemon）───
