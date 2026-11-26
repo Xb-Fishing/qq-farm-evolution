@@ -883,7 +883,7 @@ async function acceptFriends(gids) {
 /** Delete a friend by GID. */
 async function delFriend(gid) {
   const numericGid = toNum(gid);
-  if (!numericGid) throw new Error('无效的好友 GID');
+  if (!Number.isSafeInteger(numericGid) || numericGid <= 0) throw new Error('无效的好友 GID');
 
   const payload = types.DelFriendRequest.encode(
     types.DelFriendRequest.create({ friend_gid: toLong(numericGid) })
@@ -895,7 +895,7 @@ async function delFriend(gid) {
   );
   const reply = types.DelFriendReply.decode(body);
 
-  // Remove from local cache
+  require('./friend-land-analyzer').removeFriendFromListCache(numericGid);
   const accountId = process.env.FARM_ACCOUNT_ID || '';
   if (accountId) {
     removeFriendFromCache(accountId, numericGid);

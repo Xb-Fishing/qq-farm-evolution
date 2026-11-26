@@ -30,6 +30,7 @@ const {
   friends,
   loading,
   dogInfoLoading,
+  deletingFriendAccounts,
   friendLands,
   friendLandsLoading,
   blacklist,
@@ -59,6 +60,7 @@ const showConfirm = ref(false)
 const confirmMessage = ref('')
 const confirmLoading = ref(false)
 const pendingAction = ref<(() => Promise<any>) | null>(null)
+const friendToDelete = ref<{ accountId: string, gid: number, name: string } | null>(null)
 const avatarErrorKeys = ref<Set<string>>(new Set())
 const searchKeyword = ref('')
 const localKnownFriendGidSyncCooldownSec = ref(300)
@@ -190,6 +192,8 @@ const showInitialLoading = computed(() =>
 const currentAccountDisconnected = computed(() =>
   currentStatusReady.value && !status.value?.connection?.connected,
 )
+const deletingFriend = computed(() => deletingFriendAccounts.value.has(String(currentAccountId.value || '')))
+const friendDeletionDisabled = computed(() => deletingFriend.value || !currentAccount.value?.running || currentAccountDisconnected.value)
 
 async function handleRemoveGidFromList(gid: number) {
   if (!currentAccountId.value)
@@ -414,6 +418,7 @@ useIntervalFn(() => {
 }, 30_000)
 
 watch(currentAccountId, (newId, oldId) => {
+  friendToDelete.value = null
   expandedFriends.value.clear()
   currentPage.value = 1
   filterNow.value = Date.now()
@@ -434,6 +439,47 @@ watch(() => [currentAccount.value?.id, currentAccount.value?.running] as const, 
   if (id !== oldId || running !== oldRunning)
     loadData()
 })
+
+function requestFriendDeletion(friend: { gid: unknown, name?: string }) {
+  const accountId = currentAccountId.value
+  const gid = Number(friend.gid)
+  if (!accountId || friendDeletionDisabled.value || !Number.isSafeInteger(gid) || gid <= 0)
+    return
+  friendToDelete.value = { accountId, gid, name: friend.name?.trim() || `GID ${gid}` }
+}
+
+function closeFriendDeletion() {
+  if (!deletingFriend.value)
+    friendToDelete.value = null
+}
+
+async function confirmFriendDeletion() {
+  const target = friendToDelete.value
+  if (!target || target.accountId !== currentAccountId.value || deletingFriend.value)
+    return
+  if (friendDeletionDisabled.value) {
+    toast.error('请先连接当前农场账号')
+    friendToDelete.value = null
+    return
+  }
+
+  try {
+    if (await friendStore.deleteFriend(target.accountId, target.gid) && friendToDelete.value === target) {
+      expandedFriends.value.delete(String(target.gid))
+      toast.success(`已删除好友 ${target.name}`)
+    }
+  }
+  catch (error: any) {
+    if (friendToDelete.value === target) {
+      const reason = error?.response?.data?.error || (error?.name === 'Error' ? error.message : '')
+      toast.error(reason && reason !== 'API Timeout' ? reason : '删除结果未确认，请刷新好友列表核对')
+    }
+  }
+  finally {
+    if (friendToDelete.value === target)
+      friendToDelete.value = null
+  }
+}
 
 async function handleRefreshFriends() {
   if (!currentAccountId.value)
@@ -1016,6 +1062,7 @@ async function handleBatchAddKnownFriendGids() {
             :watchlist-gid-set="watchlistGidSet"
             :auto-bad-gid-set="autoBadGidSet"
             :known-friend-gid-set="knownFriendGidSet"
+            :delete-disabled="friendDeletionDisabled"
             :expanded-friends="expandedFriends"
             :friend-lands="friendLands"
             :friend-lands-loading="friendLandsLoading"
@@ -1033,6 +1080,7 @@ async function handleBatchAddKnownFriendGids() {
             @toggle-watchlist="handleToggleWatchlist"
             @toggle-auto-bad="handleToggleAutoBad"
             @remove-known-friend-gid="handleRemoveKnownFriendGid"
+            @delete-friend="requestFriendDeletion"
             @friend-avatar-error="handleFriendAvatarError"
           />
         </template>
@@ -1248,6 +1296,20 @@ async function handleBatchAddKnownFriendGids() {
       @close="!confirmLoading && (showConfirm = false)"
       @cancel="!confirmLoading && (showConfirm = false)"
     />
+
+    <Teleport to="body">
+      <ConfirmModal
+        :show="!!friendToDelete"
+        :loading="deletingFriend"
+        title="删除农场好友"
+        type="danger"
+        :message="friendToDelete ? `确定删除 ${friendToDelete.name}（GID ${friendToDelete.gid}）吗？删除后将解除农场好友关系。` : ''"
+        confirm-text="确认删除"
+        @confirm="confirmFriendDeletion"
+        @close="closeFriendDeletion"
+        @cancel="closeFriendDeletion"
+      />
+    </Teleport>
 
     <Teleport to="body">
       <div

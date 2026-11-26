@@ -56,6 +56,10 @@ export const useFriendStore = defineStore('friend', () => {
   // gid -> { at, source }：实时在线证据，log:new 桥写入，10 秒过期由页面 ticker 撤销
   const onlineEvidence = ref<Record<string, { at: number, source: string }>>({})
   let friendsReqSeq = 0
+  // 删除成功后，旧的狗信息读取也不能写回旧名单。
+  let friendRosterEpoch = 0
+  let accountEpoch = 0
+  const deletingFriendAccounts = ref(new Set<string>())
   const dogInfoLoading = ref(false)
   const friendLands = ref<Record<string, any[]>>({})
   const friendLandsLoading = ref<Record<string, boolean>>({})
@@ -71,7 +75,6 @@ export const useFriendStore = defineStore('friend', () => {
   // 前移（含 A→B→A 切回）即整体丢弃——旧写响应不得写回名单、版本、通知
   // 状态或触发过期错误提示。同一代次内的多个在途写只按服务端意图版本
   // （opSeq）裁决：较早发起但携带较新服务端版本的响应仍正常应用。
-  let watchlistAccountEpoch = 0
   const autoBadList = ref<BlacklistItem[]>([])
   const interactRecords = ref<any[]>([])
   const interactLoading = ref(false)
@@ -86,6 +89,7 @@ export const useFriendStore = defineStore('friend', () => {
   function clearFriendData() {
     // 代次前移：清空后没有新 fetch 时（A→B→A / 手动清空），旧响应 seq 不再匹配，不会写回旧列表
     friendsReqSeq++
+    friendRosterEpoch++
     loading.value = false
     friends.value = []
     onlineEvidence.value = {}
@@ -96,7 +100,7 @@ export const useFriendStore = defineStore('friend', () => {
     watchlistMeta.value = { opSeq: 0, consumedOpSeq: 0 }
     watchlistNotify.value = { saved: false, notifyAttempted: false }
     watchlistReqSeq++
-    watchlistAccountEpoch++
+    accountEpoch++
     autoBadList.value = []
     interactRecords.value = []
     interactError.value = ''
@@ -201,6 +205,36 @@ export const useFriendStore = defineStore('friend', () => {
     }
   }
 
+  async function deleteFriend(accountId: string, gid: number) {
+    if (!accountId || !isCurrentAccount(accountId) || !Number.isSafeInteger(gid) || gid <= 0)
+      return false
+    if (deletingFriendAccounts.value.has(accountId))
+      return false
+
+    const epoch = accountEpoch
+    deletingFriendAccounts.value.add(accountId)
+    try {
+      const { data } = await api.post(`/api/friend/${gid}/delete`, {}, {
+        headers: { 'x-account-id': accountId },
+        errorFeedback: 'consumer',
+      })
+      if (epoch !== accountEpoch || !isCurrentAccount(accountId))
+        return false
+      if (data?.ok !== true)
+        throw new Error(data?.error || '删除结果未确认，请刷新好友列表核对')
+      friendsReqSeq++
+      friendRosterEpoch++
+      loading.value = false
+      friends.value = friends.value.filter(friend => Number(friend.gid) !== gid)
+      delete friendLands.value[String(gid)]
+      delete onlineEvidence.value[String(gid)]
+      return true
+    }
+    finally {
+      deletingFriendAccounts.value.delete(accountId)
+    }
+  }
+
   // log:new 桥：只认当前账号、已证实在线源、10 秒窗口内的非未来证据。
   // 数据包形状来自 worker setLogHook + admin emitRealtimeLog：
   // { accountId, time, tag, msg, isWarn, meta: { module, event, friendGid, source, at } }
@@ -254,13 +288,14 @@ export const useFriendStore = defineStore('friend', () => {
     if (!accountId)
       return { ok: false, error: '账号ID无效' }
     const requestedId = String(accountId)
+    const epoch = friendRosterEpoch
     dogInfoLoading.value = true
     try {
       const res = await api.post('/api/friends/fetch-dog-info', {}, {
         headers: { 'x-account-id': accountId },
         timeout: 600000,
       })
-      if (res.data.ok && Array.isArray(res.data.friends) && isCurrentAccount(requestedId)) {
+      if (res.data.ok && Array.isArray(res.data.friends) && epoch === friendRosterEpoch && isCurrentAccount(requestedId)) {
         friends.value = res.data.friends
       }
       return {
@@ -398,12 +433,12 @@ export const useFriendStore = defineStore('friend', () => {
     if (!accountId || !gid)
       return { ok: false, stale: false }
     const requestedId = String(accountId)
-    const epoch = watchlistAccountEpoch
+    const epoch = accountEpoch
     try {
       const res = await api.post('/api/friend-watchlist/toggle', { gid }, {
         headers: { 'x-account-id': accountId },
       })
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       if (!applyWatchlistResponse(res.data))
         return { ok: false, stale: true }
@@ -417,7 +452,7 @@ export const useFriendStore = defineStore('friend', () => {
     }
     catch {
       // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       return { ok: false, stale: false }
     }
@@ -428,12 +463,12 @@ export const useFriendStore = defineStore('friend', () => {
     if (!accountId || !gid)
       return { ok: false, stale: false }
     const requestedId = String(accountId)
-    const epoch = watchlistAccountEpoch
+    const epoch = accountEpoch
     try {
       const res = await api.post('/api/friend-watchlist/resume', { gid }, {
         headers: { 'x-account-id': accountId },
       })
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       if (!applyWatchlistResponse(res.data))
         return { ok: false, stale: true }
@@ -447,7 +482,7 @@ export const useFriendStore = defineStore('friend', () => {
     }
     catch {
       // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       return { ok: false, stale: false }
     }
@@ -458,12 +493,12 @@ export const useFriendStore = defineStore('friend', () => {
     if (!accountId || !gid)
       return { ok: false, stale: false }
     const requestedId = String(accountId)
-    const epoch = watchlistAccountEpoch
+    const epoch = accountEpoch
     try {
       const res = await api.post('/api/friend-watchlist/remove', { gid }, {
         headers: { 'x-account-id': accountId },
       })
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       if (!applyWatchlistResponse(res.data))
         return { ok: false, stale: true }
@@ -477,7 +512,7 @@ export const useFriendStore = defineStore('friend', () => {
     }
     catch {
       // 拒绝分支同样受生命周期守卫：旧生命周期的请求失败不弹过期错误
-      if (epoch !== watchlistAccountEpoch || !isCurrentAccount(requestedId))
+      if (epoch !== accountEpoch || !isCurrentAccount(requestedId))
         return { ok: false, stale: true }
       return { ok: false, stale: false }
     }
@@ -694,6 +729,8 @@ export const useFriendStore = defineStore('friend', () => {
     knownFriendSettingsSaving,
     clearFriendData,
     fetchFriends,
+    deletingFriendAccounts,
+    deleteFriend,
     fetchFriendsDogInfo,
     fetchFriendDogInfo,
     fetchBlacklist,

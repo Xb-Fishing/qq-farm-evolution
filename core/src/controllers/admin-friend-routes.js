@@ -260,7 +260,7 @@ function registerAdminFriendRoutes({
 
     try {
       const gid = Number(req.params.gid);
-      if (!gid) {
+      if (!Number.isSafeInteger(gid) || gid <= 0) {
         return res.status(400).json({ ok: false, error: "无效的好友 GID" });
       }
 

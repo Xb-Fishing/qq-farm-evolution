@@ -12,6 +12,7 @@ const props = defineProps<{
   watchlistGidSet: Set<number>
   autoBadGidSet: Set<number>
   knownFriendGidSet: Set<number>
+  deleteDisabled: boolean
   expandedFriends: Set<string>
   friendLands: Record<string, any[]>
   friendLandsLoading: Record<string, boolean>
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   (e: 'toggleBlacklist', friend: any, event: Event): void
   (e: 'toggleWatchlist', friend: any, event: Event): void
   (e: 'toggleAutoBad', friend: any, event: Event): void
+  (e: 'deleteFriend', friend: any): void
   (e: 'removeKnownFriendGid', friend: any, event: Event): void
   (e: 'friendAvatarError', friend: any): void
 }>()
@@ -195,6 +197,14 @@ function formatLastLogin(at: unknown) {
           @click="emit('removeKnownFriendGid', friend, $event)"
         >
           移出同步列表
+        </button>
+        <button
+          type="button"
+          class="min-h-11 rounded border border-red-200 px-3 py-2 text-sm text-red-700 transition focus-visible:outline-red-600 disabled:cursor-not-allowed disabled:opacity-60 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-900/30"
+          :disabled="deleteDisabled"
+          @click.stop="emit('deleteFriend', friend)"
+        >
+          删除好友
         </button>
       </div>
     </div>
