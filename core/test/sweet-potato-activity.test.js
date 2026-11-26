@@ -215,19 +215,22 @@ function deferred() {
 
 function routeFixture(provider) {
   const handlers = new Map();
+  const posts = new Map();
   const scopes = new Map([['a', 'first'], ['b', 'first']]);
   const calls = { scopes: 0, statuses: 0, reads: [] };
   let load = async () => available;
+  let mutate = async () => ({});
   registerAdminActivityRoutes({
     app: {
       get(url, handler) { handlers.set(url, handler); },
-      post() {},
+      post(url, handler) { posts.set(url, handler); },
     },
     provider: provider || {
       getStatus() { calls.statuses++; return { connection: { connected: true } }; },
       getGamePanelReadScope(id) { calls.scopes++; return scopes.get(id); },
       async getSweetPotatoReadScope() { return 1; },
       getSweetPotatoActivity(id) { calls.reads.push(id); return load(id); },
+      runSweetPotatoTrade(...args) { return mutate(...args); },
     },
     getAccountIdFromRequest: req => req.accountId,
     canAccessAccount: req => req.allowed,
@@ -241,8 +244,28 @@ function routeFixture(provider) {
     await route(req, res);
     return res;
   }
-  return { get, calls, scopes, loadWith: fn => { load = fn; } };
+  async function post(action, accountId = 'a') {
+    const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; } };
+    await posts.get('/api/activity/sweet-potato/trade/:action')({ allowed: true, accountId, params: { action }, body: {} }, res);
+    return res;
+  }
+  return { get, post, calls, scopes, loadWith: fn => { load = fn; }, mutateWith: fn => { mutate = fn; } };
 }
+
+test('a trade receipt invalidates only the changed account activity state', async t => {
+  fakeClock(t, START * 1000);
+  const h = routeFixture();
+  let claimed = false;
+  h.loadWith(async () => ({ ...available, personal: { ...available.personal, seedsClaimed: claimed } }));
+  const accountB = { allowed: true, accountId: 'b' };
+  assert.equal((await h.get()).body.activity.personal.seedsClaimed, false);
+  assert.equal((await h.get(accountB)).body.activity.personal.seedsClaimed, false);
+  h.mutateWith(async () => { claimed = true; return { itemId: 20307, count: 28 }; });
+  assert.equal((await h.post('seeds')).body.ok, true);
+  assert.equal((await h.get()).body.activity.personal.seedsClaimed, true);
+  assert.equal((await h.get(accountB)).body.activity.personal.seedsClaimed, false);
+  assert.deepEqual(h.calls.reads, ['a', 'b', 'a']);
+});
 
 test('API checks account ownership and window, merges successes and failures per connection', async t => {
   const clock = fakeClock(t, START * 1000 - 1);

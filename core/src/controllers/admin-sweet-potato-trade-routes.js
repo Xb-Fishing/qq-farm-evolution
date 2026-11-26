@@ -1,11 +1,15 @@
 const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
 
-const READS = new Set(['quote', 'records', 'catalog']);
-const WRITES = new Set(['seeds', 'sale', 'exchange', 'dividend']);
+const READS = new Set(['quote', 'records', 'catalog', 'plots']);
+const WRITES = new Set(['seeds', 'sale', 'exchange', 'dividend', 'plantCrop', 'harvestCrop']);
+
+function sweetPotatoCacheKey(id, scope, socket) {
+  return `sweet-potato:${JSON.stringify([id, scope, socket])}`;
+}
 
 function registerAdminSweetPotatoTradeRoutes(context) {
-  const { app, provider, canAccessAccount, getAccountIdFromRequest, sendProviderError } = context;
-  function handler(actions) {
+  const { app, provider, activityReader, canAccessAccount, getAccountIdFromRequest, sendProviderError } = context;
+  function handler(actions, writing = false) {
     return async (req, res) => {
       const id = getAuthorizedAccountId(req, res, context);
       if (!id) return;
@@ -20,7 +24,12 @@ function registerAdminSweetPotatoTradeRoutes(context) {
         const socket = await provider.getSweetPotatoReadScope(id);
         if (!Number.isSafeInteger(socket) || socket <= 0 || !stillCurrent())
           throw new Error('账号或连接已变化，请重新读取活动');
-        const result = await provider.runSweetPotatoTrade(id, action, req.method === 'GET' ? req.query : req.body, socket);
+        let result;
+        try {
+          result = await provider.runSweetPotatoTrade(id, action, writing ? req.body : req.query, socket);
+        } finally {
+          if (writing) activityReader.clear(sweetPotatoCacheKey(id, scope, socket));
+        }
         if (!stillCurrent()) throw new Error('账号或连接已变化，请核对活动状态');
         res.json({ ok: true, accountId: id, result });
       } catch (error) {
@@ -29,7 +38,7 @@ function registerAdminSweetPotatoTradeRoutes(context) {
     };
   }
   app.get('/api/activity/sweet-potato/trade/:action', handler(READS));
-  app.post('/api/activity/sweet-potato/trade/:action', handler(WRITES));
+  app.post('/api/activity/sweet-potato/trade/:action', handler(WRITES, true));
 }
 
-module.exports = { registerAdminSweetPotatoTradeRoutes };
+module.exports = { registerAdminSweetPotatoTradeRoutes, sweetPotatoCacheKey };

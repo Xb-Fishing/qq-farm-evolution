@@ -3,6 +3,7 @@ const { getRoot } = require('../utils/proto');
 const { getUserState, sendMsgAsync } = require('../utils/network');
 const { log } = require('../utils/utils');
 const { getBag, getBagItems, invalidatePanelBagCache } = require('./warehouse');
+const { getSweetPotatoPlots, performSweetPotatoPlotAction } = require('./sweet-potato-plots');
 
 const ACTIVITY_ID = 2026111708;
 const SEED_ID = 20307;
@@ -150,6 +151,9 @@ async function mutate(action, input, checkConnection) {
   pendingOperation = true;
   try {
     const activity = await requireActivity(checkConnection);
+    if (action === 'plantCrop' || action === 'harvestCrop') {
+      return performSweetPotatoPlotAction(action, quantity(input.landId), checkConnection);
+    }
     if (action === 'seeds') {
       if (activity.seedsClaimed !== false) throw new Error('种子已领取或资格暂未确认');
       return confirmedGrant((await operate('seeds', {}, checkConnection))?.grant, SEED_ID);
@@ -195,14 +199,16 @@ async function runSweetPotatoTrade(action, input = {}, isCurrent = () => true) {
   const checkConnection = () => {
     if (!isCurrent()) throw new Error('账号连接已变化，请核对活动状态');
   };
-  if (['seeds', 'sale', 'exchange', 'dividend'].includes(action)) {
+  if (['seeds', 'sale', 'exchange', 'dividend', 'plantCrop', 'harvestCrop'].includes(action)) {
     const result = await mutate(action, input, checkConnection);
-    log('活动', `以薯换福已确认：${{ seeds: '领取红薯种子', sale: '出售蜜薯', exchange: '兑换奖励', dividend: '领取分红' }[action]}`, {
+    log('活动', `以薯换福已确认：${{ seeds: '领取红薯种子', sale: '出售蜜薯', exchange: '兑换奖励',
+      dividend: '领取分红', plantCrop: '种植红薯', harvestCrop: '收获红薯' }[action]}`, {
       module: 'activity', event: 'sweet_potato_action', action, result: 'ok',
     });
     return result;
   }
   await requireActivity(checkConnection);
+  if (action === 'plots') return getSweetPotatoPlots(checkConnection);
   if (action === 'quote') return { quote: await quote(await shopTarget(input.shop), checkConnection), stock: await stock(checkConnection) };
   if (action === 'catalog') return { catalog: await catalog(checkConnection), stock: await stock(checkConnection) };
   if (action === 'records') {

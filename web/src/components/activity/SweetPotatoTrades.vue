@@ -28,6 +28,12 @@ interface Row {
   proceeds: number | null
   dividend: number | null
 }
+interface Plots {
+  empty: number[]
+  ready: number[]
+}
+type Action = 'seeds' | 'dividend' | 'sale' | 'exchange' | 'plantCrop' | 'harvestCrop'
+type ConfirmedAction = Exclude<Action, 'seeds' | 'dividend'>
 
 const props = defineProps<{
   accountId: string
@@ -47,7 +53,16 @@ const selectedShop = ref('')
 const sellCount = ref(1)
 const exchangeCount = ref(1)
 const exchangeIndex = ref<number | null>(null)
-const confirm = ref<'sale' | 'exchange' | null>(null)
+const confirm = ref<ConfirmedAction | null>(null)
+const plots = ref<Plots | null>(null)
+const landId = ref<number | null>(null)
+const plotAction = computed(() => {
+  if (!landId.value || !plots.value)
+    return null
+  if (plots.value.empty.includes(landId.value))
+    return 'plantCrop' as const
+  return plots.value.ready.includes(landId.value) ? 'harvestCrop' as const : null
+})
 const selectedGoods = computed(() => goods.value.find(row => row.index === exchangeIndex.value))
 const maxSale = computed(() => market.value?.acceptsSales === true
   ? Math.min(stock.value?.potatoes ?? 0, market.value.remaining ?? 0)
@@ -64,6 +79,8 @@ watch(() => props.accountId, () => {
   stock.value = null
   goods.value = []
   records.value = null
+  plots.value = null
+  landId.value = null
   exchangeIndex.value = null
   selectedShop.value = ''
   confirm.value = null
@@ -71,7 +88,7 @@ watch(() => props.accountId, () => {
   error.value = ''
 })
 watch(selectedShop, () => { market.value = null })
-watch([selectedShop, sellCount, exchangeCount, exchangeIndex], () => { confirm.value = null })
+watch([selectedShop, sellCount, exchangeCount, exchangeIndex, landId], () => { confirm.value = null })
 
 async function request<T>(action: string, accountId: string, body?: Record<string, unknown>, params?: Record<string, string>) {
   const config = { headers: { 'x-account-id': accountId }, params }
@@ -138,7 +155,18 @@ function loadRecords() {
   })
 }
 
-function write(action: 'seeds' | 'dividend' | 'sale' | 'exchange') {
+function loadPlots() {
+  confirm.value = null
+  return run(async (account, current) => {
+    const result = await request<Plots>('plots', account)
+    if (current()) {
+      plots.value = result
+      landId.value = null
+    }
+  })
+}
+
+function write(action: Action) {
   const body: Record<string, unknown> = {}
   if (action === 'sale') {
     if (confirm.value !== 'sale' || !market.value || !stock.value || sellCount.value > maxSale.value)
@@ -150,16 +178,23 @@ function write(action: 'seeds' | 'dividend' | 'sale' | 'exchange') {
       return
     Object.assign(body, { index: selectedGoods.value.index, count: exchangeCount.value, unitPrice: selectedGoods.value.unitPrice, coins: stock.value.coins })
   }
+  if (action === 'plantCrop' || action === 'harvestCrop') {
+    if (confirm.value !== action || plotAction.value !== action || !landId.value)
+      return
+    body.landId = landId.value
+  }
   confirm.value = null
   return run(async (account, current) => {
     try {
-      const result = await request<{ proceeds?: number, cost?: number, amount?: number, count?: number }>(action, account, body)
+      const result = await request<{ proceeds?: number, cost?: number, amount?: number, count?: number, landId?: number, potatoes?: number }>(action, account, body)
       if (current()) {
         const feedback = {
           seeds: `已领取红薯种子 × ${result.count}`,
           dividend: `已领取分红 ${result.amount} 福气币`,
           sale: `已售出 ${result.count} 个蜜薯，获得 ${result.proceeds} 福气币`,
           exchange: `兑换已确认，使用 ${result.cost} 福气币`,
+          plantCrop: `${result.landId} 号地已种下红薯`,
+          harvestCrop: `${result.landId} 号地已收获红薯，获得 ${result.potatoes ?? 0} 个蜜薯`,
         }
         message.value = feedback[action]
       }
@@ -170,6 +205,10 @@ function write(action: 'seeds' | 'dividend' | 'sale' | 'exchange') {
         stock.value = null
         goods.value = []
         exchangeIndex.value = null
+        if (action === 'plantCrop' || action === 'harvestCrop') {
+          plots.value = null
+          landId.value = null
+        }
         emit('changed')
       }
     }
@@ -190,6 +229,26 @@ function write(action: 'seeds' | 'dividend' | 'sale' | 'exchange') {
         查询收购记录
       </BaseButton>
     </div>
+    <section class="space-y-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <h4 class="font-medium">种植与收获红薯</h4>
+        <BaseButton type="button" variant="outline" size="sm" :disabled="busy" @click="loadPlots">读取当前土地</BaseButton>
+      </div>
+      <p v-if="plots && !plots.empty.length && !plots.ready.length" class="text-sm text-gray-600 dark:text-gray-300">
+        暂无可种空地或已成熟红薯。
+      </p>
+      <div v-else-if="plots" class="flex flex-wrap items-center gap-2">
+        <label for="sweet-potato-land" class="text-sm">土地</label>
+        <select id="sweet-potato-land" v-model="landId" class="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800" :disabled="busy">
+          <option :value="null">选择土地</option>
+          <option v-for="id in plots.empty" :key="id" :value="id">{{ id }} 号地 · 可种</option>
+          <option v-for="id in plots.ready" :key="id" :value="id">{{ id }} 号地 · 红薯成熟</option>
+        </select>
+        <BaseButton type="button" variant="primary" size="sm" :disabled="busy || !plotAction" @click="confirm = plotAction">
+          {{ plotAction === 'harvestCrop' ? '收获红薯' : '种植红薯' }}
+        </BaseButton>
+      </div>
+    </section>
     <section class="space-y-2">
       <h4 class="font-medium">出售蜜薯</h4>
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="loadQuote">
@@ -231,9 +290,11 @@ function write(action: 'seeds' | 'dividend' | 'sale' | 'exchange') {
     </section>
     <div v-if="confirm" class="rounded border border-amber-300 p-3" aria-live="polite">
       <p v-if="confirm === 'sale'">出售 {{ sellCount }} 个蜜薯，预计获得 {{ sellCount * (market?.unitPrice ?? 0) }} 福气币。</p>
-      <p v-else>兑换 {{ exchangeCount }} 份，预计使用 {{ exchangeCount * (selectedGoods?.unitPrice ?? 0) }} 福气币。</p>
+      <p v-else-if="confirm === 'exchange'">兑换 {{ exchangeCount }} 份，预计使用 {{ exchangeCount * (selectedGoods?.unitPrice ?? 0) }} 福气币。</p>
+      <p v-else-if="confirm === 'plantCrop'">使用 1 颗红薯种子，在 {{ landId }} 号地种植。</p>
+      <p v-else>收获 {{ landId }} 号地的成熟红薯。</p>
       <div class="mt-2 flex gap-2">
-        <BaseButton type="button" variant="primary" size="sm" :disabled="busy" @click="write(confirm)">确认{{ confirm === 'sale' ? '出售' : '兑换' }}</BaseButton>
+        <BaseButton type="button" variant="primary" size="sm" :disabled="busy" @click="write(confirm)">确认操作</BaseButton>
         <BaseButton type="button" variant="outline" size="sm" :disabled="busy" @click="confirm = null">取消</BaseButton>
       </div>
     </div>

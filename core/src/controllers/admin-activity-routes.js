@@ -5,7 +5,7 @@ const { registerAdminOfficialAnnouncementRoutes } = require('./admin-official-an
 const { createActivityReadCache } = require('./activity-read-cache');
 const { registerAdminSolarCalendarRoutes } = require('./admin-solar-calendar-routes');
 const { registerAdminGameUpdateRoutes } = require('./admin-game-update-routes');
-const { registerAdminSweetPotatoTradeRoutes } = require('./admin-sweet-potato-trade-routes');
+const { registerAdminSweetPotatoTradeRoutes, sweetPotatoCacheKey } = require('./admin-sweet-potato-trade-routes');
 const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
 const { sweetPotatoOutsideWindow } = require('../services/activity');
 
@@ -29,7 +29,7 @@ function registerSweetPotatoRoute(context) {
       const socketScope = await provider.getSweetPotatoReadScope(accountId);
       if (!Number.isSafeInteger(socketScope) || socketScope <= 0)
         throw new Error('账号连接已变化，请重新读取');
-      key = `sweet-potato:${JSON.stringify([accountId, scope, socketScope])}`;
+      key = sweetPotatoCacheKey(accountId, scope, socketScope);
       function checkCurrent() {
         try {
           if (!sameAccount()) throw new Error('账号授权已变化，请重新读取');

@@ -118,6 +118,10 @@ function groupKey(landIds) {
   return [...landIds].map(Number).sort((a, b) => a - b).join('-');
 }
 
+function isReserved2x2Land(landId) {
+  return reserved2x2GroupKeys.some(key => key.split('-').includes(String(landId)));
+}
+
 /** 构建所有合法 2x2 组合；协议锚点为左下角。 */
 function build2x2LandGroups(lands) {
   const unlockedIds = new Set(
@@ -1330,6 +1334,7 @@ module.exports = {
   build2x2LandGroups,
   selectMaximumNonOverlappingGroups,
   select2x2Reservations,
+  isReserved2x2Land,
   expandRemoved2x2Lands,
   plant2x2Seed,
   plantPrioritized2x2Crops,

@@ -88,12 +88,12 @@ async function getAllLands() {
 }
 
 /** 一键收获 */
-async function harvest(landIds) {
+async function harvest(landIds, { all = true } = {}) {
   const userState = getUserState();
   const payload = types.HarvestRequest.encode(types.HarvestRequest.create({
     land_ids: landIds,
     host_gid: toLong(userState.gid),
-    is_all: true
+    is_all: all
   })).finish();
   const { body } = await sendMsgAsync('gamepb.plantpb.PlantService', 'Harvest', payload);
   return types.HarvestReply.decode(body);
