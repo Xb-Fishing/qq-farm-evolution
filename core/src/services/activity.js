@@ -5,6 +5,8 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   getActivityGroup = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityGroup', getActivityGroup);
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   listActivityGroups = require('./business-state').wrapBusinessFunction('services/activity.js:listActivityGroups', listActivityGroups);
+  // eslint-disable-next-line no-func-assign -- Keep both reads within one tracked operation.
+  getSweetPotatoActivity = require('./business-state').wrapBusinessFunction('services/activity.js:getSweetPotatoActivity', getSweetPotatoActivity);
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   getActivityDiscoveryList = require('./business-state').wrapBusinessFunction('services/activity.js:getActivityDiscoveryList', getActivityDiscoveryList);
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
@@ -86,6 +88,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
  * - 原始 protobuf 回退解码
  */
 const protobuf = require('protobufjs/minimal');
+const Long = require('long');
 const { sendMsgAsync, getUserState, isConnected } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum } = require('../utils/utils');
@@ -294,6 +297,134 @@ async function listActivityGroups() {
   ).finish();
   const { body } = await sendMsgAsync('gamepb.activitypb.ActivityService', 'List', request);
   return types.ActivityListReply.decode(body);
+}
+
+const SWEET_POTATO_ROOT_ID = 2026111707;
+const SWEET_POTATO_MAIN_ID = 2026111708;
+const SWEET_POTATO_START = 1795572000;
+const SWEET_POTATO_END = 1796831999;
+const SWEET_POTATO_STATE_FIELD = 130;
+const sweetPotatoConnections = new WeakMap();
+let sweetPotatoConnectionSequence = 0;
+
+function getSweetPotatoReadScope(socket) {
+  if (socket?.readyState !== 1) return null;
+  if (!sweetPotatoConnections.has(socket)) sweetPotatoConnections.set(socket, ++sweetPotatoConnectionSequence);
+  return sweetPotatoConnections.get(socket);
+}
+
+function sweetPotatoUnavailable(reason, status = 'unavailable') {
+  return { available: false, status, reason, startTime: SWEET_POTATO_START, endTime: SWEET_POTATO_END, personal: null };
+}
+
+function sweetPotatoOutsideWindow(now = Date.now()) {
+  if (now < SWEET_POTATO_START * 1000) return sweetPotatoUnavailable('活动尚未开放');
+  if (now >= SWEET_POTATO_END * 1000) return sweetPotatoUnavailable('活动已结束');
+  return null;
+}
+
+function sweetPotatoNumber(value) {
+  const number = Long.isLong(value) ? value.toNumber() : value;
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function isSweetPotatoNode(node, id, parentId) {
+  const info = node?.activity;
+  return sweetPotatoNumber(info?.id) === id
+    && sweetPotatoNumber(info?.parent_id) === parentId
+    && sweetPotatoNumber(info?.start_time) === SWEET_POTATO_START
+    && sweetPotatoNumber(info?.end_time) === SWEET_POTATO_END
+    && info.visible === true;
+}
+
+function hasValidSweetPotatoFields(bytes, claims = false) {
+  // protobufjs decodes known fields by number alone; check their wire types and
+  // reject overflowing varints or invalid claim flags before projecting state.
+  const reader = protobuf.Reader.create(bytes);
+  const wireTypes = claims ? { 1: 0, 2: 0 } : { 1: 2, 3: 0, 5: 0, 6: 0, 7: 0, 11: 0 };
+  const seen = new Set();
+  try {
+    while (reader.pos < reader.len) {
+      const tag = reader.uint32();
+      const field = tag >>> 3;
+      const wire = tag & 7;
+      const expected = wireTypes[field];
+      if (!field || (expected !== undefined && (expected !== wire || seen.has(field)))) return false;
+      if (expected !== undefined) seen.add(field);
+      if (!claims && field === 1) {
+        if (!hasValidSweetPotatoFields(reader.bytes(), true)) return false;
+        continue;
+      }
+      const start = reader.pos;
+      reader.skipType(wire);
+      if (expected !== 0) continue;
+      const length = reader.pos - start;
+      if (claims && (length !== 1 || reader.buf[start] > 1)) return false;
+      if (length > 10 || (length === 10 && reader.buf[reader.pos - 1] > 1)) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function hasValidSweetPotatoWire(rawBody, mainIndex) {
+  const groups = readProtoFields(rawBody).filter(entry => entry.field === 1);
+  if (groups.length !== 1 || groups[0].wire !== 2) return false;
+  const main = getProtoBytesAll(readProtoFields(groups[0].value), 2)[mainIndex];
+  const slots = readProtoFields(main).filter(entry => entry.field === SWEET_POTATO_STATE_FIELD);
+  return slots.length === 1 && slots[0].wire === 2 && hasValidSweetPotatoFields(slots[0].value);
+}
+
+async function getSweetPotatoActivity(isCurrent = () => true) {
+  const outside = sweetPotatoOutsideWindow();
+  if (outside) return outside;
+
+  const listed = await listActivityGroups();
+  const afterList = sweetPotatoOutsideWindow();
+  if (afterList) return afterList;
+  if (!isCurrent()) throw new Error('账号连接已变化，请重新读取');
+  const roots = (listed?.groups || []).filter(node => sweetPotatoNumber(node?.activity?.id) === SWEET_POTATO_ROOT_ID);
+  if (roots.length !== 1 || !isSweetPotatoNode(roots[0], SWEET_POTATO_ROOT_ID, 0)) {
+    return sweetPotatoUnavailable('当前活动列表未下发有效的以薯换福');
+  }
+
+  const reply = await getActivityGroup(SWEET_POTATO_ROOT_ID, '', { discoveryProbe: true });
+  const { group } = reply;
+  const afterGroup = sweetPotatoOutsideWindow();
+  if (afterGroup) return afterGroup;
+  if (!isCurrent()) throw new Error('账号连接已变化，请重新读取');
+  const children = (group?.children || []).filter(node => sweetPotatoNumber(node?.activity?.id) === SWEET_POTATO_MAIN_ID);
+  const main = children[0];
+  if (!isSweetPotatoNode(group, SWEET_POTATO_ROOT_ID, 0) || children.length !== 1
+      || !isSweetPotatoNode(main, SWEET_POTATO_MAIN_ID, SWEET_POTATO_ROOT_ID)
+      || parseActivityPayload(main.activity.payload)?.uid !== 'YiShuHuanFuMainUI') {
+    return sweetPotatoUnavailable('活动详情未下发当前玩法');
+  }
+
+  const state = main.sweet_potato;
+  if (!state || !hasValidSweetPotatoWire(reply.__rawBody, group.children.indexOf(main))) {
+    return sweetPotatoUnavailable('个人活动状态待确认', 'unknown');
+  }
+  const readNumber = field => Object.hasOwn(state, field) ? sweetPotatoNumber(state[field]) : null;
+  const basePrice = readNumber('base_price');
+  if (!(basePrice > 0)) return sweetPotatoUnavailable('个人铺价待确认', 'unknown');
+
+  return {
+    available: true,
+    status: 'available',
+    startTime: SWEET_POTATO_START,
+    endTime: SWEET_POTATO_END,
+    personal: {
+      basePrice,
+      criticalBonus: readNumber('critical_bonus'),
+      receivedCount: readNumber('received_count'),
+      coinBalance: readNumber('coin_balance'),
+      pendingDividend: readNumber('pending_dividend'),
+      seedsClaimed: state.claims ? state.claims.seeds_claimed === true : null,
+      shared: state.claims ? state.claims.shared === true : null,
+    },
+  };
 }
 
 function parseActivityPayload(value) {
@@ -3477,6 +3608,9 @@ module.exports = {
   HELU_DRAW_CMD,
   getActivityGroup,
   listActivityGroups,
+  getSweetPotatoActivity,
+  getSweetPotatoReadScope,
+  sweetPotatoOutsideWindow,
   normalizeCoreItem,
   getActivityDiscoveryList,
   getActivityGroupSnapshot,

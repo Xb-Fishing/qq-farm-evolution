@@ -544,6 +544,37 @@ function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm }) {
 
 const replyWithGids = gids => ({ game_friends: gids.map(gid => ({ gid, name: `F${gid}`, level: 3 })) });
 
+test('真实好友名单只将有效 last_login 秒或毫秒转成 DTO 时间', async () => {
+  const Long = require('long');
+  const recent = 1795000000;
+  const originalNow = Date.now;
+  Date.now = () => (recent + 3) * 1000;
+  const inputs = [
+    [recent, recent * 1000],
+    [Long.fromNumber(recent * 1000 + 123), recent * 1000 + 123],
+    [(recent + 3) * 1000, (recent + 3) * 1000],
+    [Long.ZERO, null], [undefined, null], [0, null], [NaN, null], [Infinity, null],
+    [-1, null], [1, null], [12_345, null], [1.5, null], [Long.MAX_VALUE, null], [Number.MAX_SAFE_INTEGER, null],
+    [recent + 4, null], [(recent + 3) * 1000 + 1, null], [true, null], [String(recent), null],
+  ];
+  let reads = 0;
+  const { service, restore } = loadAnalyzer({ getAllFriends: async () => {
+    reads++;
+    return { game_friends: inputs.map(([last_login], index) => ({
+      gid: index + 1, name: '测试好友', last_login, lastOnline: recent,
+    })) };
+  } });
+  try {
+    const results = await service.getFriendsList(true, { throwOnError: true });
+    assert.deepEqual(results.map(row => row.lastLoginAt), inputs.map(([, expected]) => expected));
+    assert.deepEqual((await service.getFriendsList(false)).map(row => row.lastLoginAt), inputs.map(([, expected]) => expected));
+    assert.equal(reads, 1);
+  } finally {
+    restore();
+    Date.now = originalNow;
+  }
+});
+
 test('并发好友列表请求（普通+强制混合）只触发一次上游读取并共享结果', async () => {
   const { state, getAllFriends } = makeDeferredGetAllFriends();
   const ripeAt = Date.now() + 5000;

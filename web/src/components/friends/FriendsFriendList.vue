@@ -47,6 +47,12 @@ function formatActiveAgo(atMs: number) {
     return `${minutes}分钟前`
   return `${Math.floor(minutes / 60)}小时前`
 }
+
+function formatLastLogin(at: unknown) {
+  if (typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0 || at > Date.now())
+    return '时间未知'
+  return new Date(at).toLocaleString('zh-CN', { hour12: false })
+}
 </script>
 
 <template>
@@ -110,6 +116,7 @@ function formatActiveAgo(atMs: number) {
             >
               {{ friend.dogName }}
             </span>
+            <span>最近登录 {{ formatLastLogin(friend.lastLoginAt) }}</span>
           </div>
           <div class="text-sm" :class="getFriendStatusText(friend) !== '无操作' ? 'text-green-500 font-medium' : 'text-gray-400'">
             {{ getFriendStatusText(friend) }}

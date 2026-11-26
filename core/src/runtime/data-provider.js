@@ -258,6 +258,8 @@ function createDataProvider(deps) {
 
         // ========== Activity ==========
         getMugeActivity: ref => callWorkerApi(resolveAccountId(ref), 'getMugeActivity', { _timeoutMs: 15000 }),
+        getSweetPotatoReadScope: ref => callWorkerApi(resolveAccountId(ref), 'getSweetPotatoReadScope', { _timeoutMs: 2500 }),
+        getSweetPotatoActivity: (ref, scope) => callWorkerApi(resolveAccountId(ref), 'getSweetPotatoActivity', scope, { _timeoutMs: 45000 }),
         operateMuge: (ref, action, input) => callWorkerApi(resolveAccountId(ref), 'operateMuge', action, input, { _timeoutMs: 45000 }),
         getActivityDiscoveryList: (ref) => callWorkerApi(resolveAccountId(ref), 'getActivityDiscoveryList'),
         getOfficialAnnouncements: (ref) => callWorkerApi(resolveAccountId(ref), 'getOfficialAnnouncements'),

@@ -483,7 +483,7 @@ function makeNodeOps() {
 
 const textOf = el => (el.type === 2 ? el.text : el.children.map(textOf).join(''));
 
-function watchlistPageHarness({ running = false, connected = true, api } = {}) {
+function watchlistPageHarness({ running = false, connected = true, api, renderFriendList = false } = {}) {
     const account = {
         currentAccountId: vue.ref('account-a'),
         currentAccount: vue.ref({ id: 'account-a', running, platform: 'qq' }),
@@ -533,13 +533,21 @@ function watchlistPageHarness({ running = false, connected = true, api } = {}) {
         .replace('($event.target as HTMLImageElement).style.display', '($event.target).style.display');
     const { descriptor } = compiler.parse(raw, { filename });
     const compiled = compiler.compileScript(descriptor, { id: 'friends-watchlist-test' });
+    let FriendList = componentStub;
+    if (renderFriendList) {
+        const listFile = path.join(root, 'web/src/components/friends/FriendsFriendList.vue');
+        const list = compiler.parse(fs.readFileSync(listFile, 'utf8'), { filename: listFile });
+        assert.deepEqual(list.errors, []);
+        const compiledList = compiler.compileScript(list.descriptor, { id: 'friend-list-test', inlineTemplate: true });
+        FriendList = evaluate(compiledList.content, { vue, '@/components/LandCard.vue': componentStub });
+    }
     const View = evaluate(compiled.content, {
         vue,
         pinia,
         '@vueuse/core': { useIntervalFn: () => ({ pause() {}, resume() {} }) },
         '@/api': { __esModule: true, default: apiStub },
         '@/components/ConfirmModal.vue': componentStub,
-        '@/components/friends/FriendsFriendList.vue': componentStub,
+        '@/components/friends/FriendsFriendList.vue': FriendList,
         '@/components/friends/FriendsPageHeader.vue': componentStub,
         '@/components/friends/FriendsSyncSettings.vue': componentStub,
         '@/components/friends/FriendsTabs.vue': componentStub,
@@ -608,6 +616,81 @@ test('page: paused items show badge + resume button; names joined from friends; 
     // 未保存时无通知徽标（三态文案的真实链验证见下方真实路由用例）
     await vue.nextTick();
     assert.equal(h.text().includes('已保存'), false);
+});
+
+test('page: 最近登录严格超过门槛且排除活跃证据，和狗、搜索、分页及换号组合', async () => {
+    const now = 1795600000000;
+    const day = 86_400_000;
+    const originalNow = Date.now;
+    Date.now = () => now;
+    const calls = [];
+    const h = watchlistPageHarness({ running: true, renderFriendList: true, api: {
+        get: () => new Promise(() => {}),
+        post: (...args) => { calls.push(args); throw new Error('unexpected write'); },
+    } });
+    function find(node, predicate) {
+        if (predicate(node)) return node;
+        for (const child of node.children) {
+            const result = find(child, predicate);
+            if (result) return result;
+        }
+    }
+    try {
+        h.friendStore.friends = [
+            { gid: 1, name: '组合 A', dogId: 90021, lastLoginAt: now - 10 * day - 1 },
+            { gid: 2, name: '组合 B', dogId: 90021, lastLoginAt: now - 10 * day },
+            { gid: 3, name: '组合 C', dogId: 90021, lastLoginAt: now - 11 * day, online: true },
+            { gid: 4, name: '组合 D', dogId: 90021, lastLoginAt: now - 11 * day, activeAt: now - 30 * 60_000 },
+            { gid: 5, name: '组合 E', dogId: 90021, lastLoginAt: null },
+            { gid: 6, name: '组合 F', dogId: 90021, lastLoginAt: now - 11 * day, activeAt: now - 30 * 60_000 - 1 },
+            { gid: 7, name: '组合 G', lastLoginAt: now - 11 * day },
+            ...Array.from({ length: 27 }, (_, i) => ({ gid: i + 10, name: '填充', lastLoginAt: now - 11 * day })),
+        ];
+        await vue.nextTick();
+        const select = find(h.container, node => node.tag === 'select' && textOf(node).includes('时间未知'));
+        assert.ok(select, '好友页渲染最近登录筛选');
+        const state = h.app._instance.subTree.component.setupState;
+        assert.equal(state.totalPages, 2);
+        state.currentPage = 2;
+        select.props.onChange({ target: { value: 'inactive' } });
+        await vue.nextTick();
+        assert.equal(state.currentPage, 1);
+        assert.equal(state.inactiveDays, 10);
+        assert.equal(state.totalPages, 2);
+        assert.deepEqual(state.filteredFriends.slice(0, 3).map(row => row.gid), [1, 6, 7]);
+        assert.equal(state.filteredFriends.length, 30);
+
+        const dog = find(h.container, node => node.tag === 'button' && textOf(node).includes('有护主犬'));
+        assert.ok(dog);
+        dog.props.onClick();
+        state.searchKeyword = '组合';
+        await vue.nextTick();
+        assert.deepEqual(state.paginatedFriends.map(row => row.gid), [1, 6]);
+        const displayed = new Date(now - 10 * day - 1).toLocaleString('zh-CN', { hour12: false });
+        assert.ok(h.text().includes(displayed), h.text().slice(-525));
+        const days = find(h.container, node => node.tag === 'input' && node.props.type === 'number' && node.props.min === '1');
+        assert.ok(days);
+        for (const valueAsNumber of [0, 1.5, 3651, NaN]) {
+            days.props.onInput({ target: { valueAsNumber } });
+            await vue.nextTick();
+            assert.deepEqual(state.paginatedFriends, []);
+            assert.match(h.text(), /请输入 1 至 3650 的整数/);
+        }
+        days.props.onInput({ target: { valueAsNumber: 9 } });
+        await vue.nextTick();
+        assert.deepEqual(state.paginatedFriends.map(row => row.gid), [1, 2, 6]);
+        select.props.onChange({ target: { value: 'unknown' } });
+        await vue.nextTick();
+        assert.deepEqual(state.paginatedFriends.map(row => row.gid), [5]);
+        assert.match(h.text(), /最近登录 时间未知/);
+        h.account.currentAccountId = 'account-b';
+        await vue.nextTick();
+        assert.deepEqual(state.paginatedFriends, []);
+        assert.deepEqual(calls, []);
+    } finally {
+        h.app.unmount();
+        Date.now = originalNow;
+    }
 });
 
 // ==================== 真实后端路由链（重点名单管理）====================

@@ -253,6 +253,20 @@ message ShareRewardSummary {
 }
 message ActivityBodyShareReward { ShareRewardSummary summary = 1; }
 
+message SweetPotatoClaims {
+    bool seeds_claimed = 1;
+    bool shared = 2;
+}
+
+message SweetPotatoState {
+    SweetPotatoClaims claims = 1;
+    int64 coin_balance = 3;
+    int64 base_price = 5;
+    int64 critical_bonus = 6;
+    int64 received_count = 7;
+    int64 pending_dividend = 11;
+}
+
 message ActivityNode {
     ActivityInfo activity = 1;
     repeated ActivityNode children = 2;
@@ -264,6 +278,7 @@ message ActivityNode {
     QixiGiftInfo qixi_gift = 113;
     ActivityBodyWishSign wish_sign = 119;
     ActivityBodyShareReward share_reward = 120;
+    SweetPotatoState sweet_potato = 130;
 }
 
 message ListReply {

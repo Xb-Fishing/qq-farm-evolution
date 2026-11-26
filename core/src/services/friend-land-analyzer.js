@@ -14,6 +14,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   getFriendLandsDetail = require('./business-state').wrapBusinessFunction('services/friend-land-analyzer.js:getFriendLandsDetail', getFriendLandsDetail);
 }
+const Long = require('long');
 const { PlantPhase, PHASE_NAMES } = require('../config/config');
 const {
   getPlantName,
@@ -371,12 +372,21 @@ async function getFriendsList(forceRefresh = false, { throwOnError = false } = {
   }
 }
 
+function normalizeLastLoginAt(value, now) {
+  const timestamp = Long.isLong(value) ? value.toNumber() : value;
+  if (!Number.isSafeInteger(timestamp) || timestamp < 1_000_000_000) return null;
+  // Ignore implausibly short epoch values rather than treating them as old logins.
+  const at = timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp;
+  return at <= now ? at : null;
+}
+
 /** 实际读取好友列表；只有代次未变时才回填缓存（失败不缓存，无自动重试）。 */
 async function fetchFriendsListOnce(forceRefresh) {
   const generation = friendsListGeneration;
   const { getAllFriends } = require('./friend-api');
   const allFriendsReply = await getAllFriends(forceRefresh);
   const rawFriends = allFriendsReply.game_friends || [];
+  const now = Date.now();
   const userState = getUserState();
   const accountId = process.env.FARM_ACCOUNT_ID || '';
   const dogInfoCache = accountId ? readFriendDogInfoCache(accountId) : null;
@@ -403,6 +413,7 @@ async function fetchFriendsListOnce(forceRefresh) {
         avatarUrl: String(friend.avatar_url || '').trim(),
         level: toNum(friend.level),
         gold: toNum(friend.gold),
+        lastLoginAt: normalizeLastLoginAt(friend.last_login, now),
         dogId: cachedDog ? cachedDog.dogId : 0,
         dogName: cachedDog ? cachedDog.dogName : '',
         plant: (() => {

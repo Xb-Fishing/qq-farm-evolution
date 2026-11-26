@@ -1532,7 +1532,8 @@ async function handleApiCall(msg) {
 
     if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
         || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence'
-        || method === 'getMugeActivity' || method === 'operateMuge'
+        || method === 'getMugeActivity' || method === 'operateMuge' || method === 'getSweetPotatoActivity'
+        || method === 'getSweetPotatoReadScope'
         || ['getRanchState', 'getRanchFriend', 'getRanchCleanOperation', 'reportRanchFriendPanel', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
@@ -1832,6 +1833,19 @@ async function handleApiCall(msg) {
             case 'getActivityGroupSnapshot': {
                 const { getActivityGroupSnapshot } = require('../services/activity');
                 result = await getActivityGroupSnapshot(args[0], args[1]);
+                break;
+            }
+            case 'getSweetPotatoReadScope':
+            case 'getSweetPotatoActivity': {
+                const activity = require('../services/activity');
+                const ws = getWs();
+                const scope = activity.getSweetPotatoReadScope(ws);
+                if (method === 'getSweetPotatoReadScope') {
+                    result = scope;
+                    break;
+                }
+                if (scope === null || scope !== args[0]) throw new Error('账号连接已变化，请重新读取');
+                result = await activity.getSweetPotatoActivity(() => isRunning && loginReady && getWs() === ws && ws.readyState === 1);
                 break;
             }
             case 'getSolarCalendar':

@@ -16,6 +16,10 @@ import { useToastStore } from '@/stores/toast'
 import { formatGoldAmount } from '@/utils/number-format'
 
 const GID_BATCH_SEPARATOR_RE = /[,，\s]+/
+const DAY_MS = 86_400_000
+const ACTIVE_EVIDENCE_MS = 30 * 60_000
+const MAX_INACTIVE_DAYS = 3650
+type LoginFilter = 'all' | 'inactive' | 'unknown'
 
 const accountStore = useAccountStore()
 const friendStore = useFriendStore()
@@ -71,6 +75,20 @@ const interactFilters = [
   { key: 'bad', label: '捣乱' },
 ]
 const dogFilter = ref<'all' | 'noGuardDog' | 'guardDog'>('all')
+const loginFilter = ref<LoginFilter>('all')
+const inactiveDays = ref<number | string>(10)
+const filterNow = ref(Date.now())
+const validInactiveDays = computed(() => typeof inactiveDays.value === 'number'
+  && Number.isInteger(inactiveDays.value) && inactiveDays.value >= 1 && inactiveDays.value <= MAX_INACTIVE_DAYS)
+
+function setLoginFilter(event: Event) {
+  loginFilter.value = (event.target as HTMLSelectElement).value as LoginFilter
+}
+
+function setInactiveDays(event: Event) {
+  const input = event.target as HTMLInputElement
+  inactiveDays.value = Number.isNaN(input.valueAsNumber) ? '' : input.valueAsNumber
+}
 const dogFilters = [
   { key: 'all', label: '全部' },
   { key: 'noGuardDog', label: '无护主犬' },
@@ -247,7 +265,17 @@ const dogFilteredFriends = computed(() => {
 
 const filteredFriends = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
-  const list = dogFilteredFriends.value
+  const now = filterNow.value
+  const list = loginFilter.value === 'all' ? dogFilteredFriends.value : dogFilteredFriends.value.filter((friend: any) => {
+    const at = friend.lastLoginAt
+    const known = typeof at === 'number' && Number.isSafeInteger(at) && at > 0 && at <= now
+    if (loginFilter.value === 'unknown')
+      return !known
+    const isActive = Number.isFinite(friend.activeAt) && friend.activeAt >= now - ACTIVE_EVIDENCE_MS
+      && friend.activeAt <= now
+    return validInactiveDays.value && known && !friend.online && !isActive
+      && now - at > Number(inactiveDays.value) * DAY_MS
+  })
   if (!keyword)
     return list
 
@@ -268,12 +296,13 @@ const paginatedFriends = computed(() => {
   return filteredFriends.value.slice(start, end)
 })
 
-watch(searchKeyword, () => {
+watch([searchKeyword, dogFilter, loginFilter, inactiveDays], () => {
   currentPage.value = 1
+  filterNow.value = Date.now()
 })
 
-watch(dogFilter, () => {
-  currentPage.value = 1
+watch(totalPages, (pages) => {
+  currentPage.value = Math.min(currentPage.value, pages)
 })
 
 const filteredInteractRecords = computed(() => {
@@ -319,6 +348,7 @@ async function loadData() {
 }
 
 useIntervalFn(() => {
+  filterNow.value = Date.now()
   // 10 秒过期的实时在线证据在这里撤销在线标记，回落到 30 秒快照兜底
   friendStore.expireOnlineEvidence()
   friends.value = friends.value.map((friend: any) => {
@@ -385,12 +415,14 @@ useIntervalFn(() => {
 
 watch(currentAccountId, (newId, oldId) => {
   expandedFriends.value.clear()
+  currentPage.value = 1
+  filterNow.value = Date.now()
   if (oldId !== undefined && newId !== oldId) {
     friendStore.clearFriendData()
     statusStore.clearAccountScopedData()
   }
   loadData()
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 
 watch(() => [currentAccount.value?.id, currentAccount.value?.running] as const, ([id, running], [oldId, oldRunning]) => {
   if (!id)
@@ -934,6 +966,27 @@ async function handleBatchAddKnownFriendGids() {
                 }})
               </span>
             </button>
+            <label class="flex items-center gap-2 text-sm">
+              最近登录
+              <select :value="loginFilter" class="border border-gray-200 rounded px-2 py-1 dark:border-gray-700 dark:bg-gray-800" @change="setLoginFilter">
+                <option value="all">全部</option>
+                <option value="inactive">超过指定天数未登录</option>
+                <option value="unknown">时间未知</option>
+              </select>
+            </label>
+            <label v-if="loginFilter === 'inactive'" class="flex items-center gap-2 text-sm">
+              天数
+              <input
+                :value="inactiveDays"
+                type="number" min="1" :max="MAX_INACTIVE_DAYS" step="1"
+                :aria-invalid="!validInactiveDays"
+                class="w-24 border border-gray-200 rounded px-2 py-1 dark:border-gray-700 dark:bg-gray-800"
+                @input="setInactiveDays"
+              >
+            </label>
+            <p v-if="loginFilter === 'inactive' && !validInactiveDays" role="status" class="text-sm text-red-600 dark:text-red-400">
+              请输入 1 至 {{ MAX_INACTIVE_DAYS }} 的整数。
+            </p>
             <div class="flex-1" />
             <button
               class="rounded bg-gray-100 px-3 py-1.5 text-sm text-gray-600 transition dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"
