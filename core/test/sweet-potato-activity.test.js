@@ -421,7 +421,11 @@ function mountPanel(t, clock) {
   assert.ok(fs.existsSync(filename), '缺少以薯换福子面板');
   const { descriptor, errors } = compiler.parse(fs.readFileSync(filename, 'utf8'), { filename });
   assert.deepEqual(errors, []);
-  const source = compiler.compileScript(descriptor, { id: 'sweet-potato-test', inlineTemplate: true }).content;
+  const source = compiler.compileScript(descriptor, {
+    id: 'sweet-potato-test',
+    inlineTemplate: true,
+    templateOptions: { compilerOptions: { hoistStatic: false } },
+  }).content;
   const code = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ESNext },
   }).outputText;
@@ -439,8 +443,12 @@ function mountPanel(t, clock) {
       setup: (props, { slots }) => () => vue.h('button', { disabled: props.loading }, slots.default?.()),
     } },
     './SweetPotatoTrades.vue': { default: {
-      props: ['accountId', 'seedsClaimed', 'pendingDividend'],
-      setup: () => () => vue.h('div', { 'data-test': 'sweet-potato-trades' }),
+      props: ['accountId', 'section', 'suspended', 'seedsClaimed', 'pendingDividend'],
+      setup: props => () => vue.h('div', {
+        'data-test': 'sweet-potato-trades',
+        'data-suspended': props.suspended,
+        'data-section': props.section,
+      }),
     } },
     './SweetPotatoAutomation.vue': { default: {
       props: ['accountId'],
@@ -507,7 +515,11 @@ function mountPanel(t, clock) {
     timers.delete(id);
     fn();
   }
-  return { calls, timers, accountId, component, unmount, text, button, tick, reply, expire };
+  function find(predicate, node = container) {
+    if (predicate(node)) return node;
+    return node.children.map(child => find(predicate, child)).find(Boolean);
+  }
+  return { calls, timers, accountId, component, unmount, text, button, tick, reply, expire, find };
 }
 
 test('real Vue panel opens once, handles manual refresh and failure, and drops switched responses', async t => {
@@ -523,11 +535,11 @@ test('real Vue panel opens once, handles manual refresh and failure, and drops s
     ...available.personal, seedsClaimed: false, shared: true, receivedCount: 0,
   } });
   await h.tick();
-  assert.match(h.text(), /个人基础铺价31,415/);
+  assert.match(h.text(), /自家基础铺价31,415/);
   assert.match(h.text(), /暴击加成待确认/);
   assert.match(h.text(), /领种状态未领种/);
   assert.match(h.text(), /分享状态已分享/);
-  assert.match(h.text(), /接收量0/);
+  assert.match(h.text(), /铺子接收量0/);
   assert.match(h.text(), /北京时间每日午夜按自家铺价结算/);
   assert.equal(h.calls.length, 1);
 
@@ -562,6 +574,36 @@ test('real Vue panel opens once, handles manual refresh and failure, and drops s
   h.reply(5, available);
   await h.tick();
   assert.equal(h.text(), '');
+});
+
+test('real Vue panel preserves the active tab and form on same-account refresh and clears them on switch', async t => {
+  const h = mountPanel(t, fakeClock(t));
+  const trades = () => h.find(node => node.props['data-test'] === 'sweet-potato-trades');
+  h.reply(0, available);
+  await h.tick();
+  const initial = trades();
+  assert.ok(initial);
+  h.find(node => node.props.id === 'sweet-potato-tab-rewards').props.onClick();
+  await h.tick();
+  assert.equal(initial.props['data-section'], 'rewards');
+
+  h.button().props.onClick();
+  await h.tick();
+  assert.equal(trades(), initial);
+  assert.equal(initial.props['data-suspended'], true);
+  h.reply(1, available);
+  await h.tick();
+  assert.equal(trades(), initial);
+  assert.equal(initial.props['data-suspended'], false);
+  assert.equal(initial.props['data-section'], 'rewards');
+
+  h.accountId.value = 'b';
+  await h.tick();
+  assert.equal(trades(), undefined);
+  h.reply(2, available);
+  await h.tick();
+  assert.notEqual(trades(), initial);
+  assert.equal(trades().props['data-section'], 'grow');
 });
 
 test('real Vue panel hides at the one local deadline, including a late response', async t => {
