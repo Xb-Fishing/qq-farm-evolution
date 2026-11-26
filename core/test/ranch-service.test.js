@@ -520,6 +520,23 @@ test('handbook stocking obeys the task gap, uses inventory, and leaves the payme
   assert.equal(f.scene.snapshot().scene, 1);
 });
 
+test('fresh ranch roster evidence prioritizes a steal target without visiting unconfirmed friends', async () => {
+  for (const age of [1000, 120000]) {
+    const f = fixture();
+    f.friendHosts.push('74');
+    f.friendRoster.push(
+      { gid: '73' },
+      { gid: '74', ranchSummary: { observedAt: Date.now() - age, canSteal: true } },
+    );
+    f.friendRanches.push({ ranch_inst_id: '51', husbandry_type: 1, shelves: [
+      { slot_index: 0, can_steal: true, lots: [{ item_id: '1060001', can_steal: true, remain_num: '2' }] },
+    ] });
+    const result = await f.service.runFriendTask('stealFriend', 0, () => true);
+    assert.equal(result.data.outcome, 'confirmed', result.error);
+    assert.deepEqual(f.friendVisits, [age === 1000 ? '74' : '73']);
+  }
+});
+
 test('an empty steal shelf still lets the same visit clean and a failed roster is reported separately', async t => {
   const records = ranchLogs(t);
   const f = fixture();

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const Module = require('node:module');
 
 const repo = path.resolve(__dirname, '../..');
 const tmp = fs.realpathSync(os.tmpdir());
@@ -21,7 +22,23 @@ network.sendMsgAsync = (...args) => {
 };
 const service = require('../src/services/activity');
 network.sendMsgAsync = originalSend;
-const { registerAdminActivityRoutes } = require('../src/controllers/admin-activity-routes');
+const activityRoutes = require.resolve('../src/controllers/admin-activity-routes');
+const originalModuleLoad = Module._load;
+let registerAdminActivityRoutes;
+try {
+  // The optional managed overlay starts recurring jobs when its update routes
+  // register. This fixture exercises the production activity routes, with the
+  // independent update scheduler outside its scope.
+  Module._load = function loadFixtureRoute(request, parent, isMain) {
+    if (request === './admin-activity-update-routes' && parent?.filename === activityRoutes) {
+      return { registerAdminActivityUpdateRoutes() {} };
+    }
+    return originalModuleLoad.call(this, request, parent, isMain);
+  };
+  ({ registerAdminActivityRoutes } = require(activityRoutes));
+} finally {
+  Module._load = originalModuleLoad;
+}
 const { createDataProvider } = require('../src/runtime/data-provider');
 const { types, loadProto } = require('../src/utils/proto');
 before(loadProto);
@@ -397,6 +414,10 @@ function mountPanel(t, clock) {
     '@/components/ui/BaseButton.vue': { default: {
       props: ['loading'],
       setup: (props, { slots }) => () => vue.h('button', { disabled: props.loading }, slots.default?.()),
+    } },
+    './SweetPotatoTrades.vue': { default: {
+      props: ['accountId', 'seedsClaimed', 'pendingDividend'],
+      setup: () => () => vue.h('div', { 'data-test': 'sweet-potato-trades' }),
     } },
   };
   const mod = { exports: {} };

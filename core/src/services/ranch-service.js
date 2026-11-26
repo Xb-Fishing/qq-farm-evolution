@@ -20,6 +20,7 @@ const AUTOMATION_TICK_MS = 30000;
 const CLEAN_CHECK_LIMIT = 4;
 const FRIEND_PANEL_TASK_ID = '300008';
 const FRIEND_PANEL_TASK_RECHECK_MS = 30000;
+const FRIEND_SUMMARY_MAX_AGE_MS = 90000;
 const FRIEND_SLOTS = policyTools.SLOTS.flatMap((slot, index) => slot.friend ? [index] : []);
 const AUTOMATION_LABELS = { harvest: '自动收获', produce: '自动生产', clean: '自动清理', claimTasks: '自动领取任务奖励',
   addGrass: '自动补草', place: '自动放养', buy: '自动购买', sell: '自动出售产物',
@@ -77,6 +78,21 @@ function sumItems(items = []) {
 }
 const sameItems = (a, b) => JSON.stringify(sumItems(a).map(({ id, count }) => ({ id, count })))
   === JSON.stringify(sumItems(b).map(({ id, count }) => ({ id, count })));
+
+function selectRanchFriend(candidates, cursor, actions, now = Date.now()) {
+  const start = cursor % candidates.length;
+  for (let offset = 0; offset < candidates.length; offset++) {
+    const index = (start + offset) % candidates.length;
+    const target = candidates[index];
+    const age = now - target.ranchSummary?.observedAt;
+    const summary = age >= 0 && age <= FRIEND_SUMMARY_MAX_AGE_MS ? target.ranchSummary : null;
+    if (actions.some(action => (action === 'stealFriend' && summary?.canSteal === true)
+      || (action === 'cleanFriend' && summary?.canHelp === true))) {
+      return { target, nextCursor: (index + 1) % candidates.length };
+    }
+  }
+  return { target: candidates[start], nextCursor: (start + 1) % candidates.length };
+}
 
 function automationLog(message, meta, warn = false) {
   try {
@@ -1100,7 +1116,9 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
       let gid;
       try { gid = model.positiveId(row?.gid, '好友'); }
       catch { continue; }
-      if (gid !== self && canVisitFriend(gid)) targets.set(gid, { gid, name: String(row.name || '').slice(0, 42) });
+      if (gid !== self && canVisitFriend(gid)) targets.set(gid, {
+        gid, name: String(row.name || '').slice(0, 42), ranchSummary: row.ranchSummary,
+      });
     }
     return [...targets.values()].sort((a, b) => a.gid.length - b.gid.length || a.gid.localeCompare(b.gid));
   }
@@ -1110,9 +1128,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
     if (unresolved(read())) throw error('RANCH_RESULT_UNCONFIRMED', '上一笔牧场操作待核对');
     const candidates = await friendCandidates();
     if (!candidates.length) return { outcome: 'no_friends', nextCursor: cursor };
-    const index = cursor % candidates.length;
-    const target = candidates[index];
-    const nextCursor = (index + 1) % candidates.length;
+    const { target, nextCursor } = selectRanchFriend(candidates, cursor, [action]);
     const taskAdmission = () => canSend() && canVisitFriend(target.gid) && !manualReviewOwns(read(), { friend: true });
     if (!taskAdmission()) throw error('RANCH_AUTOMATION_PAUSED', '好友牧场任务暂缓');
     try {
@@ -1216,9 +1232,7 @@ function createRanchService({ network, file, now = Date.now, quoteNow = now, can
         for (const slot of slots) noteAutoStatus(SLOTS[slot], 'no_ranch_friends', state.revision);
         return { skipped: true };
       }
-      const index = state.friendCursor % candidates.length;
-      target = candidates[index];
-      nextCursor = (index + 1) % candidates.length;
+      ({ target, nextCursor } = selectRanchFriend(candidates, state.friendCursor, slots.map(slot => SLOTS[slot].action)));
       const scan = await visitFriend(target.gid, async scene => {
         const results = [];
         const friendName = target.name || String(scene.friend.name || '').slice(0, 42);
@@ -1391,7 +1405,15 @@ function service() {
     const suffix = crypto.createHash('sha256').update(account).digest('hex').slice(0, 24);
     instance = createRanchService({ network: require('../utils/network'),
       canAutomate: () => typeof automationAdmission === 'function' && automationAdmission(),
-      getFriendTargets: () => require('./friend-land-analyzer').getFriendsList(false, { throwOnError: true }),
+      getFriendTargets: async () => {
+        const friends = await require('./friend-land-analyzer').getFriendsList(false, { throwOnError: true });
+        const roster = require('./friend-api').getRosterSnapshot();
+        if (!roster) return friends;
+        return friends.map(row => {
+          const summary = roster.ranchSummaries?.[row.gid];
+          return { ...row, ranchSummary: summary && { ...summary, observedAt: roster.at } };
+        });
+      },
       canVisitFriend: gid => !require('./friend-api').inFriendQuietHours()
         && (gid === undefined || !require('../models/store').getFriendBlacklist(account).some(value => String(value) === gid)),
       file: () => require('../config/runtime-paths').getDataFile(`ranch-operations-${suffix}.json`),

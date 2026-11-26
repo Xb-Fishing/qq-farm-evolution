@@ -89,8 +89,11 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const oilTeaItems = new Set([20530, 40530, 1040529, 1040530]);
   // Both winter rows are checked with exact values in future-calendar-seed-items.test.js.
   const winterPlants = new Set([1026038, 1126038]);
+  // Exact red-sweet-potato crop and item rows are exercised by sweet-potato-trade.test.js.
+  const sweetPotatoPlants = new Set([1020307, 1120307]);
+  const sweetPotatoItems = new Set([20307, 40307, 1040307, 1032, 1033]);
   assert.equal(hash(plants.filter(x => !selectedPlants.has(x.id) && !novemberPlants.has(x.id) && !oilTeaPlants.has(x.id) && !pasturePlants.has(x.id)
-    && !winterPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
+    && !winterPlants.has(x.id) && !sweetPotatoPlants.has(x.id))), '74e6c25a895ffe9d969e1bdf17486181a82c1e9fbca3da295a36bc877d652a9d');
   // Preserve the original reviewed rows/hash while permitting the separately
   // verified reward additions, this one resolved image-provenance annotation,
   // and the separately verified golden-fruit rows asserted independently below.
@@ -123,7 +126,7 @@ test('unrelated entries and rare/golden meanings are preserved; reviewed default
   const winterFruits = new Set([46038, 1046038]);
   const originalItems = items.filter(x => ![22254, 42254, 20040, 7001].includes(x.id) && !selectedFruits.has(x.id) && !rewardAdditions.has(x.id)
     && !goldenFruitAdditions.has(x.id) && !decorationAdditions.has(x.id) && !novemberItems.has(x.id) && !collectionAdditions.has(x.id) && !seedGiftPacks.has(x.id) && !oilTeaItems.has(x.id) && !ranchInventoryItems.has(x.id)
-    && !futureCalendarSeeds.has(x.id) && !winterFruits.has(x.id))
+    && !futureCalendarSeeds.has(x.id) && !winterFruits.has(x.id) && !sweetPotatoItems.has(x.id))
     .map(x => x.id !== 210048 ? x : { ...x, evidence: x.evidence.replace(
       '专属图按固定客户端提取快照核验，精确来源见seed_images_named/event-seed-sources.json',
       '专属图标暂缺官方资源证据，保留通用回退，不以其他道具图顶替',

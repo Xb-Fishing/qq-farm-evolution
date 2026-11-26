@@ -5,6 +5,7 @@ const { registerAdminOfficialAnnouncementRoutes } = require('./admin-official-an
 const { createActivityReadCache } = require('./activity-read-cache');
 const { registerAdminSolarCalendarRoutes } = require('./admin-solar-calendar-routes');
 const { registerAdminGameUpdateRoutes } = require('./admin-game-update-routes');
+const { registerAdminSweetPotatoTradeRoutes } = require('./admin-sweet-potato-trade-routes');
 const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
 const { sweetPotatoOutsideWindow } = require('../services/activity');
 
@@ -109,6 +110,7 @@ function registerAdminActivityRoutes({
 
   registerAdminMugeActivityRoutes(routeContext);
   registerSweetPotatoRoute(routeContext);
+  registerAdminSweetPotatoTradeRoutes(routeContext);
   registerAdminRanchRoutes(routeContext);
   registerAdminSolarCalendarRoutes(routeContext);
   registerAdminOfficialAnnouncementRoutes(routeContext);

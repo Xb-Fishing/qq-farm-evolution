@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package gamepb.activitypb.sweetpotato;
+
+message TradeRequest {
+    int64 id = 1;
+    int32 command = 2;
+    message Empty {}
+    message Quote { int64 shop = 1; }
+    message Sale {
+        int64 shop = 1;
+        int64 count = 2;
+    }
+    message Exchange {
+        int64 index = 1;
+        int64 count = 2;
+    }
+    Empty seeds = 191;
+    Quote quote = 192;
+    Sale sale = 193;
+    Empty records = 195;
+    Exchange exchange = 196;
+    Empty catalog = 197;
+    Empty dividend = 199;
+}
+
+message Grant {
+    int64 item_id = 1;
+    int64 count = 2;
+}
+
+message TradeReply {
+    int64 id = 1;
+    int32 command = 2;
+    message Seeds { Grant grant = 1; }
+    message Quote {
+        message Shop {
+            int64 owner = 1;
+            string name = 2;
+        }
+        message Price {
+            int64 base = 1;
+            int64 bonus = 2;
+            int64 remaining = 3;
+            Shop shop = 4;
+        }
+        Price price = 1;
+        bool accepts_sales = 2;
+    }
+    message Sale {
+        int64 count = 1;
+        int64 unit_price = 2;
+        int64 proceeds = 3;
+        int64 balance = 5;
+    }
+    message Records {
+        message Row {
+            int64 time = 1;
+            int64 count = 3;
+            int64 proceeds = 4;
+            string seller = 6;
+            int64 dividend = 9;
+        }
+        repeated Row rows = 1;
+    }
+    message Exchange {
+        int64 unit_price = 1;
+        Grant grant = 2;
+        int64 balance = 3;
+    }
+    message Catalog {
+        message Row {
+            int64 index = 1;
+            int64 unit_price = 2;
+            int64 state = 3;
+            int64 limit = 4;
+        }
+        repeated Row rows = 1;
+        int64 balance = 2;
+    }
+    message Dividend {
+        int64 amount = 1;
+        int64 balance = 4;
+    }
+    Seeds seeds = 191;
+    Quote quote = 192;
+    Sale sale = 193;
+    Records records = 195;
+    Exchange exchange = 196;
+    Catalog catalog = 197;
+    Dividend dividend = 199;
+}

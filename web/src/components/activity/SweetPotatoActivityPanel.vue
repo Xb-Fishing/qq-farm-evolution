@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
+import SweetPotatoTrades from './SweetPotatoTrades.vue'
 
 interface SweetPotatoPersonal {
   basePrice: number | null
@@ -168,5 +169,13 @@ function formatClaim(value: unknown, yes: string, no: string) {
         </div>
       </dl>
     </div>
+    <SweetPotatoTrades
+      v-if="activity?.available && activity.personal"
+      class="mt-4"
+      :account-id="props.accountId"
+      :seeds-claimed="activity.personal.seedsClaimed"
+      :pending-dividend="activity.personal.pendingDividend"
+      @changed="refresh"
+    />
   </section>
 </template>

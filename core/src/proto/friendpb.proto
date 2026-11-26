@@ -21,6 +21,15 @@ message Tags {
     bool is_follow = 2;
 }
 
+message RanchFriendSummary {
+    bool can_steal = 1;
+    bool can_midwife = 2;
+    bool can_help = 3;
+    int32 steal_lot_count = 4;
+    int32 midwife_count = 5;
+    int32 help_count = 6;
+}
+
 // ============ 好友信息 ============
 message GameFriend {
     int64 gid = 1;
@@ -41,6 +50,7 @@ message GameFriend {
     // 最后登录/活跃时刻（公开参考项目 2 命名 last_active_time，另一外部参考
     // 仓库命名 last_login，同一 field 19 双方独立逆向确认存在；服务端是否填值待验证）
     int64 last_login = 19;
+    RanchFriendSummary big_farm_status = 23;
 }
 
 // ============ 请求/回复 ============

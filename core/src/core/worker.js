@@ -1533,7 +1533,7 @@ async function handleApiCall(msg) {
     if (FRIEND_PANEL_ENTRY_METHODS.has(method) || BAG_PANEL_ENTRY_METHODS.has(method) || method === 'getOfficialAnnouncements'
         || method === 'getEmailSnapshot' || method === 'getGameUpdateEvidence'
         || method === 'getMugeActivity' || method === 'operateMuge' || method === 'getSweetPotatoActivity'
-        || method === 'getSweetPotatoReadScope'
+        || method === 'getSweetPotatoReadScope' || method === 'runSweetPotatoTrade'
         || ['getRanchState', 'getRanchFriend', 'getRanchCleanOperation', 'reportRanchFriendPanel', 'prepareRanchAction', 'operateRanch', 'acknowledgeRanch'].includes(method)) {
         const ws = getWs();
         if (!isRunning || !loginReady || !ws || ws.readyState !== 1) {
@@ -1846,6 +1846,15 @@ async function handleApiCall(msg) {
                 }
                 if (scope === null || scope !== args[0]) throw new Error('账号连接已变化，请重新读取');
                 result = await activity.getSweetPotatoActivity(() => isRunning && loginReady && getWs() === ws && ws.readyState === 1);
+                break;
+            }
+            case 'runSweetPotatoTrade': {
+                const { runSweetPotatoTrade } = require('../services/sweet-potato-trade');
+                const { getSweetPotatoReadScope } = require('../services/activity');
+                const ws = getWs();
+                const scope = getSweetPotatoReadScope(ws);
+                if (scope === null || scope !== args[2]) throw new Error('账号连接已变化，请重新读取');
+                result = await runSweetPotatoTrade(args[0], args[1], () => isRunning && loginReady && getWs() === ws && ws.readyState === 1);
                 break;
             }
             case 'getSolarCalendar':

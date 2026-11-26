@@ -724,6 +724,7 @@ function recordRosterReply(reply, reqSeq) {
   latestSuccessfulSeq = seq;
   const friends = Array.isArray(reply) ? reply : extractReplyFriends(reply);
   const names = {};
+  const ranchSummaries = {};
   try {
     const { noteFriendName } = require('./friend-activity');
     for (const friend of friends) {
@@ -735,10 +736,18 @@ function recordRosterReply(reply, reqSeq) {
       noteFriendName(gid, name);
     }
   } catch { /* 名字缺失不影响名册快照 */ }
+  for (const friend of friends) {
+    const gid = toNum(friend?.gid);
+    const ranch = friend?.big_farm_status;
+    if (gid && ranch && (ranch.can_steal === true || ranch.can_help === true)) {
+      ranchSummaries[gid] = { canSteal: ranch.can_steal === true, canHelp: ranch.can_help === true };
+    }
+  }
   rosterSnapshot = {
     gids: normalizeFriendGids(friends.map(f => f && f.gid)).sort((a, b) => a - b),
     names,
     at: Date.now(),
+    ...(Object.keys(ranchSummaries).length && { ranchSummaries }),
   };
   return rosterSnapshot;
 }

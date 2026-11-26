@@ -70,6 +70,7 @@ async function performLoad() {
         getResourcePath('proto', 'interactpb.proto'),
         getResourcePath('proto', 'dogpb.proto'),
         getResourcePath('proto', 'activitypb.proto'),
+        getResourcePath('proto', 'sweet-potato-trade.proto'),
         getResourcePath('proto', 'pet-diary.proto'),
         getResourcePath('proto', 'mysteryshoppb.proto'),
         getResourcePath('proto', 'milk-tea.proto'),

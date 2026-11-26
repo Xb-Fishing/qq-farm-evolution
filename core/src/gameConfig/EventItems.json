@@ -597,5 +597,50 @@
   {"id":26038,"type":5,"name":"款冬花种子","interaction_type":"plant","asset_name":"Crop_6038","level":41,"sells":"1001:2000","sell_cond":null,"cond_sells":null,"desc":"种植后，可以收获一定数量的款冬花。","evidence":"节令日历404直领与问答奖励核对种子ID；固定ItemInfo和Plant快照核对单格映射与土地等级1，显示等级41。来源见 seed_images_named/event-seed-sources.json.reviewedWinterPlantMapping。"},
   {"id":26084,"type":5,"name":"山茶花种子","interaction_type":"plant","asset_name":"Crop_6084","level":41,"sells":"1001:2000","sell_cond":null,"cond_sells":null,"desc":"种植后，可以收获一定数量的山茶花。","evidence":"public-reference-2@6ac7a3d7930018058d201af86beea8de6a9f8507 ItemInfo精确行；节令日历奖励ID交叉；仅物品识别，Plant占地/当前背包交叉未完成，不构成种植映射或土地等级证据"},
   {"id":46038,"type":6,"name":"款冬花","asset_name":"Crop_6038","icon_res":null,"bundle_name":null,"level":41,"sells":"1001:280","sell_cond":null,"cond_sells":null,"desc":"卖给商人后，可以获得金币。","evidence":"自然背包记录果实ID，售价及图片资产经固定来源核对，见 seed_images_named/event-seed-sources.json.reviewedWinterPlantMapping。"},
-  {"id":1046038,"type":17,"name":"黄金·款冬花","asset_name":"gold/Crop_6038","icon_res":null,"bundle_name":null,"level":200,"sells":"1005:6","sell_cond":null,"cond_sells":null,"desc":"黄金变异获得的果实，卖给商人后，可以获得金豆豆。","auto_sell":false,"evidence":"自然背包记录果实ID，售价及图片资产经固定来源核对，见 seed_images_named/event-seed-sources.json.reviewedWinterPlantMapping。保留本地黄金果实自动出售保护。"}
+  {"id":1046038,"type":17,"name":"黄金·款冬花","asset_name":"gold/Crop_6038","icon_res":null,"bundle_name":null,"level":200,"sells":"1005:6","sell_cond":null,"cond_sells":null,"desc":"黄金变异获得的果实，卖给商人后，可以获得金豆豆。","auto_sell":false,"evidence":"自然背包记录果实ID，售价及图片资产经固定来源核对，见 seed_images_named/event-seed-sources.json.reviewedWinterPlantMapping。保留本地黄金果实自动出售保护。"},
+  {
+    "id": 20307,
+    "name": "红薯种子",
+    "type": 5,
+    "interaction_type": "plant",
+    "asset_name": "Crop_307",
+    "level": 1,
+    "sell_cond": "活动区间外:2026111708",
+    "cond_sells": "1001:100",
+    "evidence": "背包实际 ID 与固定 ItemInfo、Plant 配置中的名称、种子和果实关系一致"
+  },
+  {
+    "id": 40307,
+    "name": "红薯",
+    "type": 6,
+    "asset_name": "Crop_307",
+    "sells": "1001:240",
+    "evidence": "背包实际 ID 与固定 ItemInfo、Plant 配置中的普通果实一致"
+  },
+  {
+    "id": 1040307,
+    "name": "黄金·红薯",
+    "type": 17,
+    "asset_name": "gold/Crop_307",
+    "sells": "1005:3",
+    "evidence": "固定 ItemInfo 配置和同版本黄金植物的果实关系一致"
+  },
+  {
+    "id": 1032,
+    "name": "蜜薯",
+    "type": 19,
+    "sell_cond": "活动结束后:2026111708",
+    "cond_sells": "1001:80",
+    "auto_sell": false,
+    "evidence": "固定 ItemInfo 配置、活动公告及活动售卖协议"
+  },
+  {
+    "id": 1033,
+    "name": "福气币",
+    "type": 19,
+    "sell_cond": "活动结束后:2026111708",
+    "cond_sells": "1001:1",
+    "auto_sell": false,
+    "evidence": "固定 ItemInfo 配置、活动公告及活动兑换协议"
+  }
 ]

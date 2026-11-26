@@ -407,6 +407,7 @@ async function fetchFriendsListOnce(forceRefresh) {
     .map(friend => {
       const gid = toNum(friend.gid);
       const cachedDog = dogInfoCache && dogInfoCache[gid] ? dogInfoCache[gid] : null;
+      const ranch = friend.big_farm_status;
       return {
         gid,
         name: friend.remark || friend.name || `GID:${gid}`,
@@ -414,6 +415,12 @@ async function fetchFriendsListOnce(forceRefresh) {
         level: toNum(friend.level),
         gold: toNum(friend.gold),
         lastLoginAt: normalizeLastLoginAt(friend.last_login, now),
+        ...(ranch && {
+          ranchSummary: {
+            canSteal: Object.hasOwn(ranch, 'can_steal') ? ranch.can_steal === true : null,
+            canHelp: Object.hasOwn(ranch, 'can_help') ? ranch.can_help === true : null,
+          },
+        }),
         dogId: cachedDog ? cachedDog.dogId : 0,
         dogName: cachedDog ? cachedDog.dogName : '',
         plant: (() => {
