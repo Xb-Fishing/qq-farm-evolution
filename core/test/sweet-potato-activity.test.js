@@ -442,6 +442,10 @@ function mountPanel(t, clock) {
       props: ['accountId', 'seedsClaimed', 'pendingDividend'],
       setup: () => () => vue.h('div', { 'data-test': 'sweet-potato-trades' }),
     } },
+    './SweetPotatoAutomation.vue': { default: {
+      props: ['accountId'],
+      setup: () => () => vue.h('div', { 'data-test': 'sweet-potato-automation' }),
+    } },
   };
   const mod = { exports: {} };
   vm.compileFunction(code, ['require', 'exports', 'setTimeout', 'clearTimeout'])(

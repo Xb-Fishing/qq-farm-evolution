@@ -348,11 +348,33 @@ async function onTimer_ranch_automation() {
     await require('../services/ranch-service').runRanchAutomation();
     await require('../services/muge-gameplay').runMugeAutomation();
 }
+let lastSweetPotatoAutomationFailureAt = 0;
+async function onTimer_sweet_potato_automation() {
+    const ws = getWs();
+    const current = () => canRunRanchAutomation() && getWs() === ws && ws?.readyState === 1;
+    if (!current()) return;
+    try {
+        await require('../services/sweet-potato-automation').runSweetPotatoAutomation(
+            current,
+            () => require('../services/activity').invalidateSweetPotatoReadScope(ws),
+        );
+    } catch {
+        if (Date.now() - lastSweetPotatoAutomationFailureAt >= 300000) {
+            lastSweetPotatoAutomationFailureAt = Date.now();
+            log('活动', '以薯换福自动任务暂缓，稍后核对状态', {
+                module: 'activity', event: 'sweet_potato_automation_deferred', result: 'paused',
+            });
+        }
+    }
+}
 function startRanchAutomationTimer() {
     require('../services/ranch-service').bindRanchAutomation(canRunRanchAutomation);
     require('../services/muge-gameplay').bindMugeAutomation(canRunRanchAutomation);
-    if (!loginReady || workerScheduler.has('ranch_automation')) return;
-    workerScheduler.setIntervalTask('ranch_automation', 30000, onTimer_ranch_automation);
+    if (!loginReady) return;
+    if (!workerScheduler.has('ranch_automation'))
+        workerScheduler.setIntervalTask('ranch_automation', 30000, onTimer_ranch_automation);
+    if (!workerScheduler.has('sweet_potato_automation'))
+        workerScheduler.setIntervalTask('sweet_potato_automation', 30000, onTimer_sweet_potato_automation, { preventOverlap: true });
 }
 
 // 神秘商人可能在登录后的任意时间出现；登录后先检查，并持续短周期探测。
@@ -1854,6 +1876,13 @@ async function handleApiCall(msg) {
                 const ws = getWs();
                 const scope = getSweetPotatoReadScope(ws);
                 if (scope === null || scope !== args[2]) throw new Error('账号连接已变化，请重新读取');
+                const automation = require('../services/sweet-potato-automation');
+                if (args[0] === 'automation' || args[0] === 'automation-settings') {
+                    result = args[0] === 'automation' ? automation.getSweetPotatoAutomation()
+                        : automation.updateSweetPotatoAutomation(args[1]);
+                    break;
+                }
+                automation.assertSweetPotatoManualAllowed(args[0]);
                 result = await runSweetPotatoTrade(args[0], args[1], () => isRunning && loginReady && getWs() === ws && ws.readyState === 1);
                 break;
             }
@@ -2440,6 +2469,7 @@ function onTimer_ws_error_cleanup() {
 function bindWorkerSessionState() {
     require('../services/ranch-service').bindRanchAutomation(canRunRanchAutomation);
     workerScheduler.bindIntervalTask('ranch_automation', onTimer_ranch_automation);
+    workerScheduler.bindIntervalTask('sweet_potato_automation', onTimer_sweet_potato_automation);
     workerScheduler.bindTimeoutTask('sentinel_strike', runSentinelStrike);
     workerScheduler.bindTimeoutTask('sentinel_pre_enter', onSentinelPreEnterTimer);
     bindWorkerNetworkEvents();

@@ -1,7 +1,7 @@
 const { getAuthorizedAccountId, requireConnectedAccount } = require('./admin-activity-route-helpers');
 
-const READS = new Set(['quote', 'records', 'catalog', 'plots']);
-const WRITES = new Set(['seeds', 'sale', 'exchange', 'dividend', 'plantCrop', 'harvestCrop']);
+const READS = new Set(['quote', 'records', 'catalog', 'plots', 'automation']);
+const WRITES = new Set(['seeds', 'sale', 'exchange', 'dividend', 'plantCrop', 'harvestCrop', 'automation-settings']);
 
 function sweetPotatoCacheKey(id, scope, socket) {
   return `sweet-potato:${JSON.stringify([id, scope, socket])}`;

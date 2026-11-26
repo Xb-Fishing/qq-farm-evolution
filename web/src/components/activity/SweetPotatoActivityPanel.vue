@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import SweetPotatoTrades from './SweetPotatoTrades.vue'
+import SweetPotatoAutomation from './SweetPotatoAutomation.vue'
 
 interface SweetPotatoPersonal {
   basePrice: number | null
@@ -177,5 +178,6 @@ function formatClaim(value: unknown, yes: string, no: string) {
       :pending-dividend="activity.personal.pendingDividend"
       @changed="refresh"
     />
+    <SweetPotatoAutomation :account-id="props.accountId" class="mt-4" />
   </section>
 </template>

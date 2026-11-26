@@ -313,6 +313,10 @@ function getSweetPotatoReadScope(socket) {
   return sweetPotatoConnections.get(socket);
 }
 
+function invalidateSweetPotatoReadScope(socket) {
+  if (socket) sweetPotatoConnections.delete(socket);
+}
+
 function sweetPotatoUnavailable(reason, status = 'unavailable') {
   return { available: false, status, reason, startTime: SWEET_POTATO_START, endTime: SWEET_POTATO_END, personal: null };
 }
@@ -3610,6 +3614,7 @@ module.exports = {
   listActivityGroups,
   getSweetPotatoActivity,
   getSweetPotatoReadScope,
+  invalidateSweetPotatoReadScope,
   sweetPotatoOutsideWindow,
   normalizeCoreItem,
   getActivityDiscoveryList,

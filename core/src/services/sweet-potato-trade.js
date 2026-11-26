@@ -52,12 +52,13 @@ function tradeType(name) {
   return getRoot().lookupType(`gamepb.activitypb.sweetpotato.${name}`);
 }
 
-async function operate(action, args, checkConnection) {
+async function operate(action, args, checkConnection, onDispatch = () => {}) {
   checkConnection();
   if (require('./activity').sweetPotatoOutsideWindow()) throw new Error('以薯换福活动已结束或尚未开放');
   const command = COMMANDS[action];
   const request = tradeType('TradeRequest');
   const body = request.encode(request.create({ id: ACTIVITY_ID, command, [action]: args })).finish();
+  onDispatch();
   const reply = await sendMsgAsync('gamepb.activitypb.ActivityService', 'Operate', body);
   checkConnection();
   const parsed = tradeType('TradeReply').decode(reply.body);
@@ -123,11 +124,11 @@ async function catalog(checkConnection) {
   });
 }
 
-async function stock(checkConnection) {
+async function stock(checkConnection, selectedItemId) {
   checkConnection();
   const items = getBagItems(await getBag());
   checkConnection();
-  const totals = { seeds: 0, potatoes: 0, coins: 0 };
+  const totals = { seeds: 0, potatoes: 0, coins: 0, ...(selectedItemId && { selected: 0 }) };
   for (const row of items) {
     const id = quantity(row.id);
     const count = quantity(row.count);
@@ -135,6 +136,7 @@ async function stock(checkConnection) {
     if (id === SEED_ID) totals.seeds += count;
     if (id === POTATO_ID) totals.potatoes += count;
     if (id === COIN_ID) totals.coins += count;
+    if (selectedItemId && id === selectedItemId) totals.selected += count;
   }
   return totals;
 }
@@ -146,21 +148,21 @@ function confirmedGrant(reward, expectedId) {
   return { itemId, count };
 }
 
-async function mutate(action, input, checkConnection) {
+async function mutate(action, input, checkConnection, onDispatch) {
   if (pendingOperation) throw new Error('上一次活动操作正在确认，请稍等');
   pendingOperation = true;
   try {
     const activity = await requireActivity(checkConnection);
     if (action === 'plantCrop' || action === 'harvestCrop') {
-      return performSweetPotatoPlotAction(action, quantity(input.landId), checkConnection);
+      return performSweetPotatoPlotAction(action, quantity(input.landId), checkConnection, onDispatch);
     }
     if (action === 'seeds') {
       if (activity.seedsClaimed !== false) throw new Error('种子已领取或资格暂未确认');
-      return confirmedGrant((await operate('seeds', {}, checkConnection))?.grant, SEED_ID);
+      return confirmedGrant((await operate('seeds', {}, checkConnection, onDispatch))?.grant, SEED_ID);
     }
     if (action === 'dividend') {
       const amount = positive(activity.pendingDividend, '当前没有可确认的待领分红');
-      const result = await operate('dividend', {}, checkConnection);
+      const result = await operate('dividend', {}, checkConnection, onDispatch);
       if (quantity(result?.amount) !== amount) throw new Error('分红回执待核对，请刷新活动状态');
       return { amount, balance: quantity(result.balance) };
     }
@@ -175,7 +177,7 @@ async function mutate(action, input, checkConnection) {
       if (items.potatoes !== quantity(input.potatoes) || items.potatoes < count) throw new Error('蜜薯库存已变化，请刷新');
       if (fresh.unitPrice !== price || fresh.acceptsSales !== true || fresh.remaining === null || fresh.remaining < count)
         throw new Error('铺子价格或收购额度已变化，请查询后重新确认');
-      const result = await operate('sale', { shop, count }, checkConnection);
+      const result = await operate('sale', { shop, count }, checkConnection, onDispatch);
       if (quantity(result?.count) !== count || quantity(result.unit_price) !== price || quantity(result.proceeds) !== total)
         throw new Error('售卖回执待核对，请刷新铺价和背包');
       return { count, proceeds: total, balance: quantity(result.balance) };
@@ -185,7 +187,7 @@ async function mutate(action, input, checkConnection) {
     if (items.coins !== quantity(input.coins) || items.coins < total) throw new Error('福气币余额已变化，请刷新');
     if (!goods?.itemId || goods.unitPrice !== price || goods.limit === null || goods.limit < count)
       throw new Error('兑换价格或余量已变化，请重新确认');
-    const result = await operate('exchange', { index, count }, checkConnection);
+    const result = await operate('exchange', { index, count }, checkConnection, onDispatch);
     if (quantity(result?.unit_price) !== price) throw new Error('兑换回执待核对，请刷新目录和背包');
     const reward = confirmedGrant(result.grant, goods.itemId);
     return { reward, cost: total, balance: quantity(result.balance) };
@@ -195,15 +197,20 @@ async function mutate(action, input, checkConnection) {
   }
 }
 
-async function runSweetPotatoTrade(action, input = {}, isCurrent = () => true) {
+async function runSweetPotatoTrade(action, input = {}, isCurrent = () => true, onDispatch) {
   const checkConnection = () => {
     if (!isCurrent()) throw new Error('账号连接已变化，请核对活动状态');
   };
   if (['seeds', 'sale', 'exchange', 'dividend', 'plantCrop', 'harvestCrop'].includes(action)) {
-    const result = await mutate(action, input, checkConnection);
+    const result = await mutate(action, input, checkConnection, onDispatch);
     log('活动', `以薯换福已确认：${{ seeds: '领取红薯种子', sale: '出售蜜薯', exchange: '兑换奖励',
       dividend: '领取分红', plantCrop: '种植红薯', harvestCrop: '收获红薯' }[action]}`, {
-      module: 'activity', event: 'sweet_potato_action', action, result: 'ok',
+      module: 'activity', event: 'sweet_potato_action', action, result: 'ok', automatic: typeof onDispatch === 'function',
+      ...(result.count !== undefined && { count: result.count }),
+      ...(result.proceeds !== undefined && { proceeds: result.proceeds }),
+      ...(result.cost !== undefined && { cost: result.cost }),
+      ...(result.amount !== undefined && { amount: result.amount }),
+      ...(result.landId !== undefined && { landId: result.landId }),
     });
     return result;
   }
@@ -225,6 +232,10 @@ async function runSweetPotatoTrade(action, input = {}, isCurrent = () => true) {
 }
 
 module.exports = {
+  getOwnSweetPotatoQuote: async check => quote(await shopTarget(), check),
+  getSweetPotatoCatalog: catalog,
+  getSweetPotatoInventory: stock,
+  getSweetPotatoRewardId: index => REWARDS.get(index)?.[1] || null,
   runSweetPotatoTrade: require('./business-state').wrapBusinessFunction(
     'services/sweet-potato-trade.js:runSweetPotatoTrade',
     runSweetPotatoTrade,

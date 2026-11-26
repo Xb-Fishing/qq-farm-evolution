@@ -18,7 +18,7 @@ function readPlots(lands) {
   const prioritizeLarge = getPrioritize2x2Crops();
   const empty = farm.empty.filter(id => !prioritizeLarge || !isReserved2x2Land(id));
   const ownedCrop = new Set(lands.filter(hasSweetPotato).map(row => Number(row.id)));
-  return { empty, ready: farm.harvestable.filter(id => ownedCrop.has(id)) };
+  return { empty, ready: farm.harvestable.filter(id => ownedCrop.has(id)), planted: [...ownedCrop] };
 }
 
 async function getSweetPotatoPlots(checkConnection) {
@@ -35,7 +35,7 @@ function checkFarmWindow(checkConnection) {
   if (require('./activity').sweetPotatoOutsideWindow()) throw new Error('以薯换福活动已结束或尚未开放');
 }
 
-async function performSweetPotatoPlotAction(action, landId, checkConnection) {
+async function performSweetPotatoPlotAction(action, landId, checkConnection, onDispatch = () => {}) {
   if (!Number.isSafeInteger(landId) || landId <= 0) throw new Error('请选择有效的土地');
   checkFarmWindow(checkConnection);
   if (action === 'plantCrop') {
@@ -48,6 +48,7 @@ async function performSweetPotatoPlotAction(action, landId, checkConnection) {
   if (!allowed.includes(landId)) throw new Error('土地状态已变化，请重新选择');
   checkFarmWindow(checkConnection);
   try {
+    onDispatch();
     if (action === 'plantCrop') {
       const planted = await plantSeeds(SEED_ID, [landId], { maxPlantCount: 1, stopOnError: true });
       checkConnection();
