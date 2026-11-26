@@ -21,14 +21,14 @@ const searchKeyword = defineModel<string>('searchKeyword', { required: true })
         好友
       </h2>
     </div>
-    <div class="flex items-center gap-3">
-      <div v-if="activeTab === 'friends'" class="relative">
+    <div class="min-w-0 flex flex-wrap items-center gap-3">
+      <div v-if="activeTab === 'friends'" class="relative min-w-0 flex flex-auto">
         <div class="i-carbon-search absolute left-3 top-1/2 text-gray-400 -translate-y-1/2" />
         <input
           v-model="searchKeyword"
           type="text"
           placeholder="搜索好友..."
-          class="w-full border border-gray-300 rounded-lg bg-white py-2 pl-10 pr-4 text-sm sm:w-64 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+          class="w-full min-w-0 max-w-full border border-gray-300 rounded-lg bg-white py-2 pl-10 pr-4 text-sm sm:w-64 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
         >
       </div>
       <div v-if="activeTab === 'friends' && friendsCount" class="text-sm text-gray-500">

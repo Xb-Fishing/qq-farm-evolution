@@ -218,6 +218,7 @@ function confirm() {
 .confirm-modal-message {
   margin: 12px 0 0;
   white-space: pre-line;
+  overflow-wrap: anywhere;
   color: #546e5a;
   font-size: 0.92rem;
   line-height: 1.65;

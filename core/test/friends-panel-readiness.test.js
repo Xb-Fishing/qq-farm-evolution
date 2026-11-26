@@ -523,7 +523,7 @@ function makeDeferredGetAllFriends() {
   return { state, getAllFriends };
 }
 
-function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm }) {
+function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm, restoredRoster }) {
   const servicePath = require.resolve('../src/services/friend-land-analyzer');
   const friendApiPath = require.resolve('../src/services/friend-api');
   const networkPath = require.resolve('../src/utils/network');
@@ -532,6 +532,8 @@ function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm }) {
   const farmLandAnalyzerPath = require.resolve('../src/services/farm-land-analyzer');
   const paths = [servicePath, friendApiPath, networkPath, storePath,
     fertilizerPath, farmLandAnalyzerPath];
+  const businessPath = require.resolve('../src/services/business-state');
+  if (restoredRoster !== undefined) paths.push(businessPath);
   const previous = new Map(paths.map(file => [file, require.cache[file]]));
 
   require.cache[friendApiPath] = mockModule(friendApiPath, {
@@ -567,12 +569,26 @@ function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm }) {
   });
   delete require.cache[servicePath];
   const previousAccountId = process.env.FARM_ACCOUNT_ID;
+  const previousBusiness = process.env.FARM_SESSION_BUSINESS;
+  if (restoredRoster !== undefined) {
+    process.env.FARM_SESSION_BUSINESS = '1';
+    require.cache[businessPath] = mockModule(businessPath, {
+      wrapBusinessFunction: (_, fn) => fn,
+      registerDataState(key, capture, hydrate) {
+        if (key === 'services/friend-land-analyzer.js') {
+          hydrate({ friendsListCache: restoredRoster, friendsListGeneration: 1 });
+        }
+      },
+    });
+  }
   process.env.FARM_ACCOUNT_ID = 'friends-panel-readiness-test';
   return {
     service: require(servicePath),
     restore() {
       if (previousAccountId === undefined) delete process.env.FARM_ACCOUNT_ID;
       else process.env.FARM_ACCOUNT_ID = previousAccountId;
+      if (previousBusiness === undefined) delete process.env.FARM_SESSION_BUSINESS;
+      else process.env.FARM_SESSION_BUSINESS = previousBusiness;
       delete require.cache[servicePath];
       for (const file of paths) {
         if (previous.get(file)) require.cache[file] = previous.get(file);
@@ -583,6 +599,42 @@ function loadAnalyzer({ getAllFriends, ripeSnapshot = null, enterFriendFarm }) {
 }
 
 const replyWithGids = gids => ({ game_friends: gids.map(gid => ({ gid, name: `F${gid}`, level: 3 })) });
+
+test('保连接更新丢弃缺少登录字段的旧名单，保留已明确缺值的新名单', async () => {
+  const lastLogin = 1_770_000_000;
+  const { state, getAllFriends } = makeDeferredGetAllFriends();
+  const legacy = loadAnalyzer({
+    getAllFriends,
+    restoredRoster: [{ gid: 77, name: 'Old' }],
+  });
+  try {
+    const first = legacy.service.getFriendsList();
+    const second = legacy.service.getFriendsList();
+    assert.equal(state.calls, 1, 'first ordinary reads share a refresh');
+    state.pending[0].resolve({
+      game_friends: [{ gid: 77, name: 'Fresh', last_login: lastLogin }, { gid: 88, name: 'No service value' }],
+    });
+    const [fresh, same] = await Promise.all([first, second]);
+    assert.deepEqual(same, fresh);
+    assert.equal(fresh.find(friend => friend.gid === 77).lastLoginAt, lastLogin * 1000);
+    assert.equal(fresh.find(friend => friend.gid === 88).lastLoginAt, null);
+    await legacy.service.getFriendsList();
+    assert.equal(state.calls, 1, 'a confirmed missing value does not trigger extra reads');
+  } finally {
+    legacy.restore();
+  }
+
+  const current = loadAnalyzer({
+    getAllFriends,
+    restoredRoster: [{ gid: 88, name: 'No service value', lastLoginAt: null }],
+  });
+  try {
+    assert.equal((await current.service.getFriendsList())[0].lastLoginAt, null);
+    assert.equal(state.calls, 1);
+  } finally {
+    current.restore();
+  }
+});
 
 test('真实好友名单只将有效 last_login 秒或毫秒转成 DTO 时间', async () => {
   const Long = require('long');

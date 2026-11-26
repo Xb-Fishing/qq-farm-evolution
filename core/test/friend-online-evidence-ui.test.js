@@ -647,7 +647,7 @@ test('page: 最近登录严格超过门槛且排除活跃证据，和狗、搜�
             ...Array.from({ length: 27 }, (_, i) => ({ gid: i + 10, name: '填充', lastLoginAt: now - 11 * day })),
         ];
         await vue.nextTick();
-        const select = find(h.container, node => node.tag === 'select' && textOf(node).includes('时间未知'));
+        const select = find(h.container, node => node.tag === 'select' && textOf(node).includes('暂无登录时间'));
         assert.ok(select, '好友页渲染最近登录筛选');
         const state = h.app._instance.subTree.component.setupState;
         assert.equal(state.totalPages, 2);
@@ -682,7 +682,13 @@ test('page: 最近登录严格超过门槛且排除活跃证据，和狗、搜�
         select.props.onChange({ target: { value: 'unknown' } });
         await vue.nextTick();
         assert.deepEqual(state.paginatedFriends.map(row => row.gid), [5]);
-        assert.match(h.text(), /最近登录 时间未知/);
+        assert.match(h.text(), /最近登录\s*暂无登录时间/);
+        assert.match(h.text(), /游戏名单没有提供这些好友的可用登录时间，按天数筛选时会跳过/);
+        h.friendStore.friends = [{ gid: 5, name: '组合 E', dogId: 90021, lastLoginAt: null }];
+        select.props.onChange({ target: { value: 'inactive' } });
+        await vue.nextTick();
+        assert.deepEqual(state.paginatedFriends, []);
+        assert.match(h.text(), /好友名单暂无可用的登录时间，暂时无法按天数筛选/);
         h.account.currentAccountId = 'account-b';
         await vue.nextTick();
         assert.deepEqual(state.paginatedFriends, []);

@@ -267,12 +267,21 @@ const dogFilteredFriends = computed(() => {
   return sortedFriends.value
 })
 
+function hasLastLoginTime(value: unknown, now: number): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= now
+}
+
+const noLoginTimeData = computed(() => friends.value.length > 0
+  && !friends.value.some(friend => hasLastLoginTime(friend.lastLoginAt, filterNow.value)))
+const showLoginTimeHint = computed(() => loginFilter.value === 'unknown'
+  || (loginFilter.value === 'inactive' && noLoginTimeData.value))
+
 const filteredFriends = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
   const now = filterNow.value
   const list = loginFilter.value === 'all' ? dogFilteredFriends.value : dogFilteredFriends.value.filter((friend: any) => {
     const at = friend.lastLoginAt
-    const known = typeof at === 'number' && Number.isSafeInteger(at) && at > 0 && at <= now
+    const known = hasLastLoginTime(at, now)
     if (loginFilter.value === 'unknown')
       return !known
     const isActive = Number.isFinite(friend.activeAt) && friend.activeAt >= now - ACTIVE_EVIDENCE_MS
@@ -945,8 +954,8 @@ async function handleBatchAddKnownFriendGids() {
               :key="item.gid"
               class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-700/50"
             >
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="text-sm font-medium text-gray-800 dark:text-gray-200">
+              <div class="min-w-0 flex flex-wrap items-center gap-2">
+                <span class="min-w-0 text-sm font-medium text-gray-800 [overflow-wrap:anywhere] dark:text-gray-200">
                   {{ item.name || `GID:${item.gid}` }}
                 </span>
                 <span
@@ -1012,12 +1021,12 @@ async function handleBatchAddKnownFriendGids() {
                 }})
               </span>
             </button>
-            <label class="flex items-center gap-2 text-sm">
+            <label class="max-w-full flex flex-wrap items-center gap-2 text-sm">
               最近登录
-              <select :value="loginFilter" class="border border-gray-200 rounded px-2 py-1 dark:border-gray-700 dark:bg-gray-800" @change="setLoginFilter">
+              <select :value="loginFilter" :aria-describedby="showLoginTimeHint ? 'friend-login-missing-hint' : undefined" class="min-w-0 max-w-full border border-gray-200 rounded px-2 py-1 dark:border-gray-700 dark:bg-gray-800" @change="setLoginFilter">
                 <option value="all">全部</option>
                 <option value="inactive">超过指定天数未登录</option>
-                <option value="unknown">时间未知</option>
+                <option value="unknown">暂无登录时间</option>
               </select>
             </label>
             <label v-if="loginFilter === 'inactive'" class="flex items-center gap-2 text-sm">
@@ -1050,6 +1059,11 @@ async function handleBatchAddKnownFriendGids() {
               <div v-if="dogInfoLoading" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
               获取狗信息
             </button>
+            <p v-if="showLoginTimeHint" id="friend-login-missing-hint" class="w-full text-sm text-gray-600 dark:text-gray-300">
+              {{ loginFilter === 'inactive'
+                ? '好友名单暂无可用的登录时间，暂时无法按天数筛选。'
+                : '游戏名单没有提供这些好友的可用登录时间，按天数筛选时会跳过。' }}
+            </p>
           </div>
 
           <FriendsFriendList
@@ -1134,9 +1148,9 @@ async function handleBatchAddKnownFriendGids() {
           <div
             v-for="item in blacklist"
             :key="item.gid"
-            class="flex items-center justify-between rounded-lg bg-white p-4 shadow dark:bg-gray-800"
+            class="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white p-4 shadow dark:bg-gray-800"
           >
-            <div class="flex items-center gap-3">
+            <div class="min-w-0 flex flex-auto items-start gap-3">
               <div class="h-10 w-10 flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-200 ring-1 ring-gray-100 dark:bg-gray-600 dark:ring-gray-700">
                 <img
                   v-if="item.avatarUrl"
@@ -1147,13 +1161,13 @@ async function handleBatchAddKnownFriendGids() {
                 >
                 <div v-else class="i-carbon-user text-gray-400" />
               </div>
-              <div>
+              <div class="min-w-0 [overflow-wrap:anywhere]">
                 <span class="font-medium">{{ item.name || `GID:${item.gid}` }}</span>
                 <span class="ml-2 text-sm text-gray-400">({{ item.gid }})</span>
               </div>
             </div>
             <button
-              class="rounded bg-red-100 px-3 py-1.5 text-sm text-red-600 dark:bg-red-900/30 hover:bg-red-200 dark:text-red-400 dark:hover:bg-red-900/50"
+              class="min-h-11 shrink-0 whitespace-nowrap rounded bg-red-100 px-3 py-1.5 text-sm text-red-600 dark:bg-red-900/30 hover:bg-red-200 dark:text-red-400 dark:hover:bg-red-900/50"
               @click="handleRemoveFromBlacklist(item.gid)"
             >
               移出黑名单

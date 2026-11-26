@@ -764,7 +764,10 @@ module.exports = {
 if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   const { registerDataState } = require('./business-state');
   registerDataState('services/friend-land-analyzer.js', () => ({ friendsListCache, friendsListGeneration }), value => {
-      friendsListCache = value.friendsListCache;
+      // Older business sessions did not include login timestamps in their cached roster.
+      const cache = value.friendsListCache;
+      friendsListCache = Array.isArray(cache) && cache.every(friend => friend && Object.hasOwn(friend, 'lastLoginAt'))
+        ? cache : null;
       friendsListGeneration = value.friendsListGeneration;
   }, { idle: () => !friendsListInFlight, });
 }
