@@ -116,6 +116,29 @@ test('a plan without a reconnect option preserves per-account recovery settings'
   }
 });
 
+test('resetting a default plan removes its reconnect override', () => {
+  const { registerAdminSettingsRoutes } = require('../src/controllers/admin-settings-routes');
+  const username = 'reset-relogin-plan';
+  const defaults = store.getUserDefaultAccountPlan(username).config;
+  assert.equal(Object.hasOwn(defaults, 'kickoutRelogin'), false);
+  const { accounts } = store.addOrUpdateAccount({ name: 'Synthetic farm', username, code: 'reset-relogin-fixture' });
+  const accountId = accounts.at(-1).id;
+  const accountSetting = { delayMinutes: 31, validUntil: '2099-12-31T23:59' };
+  store.applyConfigSnapshot({ kickoutRelogin: accountSetting }, { accountId });
+  store.setUserDefaultAccountPlan(username, { kickoutRelogin: { delayMinutes: 12 } }, { enabled: false });
+
+  const routes = new Map();
+  const app = { get() {}, put() {}, post(url, handler) { routes.set(url, handler); } };
+  registerAdminSettingsRoutes({ app, store });
+  const reset = routes.get('/api/settings/default-plan/reset');
+  let response;
+  reset({ currentUser: { username } }, { json(data) { response = data; } });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.enabled, false);
+  assert.deepEqual(response.data.config, defaults);
+  assert.deepEqual(store.applyUserDefaultAccountPlan(username, accountId).kickoutRelogin, accountSetting);
+});
+
 test('disabled plans do not change new account defaults', () => {
   store.setUserDefaultAccountPlan('bob', {
     plantingStrategy: 'max_profit',

@@ -251,9 +251,11 @@ function registerAdminSettingsRoutes({
         return res.status(401).json({ ok: false, error: "未登录" });
       }
       const currentPlan = store.getUserDefaultAccountPlan(currentUser.username);
+      const config = store.getDefaultAccountConfig();
+      delete config.kickoutRelogin;
       const data = store.setUserDefaultAccountPlan(
         currentUser.username,
-        store.getDefaultAccountConfig(),
+        config,
         { enabled: currentPlan.enabled !== false },
       );
       res.json({ ok: true, data });

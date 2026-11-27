@@ -1960,7 +1960,7 @@ function getUserDefaultAccountPlan(username) {
         return {
             exists: false,
             enabled: true,
-            config: pickDefaultPlanConfig(DEFAULT_ACCOUNT_CONFIG),
+            config: pickDefaultPlanConfig(),
             updatedAt: 0
         };
     }
