@@ -918,6 +918,7 @@ function pickDefaultPlanConfig(raw) {
         requestPolicy: { ...cfg.requestPolicy },
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
+        kickoutRelogin: { ...cfg.kickoutRelogin },
         stealDelaySeconds: cfg.stealDelaySeconds,
         plantOrderRandom: cfg.plantOrderRandom,
         plantDelaySeconds: cfg.plantDelaySeconds,
