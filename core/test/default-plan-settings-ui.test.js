@@ -189,6 +189,29 @@ async function section(page, name) {
   await vue.nextTick();
 }
 
+test('the default plan saves a reconnect delay only while opted in', async t => {
+  const config = completeConfig();
+  delete config.kickoutRelogin;
+  const page = await mountPage(t, config, { planUser: 'synthetic-relogin-plan' });
+  const label = '将重登延迟纳入默认方案';
+  assert.equal(Object.hasOwn(await save(page), 'kickoutRelogin'), false);
+  await section(page, '自动控制');
+  assert.equal(input(page.root, label).checked, false);
+  assert.doesNotMatch(textOf(page.root), /重登延迟 \(分钟\)/);
+  await setSwitch(page, label, true);
+  await setInput(page, '重登延迟 (分钟)', 17);
+  assert.deepEqual((await save(page)).kickoutRelogin, { delayMinutes: 17, validUntil: '' });
+  await page.reload();
+  await section(page, '自动控制');
+  assert.equal(input(page.root, label).checked, true);
+  assert.equal(input(page.root, '重登延迟 (分钟)').props.value, 17);
+  await setSwitch(page, label, false);
+  assert.equal(Object.hasOwn(await save(page), 'kickoutRelogin'), false);
+  await page.reload();
+  await section(page, '自动控制');
+  assert.equal(input(page.root, label).checked, false);
+});
+
 for (const initial of [false, true]) {
   test(`real quiet switch ${initial} -> ${!initial} survives payload, response, repeated save and reload`, async (t) => {
     const page = await mountPage(t, completeConfig(initial));

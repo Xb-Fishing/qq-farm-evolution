@@ -50,6 +50,7 @@ onBeforeUnmount(() => {
 
 const strategySettings = ref(createStrategySettings())
 const automationSettings = ref(createAutomationSettings())
+const includeKickoutRelogin = ref(false)
 const autoCodeRefresh = ref({ enabled: false, intervalMinutes: 60 })
 
 function createStrategySettings() {
@@ -130,8 +131,9 @@ function createAutomationSettings() {
 }
 
 function applyPlan(data: any) {
-  const config = data?.config || {}
+  const { kickoutRelogin, ...config } = data?.config || {}
   exists.value = data?.exists === true
+  includeKickoutRelogin.value = exists.value && !!kickoutRelogin
   enabled.value = data?.enabled !== false
   updatedAt.value = Number(data?.updatedAt) || 0
   strategySettings.value = {
@@ -147,6 +149,7 @@ function applyPlan(data: any) {
     ...automationDefaults,
     ...config,
     automation: { ...automationDefaults.automation, ...(config.automation || {}) },
+    kickoutRelogin: { ...automationDefaults.kickoutRelogin, ...kickoutRelogin },
   }
   autoCodeRefresh.value = {
     enabled: config.autoCodeRefresh?.enabled === true,
@@ -195,7 +198,9 @@ function buildConfig() {
   return {
     ...strategySettings.value,
     // Both drafts contain the loaded config; only automation fields may override current strategy edits.
-    ...Object.fromEntries(automationKeys.map(key => [key, automationSettings.value[key]])),
+    ...Object.fromEntries(automationKeys
+      .filter(key => key !== 'kickoutRelogin' || includeKickoutRelogin.value)
+      .map(key => [key, automationSettings.value[key]])),
     autoCodeRefresh: autoCodeRefresh.value,
   }
 }
@@ -419,6 +424,7 @@ onMounted(fetchPlan)
     <AutomationSettingsTab
       v-else
       v-model:settings="automationSettings"
+      v-model:include-kickout-relogin="includeKickoutRelogin"
       v-model:auto-code-refresh="autoCodeRefresh"
       current-account-id="default-plan"
       :current-account-name="null"
