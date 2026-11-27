@@ -895,7 +895,7 @@ useIntervalFn(updateCountdowns, 1000)
       重新扫码并更新连接
     </BaseButton>
   </div>
-  <div class="flex flex-col gap-5 pt-1 md:pt-2">
+  <div class="dashboard-content flex flex-col gap-5 pt-1 md:pt-2">
     <div
       v-if="slowdownActive"
       class="flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-lg bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20"
@@ -1099,11 +1099,11 @@ useIntervalFn(updateCountdowns, 1000)
       </div>
     </div>
 
-    <div class="flex flex-1 flex-col items-stretch gap-5 md:flex-row">
-      <div class="flex flex-1 flex-col gap-5 md:w-3/4">
-        <div class="ui-card-elevated flex flex-1 flex-col rounded-lg p-5 md:overflow-hidden">
-          <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <h3 class="flex items-center gap-2 text-lg font-medium">
+    <div class="dashboard-cards grid gap-5">
+      <div class="min-w-0 flex flex-col">
+        <div class="ui-card-elevated flex flex-1 flex-col rounded-lg p-5">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+            <h3 class="flex items-center gap-2 whitespace-nowrap text-lg font-medium">
               <div class="i-carbon-document" />
               <span>运行日志</span>
             </h3>
@@ -1112,28 +1112,28 @@ useIntervalFn(updateCountdowns, 1000)
               <BaseSelect
                 v-model="filter.module"
                 :options="modules"
-                class="w-32"
+                class="w-30 sm:w-32"
                 @change="onLogFilterChange"
               />
 
               <BaseSelect
                 v-model="filter.event"
                 :options="events"
-                class="w-32"
+                class="w-30 sm:w-32"
                 @change="onLogFilterChange"
               />
 
               <BaseSelect
                 v-model="filter.isWarn"
                 :options="logLevels"
-                class="w-32"
+                class="w-30 sm:w-32"
                 @change="onLogFilterChange"
               />
 
               <BaseInput
                 v-model="filter.keyword"
                 placeholder="关键词..."
-                class="w-32"
+                class="w-30 sm:w-32"
                 clearable
                 @keyup.enter="onLogSearchTrigger"
                 @clear="onLogSearchTrigger"
@@ -1169,7 +1169,7 @@ useIntervalFn(updateCountdowns, 1000)
                 运行账号后，这里会持续追加巡查、种植、任务和出售记录。
               </div>
             </div>
-            <div v-for="log in allLogs" :key="log.ts + log.msg" class="mb-1 break-all">
+            <div v-for="log in allLogs" :key="log.ts + log.msg" class="mb-1 break-words">
               <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time, log.ts) }}]</span>
               <span class="mr-2 rounded px-1.5 py-0.5 text-xs font-bold" :class="getLogTagClass(log.tag)">{{ log.tag }}</span>
               <span v-if="log.meta?.event" class="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-500 dark:bg-blue-900/20 dark:text-blue-400">{{ getEventLabel(log.meta.event) }}</span>
@@ -1180,7 +1180,7 @@ useIntervalFn(updateCountdowns, 1000)
         </div>
       </div>
 
-      <div class="flex flex-col gap-5 md:w-1/4">
+      <div class="min-w-0 flex flex-col gap-5">
         <div class="ui-card flex flex-col rounded-lg p-5">
           <h3 class="mb-4 flex items-center gap-2 text-lg font-medium">
             <div class="i-carbon-hourglass" />
@@ -1276,7 +1276,7 @@ useIntervalFn(updateCountdowns, 1000)
         </div>
       </div>
 
-      <div v-if="watchlistRipe.length" class="ui-card rounded-lg p-5">
+      <div v-if="watchlistRipe.length" class="ui-card col-span-full min-w-0 rounded-lg p-5">
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-star-filled text-yellow-500" />
           <span>重点监控</span>
@@ -1303,7 +1303,7 @@ useIntervalFn(updateCountdowns, 1000)
         </div>
       </div>
 
-      <div class="ui-card rounded-lg p-5">
+      <div class="ui-card col-span-full min-w-0 rounded-lg p-5">
         <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
           <div class="i-carbon-list-checked" />
           <span>今日事件</span>
@@ -1366,3 +1366,19 @@ useIntervalFn(updateCountdowns, 1000)
     @saved="onAccountSaved"
   />
 </template>
+
+<style scoped>
+.dashboard-content {
+  container: dashboard / inline-size;
+}
+
+.dashboard-cards {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container dashboard (inline-size >= 48rem) {
+  .dashboard-cards {
+    grid-template-columns: minmax(0, 2fr) minmax(20rem, 1fr); /* 为双列统计卡预留宽度 */
+  }
+}
+</style>
