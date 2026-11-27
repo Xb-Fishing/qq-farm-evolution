@@ -109,7 +109,7 @@ test('牧场每日礼包道具在实际背包命名，保留普通物品安全�
   assert.equal(item.itemType, 109);
   assert.equal(item.sellable, false);
   assert.equal(config.isSeedItem(id), false);
-  assert.equal(config.getItemImageById(id), '');
+  assert.equal(config.getItemImageById(id), '/game-config/seed_images_named/80021_official.png');
   assert.deepEqual(auditBagSeedCoverage([stack], []).issues, []);
 });
 
@@ -155,9 +155,9 @@ test('encoded BagReply and ranch DTO resolve reviewed rewards with exact counts 
 test('encoded BagReply names ranch can time balances and uses the matching official shared sprites', async t => {
   const cases = [
     { id: 7003, uid: 730, count: '3602', name: '无机罐头容器', sharedSpriteId: 1011,
-      spriteFile: '1011_普通化肥容器_normalFertilizeIcon.png' },
+      spriteFile: '7003_official.png' },
     { id: 7004, uid: 740, count: '240010', name: '有机罐头容器', sharedSpriteId: 1012,
-      spriteFile: '1012_有机化肥容器_fertilizePro.png' },
+      spriteFile: '7004_official.png' },
   ];
   const { warehouse, calls } = fixture(t, cases.map(({ id, uid, count }) => ({ id, uid, count })));
   const bag = await warehouse.getBagDetail();
@@ -177,8 +177,6 @@ test('encoded BagReply names ranch can time balances and uses the matching offic
     const officialFrame = config.getItemById(sharedSpriteId).icon_res;
     assert.ok(officialFrame);
     assert.equal(config.getItemById(id).icon_res, officialFrame);
-    // The isolated countercheck copies only ASCII filenames. The production URL
-    // still names the exact tracked sprite, regardless of the snapshot filter.
     assert.equal(decodeURI(image), `/game-config/seed_images_named/${spriteFile}`);
     assert.deepEqual(itemDto({ id, count }), { id: String(id), name, count, image });
   }

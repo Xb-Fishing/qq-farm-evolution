@@ -573,7 +573,7 @@ test('乌云使坏瓶 5006 按快照登记,非种子只读展示且不新增使�
     assert.equal(entry.usable, false, 'registration adds no use capability');
     assert.equal(entry.sellable, false, 'registration adds no sell capability');
     assert.equal(entry.interactionType, '');
-    assert.equal(entry.image, '', 'dedicated icon stays an explicit gap, no substitute image');
+    assert.equal(entry.image, '/game-config/seed_images_named/5006_official.png', 'official dedicated sprite is now available');
     // 审计：5006 已登记不再产生缺口
     assert.equal(detail.seedRecognition.issues.filter(i => i.itemId === 5006).length, 0);
     // 日志：全部已登记物品，不得再报 bag_unclassified_item
