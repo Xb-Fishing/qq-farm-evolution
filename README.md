@@ -267,6 +267,11 @@ docker compose logs -f
 - [活动适配说明](core/docs/activity-update-runbook.md)
 - [TSDK/WASM 更新手册](core/docs/tsdk-update-runbook.md)
 
+## 贡献者
+
+- [YepYuYu](https://github.com/YepYuYu) 提出了默认账号方案的重登设置修复。[PR #40](https://github.com/Xb-Fishing/qq-farm-evolution/pull/40)
+- [736456849](https://github.com/736456849) 提出了概览和移动端导航优化，移动端侧栏修复已被采纳。[PR #42](https://github.com/Xb-Fishing/qq-farm-evolution/pull/42) · [PR #43](https://github.com/Xb-Fishing/qq-farm-evolution/pull/43)
+
 ---
 
 <div align="center">
