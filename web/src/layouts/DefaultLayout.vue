@@ -1,25 +1,23 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import MysteryMerchantBanner from '@/components/shop/MysteryMerchantBanner.vue'
 import Sidebar from '@/components/Sidebar.vue'
 import TopAccountMenu from '@/components/TopAccountMenu.vue'
+import { menuRoutes } from '@/router/menu'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
-const { loginPageConfig, sidebarOpen } = storeToRefs(appStore)
-const headerLogoFailed = ref(false)
+const currentRoute = useRoute()
+const pageTitle = computed(() => {
+  const item = menuRoutes.find(item => `/${item.path}` === currentRoute.path)
+  return item?.label === '概览' ? '农场概览' : item?.label || '农场工作台'
+})
+const { sidebarOpen } = storeToRefs(appStore)
 
 onMounted(() => {
   appStore.fetchLoginPageConfig()
-})
-
-onUnmounted(() => {
-  // 清理逻辑
-})
-
-watch(() => loginPageConfig.value.logoUrl, () => {
-  headerLogoFailed.value = false
 })
 </script>
 
@@ -35,7 +33,7 @@ watch(() => loginPageConfig.value.logoUrl, () => {
     <Sidebar />
 
     <main class="relative h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
-      <header class="glass-panel relative z-30 mx-2 mt-2 h-16 flex shrink-0 items-center justify-between rounded-xl px-4 md:mx-4 md:mt-4 md:px-5">
+      <header class="shell-header relative z-30 flex shrink-0 items-center justify-between">
         <div class="min-w-0 flex items-center gap-3">
           <button
             class="h-9 w-9 flex items-center justify-center rounded-lg text-gray-500 transition lg:hidden hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
@@ -44,18 +42,8 @@ watch(() => loginPageConfig.value.logoUrl, () => {
           >
             <div class="i-carbon-menu text-xl" />
           </button>
-          <div class="h-8 w-8 flex flex-none items-center justify-center overflow-hidden rounded-lg" :style="{ background: 'var(--theme-gradient)' }">
-            <img
-              v-if="loginPageConfig.logoUrl && !headerLogoFailed"
-              :src="loginPageConfig.logoUrl"
-              :alt="`${loginPageConfig.title || 'QQ农场智能助手'}图标`"
-              class="h-full w-full object-cover"
-              @error="headerLogoFailed = true"
-            >
-            <div v-else class="i-carbon-sprout text-base text-white" />
-          </div>
           <div class="truncate text-base text-gray-900 font-semibold md:text-lg dark:text-gray-100">
-            {{ loginPageConfig.title || 'QQ农场智能助手' }}
+            {{ pageTitle }}
           </div>
         </div>
 
@@ -65,10 +53,10 @@ watch(() => loginPageConfig.value.logoUrl, () => {
       <!-- Main Content Area -->
       <div class="min-h-0 flex flex-1 flex-col overflow-hidden">
         <MysteryMerchantBanner />
-        <div class="custom-scrollbar min-h-0 flex flex-1 flex-col overflow-y-auto p-3 pb-[calc(1rem+env(safe-area-inset-bottom))] md:p-6 sm:p-4 md:pb-6 sm:pb-[calc(1rem+env(safe-area-inset-bottom))]">
+        <div class="shell-content custom-scrollbar min-h-0 flex flex-1 flex-col overflow-y-auto">
           <RouterView v-slot="{ Component, route }">
             <Transition name="slide-fade" mode="out-in">
-              <div :key="route.path" class="min-w-0 flex-1">
+              <div :key="route.path" class="shell-page min-w-0 flex-1">
                 <component :is="Component" />
               </div>
             </Transition>
@@ -80,6 +68,29 @@ watch(() => loginPageConfig.value.logoUrl, () => {
 </template>
 
 <style scoped>
+.shell-header {
+  min-height: 72px;
+  padding: 12px 28px;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-1);
+}
+.shell-content {
+  padding: 24px 28px 32px;
+}
+.shell-page {
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+@media (max-width: 767px) {
+  .shell-header {
+    min-height: 64px;
+    padding: 10px 16px;
+  }
+  .shell-content {
+    padding: 16px 14px calc(20px + env(safe-area-inset-bottom));
+  }
+}
 .app-shell {
   background: var(--app-bg);
 }

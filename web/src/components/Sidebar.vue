@@ -376,14 +376,17 @@ async function copyToken() {
 
 <template>
   <aside
-    class="fixed inset-y-0 left-0 z-50 h-full w-72 flex flex-col border-r border-gray-200/60 p-3 transition-transform duration-300 lg:static lg:translate-x-0 dark:border-gray-700/60"
+    class="app-sidebar fixed inset-y-0 left-0 z-50 h-full w-72 flex flex-col border-r border-gray-200/60 p-3 transition-transform duration-300 lg:static lg:translate-x-0 dark:border-gray-700/60"
     :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     :style="{ background: 'color-mix(in srgb, var(--surface-1) 90%, transparent)', color: 'var(--theme-text)' }"
   >
     <!-- Brand -->
-    <div class="relative h-16 flex flex-none items-center justify-between px-2">
+    <div class="sidebar-brand relative h-16 flex flex-none items-center justify-between px-2">
       <div class="min-w-0 flex items-center gap-3">
-        <div class="h-11 w-11 flex flex-none items-center justify-center overflow-hidden rounded-full shadow-sm ring-1 ring-gray-200 dark:ring-gray-700">
+        <div
+          class="sidebar-brand-icon h-9 w-9 flex flex-none items-center justify-center overflow-hidden rounded-xl"
+          :style="{ background: 'var(--theme-gradient)' }"
+        >
           <img
             v-if="loginPageConfig.logoUrl && !brandLogoFailed"
             :src="loginPageConfig.logoUrl"
@@ -405,6 +408,7 @@ async function copyToken() {
       <!-- Mobile Close Button -->
       <button
         class="h-8 w-8 flex flex-none items-center justify-center rounded-lg text-gray-500 transition lg:hidden hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+        aria-label="关闭导航菜单"
         @click="appStore.closeSidebar"
       >
         <div class="i-carbon-close text-xl" />
@@ -415,10 +419,10 @@ async function copyToken() {
     <div class="mx-2 mb-3 h-px flex-none" style="background: linear-gradient(90deg, color-mix(in srgb, var(--theme-primary) 45%, transparent), transparent);" />
 
     <!-- User Info -->
-    <div class="px-1 py-4">
+    <div class="sidebar-user px-1 py-2">
       <div class="group relative">
         <button
-          class="ui-card w-full flex items-center justify-between rounded-lg px-3.5 py-3 outline-none transition-all duration-200 hover:border-gray-300 hover:-translate-y-0.5 dark:hover:border-gray-600"
+          class="w-full flex items-center justify-between rounded-lg px-2 py-2 outline-none transition-all duration-200 hover:border-gray-300 hover:-translate-y-0.5 dark:hover:border-gray-600"
           style="--focus-ring: var(--theme-primary)"
           @click="showUserDropdown = !showUserDropdown"
         >
@@ -494,8 +498,9 @@ async function copyToken() {
         :active-class="item.path === '/' ? '' : 'router-link-active'"
         :exact-active-class="item.path === '/' ? 'router-link-active' : 'router-link-exact-active'"
         class="nav-item group relative flex items-center gap-3 rounded-xl px-2 py-1.5 transition-colors duration-200"
+        @click="appStore.closeSidebar"
       >
-        <span class="nav-icon h-9 w-9 flex flex-none items-center justify-center rounded-lg text-[22px] transition-colors duration-200">
+        <span class="nav-icon h-8 w-8 flex flex-none items-center justify-center rounded-lg text-[19px] transition-colors duration-200">
           <div :class="[item.icon]" />
         </span>
         <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ item.label }}</span>
@@ -513,7 +518,7 @@ async function copyToken() {
     </nav>
 
     <!-- Token Display (All Users) -->
-    <div v-if="userStore.token" class="ui-subtle-panel mb-3 rounded-lg px-2 py-2">
+    <div v-if="userStore.token" class="sidebar-token mb-1 rounded-lg px-1 py-1">
       <button
         class="w-full flex items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-gray-100/50 dark:hover:bg-gray-700/50"
         @click="showTokenDropdown = !showTokenDropdown"
@@ -557,7 +562,7 @@ async function copyToken() {
     </div>
 
     <!-- Footer Status -->
-    <div class="relative mt-4 flex-none rounded-xl px-3 py-2.5" style="background: color-mix(in srgb, var(--surface-2) 80%, transparent);">
+    <div class="sidebar-footer relative mt-2 flex-none rounded-xl px-2 py-2.5" style="background: color-mix(in srgb, var(--surface-2) 80%, transparent);">
       <div class="flex items-center justify-between text-xs">
         <div class="flex items-center gap-1.5 font-medium" style="color: var(--theme-text);">
           <span
@@ -734,6 +739,43 @@ async function copyToken() {
 </template>
 
 <style scoped>
+.app-sidebar {
+  flex-shrink: 0;
+}
+@media (min-width: 1024px) {
+  .app-sidebar {
+    width: 224px;
+    padding: 10px;
+  }
+  .sidebar-brand {
+    height: 56px;
+  }
+  .sidebar-brand > div {
+    gap: 9px;
+  }
+  .sidebar-brand .tracking-tight {
+    font-size: 13px;
+  }
+  .sidebar-brand .font-mono {
+    font-size: 9px;
+    letter-spacing: 0.5px;
+  }
+  .nav-item {
+    gap: 9px;
+    padding: 4px 8px;
+    border-radius: 9px;
+  }
+  .nav-item > span:nth-child(2) {
+    font-size: 13px;
+  }
+  .sidebar-footer {
+    font-size: 11px;
+  }
+  .sidebar-footer .font-mono {
+    font-size: 10px;
+  }
+}
+
 .theme-sidebar-palette {
   position: absolute;
   left: 0;

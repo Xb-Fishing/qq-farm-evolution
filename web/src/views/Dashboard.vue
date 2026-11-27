@@ -30,6 +30,17 @@ const {
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
 const reloginBusy = ref(false)
 const showReloginModal = ref(false)
+const activityTab = ref<'logs' | 'events'>('logs')
+const showLogFilters = ref(false)
+
+function onActivityTabKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
+    return
+  event.preventDefault()
+  activityTab.value = event.key === 'Home' ? 'logs' : event.key === 'End' ? 'events' : activityTab.value === 'logs' ? 'events' : 'logs'
+  const target = event.currentTarget as HTMLElement
+  target.parentElement?.querySelector<HTMLButtonElement>(`#tab-${activityTab.value}`)?.focus()
+}
 const toast = useToastStore()
 
 // UI 操作代次：新扫码取代进行中的直接重登反馈（账号锁/后台代次各自独立处理）
@@ -878,58 +889,64 @@ useIntervalFn(updateCountdowns, 1000)
 </script>
 
 <template>
-  <div v-if="currentStatusReady && status?.requestProfile?.policySupported" class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-slate-100 px-4 py-3 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" role="status">
-    <strong :class="status.requestProfile.enabled ? '' : 'text-red-600 dark:text-red-400'">当前连接通信限流：{{ status.requestProfile.enabled ? '已开启' : '已关闭' }}</strong>
-    <span>近 60 秒结算 {{ status.requestProfile.windowCount }} 次 · 好友 {{ status.requestProfile.friendCount }} 次</span>
-    <span v-if="status.requestProfile.watchModeActive">热点窗口：总量/好友 ×1.5，进门/读地 ×{{ status.requestProfile.watchModeBoost }}</span>
-    <span v-if="status.requestProfile.enabled">
-      总预算 {{ status.requestProfile.effectiveTotalLimit }}
-      <template v-if="status.requestProfile.rosterSize > 0">（{{ status.requestProfile.rosterSize }} 位好友）</template>
-      · 好友 {{ status.requestProfile.effectiveFriendLimit }} · 单接口 {{ status.requestProfile.perMethodLimit }}
-    </span>
-    <span v-if="status.requestProfile.enabled && status.sessionUpgrade && status.requestProfile.rosterSize === undefined">好友增量将在连接更新后生效</span>
-  </div>
-  <div v-if="currentStatusReady && status?.sessionUpgrade?.requiresRescan" class="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-xl bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
-    <p>更新已保留旧游戏连接。新通信控制需要重新建立连接后生效。{{ currentAccount?.platform === 'wx' ? '请为此账号重新扫码，新授权会替换旧连接。' : '请更新登录码后重启此账号。' }}</p>
-    <BaseButton v-if="currentAccount?.platform === 'wx'" variant="secondary" @click="rescanFromHome">
-      重新扫码并更新连接
-    </BaseButton>
-  </div>
-  <div class="flex flex-col gap-5 pt-1 md:pt-2">
-    <div
-      v-if="slowdownActive"
-      class="flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-lg bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20"
-    >
-      <div class="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
-        <div class="i-carbon-warning-alt text-lg" />
-        <span>
-          请求异常降速中：普通巡查放缓到约 {{ slowdownDelaySec }} 秒级，自己收获、重点在线监控和成熟到点动作保持运行；约
-          <span class="font-bold font-mono">{{ formatDuration(slowdownRemainSec) }}</span>
-          后恢复常规节奏
-        </span>
+  <div class="dashboard-view">
+    <details v-if="currentStatusReady && status?.requestProfile?.policySupported" class="request-policy">
+      <summary>
+        <span class="policy-state" :class="{ 'policy-disabled': !status.requestProfile.enabled }"><span class="i-carbon-security" />通信保护{{ status.requestProfile.enabled ? '已开启' : '已关闭' }}</span>
+        <span class="policy-summary">近 60 秒 {{ status.requestProfile.windowCount }} 次请求 · 好友 {{ status.requestProfile.friendCount }} 次</span>
+        <span class="policy-details-label">详细信息 <span class="i-carbon-chevron-down" /></span>
+      </summary>
+      <div class="policy-details">
+        <span v-if="status.requestProfile.watchModeActive">热点窗口：总量/好友 ×1.5，进门/读地 ×{{ status.requestProfile.watchModeBoost }}</span>
+        <span v-if="status.requestProfile.enabled">总预算 {{ status.requestProfile.effectiveTotalLimit }}<template v-if="status.requestProfile.rosterSize > 0">（{{ status.requestProfile.rosterSize }} 位好友）</template> · 好友 {{ status.requestProfile.effectiveFriendLimit }} · 单接口 {{ status.requestProfile.perMethodLimit }}</span>
+        <span v-if="status.requestProfile.enabled && status.sessionUpgrade && status.requestProfile.rosterSize === undefined">好友增量将在连接更新后生效</span>
       </div>
-      <button
-        class="rounded bg-amber-500 px-3 py-1.5 text-xs text-white transition hover:bg-amber-600 disabled:opacity-50"
-        :disabled="slowdownClearing"
-        @click="clearSlowdown"
-      >
-        {{ slowdownClearing ? '取消中…' : '取消降速' }}
-      </button>
+    </details>
+    <div v-if="currentStatusReady && status?.sessionUpgrade?.requiresRescan" class="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-xl bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
+      <p>更新已保留旧游戏连接。新通信控制需要重新建立连接后生效。{{ currentAccount?.platform === 'wx' ? '请为此账号重新扫码，新授权会替换旧连接。' : '请更新登录码后重启此账号。' }}</p>
+      <BaseButton v-if="currentAccount?.platform === 'wx'" variant="secondary" @click="rescanFromHome">
+        重新扫码并更新连接
+      </BaseButton>
     </div>
-    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3 sm:grid-cols-2">
-      <div class="ui-card metric-card min-h-[168px] flex flex-col rounded-lg p-5">
-        <div class="mb-2 flex items-start justify-between">
-          <div class="flex items-center gap-1.5 text-sm text-gray-500">
-            <div class="i-fas-user-circle" />
-            账号
-          </div>
-          <div class="flex items-center gap-2">
+    <div class="dashboard-sections">
+      <div
+        v-if="slowdownActive"
+        class="flex flex-wrap items-center justify-between gap-3 border border-amber-300 rounded-lg bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20"
+      >
+        <div class="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
+          <div class="i-carbon-warning-alt text-lg" />
+          <span>
+            请求异常降速中：普通巡查放缓到约 {{ slowdownDelaySec }} 秒级，自己收获、重点在线监控和成熟到点动作保持运行；约
+            <span class="font-bold font-mono">{{ formatDuration(slowdownRemainSec) }}</span>
+            后恢复常规节奏
+          </span>
+        </div>
+        <button
+          class="rounded bg-amber-500 px-3 py-1.5 text-xs text-white transition hover:bg-amber-600 disabled:opacity-50"
+          :disabled="slowdownClearing"
+          @click="clearSlowdown"
+        >
+          {{ slowdownClearing ? '取消中…' : '取消降速' }}
+        </button>
+      </div>
+      <div class="overview-grid">
+        <div class="ui-card overview-account">
+          <div class="account-heading">
+            <div class="section-eyebrow">
+              <div class="i-fas-user-circle" />
+              当前账号
+            </div>
             <div class="rounded-lg bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
               Lv.{{ status?.status?.level || 0 }}
             </div>
+          </div>
+          <div class="account-name" :title="displayName">
+            {{ displayName }}
+          </div>
+          <div class="account-actions">
             <button
               v-if="currentAccount?.platform === 'wx'"
-              class="rounded bg-emerald-500 px-2 py-1 text-xs text-white transition hover:bg-emerald-600 disabled:opacity-50"
+              class="account-action"
               :disabled="reloginBusy"
               title="优先恢复现有连接，确认离线后再尝试登录"
               @click="reloginFromHome"
@@ -938,202 +955,161 @@ useIntervalFn(updateCountdowns, 1000)
             </button>
             <button
               v-if="currentAccount?.platform === 'wx'"
-              class="rounded bg-blue-500 px-2 py-1 text-xs text-white transition hover:bg-blue-600"
+              class="account-action"
               title="跳过旧凭据，直接用微信扫码为当前账号更换授权"
               @click="rescanFromHome"
             >
-              重新扫码授权
+              扫码授权
             </button>
             <button
               v-if="currentAccountNeedsRescan"
-              class="rounded bg-amber-500 px-2 py-1 text-xs text-white transition hover:bg-amber-600"
+              class="account-action account-action-warning"
               title="重新登录凭据需要更新：打开自助页面，可把新二维码推送到手机"
               @click="openWxLoginHelp"
             >
               需重新扫码·发到手机
             </button>
           </div>
-        </div>
-        <div class="mb-1 truncate text-xl font-bold" :title="displayName">
-          {{ displayName }}
-        </div>
-        <div class="mt-auto">
-          <div class="mb-1 flex justify-between text-xs text-gray-500">
-            <div class="flex items-center gap-1">
-              <div class="i-fas-bolt text-blue-400" />
-              <span>EXP</span>
+
+          <div class="account-progress">
+            <div class="mb-1 flex justify-between text-xs text-gray-500">
+              <div class="flex items-center gap-1">
+                <div class="i-fas-bolt text-blue-400" />
+                <span>EXP</span>
+              </div>
+              <span>{{ status?.levelProgress?.current || 0 }} / {{ status?.levelProgress?.needed || '?' }}</span>
             </div>
-            <span>{{ status?.levelProgress?.current || 0 }} / {{ status?.levelProgress?.needed || '?' }}</span>
+            <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+              <div
+                class="h-full rounded-full bg-blue-500 transition-all duration-500"
+                :style="{ width: `${getExpPercent(status?.levelProgress)}%` }"
+              />
+            </div>
+            <div class="account-efficiency text-xs text-gray-400">
+              <span>效率: {{ expRate }}</span>
+              <span v-if="timeToLevel" title="按本次运行已获得经验的平均速度估算，未计入尚未收获作物的经验；集中成熟时可能有较大偏差。">历史效率估算：{{ timeToLevel }}</span>
+            </div>
           </div>
-          <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-            <div
-              class="h-full rounded-full bg-blue-500 transition-all duration-500"
-              :style="{ width: `${getExpPercent(status?.levelProgress)}%` }"
-            />
+        </div>
+        <div class="ui-card overview-assets">
+          <div class="section-eyebrow mb-5">
+            资产概览
           </div>
-          <div class="mt-2 flex justify-between text-xs text-gray-400">
-            <span>效率: {{ expRate }}</span>
-            <span v-if="timeToLevel" title="按本次运行已获得经验的平均速度估算，未计入尚未收获作物的经验；集中成熟时可能有较大偏差。">历史效率估算：{{ timeToLevel }}</span>
+          <div class="asset-grid">
+            <div class="asset-item">
+              <div class="flex items-center gap-1.5 text-xs text-gray-500">
+                <div class="i-fas-coins text-yellow-500" />
+                金币
+              </div>
+              <div class="asset-value text-yellow-600 font-bold dark:text-yellow-500">
+                {{ formatGoldAmount(status?.status?.gold || 0) }}
+              </div>
+              <div
+                v-if="(status?.sessionGoldGained || 0) !== 0"
+                class="text-[10px]"
+                :class="(status?.sessionGoldGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
+              >
+                {{ (status?.sessionGoldGained || 0) > 0 ? '+' : '' }}{{ formatGoldAmount(status?.sessionGoldGained || 0) }}
+              </div>
+            </div>
+            <div class="asset-item">
+              <div class="flex items-center gap-1.5 text-xs text-gray-500">
+                <div class="i-fas-ticket-alt text-emerald-400" />
+                点券
+              </div>
+              <div class="asset-value text-emerald-500 font-bold dark:text-emerald-400">
+                {{ formatCouponAmount(status?.status?.coupon || 0) }}
+              </div>
+              <div
+                v-if="(status?.sessionCouponGained || 0) !== 0"
+                class="text-[10px]"
+                :class="(status?.sessionCouponGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
+              >
+                {{ (status?.sessionCouponGained || 0) > 0 ? '+' : '' }}{{ formatCouponAmount(status?.sessionCouponGained || 0) }}
+              </div>
+            </div>
+            <div class="asset-item">
+              <div class="flex items-center gap-1.5 text-xs text-gray-500">
+                <div class="i-carbon-diamond-outline text-cyan-500" />
+                钻石
+              </div>
+              <div class="asset-value text-cyan-600 font-bold dark:text-cyan-400">
+                {{ formatCouponAmount(status?.status?.diamond || 0) }}
+              </div>
+            </div>
+            <div class="asset-item">
+              <div class="flex items-center gap-1.5 text-xs text-gray-500">
+                <div class="i-carbon-circle text-amber-500" />
+                金豆
+              </div>
+              <div class="asset-value text-amber-500 font-bold dark:text-amber-400">
+                {{ formatGoldBeanAmount(status?.status?.goldBean || 0) }}
+              </div>
+            </div>
+          </div>
+          <div class="mt-4 border-t border-gray-100/80 pt-3 dark:border-gray-700/80">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <div class="h-2.5 w-2.5 rounded-full" :class="status?.connection?.connected ? 'bg-green-500' : currentStatusReady ? 'bg-red-500' : 'bg-gray-300'" />
+                <span class="text-xs font-bold">{{ status?.connection?.connected ? '在线' : currentStatusReady ? '离线' : '检查中' }}</span>
+              </div>
+              <div class="flex items-center gap-1.5 text-xs text-gray-400">
+                <div class="i-fas-clock text-purple-400" />
+                {{ formatDuration(localUptime) }}
+              </div>
+            </div>
+            <SessionRuntimeStatus v-if="currentStatusReady" :runtime="status?.sessionRuntime" />
           </div>
         </div>
       </div>
-
-      <div class="ui-card metric-card min-h-[168px] flex flex-col justify-between rounded-lg p-5">
-        <div class="grid grid-cols-4 gap-3">
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-coins text-yellow-500" />
-              金币
-            </div>
-            <div class="text-2xl text-yellow-600 font-bold dark:text-yellow-500">
-              {{ formatGoldAmount(status?.status?.gold || 0) }}
-            </div>
-            <div
-              v-if="(status?.sessionGoldGained || 0) !== 0"
-              class="text-[10px]"
-              :class="(status?.sessionGoldGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
-            >
-              {{ (status?.sessionGoldGained || 0) > 0 ? '+' : '' }}{{ formatGoldAmount(status?.sessionGoldGained || 0) }}
+      <div class="dashboard-body">
+        <section class="ui-card dashboard-activity" aria-label="农场动态">
+          <div class="activity-header">
+            <h2>农场动态</h2>
+            <div class="activity-tabs" role="tablist" aria-label="动态类型">
+              <button id="tab-logs" type="button" role="tab" :aria-selected="activityTab === 'logs'" aria-controls="dashboard-logs" :tabindex="activityTab === 'logs' ? 0 : -1" :class="{ active: activityTab === 'logs' }" @click="activityTab = 'logs'" @keydown="onActivityTabKeydown">
+                运行日志
+              </button>
+              <button id="tab-events" type="button" role="tab" :aria-selected="activityTab === 'events'" aria-controls="dashboard-events" :tabindex="activityTab === 'events' ? 0 : -1" :class="{ active: activityTab === 'events' }" @click="activityTab = 'events'" @keydown="onActivityTabKeydown">
+                今日事件
+              </button>
             </div>
           </div>
-          <div class="min-w-0 text-center">
-            <div class="flex items-center justify-center gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-ticket-alt text-emerald-400" />
-              点券
+          <div v-show="activityTab === 'logs'" id="dashboard-logs" role="tabpanel" aria-labelledby="tab-logs" class="activity-content">
+            <div class="activity-toolbar">
+              <span class="activity-caption">最新记录在前 · 实时更新</span>
+              <button class="filter-toggle" type="button" :aria-expanded="showLogFilters" aria-controls="dashboard-log-filters" @click="showLogFilters = !showLogFilters">
+                <span class="i-carbon-filter" />
+                {{ showLogFilters ? '收起筛选' : '筛选日志' }}
+                <span v-if="hasActiveLogFilter" class="filter-active-dot" />
+              </button>
             </div>
-            <div class="text-2xl text-emerald-500 font-bold dark:text-emerald-400">
-              {{ formatCouponAmount(status?.status?.coupon || 0) }}
-            </div>
-            <div
-              v-if="(status?.sessionCouponGained || 0) !== 0"
-              class="text-[10px]"
-              :class="(status?.sessionCouponGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
-            >
-              {{ (status?.sessionCouponGained || 0) > 0 ? '+' : '' }}{{ formatCouponAmount(status?.sessionCouponGained || 0) }}
-            </div>
-          </div>
-          <div class="min-w-0 text-center">
-            <div class="flex items-center justify-center gap-1.5 text-xs text-gray-500">
-              <div class="i-carbon-diamond-outline text-cyan-500" />
-              钻石
-            </div>
-            <div class="text-2xl text-cyan-600 font-bold dark:text-cyan-400">
-              {{ formatCouponAmount(status?.status?.diamond || 0) }}
-            </div>
-          </div>
-          <div class="min-w-0 text-right">
-            <div class="flex items-center justify-end gap-1.5 text-xs text-gray-500">
-              <div class="i-carbon-circle text-amber-500" />
-              金豆
-            </div>
-            <div class="text-2xl text-amber-500 font-bold dark:text-amber-400">
-              {{ formatGoldBeanAmount(status?.status?.goldBean || 0) }}
-            </div>
-          </div>
-        </div>
-        <div class="mt-4 border-t border-gray-100/80 pt-3 dark:border-gray-700/80">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <div class="h-2.5 w-2.5 rounded-full" :class="status?.connection?.connected ? 'bg-green-500' : currentStatusReady ? 'bg-red-500' : 'bg-gray-300'" />
-              <span class="text-xs font-bold">{{ status?.connection?.connected ? '在线' : currentStatusReady ? '离线' : '检查中' }}</span>
-            </div>
-            <div class="flex items-center gap-1.5 text-xs text-gray-400">
-              <div class="i-fas-clock text-purple-400" />
-              {{ formatDuration(localUptime) }}
-            </div>
-          </div>
-          <SessionRuntimeStatus v-if="currentStatusReady" :runtime="status?.sessionRuntime" />
-        </div>
-      </div>
-
-      <div class="ui-card metric-card min-h-[168px] flex flex-col justify-between rounded-lg p-5">
-        <div class="mb-2 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-flask text-emerald-400" />
-          化肥容器
-        </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-flask text-emerald-400" />
-              普通
-            </div>
-            <div class="font-bold">
-              {{ formatBucketTime(fertilizerNormal) }}
-            </div>
-          </div>
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-vial text-emerald-400" />
-              有机
-            </div>
-            <div class="font-bold">
-              {{ formatBucketTime(fertilizerOrganic) }}
-            </div>
-          </div>
-        </div>
-        <div class="my-3 border-t border-gray-100/80 dark:border-gray-700/80" />
-        <div class="mb-1 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-star text-emerald-400" />
-          收藏点
-        </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-bookmark text-emerald-400" />
-              普通
-            </div>
-            <div class="font-bold">
-              {{ collectionNormal?.count || 0 }}
-            </div>
-          </div>
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-gem text-emerald-400" />
-              典藏
-            </div>
-            <div class="font-bold">
-              {{ collectionRare?.count || 0 }}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="flex flex-1 flex-col items-stretch gap-5 md:flex-row">
-      <div class="flex flex-1 flex-col gap-5 md:w-3/4">
-        <div class="ui-card-elevated flex flex-1 flex-col rounded-lg p-5 md:overflow-hidden">
-          <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <h3 class="flex items-center gap-2 text-lg font-medium">
-              <div class="i-carbon-document" />
-              <span>运行日志</span>
-            </h3>
-
-            <div class="flex flex-wrap items-center gap-2 text-sm">
+            <div v-show="showLogFilters" id="dashboard-log-filters" class="log-filters">
               <BaseSelect
                 v-model="filter.module"
-                :options="modules"
-                class="w-32"
+                :options="modules" label="模块"
+                class="log-filter-field"
                 @change="onLogFilterChange"
               />
 
               <BaseSelect
                 v-model="filter.event"
-                :options="events"
-                class="w-32"
+                :options="events" label="事件"
+                class="log-filter-field"
                 @change="onLogFilterChange"
               />
 
               <BaseSelect
                 v-model="filter.isWarn"
-                :options="logLevels"
-                class="w-32"
+                :options="logLevels" label="级别"
+                class="log-filter-field"
                 @change="onLogFilterChange"
               />
 
               <BaseInput
                 v-model="filter.keyword"
-                placeholder="关键词..."
-                class="w-32"
+                label="关键词" placeholder="搜索日志"
+                class="log-filter-field"
                 clearable
                 @keyup.enter="onLogSearchTrigger"
                 @clear="onLogSearchTrigger"
@@ -1142,9 +1118,10 @@ useIntervalFn(updateCountdowns, 1000)
               <BaseButton
                 variant="primary"
                 size="sm"
+                aria-label="搜索日志"
                 @click="onLogSearchTrigger"
               >
-                <div class="i-carbon-search" />
+                <div class="i-carbon-search mr-1" />搜索
               </BaseButton>
 
               <BaseButton
@@ -1157,207 +1134,251 @@ useIntervalFn(updateCountdowns, 1000)
                 清空
               </BaseButton>
             </div>
-          </div>
 
-          <div ref="logContainer" class="ui-subtle-panel max-h-[50vh] min-h-0 flex-1 overflow-y-auto rounded-lg p-4 text-sm leading-relaxed font-mono" @scroll="onLogScroll">
-            <div v-if="!allLogs.length" class="py-8 text-center text-gray-400">
-              <div class="i-carbon-document-blank mx-auto mb-3 text-3xl text-gray-300" />
-              <div class="text-sm text-gray-500 dark:text-gray-400">
-                暂无日志
-              </div>
-              <div class="mt-1 text-xs text-gray-400">
-                运行账号后，这里会持续追加巡查、种植、任务和出售记录。
-              </div>
-            </div>
-            <div v-for="log in allLogs" :key="log.ts + log.msg" class="mb-1 break-all">
-              <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time, log.ts) }}]</span>
-              <span class="mr-2 rounded px-1.5 py-0.5 text-xs font-bold" :class="getLogTagClass(log.tag)">{{ log.tag }}</span>
-              <span v-if="log.meta?.event" class="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-500 dark:bg-blue-900/20 dark:text-blue-400">{{ getEventLabel(log.meta.event) }}</span>
-              <span v-if="log.meta?.automationCategory" class="mr-2 text-xs text-violet-500">{{ AUTOMATION_CATEGORY_LABELS[log.meta.automationCategory] || '' }}</span>
-              <span :class="getLogMsgClass(log.tag)">{{ log.msg }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-5 md:w-1/4">
-        <div class="ui-card flex flex-col rounded-lg p-5">
-          <h3 class="mb-4 flex items-center gap-2 text-lg font-medium">
-            <div class="i-carbon-hourglass" />
-            <span>下次检查倒计时</span>
-          </h3>
-          <div class="flex flex-col justify-center gap-4">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                <div class="i-carbon-sprout text-lg text-green-500" />
-                <span>农场</span>
-              </div>
-              <div class="text-lg font-bold font-mono">
-                {{ nextFarmCheck }}
-              </div>
-            </div>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                <div class="i-carbon-user-multiple text-lg text-blue-500" />
-                <span>帮助</span>
-                <span
-                  v-if="helpExpCapped"
-                  class="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-                  title="今日帮助经验已达上限，帮忙全停，跨日（北京时间 0 点）自动恢复"
-                >经验上限</span>
-              </div>
-              <div class="text-lg font-bold font-mono" :class="helpExpCapped ? 'text-amber-500' : ''">
-                {{ nextHelpCheck }}
-              </div>
-            </div>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                <div class="i-carbon-run text-lg text-orange-500" />
-                <span>偷菜</span>
-              </div>
-              <div class="flex flex-col items-end">
-                <div class="text-lg font-bold font-mono">
-                  {{ nextStealCheck }}
+            <div ref="logContainer" class="log-stream min-h-0 overflow-y-auto text-sm leading-relaxed font-mono" @scroll="onLogScroll">
+              <div v-if="!allLogs.length" class="py-8 text-center text-gray-400">
+                <div class="i-carbon-document-blank mx-auto mb-3 text-3xl text-gray-300" />
+                <div class="text-sm text-gray-500 dark:text-gray-400">
+                  暂无日志
                 </div>
-                <div
-                  v-if="nextStealKnown"
-                  class="max-w-36 text-right text-[11px] text-gray-400"
-                  title="这是所有已获取好友中的最早成熟墙钟，不代表刚刚偷取的好友，也不是下次检查时间"
+                <div class="mt-1 text-xs text-gray-400">
+                  运行账号后，这里会持续追加巡查、种植、任务和出售记录。
+                </div>
+              </div>
+              <div v-for="log in allLogs" :key="log.ts + log.msg" class="log-entry">
+                <span class="mr-2 select-none text-gray-400">[{{ formatLogTime(log.time, log.ts) }}]</span>
+                <span class="mr-2 rounded px-1.5 py-0.5 text-xs font-bold" :class="getLogTagClass(log.tag)">{{ log.tag }}</span>
+                <span v-if="log.meta?.event" class="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-500 dark:bg-blue-900/20 dark:text-blue-400">{{ getEventLabel(log.meta.event) }}</span>
+                <span v-if="log.meta?.automationCategory" class="mr-2 text-xs text-violet-500">{{ AUTOMATION_CATEGORY_LABELS[log.meta.automationCategory] || '' }}</span>
+                <span :class="getLogMsgClass(log.tag)">{{ log.msg }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-show="activityTab === 'events'" id="dashboard-events" role="tabpanel" aria-labelledby="tab-events" class="activity-content">
+            <div class="event-toolbar">
+              <div class="event-actions">
+                <span class="activity-caption event-caption">当天最近 200 条已执行事件</span>
+                <BaseSelect v-model="dailyEventCategory" :options="dailyEventCategories" class="event-category" />
+                <BaseButton
+                  variant="secondary"
+                  size="sm"
+                  :loading="downloadingDailyEvents"
+                  :disabled="!currentAccountId"
+                  title="下载可分享的脱敏日志"
+                  @click="downloadDailyEventLog"
                 >
-                  {{ nextStealKnown }}
+                  <div class="i-carbon-download mr-1" />
+                  下载日志
+                </BaseButton>
+                <BaseButton
+                  variant="secondary"
+                  size="sm"
+                  :loading="downloadingStealEvents"
+                  :disabled="!currentAccountId"
+                  title="仅导出偷菜和被偷事件，并保留好友昵称"
+                  @click="downloadStealEventLog"
+                >
+                  <div class="i-carbon-download mr-1" />
+                  偷菜/被偷日志
+                </BaseButton>
+              </div>
+            </div>
+            <div v-if="!visibleDailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
+              {{ dailyEvents.length ? '该分类暂无已执行动作' : '今天还没有记录到事件' }}
+            </div>
+            <div v-else class="event-stream overflow-y-auto">
+              <div
+                v-for="ev in visibleDailyEvents"
+                :key="ev.id || `${ev.at}-${ev.type}`"
+                class="daily-event-row"
+              >
+                <span class="shrink-0 text-xs text-gray-400 font-mono">{{ formatEventTime(ev.at) }}</span>
+                <span
+                  v-if="EVENT_TYPE_LABELS[ev.type] || ev.level !== 'info'"
+                  class="shrink-0 rounded px-1.5 py-0.5 text-xs"
+                  :class="ev.level === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' : ev.level === 'warn' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'"
+                >{{ EVENT_TYPE_LABELS[ev.type] || ev.type }}</span>
+                <span class="min-w-0 flex-1 break-all text-xs" :class="EVENT_LEVEL_STYLE[ev.level] || EVENT_LEVEL_STYLE.info">
+                  {{ ev.message }}<span v-if="ev.count && ev.count > 1" class="ml-1 text-gray-400">×{{ ev.count }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+        <aside class="dashboard-aside" aria-label="农场辅助信息">
+          <div class="ui-card dashboard-countdown">
+            <h3 class="mb-4 flex items-center gap-2 text-sm font-semibold">
+              <div class="i-carbon-hourglass" />
+              <span>下次检查</span>
+            </h3>
+            <div class="flex flex-col justify-center gap-4">
+              <div class="countdown-row">
+                <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                  <div class="i-carbon-sprout text-lg text-green-500" />
+                  <span>农场</span>
+                </div>
+                <div class="countdown-value font-mono">
+                  {{ nextFarmCheck }}
+                </div>
+              </div>
+              <div class="countdown-row">
+                <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                  <div class="i-carbon-user-multiple text-lg text-blue-500" />
+                  <span>帮助</span>
+                  <span
+                    v-if="helpExpCapped"
+                    class="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                    title="今日帮助经验已达上限，帮忙全停，跨日（北京时间 0 点）自动恢复"
+                  >经验上限</span>
+                </div>
+                <div class="countdown-value font-mono" :class="helpExpCapped ? 'text-amber-500' : ''">
+                  {{ nextHelpCheck }}
+                </div>
+              </div>
+              <div class="countdown-row">
+                <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                  <div class="i-carbon-run text-lg text-orange-500" />
+                  <span>偷菜</span>
+                </div>
+                <div class="flex flex-col items-end">
+                  <div class="countdown-value font-mono">
+                    {{ nextStealCheck }}
+                  </div>
+                  <div
+                    v-if="nextStealKnown"
+                    class="max-w-36 text-right text-[11px] text-gray-400"
+                    title="这是所有已获取好友中的最早成熟墙钟，不代表刚刚偷取的好友，也不是下次检查时间"
+                  >
+                    {{ nextStealKnown }}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-
-        <div class="ui-card flex-1 rounded-lg p-5">
-          <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
-            <div class="i-carbon-chart-column" />
-            <span>今日统计</span>
-          </h3>
-          <div v-if="currentAccountDisconnected" class="ui-subtle-panel flex flex-col items-center justify-center gap-4 rounded-lg p-10 text-center text-gray-500">
-            <div class="i-carbon-connection-signal-off text-4xl text-gray-400" />
-            <div class="flex flex-col">
-              <div class="text-lg text-gray-700 font-medium dark:text-gray-300">
-                账号未登录
-              </div>
-              <div class="mt-1 text-sm text-gray-400">
-                请先运行账号或检查网络连接。
-              </div>
+          <div class="ui-card dashboard-resources">
+            <div class="mb-2 flex items-center gap-1.5 text-sm text-gray-500 font-medium">
+              <div class="i-fas-flask text-emerald-400" />
+              化肥容器
             </div>
-          </div>
-          <div v-else-if="!Object.keys(filteredOperations).length" class="ui-subtle-panel flex flex-col items-center justify-center gap-3 rounded-lg p-8 text-center">
-            <div class="i-carbon-chart-column text-3xl text-gray-300" />
-            <div class="text-sm text-gray-600 font-medium dark:text-gray-300">
-              暂无主动作统计
-            </div>
-            <div class="text-xs text-gray-400">
-              通常是刚启动、刚切换账号，或本轮巡查尚未完成。
-            </div>
-          </div>
-          <div v-else class="grid grid-cols-2 gap-2 2xl:gap-3">
-            <div
-              v-for="(val, key) in filteredOperations"
-              :key="key"
-              class="ui-subtle-panel flex items-center justify-between rounded-lg px-3 py-2"
-            >
-              <div class="flex items-center gap-2">
-                <div class="text-base 2xl:text-lg" :class="[getOpIcon(key), getOpColor(key)]" />
-                <div class="text-xs text-gray-500 2xl:text-sm">
-                  {{ getOpName(key) }}
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <div class="flex items-center gap-1 text-xs text-gray-400">
+                  <div class="i-fas-flask text-emerald-400" />
+                  普通
+                </div>
+                <div class="font-bold">
+                  {{ formatBucketTime(fertilizerNormal) }}
                 </div>
               </div>
-              <div class="text-sm font-bold 2xl:text-base">
-                {{ val }}
+              <div>
+                <div class="flex items-center gap-1 text-xs text-gray-400">
+                  <div class="i-fas-vial text-emerald-400" />
+                  有机
+                </div>
+                <div class="font-bold">
+                  {{ formatBucketTime(fertilizerOrganic) }}
+                </div>
+              </div>
+            </div>
+            <div class="my-3 border-t border-gray-100/80 dark:border-gray-700/80" />
+            <div class="mb-1 flex items-center gap-1.5 text-sm text-gray-500 font-medium">
+              <div class="i-fas-star text-emerald-400" />
+              收藏点
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <div class="flex items-center gap-1 text-xs text-gray-400">
+                  <div class="i-fas-bookmark text-emerald-400" />
+                  普通
+                </div>
+                <div class="font-bold">
+                  {{ collectionNormal?.count || 0 }}
+                </div>
+              </div>
+              <div>
+                <div class="flex items-center gap-1 text-xs text-gray-400">
+                  <div class="i-fas-gem text-emerald-400" />
+                  典藏
+                </div>
+                <div class="font-bold">
+                  {{ collectionRare?.count || 0 }}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div v-if="watchlistRipe.length" class="ui-card rounded-lg p-5">
-        <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
-          <div class="i-carbon-star-filled text-yellow-500" />
-          <span>重点监控</span>
-          <span class="ml-auto text-xs text-gray-400 font-normal">在线时敏捷监控；其余按已知成熟时间执行</span>
-        </h3>
-        <div class="space-y-1.5">
-          <div
-            v-for="item in watchlistRipe"
-            :key="item.gid"
-            class="ui-subtle-panel flex items-center justify-between rounded-lg px-3 py-2"
-          >
-            <div class="min-w-0 flex items-center gap-2">
-              <span class="truncate text-sm text-gray-700 dark:text-gray-200">{{ item.name }}</span>
-              <span
-                v-if="item.inWindow"
-                class="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                :title="`已进入 ${watchlistWindowMinutes} 分钟自然成熟布控窗口；按成熟时刻执行，不进行施肥趋势追踪`"
-              >成熟观察</span>
+          <div class="ui-card dashboard-statistics">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-semibold">
+              <div class="i-carbon-chart-column" />
+              <span>今日统计</span>
+            </h3>
+            <div v-if="currentAccountDisconnected" class="ui-subtle-panel flex flex-col items-center justify-center gap-4 rounded-lg p-5 text-center text-gray-500">
+              <div class="i-carbon-connection-signal-off text-4xl text-gray-400" />
+              <div class="flex flex-col">
+                <div class="text-lg text-gray-700 font-medium dark:text-gray-300">
+                  账号未登录
+                </div>
+                <div class="mt-1 text-sm text-gray-400">
+                  请先运行账号或检查网络连接。
+                </div>
+              </div>
             </div>
-            <div class="text-sm font-bold font-mono" :class="item.inWindow ? 'text-emerald-500' : 'text-gray-500'">
-              {{ item.remainSec > 0 ? formatDuration(item.remainSec) : '已成熟，抢收中' }}
+            <div v-else-if="!Object.keys(filteredOperations).length" class="ui-subtle-panel flex flex-col items-center justify-center gap-3 rounded-lg p-5 text-center">
+              <div class="i-carbon-chart-column text-3xl text-gray-300" />
+              <div class="text-sm text-gray-600 font-medium dark:text-gray-300">
+                暂无主动作统计
+              </div>
+              <div class="text-xs text-gray-400">
+                通常是刚启动、刚切换账号，或本轮巡查尚未完成。
+              </div>
+            </div>
+            <div v-else class="grid grid-cols-2 gap-2 2xl:gap-3">
+              <div
+                v-for="(val, key) in filteredOperations"
+                :key="key"
+                class="ui-subtle-panel flex items-center justify-between rounded-lg px-3 py-2"
+              >
+                <div class="flex items-center gap-2">
+                  <div class="text-base 2xl:text-lg" :class="[getOpIcon(key), getOpColor(key)]" />
+                  <div class="text-xs text-gray-500 2xl:text-sm">
+                    {{ getOpName(key) }}
+                  </div>
+                </div>
+                <div class="text-sm font-bold 2xl:text-base">
+                  {{ val }}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div class="ui-card rounded-lg p-5">
-        <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
-          <div class="i-carbon-list-checked" />
-          <span>今日事件</span>
-          <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-            <span class="text-xs text-gray-400 font-normal">动作与重要事件 · 当天最近 200 条</span>
-            <BaseSelect v-model="dailyEventCategory" :options="dailyEventCategories" class="w-28" />
-            <BaseButton
-              variant="secondary"
-              size="sm"
-              :loading="downloadingDailyEvents"
-              :disabled="!currentAccountId"
-              title="下载可分享的脱敏日志"
-              @click="downloadDailyEventLog"
-            >
-              <div class="i-carbon-download mr-1" />
-              下载日志
-            </BaseButton>
-            <BaseButton
-              variant="secondary"
-              size="sm"
-              :loading="downloadingStealEvents"
-              :disabled="!currentAccountId"
-              title="仅导出偷菜和被偷事件，并保留好友昵称"
-              @click="downloadStealEventLog"
-            >
-              <div class="i-carbon-download mr-1" />
-              偷菜/被偷日志
-            </BaseButton>
+          <div v-if="watchlistRipe.length" class="ui-card dashboard-watchlist">
+            <h3 class="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+              <div class="i-carbon-star-filled text-yellow-500" />
+              <span>重点监控</span>
+              <span class="w-full text-xs text-gray-400 font-normal">在线时敏捷监控；其余按已知成熟时间执行</span>
+            </h3>
+            <div class="space-y-1.5">
+              <div
+                v-for="item in watchlistRipe"
+                :key="item.gid"
+                class="ui-subtle-panel flex items-center justify-between rounded-lg px-3 py-2"
+              >
+                <div class="min-w-0 flex items-center gap-2">
+                  <span class="truncate text-sm text-gray-700 dark:text-gray-200">{{ item.name }}</span>
+                  <span
+                    v-if="item.inWindow"
+                    class="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                    :title="`已进入 ${watchlistWindowMinutes} 分钟自然成熟布控窗口；按成熟时刻执行，不进行施肥趋势追踪`"
+                  >成熟观察</span>
+                </div>
+                <div class="text-sm font-bold font-mono" :class="item.inWindow ? 'text-emerald-500' : 'text-gray-500'">
+                  {{ item.remainSec > 0 ? formatDuration(item.remainSec) : '已成熟，抢收中' }}
+                </div>
+              </div>
+            </div>
           </div>
-        </h3>
-        <div v-if="!visibleDailyEvents.length" class="ui-subtle-panel rounded-lg p-6 text-center text-sm text-gray-400">
-          {{ dailyEvents.length ? '该分类暂无已执行动作' : '今天还没有记录到事件' }}
-        </div>
-        <div v-else class="max-h-80 overflow-y-auto pr-1 space-y-1.5">
-          <div
-            v-for="ev in visibleDailyEvents"
-            :key="ev.id || `${ev.at}-${ev.type}`"
-            class="ui-subtle-panel flex items-start gap-2 rounded-lg px-3 py-1.5"
-          >
-            <span class="shrink-0 text-xs text-gray-400 font-mono">{{ formatEventTime(ev.at) }}</span>
-            <span
-              v-if="EVENT_TYPE_LABELS[ev.type] || ev.level !== 'info'"
-              class="shrink-0 rounded px-1.5 py-0.5 text-xs"
-              :class="ev.level === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' : ev.level === 'warn' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'"
-            >{{ EVENT_TYPE_LABELS[ev.type] || ev.type }}</span>
-            <span class="min-w-0 flex-1 break-all text-xs" :class="EVENT_LEVEL_STYLE[ev.level] || EVENT_LEVEL_STYLE.info">
-              {{ ev.message }}<span v-if="ev.count && ev.count > 1" class="ml-1 text-gray-400">×{{ ev.count }}</span>
-            </span>
-          </div>
-        </div>
+        </aside>
       </div>
     </div>
   </div>
-
   <AccountModal
     :show="showReloginModal"
     :edit-data="currentAccount"
@@ -1366,3 +1387,438 @@ useIntervalFn(updateCountdowns, 1000)
     @saved="onAccountSaved"
   />
 </template>
+
+<style scoped>
+.dashboard-view {
+  container-type: inline-size;
+  color: var(--theme-text);
+}
+.dashboard-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.dashboard-view :where(.ui-card) {
+  min-width: 0;
+  border-radius: 16px;
+  box-shadow: 0 3px 16px rgb(15 23 42 / 3%);
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+.overview-account,
+.overview-assets {
+  padding: 24px;
+}
+.overview-account {
+  display: flex;
+  flex-direction: column;
+}
+.account-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--theme-text) 55%, transparent);
+  white-space: nowrap;
+}
+.account-name {
+  overflow: hidden;
+  margin: 8px 0 12px;
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.account-actions:empty {
+  display: none;
+}
+.account-action {
+  padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 16%, var(--surface-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--theme-primary) 5%, transparent);
+  color: var(--theme-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: background 150ms;
+}
+.account-action:hover {
+  background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+}
+.account-action:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.account-action-warning {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.account-progress {
+  margin-top: auto;
+}
+.account-efficiency {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-top: 8px;
+  line-height: 1.6;
+}
+.overview-assets {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 16px;
+}
+.asset-item {
+  min-width: 0;
+}
+.asset-value {
+  margin: 7px 0 2px;
+  font-size: clamp(22px, 2.7cqi, 29px);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -1px;
+  white-space: nowrap;
+}
+.dashboard-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.dashboard-activity {
+  overflow: hidden;
+}
+.activity-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--surface-border);
+}
+.activity-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.activity-tabs {
+  display: flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+.activity-tabs button {
+  min-height: 32px;
+  padding: 5px 13px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--theme-text) 55%, transparent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.activity-tabs button.active {
+  background: var(--surface-1);
+  color: var(--theme-primary);
+  box-shadow: 0 1px 4px rgb(15 23 42 / 8%);
+  font-weight: 600;
+}
+.activity-content {
+  padding: 0 22px 18px;
+}
+.activity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 56px;
+}
+.activity-caption {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--theme-text) 55%, transparent);
+}
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 6px 8px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--theme-text) 55%, transparent);
+  white-space: nowrap;
+}
+.filter-toggle:hover {
+  color: var(--theme-primary);
+}
+.filter-active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--theme-primary);
+}
+.log-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.log-filter-field {
+  min-width: 0;
+  width: 100%;
+}
+.log-filters :deep(label) {
+  font-size: 11px;
+  font-weight: 500;
+}
+.log-filters :deep(button) {
+  white-space: nowrap;
+}
+.log-stream,
+.event-stream {
+  min-height: 300px;
+  max-height: 520px;
+  height: min(52vh, 520px);
+  scrollbar-gutter: stable;
+}
+.log-stream {
+  font-size: 12px;
+  line-height: 1.9;
+}
+.log-entry {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--surface-border);
+  overflow-wrap: anywhere;
+}
+.log-entry:last-child {
+  border-bottom: 0;
+}
+.log-entry > span:first-child {
+  white-space: nowrap;
+  font-size: 11px;
+}
+.log-entry :deep(.text-xs) {
+  font-size: 11px;
+}
+.event-toolbar {
+  padding: 14px 0;
+}
+.event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.event-caption {
+  flex-basis: 100%;
+  margin-bottom: 4px;
+}
+.event-category {
+  min-width: 112px;
+  flex: 1 1 112px;
+}
+.event-actions :deep(button) {
+  white-space: nowrap;
+  font-size: 12px;
+}
+.daily-event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--surface-border);
+}
+.daily-event-row > :last-child {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.8;
+}
+.dashboard-aside {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.dashboard-aside > .ui-card {
+  padding: 20px;
+}
+.dashboard-aside h3 {
+  white-space: nowrap;
+}
+.countdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.countdown-row > :first-child {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.countdown-value {
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-resources :where(.font-bold) {
+  font-size: 18px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.request-policy {
+  margin-bottom: 20px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-1) 50%, transparent);
+  font-size: 12px;
+  color: color-mix(in srgb, var(--theme-text) 55%, transparent);
+}
+.request-policy summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+.request-policy summary::-webkit-details-marker {
+  display: none;
+}
+.policy-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #059669;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.policy-state.policy-disabled {
+  color: #dc2626;
+}
+.policy-details-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.policy-details-label > span {
+  transition: transform 150ms;
+}
+.request-policy[open] .policy-details-label > span {
+  transform: rotate(180deg);
+}
+.policy-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 0 16px 14px;
+  line-height: 1.8;
+}
+@container (min-width: 580px) {
+  .asset-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@container (min-width: 760px) {
+  .overview-grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr);
+  }
+  .overview-account,
+  .overview-assets {
+    min-height: 225px;
+  }
+  .dashboard-body {
+    grid-template-columns: minmax(0, 1fr) 288px;
+  }
+  .log-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container (min-width: 1160px) {
+  .dashboard-body {
+    grid-template-columns: minmax(0, 1fr) 308px;
+  }
+}
+@container (max-width: 759px) {
+  .dashboard-aside {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dashboard-watchlist {
+    grid-column: 1 / -1;
+  }
+}
+@container (max-width: 479px) {
+  .dashboard-sections,
+  .overview-grid,
+  .dashboard-body {
+    gap: 14px;
+  }
+  .overview-account,
+  .overview-assets {
+    padding: 20px;
+  }
+  .dashboard-aside {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .activity-header {
+    padding: 16px;
+  }
+  .activity-content {
+    padding: 0 16px 16px;
+  }
+  .activity-header h2 {
+    width: 100%;
+  }
+  .activity-tabs {
+    width: 100%;
+  }
+  .activity-tabs button {
+    flex: 1;
+    min-height: 38px;
+  }
+  .policy-summary {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .activity-caption {
+    font-size: 11px;
+  }
+  .log-stream,
+  .event-stream {
+    min-height: 280px;
+    height: 48vh;
+  }
+}
+</style>
