@@ -244,6 +244,11 @@ const hasActiveMysteryOffer = computed(() => {
 
 const version = __APP_VERSION__
 
+function closeCurrentMenu(itemPath: string) {
+  if (route.path === itemPath && window.innerWidth < 1024)
+    appStore.closeSidebar()
+}
+
 watch(
   () => route.path,
   () => {
@@ -404,6 +409,8 @@ async function copyToken() {
       </div>
       <!-- Mobile Close Button -->
       <button
+        type="button"
+        aria-label="关闭导航菜单"
         class="h-8 w-8 flex flex-none items-center justify-center rounded-lg text-gray-500 transition lg:hidden hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
         @click="appStore.closeSidebar"
       >
@@ -494,6 +501,7 @@ async function copyToken() {
         :active-class="item.path === '/' ? '' : 'router-link-active'"
         :exact-active-class="item.path === '/' ? 'router-link-active' : 'router-link-exact-active'"
         class="nav-item group relative flex items-center gap-3 rounded-xl px-2 py-1.5 transition-colors duration-200"
+        @click.left.exact="closeCurrentMenu(item.path)"
       >
         <span class="nav-icon h-9 w-9 flex flex-none items-center justify-center rounded-lg text-[22px] transition-colors duration-200">
           <div :class="[item.icon]" />
