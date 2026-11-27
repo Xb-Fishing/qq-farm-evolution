@@ -70,6 +70,52 @@ test('saving an existing default plan overwrites it on disk', () => {
   assert.equal(persisted.userDefaultAccountPlans.alice.config.automation.task, true);
 });
 
+test('default plans retain kickout relogin settings when saved, read and applied', () => {
+  const username = 'relogin-plan';
+  const accounts = store.addOrUpdateAccount({ name: 'Existing farm', username, code: 'relogin-existing' });
+  const existingId = accounts.accounts.at(-1).id;
+  const configs = [
+    { delayMinutes: 5, validUntil: '' },
+    { delayMinutes: 5, validUntil: '2099-12-31T23:59' },
+    { delayMinutes: 0, validUntil: '' },
+  ];
+
+  for (const [index, kickoutRelogin] of configs.entries()) {
+    const saved = store.setUserDefaultAccountPlan(username, { kickoutRelogin });
+    assert.deepEqual(saved.config.kickoutRelogin, kickoutRelogin);
+    assert.deepEqual(store.getUserDefaultAccountPlan(username).config.kickoutRelogin, kickoutRelogin);
+
+    const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8'));
+    assert.deepEqual(persisted.userDefaultAccountPlans[username].config.kickoutRelogin, kickoutRelogin);
+    assert.deepEqual(store.applyUserDefaultAccountPlan(username, existingId).kickoutRelogin, kickoutRelogin);
+
+    const updated = store.addOrUpdateAccount({ name: `New farm ${index}`, username, code: `relogin-new-${index}` });
+    assert.deepEqual(store.getConfigSnapshot(updated.accounts.at(-1).id).kickoutRelogin, kickoutRelogin);
+  }
+});
+
+test('a plan without a reconnect option preserves per-account recovery settings', () => {
+  const username = 'legacy-relogin-plan';
+  const original = store.getConfigSnapshot().kickoutRelogin;
+  const fallback = { delayMinutes: 12, validUntil: '' };
+  try {
+    store.applyConfigSnapshot({ kickoutRelogin: fallback }, { persist: false });
+    store.setUserDefaultAccountPlan(username, { plantingStrategy: 'max_profit' });
+    assert.equal(store.getUserDefaultAccountPlan(username).config.kickoutRelogin, undefined);
+    const id = store.addOrUpdateAccount({ name: 'Legacy example', username, code: 'legacy-relogin-fixture' }).accounts.at(-1).id;
+    assert.deepEqual(store.getConfigSnapshot(id).kickoutRelogin, fallback);
+    const accountSetting = { delayMinutes: 31, validUntil: '2099-12-31T23:59' };
+    store.applyConfigSnapshot({ kickoutRelogin: accountSetting }, { accountId: id });
+    assert.deepEqual(store.applyUserDefaultAccountPlan(username, id).kickoutRelogin, accountSetting);
+    for (const kickoutRelogin of [null, [], {}]) {
+      assert.equal(store.setUserDefaultAccountPlan(username, { kickoutRelogin }).config.kickoutRelogin, undefined);
+      assert.deepEqual(store.applyUserDefaultAccountPlan(username, id).kickoutRelogin, accountSetting);
+    }
+  } finally {
+    store.applyConfigSnapshot({ kickoutRelogin: original }, { persist: false });
+  }
+});
+
 test('disabled plans do not change new account defaults', () => {
   store.setUserDefaultAccountPlan('bob', {
     plantingStrategy: 'max_profit',
