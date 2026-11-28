@@ -220,7 +220,7 @@ test('牧场每日礼包手动领取验证槽位、预检、实际回执和当�
   f.keepMallCatalogStale = true;
   f.realScene = true;
   const state = await f.service.getState('mallGift');
-  assert.deepEqual(state.data.mallGift, { status: 'ready', reward: { id: '80021', count: '1', name: '无机罐头（1小时）' } });
+  assert.deepEqual(state.data.mallGift, { status: 'ready', reward: { id: '80021', count: '1', name: '无机罐头（1小时）', image: '/game-config/seed_images_named/80021_official.png' } });
   assert.deepEqual(f.mallOpens, [true]);
   const prepared = await f.service.prepare('claimMallGift');
   assert.equal(prepared.ok, true, prepared.error);
@@ -1732,9 +1732,9 @@ test('automatic harvest names reviewed rewards with exact receipt counts and log
   const records = ranchLogs(t);
   const f = fixture();
   const rewards = [
-    { id: '1065003', count: '5', name: '巨大鹅蛋' },
-    { id: '1065010', count: '9007199254740993', name: '巨大鼹鼠崽' },
-    { id: '2065003', count: '2', name: '巨大鹅' },
+    { id: '1065003', count: '5', name: '巨大鹅蛋', image: '/game-config/seed_images_named/1065003_official.png' },
+    { id: '1065010', count: '9007199254740993', name: '巨大鼹鼠崽', image: '/game-config/seed_images_named/1065010_official.png' },
+    { id: '2065003', count: '2', name: '巨大鹅', image: '/game-config/seed_images_named/2065003_official.png' },
   ];
   f.mutateReply = reply => ({
     ...reply,
