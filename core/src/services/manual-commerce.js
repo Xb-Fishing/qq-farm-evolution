@@ -41,6 +41,7 @@ function shopPanelFields(goods, kind, requiredLevel = 0) {
 function getSaleQualification(itemId) {
   const config = require('../config/gameConfig');
   const info = config.getItemById(Number(itemId));
+  if (info?.catalogOnly) return { sellable: false, priceId: 0, price: '' };
   const direct = /^(\d+):(\d+)$/.exec(String(info?.sells || ''));
   const conditional = Boolean(info?.sell_cond && !info?.sells);
   const sellable = !conditional && Boolean(direct || config.getPlantByFruitId(Number(itemId)));

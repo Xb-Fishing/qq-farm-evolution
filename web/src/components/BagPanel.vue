@@ -98,7 +98,7 @@ function canBatchSell(item: any) {
   return canSell(item) && Number(item.count || 0) > 0
 }
 function canUse(item: any) {
-  return Boolean(item?.usable) || Number(item?.itemType || 0) === 11
+  return !item?.catalogOnly && (Boolean(item?.usable) || Number(item?.itemType || 0) === 11)
 }
 function handleSellClick(item: any) {
   if (batchMode.value) {

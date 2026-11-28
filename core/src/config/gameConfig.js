@@ -127,14 +127,20 @@ function loadConfigs() {
         const itemInfoPath = path.join(basePath, 'ItemInfo.json');
         if (fs.existsSync(itemInfoPath)) {
             itemInfoConfig = JSON.parse(fs.readFileSync(itemInfoPath, 'utf8'));
+            const catalogAuditPath = path.join(basePath, 'client-item-catalog-audit.json');
+            const catalogOnlyIds = new Set(fs.existsSync(catalogAuditPath)
+                ? JSON.parse(fs.readFileSync(catalogAuditPath, 'utf8')).addedItemIds
+                : []);
             itemInfoMap.clear();
             seedItemMap.clear();
             for (const item of itemInfoConfig) {
                 const itemId = Number(item && item.id) || 0;
                 if (itemId <= 0 || isInvalidSeedId(itemId)) continue;
-                itemInfoMap.set(itemId, item);
+                // The client catalog adds names and images. Bag actions need separate gameplay evidence.
+                const catalogOnly = catalogOnlyIds.has(itemId);
+                itemInfoMap.set(itemId, catalogOnly ? { ...item, catalogOnly: true } : item);
                 // type === 5 表示种子物品
-                if (Number(item.type) === 5) {
+                if (Number(item.type) === 5 && !catalogOnly) {
                     seedItemMap.set(itemId, item);
                 }
             }

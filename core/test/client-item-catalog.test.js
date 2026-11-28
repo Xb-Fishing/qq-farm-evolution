@@ -58,7 +58,7 @@ test('official catalog gaps are closed while prior item records and invalid seed
   assert.equal(config.getItemById(101407).cond_sells, '1001:1');
 });
 
-test('real Bag codec names all 319 additions without seed gaps, selling or automatic item use', async t => {
+test('real Bag codec displays every catalog addition without enabling transactions', async t => {
   await loadProto();
   const stacks = audit.addedItemIds.map((id, i) => ({ id, uid: 50000 + i, count: 1 }));
   const calls = [];
@@ -89,6 +89,10 @@ test('real Bag codec names all 319 additions without seed gaps, selling or autom
     assert.equal(item.name, config.getItemById(item.id).name);
     assert.equal(item.itemType, config.getItemById(item.id).type);
     assert.equal(item.countDec, '1');
+    assert.equal(item.catalogOnly, true);
+    assert.equal(item.sellable, false);
+    assert.equal(item.usable, false);
+    assert.equal(item.priceUnit, '');
     assert.equal(config.isSeedItem(item.id), false);
     assert.equal(config.getPlantBySeedId(item.id), undefined);
   }
@@ -98,6 +102,9 @@ test('real Bag codec names all 319 additions without seed gaps, selling or autom
   assert.deepEqual(auditBagSeedCoverage([...stacks, unknown], []).issues, [
     { itemId: unknown.id, kind: 'unclassified_item' },
   ]);
+  await assert.rejects(warehouse.sellItems([{ id: 60001, count: 1 }]), { code: 'BAG_ITEM_CATALOG_ONLY' });
+  await assert.rejects(warehouse.useItem(5004, 1, 123), { code: 'BAG_ITEM_CATALOG_ONLY' });
+  await assert.rejects(warehouse.batchUseItems([{ itemId: 101403, count: 1, uid: 123 }]), { code: 'BAG_ITEM_CATALOG_ONLY' });
   await warehouse.sellAllFruits();
   assert.equal(await warehouse.openFertilizerGiftPacksSilently(), 0);
   assert.ok(calls.length >= 2);
