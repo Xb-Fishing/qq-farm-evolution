@@ -13,22 +13,25 @@ const store = require('../src/models/store');
 const storePath = require.resolve('../src/models/store');
 const workerPath = path.join(__dirname, 'fixtures/blacklist-config-worker.js');
 const readDisk = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8'));
-function reloadBlacklist(accountId) {
+function reloadAccountSetting(accountId, getter) {
   const output = execFileSync(process.execPath, ['-e',
-    'const store = require(process.argv[1]); console.log(JSON.stringify(store.getFriendBlacklist(process.argv[2])));',
-    storePath, accountId], { env: process.env, encoding: 'utf8' });
+    'const store = require(process.argv[1]); console.log(JSON.stringify(store[process.argv[3]](process.argv[2])));',
+    storePath, accountId, getter], { env: process.env, encoding: 'utf8' });
   return JSON.parse(output.trim().split(/\r?\n/).at(-1));
 }
+const reloadBlacklist = accountId => reloadAccountSetting(accountId, 'getFriendBlacklist');
+const reloadRetryDate = accountId => reloadAccountSetting(accountId, 'getFriendBadRetryDate');
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 for (const [mode, action] of [
-  ['fork', 'expire'], ['fork', 'pause'], ['thread', 'expire'], ['thread', 'pause'], ['fork', 'ipc-failure'],
+  ['fork', 'expire'], ['fork', 'pause'], ['thread', 'expire'], ['thread', 'pause'], ['fork', 'ipc-failure'], ['fork', 'detached'],
 ]) {
   test(`${mode}/${action}: bad-action pause cannot overwrite newer blacklists from any account`, { timeout: 20000 }, async t => {
     const accountId = `blacklist-${mode}-${action}`;
     const otherId = `${accountId}-other`;
+    const shouldPause = action === 'pause' || action === 'detached';
     store.applyConfigSnapshot({
-      friendBadRetryDate: action === 'pause' ? '' : '2000-01-01',
+      friendBadRetryDate: shouldPause ? '' : '2000-01-01',
       friendBlacklist: [], automation: { friend_bad: true },
     }, { accountId });
     store.setFriendBlacklist(otherId, []);
@@ -48,13 +51,22 @@ for (const [mode, action] of [
     if (mode === 'fork') worker.send({ type: action });
     else worker.postMessage({ type: action });
     await exited;
-    assert.equal(messages.find(message => message.type === 'checked')?.paused, action === 'pause');
+    assert.equal(messages.find(message => message.type === 'checked')?.paused, shouldPause);
     let disk = readDisk();
     assert.deepEqual(disk.accountConfigs[accountId].friendBlacklist, [101, 102]);
     assert.deepEqual(disk.accountConfigs[otherId].friendBlacklist, [201]);
 
     // The manager alone persists the small patch against its current state.
     const patch = messages.find(message => message.type === 'automation_patch')?.patch;
+    if (action === 'detached') {
+      assert.equal(patch, undefined);
+      assert.match(reloadRetryDate(accountId), /^\d{4}-\d{2}-\d{2}$/);
+      assert.deepEqual(reloadBlacklist(accountId), [101, 102]);
+      assert.equal(reloadRetryDate(otherId), '');
+      store.setAutomation('friend_bad', true, accountId);
+      assert.equal(reloadRetryDate(accountId), '');
+      return;
+    }
     if (action === 'ipc-failure') {
       assert.equal(patch, undefined);
       assert.deepEqual(reloadBlacklist(accountId), [101, 102]);
@@ -97,4 +109,37 @@ test('standalone pause expiry still persists when there is no manager', () => {
   });
   assert.equal(readDisk().accountConfigs[accountId].friendBadRetryDate, '');
   assert.deepEqual(reloadBlacklist(accountId), [401]);
+});
+
+test('manual re-enable reports a failed clear and can retry against the same live reader', { timeout: 20000 }, async t => {
+  const accountId = 'blacklist-manual-resume';
+  const retryDate = '2099-01-01';
+  store.setAutomation('friend_bad', false, accountId);
+  store.saveFriendBadRetryDate(retryDate, accountId);
+  const reader = fork('-e', [
+    'const store = require(process.argv[1]); process.on("message", () => process.send(store.getFriendBadRetryDate(process.argv[2])));',
+    storePath, accountId,
+  ], { execPath: process.execPath, execArgv: [], env: process.env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(() => reader.kill());
+  async function observedDate() {
+    const reply = once(reader, 'message');
+    reader.send('read');
+    return (await reply)[0];
+  }
+  assert.equal(await observedDate(), retryDate);
+  const rename = fs.renameSync;
+  const failClear = t.mock.method(fs, 'renameSync', (source, target) => {
+    if (path.dirname(target) === path.join(dataDir, 'friend_bad_retry')) {
+      throw Object.assign(new Error('simulated write failure'), { code: 'ENOSPC' });
+    }
+    return rename(source, target);
+  });
+  assert.throws(() => store.setAutomation('friend_bad', true, accountId), /无法保存好友捣乱暂停状态/);
+  assert.equal(store.isAutomationOn('friend_bad', accountId), false);
+  assert.equal(await observedDate(), retryDate);
+  failClear.mock.restore();
+  store.setAutomation('friend_bad', true, accountId);
+  assert.equal(store.isAutomationOn('friend_bad', accountId), true);
+  assert.equal(await observedDate(), '');
+  assert.equal(reloadRetryDate(accountId), '');
 });

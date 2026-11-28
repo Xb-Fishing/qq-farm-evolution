@@ -19,7 +19,10 @@ const run = async message => {
   if (message.type === 'ipc-failure') {
     process.send = () => { throw new Error('simulated IPC failure'); };
   }
-  if (message.type === 'pause') await runBadOnceOnStartup(true);
+  if (message.type === 'detached') {
+    process.send = packet => packet.type === 'automation_patch' ? true : send(packet);
+  }
+  if (message.type === 'pause' || message.type === 'detached') await runBadOnceOnStartup(true);
   const paused = isFriendBadPaused();
   send({ type: 'checked', paused });
   if (parentPort) parentPort.close();

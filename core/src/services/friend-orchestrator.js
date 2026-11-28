@@ -37,6 +37,7 @@ const {
   getKnownFriendGids,
   applyConfigSnapshot,
   getFriendBadRetryDate,
+  saveFriendBadRetryDate,
   readFriendDogInfoCache,
   getPauseRemainMs,
 } = require('../models/store');
@@ -744,18 +745,20 @@ async function bootstrapFriendDogInfoCacheIfNeeded() {
   }
 }
 
-function syncAutomationPatchToMaster(patch) {
+function setFriendBadPause(retryDate) {
   const accountId = process.env.FARM_ACCOUNT_ID || '';
-  // Worker 只更新自己的内存，由主进程基于最新配置落盘。
-  // Worker 的整份 store 快照可能已经过期，写回会覆盖其它账号的黑名单。
-  applyConfigSnapshot(patch, { accountId, persist: false });
-  const synced = postToMaster({
-    type: 'automation_patch',
-    patch,
-  });
-  // 仅独立运行时直接保存；托管 Worker 的 IPC 失败也不能写旧快照。
-  if (!synced && !process.send && !parentPort) {
-    applyConfigSnapshot(patch, { accountId });
+  const managed = Boolean(process.send || parentPort || process.env.FARM_WORKER === '1'
+    || process.env.FARM_SESSION_BUSINESS === '1');
+  const patch = { friendBadRetryDate: retryDate };
+  // Keep the account's pause durable even when the session host has no manager.
+  saveFriendBadRetryDate(retryDate, accountId);
+  applyConfigSnapshot(patch, { accountId, persist: !managed });
+  if (!managed || process.connected === false) return;
+  const message = { type: 'automation_patch', patch };
+  if (typeof process.send === 'function') {
+    try { process.send(message, () => {}); } catch { /* The date is already saved for this account. */ }
+  } else {
+    postToMaster(message);
   }
 }
 
@@ -774,7 +777,7 @@ function getLocalDateKey(offsetDays = 0) {
 
 function pauseFriendBadUntilTomorrow(reason) {
   const retryDate = getLocalDateKey(1);
-  syncAutomationPatchToMaster({ friendBadRetryDate: retryDate });
+  setFriendBadPause(retryDate);
   resetBadFailureCount();
   log('好友', `捣乱连续失败 ${BAD_FAILURE_LIMIT} 次，已暂停至 ${retryDate} 再尝试。最后错误: ${reason || '未知'}`, {
     module: 'friend',
@@ -792,7 +795,7 @@ function isFriendBadPaused() {
   if (!retryDate) return false;
   if (getLocalDateKey() < retryDate) return true;
 
-  syncAutomationPatchToMaster({ friendBadRetryDate: '' });
+  setFriendBadPause('');
   resetBadFailureCount();
   return false;
 }
