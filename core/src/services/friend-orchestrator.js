@@ -26,6 +26,7 @@ if (globalThis.process?.env?.FARM_SESSION_BUSINESS === '1') {
   // eslint-disable-next-line no-func-assign -- Preserve the hoisted function and its existing recursive callers.
   watchlistPollTick = require('./business-state').wrapBusinessFunction('services/friend-orchestrator.js:watchlistPollTick', watchlistPollTick);
 }
+const { parentPort } = require('node:worker_threads');
 const { CONFIG } = require('../config/config');
 const {
   isAutomationOn,
@@ -36,6 +37,7 @@ const {
   getKnownFriendGids,
   applyConfigSnapshot,
   getFriendBadRetryDate,
+  saveFriendBadRetryDate,
   readFriendDogInfoCache,
   getPauseRemainMs,
 } = require('../models/store');
@@ -743,11 +745,21 @@ async function bootstrapFriendDogInfoCacheIfNeeded() {
   }
 }
 
-function syncAutomationPatchToMaster(patch) {
-  postToMaster({
-    type: 'automation_patch',
-    patch,
-  });
+function setFriendBadPause(retryDate) {
+  const accountId = process.env.FARM_ACCOUNT_ID || '';
+  const managed = Boolean(process.send || parentPort || process.env.FARM_WORKER === '1'
+    || process.env.FARM_SESSION_BUSINESS === '1');
+  const patch = { friendBadRetryDate: retryDate };
+  // Keep the account's pause durable even when the session host has no manager.
+  saveFriendBadRetryDate(retryDate, accountId);
+  applyConfigSnapshot(patch, { accountId, persist: !managed });
+  if (!managed || process.connected === false) return;
+  const message = { type: 'automation_patch', patch };
+  if (typeof process.send === 'function') {
+    try { process.send(message, () => {}); } catch { /* The date is already saved for this account. */ }
+  } else {
+    postToMaster(message);
+  }
 }
 
 function resetBadFailureCount() {
@@ -764,13 +776,8 @@ function getLocalDateKey(offsetDays = 0) {
 }
 
 function pauseFriendBadUntilTomorrow(reason) {
-  const accountId = process.env.FARM_ACCOUNT_ID || '';
   const retryDate = getLocalDateKey(1);
-  applyConfigSnapshot(
-    { friendBadRetryDate: retryDate },
-    { accountId }
-  );
-  syncAutomationPatchToMaster({ friendBadRetryDate: retryDate });
+  setFriendBadPause(retryDate);
   resetBadFailureCount();
   log('好友', `捣乱连续失败 ${BAD_FAILURE_LIMIT} 次，已暂停至 ${retryDate} 再尝试。最后错误: ${reason || '未知'}`, {
     module: 'friend',
@@ -788,8 +795,7 @@ function isFriendBadPaused() {
   if (!retryDate) return false;
   if (getLocalDateKey() < retryDate) return true;
 
-  applyConfigSnapshot({ friendBadRetryDate: '' }, { accountId });
-  syncAutomationPatchToMaster({ friendBadRetryDate: '' });
+  setFriendBadPause('');
   resetBadFailureCount();
   return false;
 }

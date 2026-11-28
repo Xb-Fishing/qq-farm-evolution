@@ -15,7 +15,9 @@ const ACCOUNTS_FILE = getDataFile('accounts.json');
 const KNOWN_FRIEND_GIDS_DIR = getDataFile('known_friend_gids');
 const FRIEND_DOG_INFO_DIR = getDataFile('friend_dog_info');
 const FRIEND_LIST_CACHE_DIR = getDataFile('friend_list_cache');
+const FRIEND_BAD_RETRY_DIR = getDataFile('friend_bad_retry');
 const WATCHLIST_STATE_MIRROR_DIR = getDataFile('watchlist_state_mirror');
+const unsavedFriendBadRetries = new Map();
 
 // ==================== 缓存目录辅助 ====================
 
@@ -205,6 +207,11 @@ function deleteAccountCaches(accountId) {
     deleteFriendListCache(accountId);
     deleteFriendDogInfoCache(accountId);
     deleteKnownFriendGidsCache(accountId);
+    const file = friendBadRetryFile(accountId);
+    if (file) {
+        unsavedFriendBadRetries.delete(file);
+        try { fs.unlinkSync(file); } catch { }
+    }
 }
 
 // ==================== 允许的策略 ====================
@@ -1291,7 +1298,7 @@ function getConfigSnapshot(accountId) {
         plantingStrategy: cfg.plantingStrategy,
         preferredSeedId: cfg.preferredSeedId,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
-        friendBadRetryDate: String(cfg.friendBadRetryDate || ''),
+        friendBadRetryDate: readFriendBadRetryDate(accountId) ?? String(cfg.friendBadRetryDate || ''),
         requestPolicy: { ...cfg.requestPolicy },
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
@@ -1470,6 +1477,7 @@ function setAutomation(key, value, accountId) {
     }
     const patch = { automation: { [key]: value } };
     if (key === 'friend_bad' && value === true) {
+        saveFriendBadRetryDate('', accountId, { required: true });
         patch.friendBadRetryDate = '';
     }
     return applyConfigSnapshot(patch, { accountId });
@@ -1510,8 +1518,39 @@ function getPrioritize2x2Crops(accountId) {
     return getAccountConfigSnapshot(accountId).prioritize2x2Crops === true;
 }
 
+function friendBadRetryFile(accountId) {
+    const id = resolveAccountId(accountId);
+    return id ? path.join(FRIEND_BAD_RETRY_DIR, `${Buffer.from(id).toString('base64url')}.json`) : '';
+}
+
+function saveFriendBadRetryDate(retryDate, accountId, { required = false } = {}) {
+    const file = friendBadRetryFile(accountId);
+    if (!file) return;
+    const value = { retryDate, updatedAt: Date.now() };
+    try {
+        writeJsonFileAtomic(file, value);
+        unsavedFriendBadRetries.delete(file);
+    } catch {
+        if (required) throw new Error('无法保存好友捣乱暂停状态');
+        // A full or unavailable disk must not cancel the live worker's pause.
+        unsavedFriendBadRetries.set(file, value);
+    }
+}
+
+function readFriendBadRetryDate(accountId) {
+    const file = friendBadRetryFile(accountId);
+    if (!file) return null;
+    const saved = readJsonFile(file, null);
+    const valid = saved && Number.isSafeInteger(saved.updatedAt)
+        && typeof saved.retryDate === 'string' && /^(?:\d{4}-\d{2}-\d{2})?$/.test(saved.retryDate);
+    const unsaved = unsavedFriendBadRetries.get(file);
+    if (unsaved && (!valid || unsaved.updatedAt >= saved.updatedAt)) return unsaved.retryDate;
+    if (unsaved) unsavedFriendBadRetries.delete(file);
+    return valid ? saved.retryDate : null;
+}
+
 function getFriendBadRetryDate(accountId) {
-    return String(getAccountConfigSnapshot(accountId).friendBadRetryDate || '');
+    return readFriendBadRetryDate(accountId) ?? String(getAccountConfigSnapshot(accountId).friendBadRetryDate || '');
 }
 
 function getBagSeedPriority(accountId) {
@@ -1993,8 +2032,10 @@ function setUserDefaultAccountPlan(username, rawConfig, options = {}) {
 function applyUserDefaultAccountPlan(username, accountId) {
     const plan = getUserDefaultAccountPlan(username);
     if (!plan.exists) throw new Error('尚未保存默认方案');
-    const kickoutRelogin = plan.config.kickoutRelogin ?? getAccountConfigSnapshot(accountId).kickoutRelogin;
-    setAccountConfigSnapshot(accountId, { ...plan.config, kickoutRelogin });
+    const currentConfig = getAccountConfigSnapshot(accountId);
+    const kickoutRelogin = plan.config.kickoutRelogin ?? currentConfig.kickoutRelogin;
+    // 默认方案只替换策略设置，保留账号独有的好友名单等数据。
+    setAccountConfigSnapshot(accountId, { ...currentConfig, ...plan.config, kickoutRelogin });
     return getConfigSnapshot(accountId);
 }
 
@@ -2334,6 +2375,7 @@ module.exports = {
     getPlantingStrategy,
     getPrioritize2x2Crops,
     getFriendBadRetryDate,
+    saveFriendBadRetryDate,
     getBagSeedPriority,
     getBagSeedFallbackStrategy,
     getIntervals,
